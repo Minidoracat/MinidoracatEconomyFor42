@@ -11,5 +11,11 @@
         "tchinese": "STEAM_DESCRIPTION.md",
         "schinese": "STEAM_DESCRIPTION.md",
         "japanese": "STEAM_DESCRIPTION_JP.md"
+    },
+    "titles": {
+        "english": "Minidoracat Economy for B42",
+        "tchinese": "[B42] Minidoracat 經濟系統 Economy",
+        "schinese": "[B42] Minidoracat 经济系统 Economy",
+        "japanese": "[B42] Minidoracat エコノミー Economy"
     }
 }
