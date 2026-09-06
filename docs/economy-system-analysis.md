@@ -247,10 +247,10 @@ Bshop 公開頁提及 Money／Silver／Gold／StockCertificate 的固定兌值�
 
 #### 每日簽到
 
-- 以 server 計算的 `rewardDayKey` 判斷每日一次；時區由 server 設定。
+- 以 server 計算的 `rewardDayKey` 判斷每日一次：**現實日**（伺服器壁鐘 `getTimestampMs()`），不是遊戲日——遊戲時間在空服暫停（`PauseEmpty=true`）且日長是伺服器選項（預設一個遊戲日約 1 真實小時，A20 實測 0.4 h／分鐘）；時區與重置時刻由沙盒設定（`Economy_RewardDayResetHourUTC`，建議台灣 04:00＝UTC 20:00）。
 - 玩家先達到最低有效遊玩時間，才可在「獎勵」頁手動領取。
-- 獎勵只發交易幣，金額小且有 server-wide 每日 mint 上限。
-- server-wide cap 是安全閘門；當日額度已滿時拒絕發放但不消耗該次 claim，當日結束後不追溯補發。
+- 獎勵只發交易幣、金額固定（沙盒，預設 30）。**簽到不設全服每日上限**（2026-09-06 主持人定案）：每帳號每日一次×固定金額，總發放量已被在線人數綁死（`MaxPlayers` × 金額）；沙盒保留 `Economy_CheckinServerDailyCap`（預設 0＝不限）作為緊急保險絲。全服每日上限只用於 Discord 存入與整合 MOD 來源（§18、§21）。
+- 若保險絲被打開且當日額度已滿：拒絕發放但不消耗該次 claim，當日結束後不追溯補發。
 - 不做連續簽到倍率；漏一天不清空玩家進度，避免 FOMO 與客服爭議。
 - 斷線重連、重複按鈕、request retry 都回傳同一結果，不重複發錢。
 - 一切以 dedicated server 的 `getTimestampMs()` 為準；正式服 `PauseEmpty=true` 時空服會停掉 `EveryOneMinute`，日切與領取資格判定掛在 `OnTickEvenPaused` 節流或玩家連線時補算。
@@ -584,7 +584,7 @@ client UI 可顯示短碼供客服查詢，但完整 account key、Discord ident
 
 | # | 假設 | 怎麼驗 | 通過條件 | 不通過時 |
 |---|---|---|---|---|
-| — | **進度（2026-09-06，Windows dedicated 42.20.4，原型在 `42/media/lua/server/MinidoracatEconomy/proto/`，以 `Lua/MinidoracatEconomy/proto/enable.txt` 啟用）** | A1 ✓ A2 ✓（加上限）A3 ✓ A4 ✓ A5 ✓ A6 ✓ A7 ✓ A8 ✓ A9 ✓ A10 ✓ A11 ✓ A12 ✓ A13 ✓ A14 ✓ A15 ✓ A16 ✓A18 ✓（單 client）A19 ✓ A20 ✓；A17 等 UIFor42 ImageSync；A18 第二 client 併入階段 B 實 UI 測 | | |
+| — | **進度（2026-09-06，Windows dedicated 42.20.4，原型在 `42/media/lua/server/MinidoracatEconomy/proto/`，以 `Lua/MinidoracatEconomy/proto/enable.txt` 啟用）** | A1 ✓ A2 ✓（加上限）A3 ✓ A4 ✓ A5 ✓ A6 ✓ A7 ✓ A8 ✓ A9 ✓ A10 ✓ A11 ✓ A12 ✓ A13 ✓ A14 ✓ A15 ✓ A16 ✓ A18 ✓（單 client）A19 ✓ A20 ✓；A17 改為 Economy 自帶同步、併入階段 B；A18 第二 client 併入階段 B 實 UI 測 | | |
 | A1 | `getFileWriter`／`getFileReader` 在 dedicated 可寫讀 `Lua/MinidoracatEconomy/` 子目錄；`.json` 白名單；`close()` 即落盤 | 寫 1,000 行後 `kill -9`，重啟讀回 | 行數完整、無半行 | 改為單檔或減少 flush 頻率 |
 | A1 結果 | **✓**（Windows）：`.ndjson` 回 nil、巢狀子目錄自動建立、append／truncate 語意正確；SIGKILL 後 1,072 行全部完整、Lua 啟動掃描正確報 lastSeq；**`writeln` 用 `System.lineSeparator()`（Windows CRLF、Linux LF），companion 兩者都要吃**；Linux 實機再驗一次路徑權限 | | | |
 | A2 | 同一 tick 合併寫三個檔（events／receipts／audit）的成本 | 100 筆／tick，GameProfiler 量 | 單 tick < 3 ms | 降批次或改單檔 |
@@ -617,7 +617,7 @@ client UI 可顯示短碼供客服查詢，但完整 account key、Discord ident
 | A15 結果 | **✓** 跨 tick 保持 `BufferedReader` 開啟，200 行／tick：平均 0.27 ms、最大 1 ms，26 tick 讀完；可放寬到 1,000 行／tick | | | |
 | A16 | `Clipboard.setClipboard` 在 client 可用；server 端 `getMyDocumentFolder()` 回 cachedir 絕對路徑 | 面板複製路徑 | 貼上得到正確伺服器路徑 | 只顯示相對路徑 |
 | A16 結果 | **✓** client：`Clipboard.setClipboard` 可寫，貼上得到 `A16 clipboard ok <cachedir>`；server：`getMyDocumentFolder()` 回 cachedir 絕對路徑（本機 `%USERPROFILE%\Zomboid`，正式服即 `Zomboid/` 根），面板「複製路徑」以此組出事件／收據／稽核目錄的伺服器端絕對路徑 | | | |
-| A17 | 圖示同步（沿用 NoticeBoard 管線）：64x64 PNG 從 server 到 client 快取並以絕對路徑 `getTexture` 顯示 | 上傳一張、兩個 client | 兩端顯示新圖、缺圖退回預設 | 等 UIFor42 ImageSync |
+| A17 | 圖示同步（Economy 自帶 NoticeBoard 同款管線）：64x64 PNG 從 server 到 client 快取並以絕對路徑 `getTexture` 顯示 | 上傳一張、兩個 client | 兩端顯示新圖、缺圖退回預設 | 只出預設圖示 |
 | A18 | 兩個 client 的 E2E：`OnGameStart` 零 command、首個 `OnTick` 才送；第二 client 看到第一 client 的刊登 | 兩個獨立遠端 client | 目錄同步、無重複 command | 調整訂閱時機 |
 | A18 結果 | **✓（單 client）** `OnGameStart` 零 command；首個 `OnTick` 送 `reconcile`＋`terminals`，server 約 23 ms 後收到。第二 client 的目錄同步待測 | | | |
 | A19 | 整合 API：假 consumer MOD 在 server 呼叫 `credit`／`debit`，未註冊與超額被拒，`requestId` 重送冪等 | 拋棄式 MOD | 六種錯誤碼各命中一次 | 補錯誤碼 |
@@ -631,7 +631,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 ### 階段 B：帳本、雙貨幣、獎勵與管理
 
-- Wallet／Ledger／Idempotency／Config／Admin audit；貨幣註冊表與名稱覆寫（§18.1–18.2）；預設圖示隨 MOD 出貨，圖示覆寫同步等 UIFor42 `ImageSync` 就緒再接（§18.3）；
+- Wallet／Ledger／Idempotency／Config／Admin audit；貨幣註冊表與名稱覆寫（§18.1–18.2）；預設圖示隨 MOD 出貨；圖示覆寫同步為 **Economy 自帶的 NoticeBoard 同款實作**（§18.3，主持人 2026-09-06：不依賴 UIFor42），A17 在本階段驗證；
 - 管理面板 v1 子集（§19）：玩家查詢、調整餘額、貨幣設定、稽核、系統；刊登與交易站管理子分頁隨階段 D–F 增補；
 - ModData 大小預算與自我量測（§20）從第一筆錢包開始生效；
 - 事件檔匯出（`epoch`＋`seq`）與 companion 對帳、存檔水位——**必須在對玩家發幣之前上線**，否則發出去的幣沒有外部帳本可查；
@@ -659,11 +659,11 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - 同 tick 原子（只動 Global ModData）：驗證終端距離、餘額、刊登仍存在與 revision → 買家扣款、賣家入帳、稅銷毀、託管快照移入買家**信箱**、寫事件；任一步失敗全部不變。物品進背包是購買完成後立即執行的 `claim-in`（§19.7）：信箱 (ModData) → 背包 (玩家存檔) 的兩階段操作，離線或背包滿就留在信箱。
 - 刊登與賣給系統是唯一另一種跨存檔線的操作 `list-out`：玩家 modData 先記 pending（含 `itemId` 與快照）→ 移除物品 → ModData 建立 listing／入帳 → 清 pending。登入時依 §19.7 規則三自動收斂，不需要管理員。
 - 單一 list view、搜尋、分類、排序、分頁、我的刊登；listing fee、sales tax、價格／配額 cap；兩名買家競爭同一商品、失敗 rollback、離線賣家收款；
-- 最小信箱（delivery claim、背包滿保留 READY，任一終端可領）在此階段先上，供交付失敗與退件使用。
+- 最小信箱（delivery claim、背包滿保留 READY，任一終端可領）在此階段先上，供交付失敗與退件使用。**上限規則（2026-09-06 主持人定案）**：信箱是帳號層資料、只存快照（§19.7 規則一），每帳號 50 筆未領、全服 10,000。購買／得標／系統商店購買需要一個空位（終端旁購買緊接 `claim-in`，空位立即釋放，所以只有「已 50 筆未領」才被拒，提示「信箱已滿，先領取」）；上架不佔信箱；取消刊登需要空位（退回走信箱），滿了拒絕取消、刊登續掛；系統退件（刊登到期、管理員下架、拍賣流標／取消）**一律成功、允許暫超上限**（受刊登配額 5＋5 約束，最多 +10）；待領項永不過期、跨角色死亡保留，領取即結清消失（信箱數只算未領）。
 
 ### 階段 E：完整信箱＋白名單擴充＋電台
 
-- 完整帳號信箱（slot 預留、quarantine、跨死亡保留政策）；
+- 完整帳號信箱（slot 預留、quarantine；跨死亡保留＋永不過期已定案，見階段 D 上限規則與 §19.7 規則五）；
 - 白名單 codec 的 round-trip 矩陣擴充（流體容器、可修理物、有限 modData 的 MOD 物品）；
 - 交易站電台廣播（§17.3）：定時行情摘要、拍賣即將到期。
 
@@ -672,6 +672,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - 獨立 Auction service／UI，只接受中央託管白名單物品；
 - bid reserve、outbid refund、賣家不可自出價、同 bidder 只追加差額、server restart 恢復、無人出價歸還、空服到期以 `OnTickEvenPaused` 結算一次；
 - 可設定時長；先不做 anti-sniping 延長。
+- **停機政策（2026-09-06 主持人定案：自動延長）**：server 每 60 秒把 `getTimestampMs()` 寫進 `{cachedir}/Lua/MinidoracatEconomy/heartbeat.json`（單行、open→writeln→close，A2 實測 0.13 ms；不能放 ModData——它只在世界存檔時落盤，會把停機高估最多一個存檔週期）；啟動時 `downtime = now − heartbeat`：≤ 5 分鐘（日常自動重啟）不動；5 分鐘–24 小時把 `downtime` 加到所有進行中拍賣的截止時間並寫 `auction.extended{downtime}` 事件（出價與保留款維持）；> 24 小時全部取消：託管快照退回賣家信箱（系統退件、必成功）、所有保留款釋回、事件 `auction.cancelled{reason=downtime}`。不區分預告／意外，不需要管理員操作；壁鐘為準，停機中到期但未超過 5 分鐘者重啟後直接結算。心跳檔缺失（首次啟動）視為 downtime 0。
 
 ### 階段 G：系統收購（mint）
 
@@ -776,13 +777,13 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - 積分→貓幣的比率與上限的**初始沙盒值**（機制已定 2026-09-06：遊戲端 config 擁有、沙盒預設、管理面板可改、Watchcord 建單時讀取；建議 1:1、單筆 10–5,000、每人每日 5,000、全服每日 50,000）；
 - ~~唯讀分頁是否允許遠端開啟~~ → 已定：允許，沙盒 `Economy_RemoteReadOnly` 可關；呈現用 UIFor42 浮鈕＋唯讀狀態帶（§17.1）；~~終端距離門檻~~ → 已定 ≤ 2、同層；
 - ~~含配件武器怎麼處理~~ → 已定：自動拆配件退回背包後上架；未知 modData 鍵一律拒絕（§12 階段 D）；白名單檔的預設內容與流體容器開放時機；
-- 信箱是否跨角色死亡保留、READY 是否永不過期（這決定了「跨死亡安全倉庫」是否為刻意玩法）；
-- 預告維護與意外長停覆蓋拍賣時窗時的公平政策（延長、取消退款或照常結算）；
-- 每日獎勵的全服上限分配：先到先得（明示為限量）或依時段預留預算；
-- 是否以及何時開放 v2 玩家提領（開放時才決定 `rateOut`／價差、每日提領上限，並評估把 `SaveWorldEveryMinutes` 由 60 調 30 以縮短等待——由引擎排程，不走 RCON）；贊助幣即使 v2 也預設不提領，其 catalog 內容另定；
+- ~~信箱是否跨角色死亡保留、READY 是否永不過期~~ → 已定（2026-09-06）：保留＋永不過期，上限與滿載規則見 §12 階段 D；
+- ~~預告維護與意外長停覆蓋拍賣時窗時的公平政策~~ → 已定：以心跳檔算停機長度自動延長／超過 24 小時取消退款（§12 階段 F）；
+- ~~每日獎勵的全服上限分配~~ → 已定：簽到不設全服上限（保險絲預設 0），無分配問題（§8.2）；
+- ~~是否以及何時開放 v2 玩家提領~~ → 已定：不排；日後開放時才決定 `rateOut`／價差、每日提領上限，並評估 `SaveWorldEveryMinutes` 由 60 調 30（由引擎排程，不走 RCON）；贊助幣即使 v2 也預設不提領；
 - 交易站與 ATM 的自製 tile 包範圍（四面向精靈圖；ATM 是否借用原版櫃員機 tile 待查）；交易站電台的頻率、廣播間隔與內容範本；
 - 社群幣消費 catalog 的可轉售性審核（社群商品若可轉售，等於繞過社群幣→交易幣的兌換上限）；
-- 每日 reward day 的時區、有效遊玩判定與 server-wide mint cap；
+- ~~每日 reward day 的時區、有效遊玩判定與 server-wide mint cap~~ → 已定：現實日、沙盒重置時刻（建議台灣 04:00）、有效遊玩用壁鐘連線時間；簽到無全服上限（§8.2）；
 - 生存里程碑門檻與死亡後政策；
 - listing 到期、取消、背包滿、離線交付與無人出價的完整狀態機；
 - 中央託管的可重建物品白名單（type、condition、uses、fluid、有限 modData）；
@@ -995,10 +996,10 @@ EconomyConfig.currencies = {
 - 驗證：1–16 個字元、去頭尾空白、不含控制字元與 `<`／`>`（避免任何 RichText 面板誤解）、不得與另一幣別同名。
 - 生效：寫入 `config.currencies[id].nameOverride` → 事件 → 下一次 snapshot 推給在線 client；client 一律呼叫 `Currency.displayName(id)`（覆寫 → 翻譯 → id），不自行快取字串。
 
-### 18.3 圖示覆寫（沿用家族圖片同步作法，管線放 UI 框架）
+### 18.3 圖示覆寫（沿用家族圖片同步作法；管線 Economy 自帶）
 
 - 目錄：`{cachedir}/Lua/MinidoracatEconomy/icons/<currencyId>.png`；規格 64x64 RGBA PNG、≤ 32 KB、檔名即幣別 id（ASCII）；不符者 log `icon-invalid` 並沿用預設。
-- 同步：server 以 `getFileInput` 讀位元組、分批 base64、以 hash 命名 → client 收分塊、`getFileOutput` 寫到 `getMyDocumentFolder()/Lua/MinidoracatEconomy/cache/<addr>_<hash>.png`、驗證後以絕對路徑 `getTexture()` 載入（引擎出處：`LuaManager.java:5818`、`:6863`、`:8431-8433`、`:8835`；作法已在 NoticeBoard 實證：`NBImage.lua`、`NBImageCache.lua`）。**管線不在本 MOD 重寫**：提案把 NoticeBoard 的 `NBImage`（純邏輯）＋`NBImageCache`／server 掃描器抽到 `MinidoracatUIFor42` 成為 `CAPABILITIES.imageSync`（兩個真實 consumer，符合該框架「≥1 consumer 才收」原則）；Economy 只呼叫 `UI.ImageSync.request(hash)`／`UI.ImageSync.pathFor(hash)`。框架未提供該能力時，Economy 只顯示預設圖示（不做自己的同步）。
+- 同步：server 以 `getFileInput` 讀位元組、分批 base64、以 hash 命名 → client 收分塊、`getFileOutput` 寫到 `getMyDocumentFolder()/Lua/MinidoracatEconomy/cache/<addr>_<hash>.png`、驗證後以絕對路徑 `getTexture()` 載入（引擎出處：`LuaManager.java:5818`、`:6863`、`:8431-8433`、`:8835`；作法已在 NoticeBoard 實證：`NBImage.lua`、`NBImageCache.lua`）。**管線由 Economy 自帶**（2026-09-06 主持人：沿用 NoticeBoard 作法、不依賴 UIFor42）：把 NoticeBoard 的 `NBImage`（純邏輯）＋`NBImageCache`／server 掃描器複製到 `MinidoracatEconomy/Image*` 命名空間，維持與 NoticeBoard 相同的協定與快取路徑規則，只改前綴；UI 框架（Theme／Skin／VirtualList）仍是 UIFor42。日後 UIFor42 若抽出 `ImageSync`，Economy 再遷移（additive，不影響出貨）。
 - 退回鏈：已同步覆寫圖 → MOD 內預設圖 → 兩字縮寫文字（例如「倖」「貓」）；任何一層失敗都不得讓面板開不了（框架 fail-soft 紅線）。
 - 生效時機：server 啟動掃描一次；管理面板「重新載入圖示」command 重掃；ModData 只存 `iconHash`（8 字元），client 以 hash 判斷是否需要下載，不存圖片位元組。
 - 顯示尺寸 16／20／24／32 px，由 64 px 原稿縮放；UI 由 `MinidoracatUIFor42` 承載（Theme／Skin／Icons／VirtualList），彩色貨幣圖示是 Economy 自有貼圖、不進框架的白圖 Icons 集；管理分頁需要的單色圖示（盾牌、鉛筆、警示等）以 additive key 提給框架。
@@ -1030,7 +1031,7 @@ EconomyConfig.currencies = {
 ### 19.3 調整餘額的最小安全規則
 
 1. 原因必填 10–200 字；金額為非零整數；目標帳號必須存在且不是操作者自己；幣別必須啟用（停用幣只允許扣款）；帶 `expectedRevision`，錢包版本不符即拒絕（避免與玩家同時交易時算錯前後餘額）。
-2. 每幣別單筆上限（預設 5,000）；每位管理員每日**加、減各自**上限（預設各 10,000，不互抵）；全服每日管理調整總額另有上限（預設各 50,000）；每分鐘 ≤ 10 筆。上限只能在沙盒／config 檔改，不能在面板自行提高。
+2. 每幣別單筆上限（預設 5,000）；每位管理員每日**加、減各自**上限（預設各 10,000，不互抵）；全服每日管理調整總額另有上限（預設各 50,000）；每分鐘 ≤ 10 筆。上限只能在沙盒改（`Economy_AdminAdjustMaxPerTx`＝5,000、`Economy_AdminAdjustDailyPerAdmin`＝10,000、`Economy_AdminAdjustServerDaily`＝50,000、`Economy_AdminReasonMinChars`＝10），面板不提供、也不做 runtime 覆寫——這是限制管理員的設定，屬服主層級（2026-09-06 主持人定案）；B42 管理員的「沙盒設定」可線上改、server 每次讀取，是否即時生效在階段 B 實測。
 3. 不可使目標餘額為負；不可動保留款；不可調整 `EXTERNAL_*`／`SYSTEM_*` 帳戶。
 4. 每筆產生 `admin.adjust` 事件（adminKey、target、currency、delta、reason、requestId、`expectedRevision`、`reversalOfTxId`）；Watchcord 輪詢到即推 Discord 管理頻道通知——管理員帳號被盜時，外部告警是最有效的防線（Watchcord 已有 `admin_alerts`／`discord_outbox`）。
 5. **分權**：遊戲內「調整餘額」與 Watchcord 端「退回積分」由不同角色執行；退回積分必須綁原訂單 `orderId`，且同一訂單的累計退回不得超過該訂單實扣金額。
