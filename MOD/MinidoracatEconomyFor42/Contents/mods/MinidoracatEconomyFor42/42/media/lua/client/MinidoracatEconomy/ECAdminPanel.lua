@@ -1395,21 +1395,33 @@ function Admin:layout()
     layoutColumns(self.auditList, auditSpec(), auditW - 12)
     g.auditBottom = auditListY + auditH
 
-    -- system page: state card left, paths card right
+    -- system page: state card left, paths card right. Each path is "label / value / copy": two
+    -- lines when the card has the room, one line at the minimum window height with a large UI font
+    -- (the rows must never run into the footer).
     g.sysLeftW = math.max(240, math.floor((w - PAD) * 0.5))
     g.sysRightX = g.sysLeftW + PAD
     g.sysRightW = math.max(220, w - g.sysRightX)
-    local py = g.bodyY + CARD_TITLE_H + PAD
     local copyH = math.max(20, fontH.small + 6)
+    local top = g.bodyY + CARD_TITLE_H + PAD
+    local roomH = g.bodyY + g.bodyH - PAD - top
+    g.sysStacked = #PATH_KEYS * (lh + copyH + 4) <= roomH
+    g.sysLabelW = 0
+    if not g.sysStacked then
+        for _, key in ipairs(PATH_KEYS) do
+            g.sysLabelW = math.max(g.sysLabelW, textWidth(tr("Admin_Sys_Path_" .. key)))
+        end
+        g.sysLabelW = math.min(g.sysLabelW, math.floor(g.sysRightW * 0.3))
+    end
+    local py = top
     for _, b in ipairs(self.copyButtons) do
         b:setVisible(system)
         b:setWidth(math.min(textWidth(b.fullTitle) + 20, math.max(30, g.sysRightW - PAD * 2)))
         b:setHeight(copyH)
         b:setX(g.sysRightX + g.sysRightW - PAD - b.width)
-        b:setY(py + lh)
-        py = py + lh + copyH + 4
+        b:setY(g.sysStacked and (py + lh) or py)
+        py = py + copyH + 4 + (g.sysStacked and lh or 0)
     end
-    g.sysPathY = g.bodyY + CARD_TITLE_H + PAD
+    g.sysPathY = top
 
     self:rebuildAudit()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
@@ -1763,11 +1775,19 @@ function Admin:drawSystem()
     local paths = sys and sys.paths
     for i, key in ipairs(PATH_KEYS) do
         local button = self.copyButtons[i]
-        text(self, tr("Admin_Sys_Path_" .. key), g.sysRightX + PAD, py, "textMuted")
-        py = py + lh
-        local value = paths and paths[key] or "-"
-        text(self, fitText(tostring(value), g.sysRightW - PAD * 2 - button.width - 6), g.sysRightX + PAD,
-            py + math.floor((button.height - fontH.small) / 2), "text")
+        local value = tostring(paths and paths[key] or "-")
+        local label = tr("Admin_Sys_Path_" .. key)
+        local vy = py + math.floor((button.height - fontH.small) / 2)
+        if g.sysStacked then
+            text(self, label, g.sysRightX + PAD, py, "textMuted")
+            py = py + lh
+            vy = py + math.floor((button.height - fontH.small) / 2)
+            text(self, fitText(value, button.x - 6 - (g.sysRightX + PAD)), g.sysRightX + PAD, vy, "text")
+        else
+            text(self, fitText(label, g.sysLabelW), g.sysRightX + PAD, vy, "textMuted")
+            local vx = g.sysRightX + PAD + g.sysLabelW + PAD
+            text(self, fitText(value, button.x - 6 - vx), vx, vy, "text")
+        end
         py = py + button.height + 4
     end
     -- the server omits paths entirely when it could not resolve the cache dir (pathsResolved)
