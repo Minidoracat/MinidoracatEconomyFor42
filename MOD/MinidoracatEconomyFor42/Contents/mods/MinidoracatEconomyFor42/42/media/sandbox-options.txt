@@ -161,3 +161,22 @@ option MinidoracatEconomy.CatServerDaily
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_CatServerDaily,
 }
+
+/* Survival milestones: ';'-separated lists (no commas: ScriptParser splits on them), same length,
+   positive integers. Days are in-game days survived by the current character; each milestone is
+   paid once per account per season. */
+option MinidoracatEconomy.MilestoneDays
+{
+    type = string,
+    default = 1;3;7;14;30,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MilestoneDays,
+}
+
+option MinidoracatEconomy.MilestoneAmounts
+{
+    type = string,
+    default = 100;150;250;400;1000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MilestoneAmounts,
+}

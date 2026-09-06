@@ -57,6 +57,36 @@ function C.currency(id)
     return nil
 end
 
+-- Rewards (server-authoritative; the UI in stage B6 renders C.rewards and listens via C.onRewards)
+C.rewards = nil
+C.rewardsListeners = {}
+function C.onRewards(fn) C.rewardsListeners[#C.rewardsListeners + 1] = fn end
+local function notifyRewards(kind, args)
+    for _, fn in ipairs(C.rewardsListeners) do
+        local ok, err = pcall(fn, kind, args)
+        if not ok then EC.log("rewards listener failed: " .. tostring(err)) end
+    end
+end
+
+handlers["rewards.state"] = function(args)
+    C.rewards = args
+    notifyRewards("state", args)
+end
+
+handlers["rewards.checkin"] = function(args)
+    EC.log("checkin ok=" .. tostring(args.ok) .. " error=" .. tostring(args.error) .. " amount=" .. tostring(args.amount) .. " balance=" .. tostring(args.balance))
+    if args.ok and C.rewards then C.rewards.claimed = true end
+    notifyRewards("checkin", args)
+end
+
+handlers["milestone.granted"] = function(args)
+    EC.log("milestone " .. tostring(args.index) .. " (" .. tostring(args.days) .. " days) +" .. tostring(args.amount))
+    notifyRewards("milestone", args)
+end
+
+function C.requestRewards() send("rewards.state") end
+function C.checkin() send("rewards.checkin") end
+
 local function onServerCommand(module, command, args)
     if module ~= EC.COMMAND_MODULE then return end
     local handler = handlers[command]

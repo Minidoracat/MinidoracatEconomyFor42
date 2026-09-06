@@ -31,5 +31,9 @@
   "Sandbox_MinidoracatEconomy_CatPerAccountDaily": "ネココイン アカウント日次入金上限",
   "Sandbox_MinidoracatEconomy_CatPerAccountDaily_tooltip": "同じゲームアカウントが報酬日ごとに入金できるネココインの総数。超えた注文は拒否され、ポイントは返却されます。起動既定値。管理パネルで変更可。",
   "Sandbox_MinidoracatEconomy_CatServerDaily": "ネココイン サーバー日次入金上限",
-  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "サーバー全体が報酬日ごとに入金できるネココインの総数。起動既定値。管理パネルで変更可。"
+  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "サーバー全体が報酬日ごとに入金できるネココインの総数。起動既定値。管理パネルで変更可。",
+  "Sandbox_MinidoracatEconomy_MilestoneDays": "生存マイルストーン日数",
+  "Sandbox_MinidoracatEconomy_MilestoneDays_tooltip": "セミコロン区切りのゲーム内生存日数リスト（例：1;3;7;14;30）。キャラクターが各日数に到達すると対応する金額が自動で支払われます。各マイルストーンはアカウントごと・シーズンごとに 1 回のみで、死亡後の新キャラクターでは再支払いされません。",
+  "Sandbox_MinidoracatEconomy_MilestoneAmounts": "生存マイルストーン金額（サバイバーコイン）",
+  "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "マイルストーン日数と 1 対 1 で対応する、セミコロン区切りの金額リスト（例：100;150;250;400;1000）。長さが異なる場合は両方に存在する項目のみ使われます。"
 }

@@ -93,7 +93,12 @@ local function fire(name, ...)
 end
 
 local function fakePlayer(username)
-    return { getUsername = function() return username end }
+    local p = { username = username, x = 100, y = 200, hours = 0 }
+    p.getUsername = function() return username end
+    p.getX = function() return p.x end
+    p.getY = function() return p.y end
+    p.getHoursSurvived = function() return p.hours end
+    return p
 end
 
 -- ===== 載入受測程式碼（shared → server；client 檔不在 server 端載入）=====
@@ -112,15 +117,17 @@ require("MinidoracatEconomy/ECServer")
 require("MinidoracatEconomy/ECLedger")
 require("MinidoracatEconomy/ECExport")
 require("MinidoracatEconomy/ECConfig")
+require("MinidoracatEconomy/ECRewards")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
 local X = EC.Export
 local Cfg = EC.Config
+local R = EC.Rewards
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 93     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 113     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -442,6 +449,111 @@ root.config.currencies.survivor.balanceMax = nil
 nowMs = nowMs + 1000
 fire("OnServerStarted")
 check(Cfg.currency("cat").exchange.rateVersion == 2 and Cfg.currency("cat").exchange.perOrderMax == 9000, "restart keeps runtime exchange overrides (sandbox only seeds the first boot)")
+onlinePlayers = {}
+
+
+-- ===== 情境十六：獎勵日與簽到 =====
+io.write("scenario 16: reward day, playtime, check-in\n")
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+SandboxVars.MinidoracatEconomy.RewardDayResetHourUTC = 20
+SandboxVars.MinidoracatEconomy.CheckinAmount = 30
+SandboxVars.MinidoracatEconomy.CheckinMinPlaytimeMinutes = 2
+SandboxVars.MinidoracatEconomy.CheckinServerDailyCap = 0
+nowMs = 1788699986478                      -- 2026-09-06 ~05:46 UTC -> reward day 20260905 (reset at 20:00 UTC)
+fire("OnServerStarted")
+check(R.dayKey(nowMs) == "20260905" and R.dayKey(nowMs + 15 * 3600000) == "20260906", "reward day flips at the configured UTC reset hour, not at UTC midnight")
+check(R.nextResetMs(nowMs) == 1788724800000, "nextResetMs is the next 20:00 UTC")
+
+local dave = fakePlayer("dave")
+onlinePlayers = { dave }
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
+local r0 = lastSent("rewards.checkin")
+check(r0 and r0.args.ok == false and r0.args.error == "not_enough_playtime" and r0.args.playedMs == 0, "check-in before any playtime is refused")
+
+-- 三個 tick，每 60 s 一次；第一個 tick 只取樣位置
+for i = 1, 3 do nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaused") end
+local st = R.state("dave", nowMs)
+check(st.playedMs == 120000 and st.claimed == false, "moving players accrue playtime (first sample excluded)")
+nowMs = nowMs + 60000; fire("OnTickEvenPaused")     -- 沒移動：不計
+check(R.state("dave", nowMs).playedMs == 120000, "AFK interval (no movement) is not counted")
+
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
+local r1 = lastSent("rewards.checkin")
+check(r1.args.ok == true and r1.args.amount == 30 and r1.args.balance == 30 and L.getBalance("SYSTEM_MINT", "survivor").available == -30, "check-in pays the sandbox amount from SYSTEM_MINT")
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
+check(lastSent("rewards.checkin").args.error == "already_claimed" and L.getBalance("dave", "survivor").available == 30, "second check-in the same reward day is refused")
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.state", dave, {})
+local stc = lastSent("rewards.state").args
+check(stc.claimed == true and stc.day == "20260905" and stc.nextResetMs == 1788724800000 and #stc.milestoneList == 5, "rewards.state reports claimed/day/next reset/milestone list")
+
+-- 跨獎勵日：playtime 歸零、可再簽到
+nowMs = 1788724800000 + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
+check(lastSent("rewards.checkin").args.error == "not_enough_playtime" and R.state("dave", nowMs).playedMs == 0, "new reward day resets playtime; check-in needs playtime again")
+for i = 1, 3 do nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaused") end
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
+check(lastSent("rewards.checkin").args.ok == true and L.getBalance("dave", "survivor").available == 60, "check-in works again on the new day")
+
+-- 全服保險絲
+SandboxVars.MinidoracatEconomy.CheckinServerDailyCap = 40
+local erin = fakePlayer("erin")
+onlinePlayers = { dave, erin }
+for i = 1, 3 do nowMs = nowMs + 60000; erin.x = erin.x + 1; dave.x = dave.x + 1; fire("OnTickEvenPaused") end
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", erin, {})
+check(lastSent("rewards.checkin").args.error == "cap_exceeded" and L.getBalance("erin", "survivor").available == 0, "server daily fuse refuses once the day's total would exceed the cap (claim not consumed)")
+SandboxVars.MinidoracatEconomy.CheckinServerDailyCap = 0
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", erin, {})
+check(lastSent("rewards.checkin").args.ok == true, "with the fuse off the same claim succeeds")
+
+-- ===== 情境十七：生存里程碑 =====
+io.write("scenario 17: survival milestones\n")
+local evCount = function(kind)
+    local n = 0
+    for _, f in pairs(files) do
+        for _, line in ipairs(f.lines) do
+            if string.find(line, '"kind":"' .. kind .. '"', 1, true) and string.find(line, '"type":"tx.committed"', 1, true) then n = n + 1 end
+        end
+    end
+    return n
+end
+dave.hours = 24 * 3 + 1                    -- 3 days survived -> milestones 1 (1d) and 2 (3d)
+onlinePlayers = { dave }
+nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaused")
+fire("OnTickEvenPaused"); fire("OnTickEvenPaused")
+check(L.getBalance("dave", "survivor").available == 60 + 100 + 150, "milestones 1 and 3 days paid once (100 + 150)")
+local grants = 0
+for _, s in ipairs(sentCommands) do if s.command == "milestone.granted" and s.player == dave then grants = grants + 1 end end
+check(grants == 2, "player notified once per milestone")
+nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaused")
+check(L.getBalance("dave", "survivor").available == 310, "already granted milestones are not repeated on later scans")
+check(evCount("milestone") == 2 and evCount("checkin") == 3, "events: 2 milestone + 3 checkin tx.committed lines written")
+
+-- 死亡重建：hoursSurvived 歸零，不重發；再活到 7 天只發第 3 個
+dave.hours = 0
+nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaused")
+dave.hours = 24 * 7
+nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaused")
+check(L.getBalance("dave", "survivor").available == 310 + 250, "new life: only the 7-day milestone is new; 1d/3d are not paid again")
+
+-- 賽季重置：里程碑可重領
+S.modData().config.season = "2"
+dave.hours = 24 * 2
+nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaused")
+check(L.getBalance("dave", "survivor").available == 560 + 100, "a new season resets milestone claims (1d paid again under season 2)")
+
+-- 重啟後狀態保留
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local st2 = R.state("dave", nowMs)
+check(st2.claimed == true and st2.milestones > 0 and S.modData().claims.dave.season == "2", "claims survive a restart")
+check(L.conservation("survivor") == 0, "conservation still holds after rewards")
 onlinePlayers = {}
 
 io.write("\n")

@@ -31,5 +31,9 @@
   "Sandbox_MinidoracatEconomy_CatPerAccountDaily": "猫币每帐号每日存入上限",
   "Sandbox_MinidoracatEconomy_CatPerAccountDaily_tooltip": "同一个游戏帐号每个奖励日最多存入的猫币总数；超过的订单会被拒绝并退回积分。启动默认值，管理面板可改。",
   "Sandbox_MinidoracatEconomy_CatServerDaily": "猫币全服每日存入上限",
-  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "全服务器每个奖励日最多存入的猫币总数。启动默认值，管理面板可改。"
+  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "全服务器每个奖励日最多存入的猫币总数。启动默认值，管理面板可改。",
+  "Sandbox_MinidoracatEconomy_MilestoneDays": "生存里程碑天数",
+  "Sandbox_MinidoracatEconomy_MilestoneDays_tooltip": "以分号分隔的游戏内生存天数清单（例如 1;3;7;14;30）。角色生存达到每个天数时自动发放对应金额；每个帐号每个赛季每个里程碑只发一次，死亡重建角色不会重发。",
+  "Sandbox_MinidoracatEconomy_MilestoneAmounts": "生存里程碑金额（幸存币）",
+  "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "以分号分隔、与里程碑天数一一对应的金额清单（例如 100;150;250;400;1000）。长度不一致时只采用两边都有的项目。"
 }

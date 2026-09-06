@@ -31,5 +31,9 @@
   "Sandbox_MinidoracatEconomy_CatPerAccountDaily": "Cat Coin daily deposit cap per account",
   "Sandbox_MinidoracatEconomy_CatPerAccountDaily_tooltip": "Total Cat Coins one game account may deposit per reward day; orders above it are refused and the points refunded. Boot default; adjustable in the admin panel.",
   "Sandbox_MinidoracatEconomy_CatServerDaily": "Cat Coin daily deposit cap (server)",
-  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "Total Cat Coins the whole server may deposit per reward day. Boot default; adjustable in the admin panel."
+  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "Total Cat Coins the whole server may deposit per reward day. Boot default; adjustable in the admin panel.",
+  "Sandbox_MinidoracatEconomy_MilestoneDays": "Survival milestone days",
+  "Sandbox_MinidoracatEconomy_MilestoneDays_tooltip": "Semicolon-separated list of in-game days survived (e.g. 1;3;7;14;30). The matching amount is paid automatically when a character reaches each day count; each milestone is paid once per account per season, and a new character after death does not repeat it.",
+  "Sandbox_MinidoracatEconomy_MilestoneAmounts": "Survival milestone amounts (Survivor Coins)",
+  "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "Semicolon-separated amounts matching the milestone days one by one (e.g. 100;150;250;400;1000). If the lists differ in length only the shared entries are used."
 }
