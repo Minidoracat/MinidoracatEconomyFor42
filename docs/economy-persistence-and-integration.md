@@ -231,7 +231,7 @@ Lua 不可能提供 HTTP；API 由 companion 提供，Watchcord 是唯一呼叫�
 | `GET /accounts?steamId64=` | 該 Steam 綁定的 PZ 帳號清單：`username`、角色名、`isDead`、`lastConnection`、各貨幣 available／reserved | 來源 `whitelist` + `players.db` 的**記憶體快取**（只選 `username, steamid, name, isDead, playerIndex`，絕不讀 40 MB 的 `data` BLOB；每 60 秒或 mtime 變化時刷新；查不到的 SteamID 才做一次限流的即時刷新）＋ projection；附 `durableSeq`。**開檔方式是零鎖**（見 §7 驗證表「鎖競爭」列）：先把 `players.db` 複製到暫存檔再開（或 `?mode=ro&immutable=1`，讀到 malformed 就重試），**絕不**對正式檔持有交易——PZ 的玩家存檔寫入失敗無重試（`ServerPlayerDB.java:187-190`），任何外部鎖都會讓玩家背包靜默回滾 |
 | `POST /orders` | 建立**存入**訂單 `{orderId, steamId64, username, currency, points, amount, rateSnapshot, rateVersion, reason}` | companion 驗證 `username` 屬於該 `steamId64`、`currency` 已註冊且啟用、`amount` 在 `perOrderMin..perOrderMax`、`rateSnapshot`／`rateVersion` 與目前投影一致（不一致回 409 `rate_changed`，Watchcord 重讀 `GET /currencies` 後重試）→ 寫 inbox → 202；重送同 `orderId` 同 hash 回原結果，不同 hash → 409 |
 | `GET /orders/{orderId}` | 查存入訂單狀態 | `pending → deposited（live）→ durable`；`failed`／`conflict` |
-| `GET /ledger?after=<epoch>:<seq>&limit=` | 拉取**所有**事件（不只兌換），每筆帶 `durable: bool` | Watchcord 寫入自己的 PG；只對 `durable=true` 的事件執行不可逆動作 |
+| `GET /ledger?after=<cursor>&limit=` | 拉取**所有**事件（不只兌換），每筆帶 `cursor`（companion 的到達序 `idx:<n>`，跨 companion 重啟穩定；`after` 也接受 `<epoch>:<seq>` 定位到該事件之後）、`durable: bool`、`rolledBack: bool`；回應另帶 `next`、`durable{epoch,seq}`、`currentEpoch`、`loadedSeq`、`realmId`。`(epoch, seq)` 不是唯一鍵（`server.started`／`ledger.anomaly` 與同 seq 的 `tx.committed` 共用），所以游標不用它 | Watchcord 寫入自己的 PG；只對 `durable=true` 的事件執行不可逆動作 |
 | `GET /health` | companion 存活、事件 lag、`durableSeq`、inbox backlog、上次存檔時間 | 供 Watchcord 排程器判斷 |
 
 API 沒有 set-balance、沒有玩家對玩家轉帳、沒有任意 debit；提領不是 API 動作，由玩家在遊戲內發起。
