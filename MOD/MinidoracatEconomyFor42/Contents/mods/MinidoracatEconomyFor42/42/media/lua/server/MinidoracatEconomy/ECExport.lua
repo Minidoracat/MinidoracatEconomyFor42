@@ -30,6 +30,8 @@ X.ROOT = "MinidoracatEconomy"
 X.MAX_LINES_PER_TICK = 50
 X.HEARTBEAT_INTERVAL_MS = 60000
 X.MAX_QUEUE_LINES = 20000           -- hard bound: beyond this the oldest lines are dropped and logged
+X.AUDIT_RING = 500                  -- admin operations kept in ModData for the panel (spec 19.2 / 20)
+X.AUDIT_REASON_CHARS = 40           -- ModData is readable by every client: only a reason prefix (spec 19.3.7)
 
 local sep = "/"                       -- getFileWriter normalises separators (LuaManager.java:6732-6733)
 
@@ -147,6 +149,8 @@ function X.emit(type_, fields)
     return rec
 end
 
+-- Full record goes to the audit + events files; a trimmed copy lands in the bounded ModData ring
+-- the admin panel reads (newest first via X.auditEntries).
 function X.audit(fields)
     local ms = EC.now()
     local rec = baseRecord("audit", ms)
@@ -154,6 +158,57 @@ function X.audit(fields)
     for k, v in pairs(fields or {}) do rec[k] = v end
     X.enqueue(auditPath(ms), EC.jsonEncode(rec))
     X.enqueue(eventsPath(ms), EC.jsonEncode(rec))
+    local ring = md.audit
+    local short = {}
+    for k, v in pairs(rec) do short[k] = v end
+    if type(short.reason) == "string" and #short.reason > X.AUDIT_REASON_CHARS then
+        short.reason = string.sub(short.reason, 1, X.AUDIT_REASON_CHARS)
+    end
+    ring.items[ring.head] = short
+    ring.head = ring.head % X.AUDIT_RING + 1
+    if ring.count < X.AUDIT_RING then ring.count = ring.count + 1 end
+end
+
+-- Copy of a ring entry: the reply must never share a table with Global ModData, so nested values
+-- (Cfg.setExchange stores flat before/after blocks of exchange numbers) are copied too, and
+-- anything deeper than COPY_DEPTH is dropped rather than aliased.
+local COPY_DEPTH = 4
+
+local function copyValue(v, depth)
+    if type(v) ~= "table" then return v end
+    if depth >= COPY_DEPTH then return nil end
+    local out = {}
+    for k, inner in pairs(v) do out[k] = copyValue(inner, depth + 1) end
+    return out
+end
+
+-- Newest first. The default and the hard bound are whatever the ring currently holds (never more
+-- than AUDIT_RING); a positive integer `limit` below that narrows the reply, anything else is
+-- ignored. Each copy is stamped with rolledBack for its own (epoch, seq) so the panel can mark
+-- operations that did not survive into the save the current process loaded (spec 19.6).
+function X.auditEntries(limit)
+    local ring = md.audit
+    local n = ring.count
+    if type(limit) == "number" and limit == math.floor(limit) and limit > 0 and limit < n then
+        n = limit
+    end
+    local out = {}
+    local idx = ring.head - 1
+    for _ = 1, n do
+        if idx < 1 then idx = X.AUDIT_RING end
+        local e = ring.items[idx]
+        if type(e) == "table" then
+            local copy = copyValue(e, 1)
+            copy.rolledBack = S.isRolledBack(e.epoch, e.seq)
+            out[#out + 1] = copy
+        end
+        idx = idx - 1
+    end
+    return out
+end
+
+function X.lastHeartbeatMs()
+    return lastHeartbeat
 end
 
 local function fileHeader(ms)
@@ -208,6 +263,22 @@ local lastDay = nil
 
 function X.init(root)
     md = root
+    md.audit = md.audit or { items = {}, head = 1, count = 0, capacity = X.AUDIT_RING }
+    local ring = md.audit
+    if not ring.capacity then
+        -- The first admin draft used a 200-slot ring. Preserve its chronological order before
+        -- extending it: changing the modulo alone loses rows after the old ring has wrapped.
+        local entries = {}
+        local index = ring.head - ring.count
+        if index < 1 then index = index + 200 end
+        for _ = 1, ring.count do
+            entries[#entries + 1] = ring.items[index]
+            index = index % 200 + 1
+        end
+        ring.items, ring.count = entries, #entries
+        ring.head = #entries + 1
+        ring.capacity = X.AUDIT_RING
+    end
     queue, queueIndex, queuedLines = {}, {}, 0
     if not listenerRegistered then
         L.onCommitted(onCommitted)

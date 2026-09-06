@@ -125,6 +125,22 @@ local function idemPut(key, value)
     idem.map[key] = value
 end
 
+-- Read-only view of a recorded result (nil when this requestId is not in the window). A caller
+-- that rate-limits or meters itself asks first, so a resend is answered from here instead of
+-- being weighed against a quota it already paid; `meta` is whatever the original caller stored
+-- in tx.idemMeta, which lets it tell a genuine resend from a reused id with a different payload.
+function L.priorResult(requestId)
+    if type(requestId) ~= "string" then return nil end
+    local prior = idemGet(requestId)
+    if not prior then return nil end
+    local meta
+    if prior.meta then
+        meta = {}
+        for k, v in pairs(prior.meta) do meta[k] = v end
+    end
+    return { ok = prior.ok, txId = prior.txId, seq = prior.seq, error = prior.error, meta = meta }
+end
+
 -- ---------- receipts ring (per player account) ----------
 
 local function pushReceipt(account, entry)
@@ -203,8 +219,9 @@ function L.onCommitted(fn)
     listeners[#listeners + 1] = fn
 end
 
--- tx = { kind, requestId, reasonCode, reasonText?, actor?, payload?, allowFrozen?,
+-- tx = { kind, requestId, reasonCode, reasonText?, actor?, payload?, allowFrozen?, idemMeta?,
 --        postings = { { account, currency, amount, expectedRev? }, ... } }
+-- idemMeta is a small flat table kept with the idempotency entry (see L.priorResult).
 -- Returns { ok=true, txId, seq, duplicate=false } or { ok=false, error=code } or the first
 -- result again when requestId was seen before (duplicate=true).
 function L.post(tx)
@@ -242,7 +259,12 @@ function L.post(tx)
     end
 
     local result = { ok = true, txId = txId, seq = seq, duplicate = false }
-    idemPut(tx.requestId, { ok = true, txId = txId, seq = seq })
+    local meta
+    if tx.idemMeta then
+        meta = {}
+        for k, v in pairs(tx.idemMeta) do meta[k] = v end
+    end
+    idemPut(tx.requestId, { ok = true, txId = txId, seq = seq, meta = meta })
 
     local event = {
         txId = txId, seq = seq, ts = ts, epoch = md.meta.epoch,
@@ -270,6 +292,7 @@ function L.credit(account, currency, amount, systemAccount, opts)
     return L.post({
         kind = opts.kind or "credit", requestId = opts.requestId, reasonCode = opts.reasonCode,
         reasonText = opts.reasonText, actor = opts.actor, payload = opts.payload, allowFrozen = opts.allowFrozen,
+        idemMeta = opts.idemMeta,
         postings = {
             { account = account, currency = currency, amount = amount, expectedRev = opts.expectedRev },
             { account = systemAccount, currency = currency, amount = -amount },

@@ -22,11 +22,13 @@ require "ISUI/ISCollapsableWindow"
 require "ISUI/ISButton"
 require "ISUI/ISLayoutManager"
 
-if not MinidoracatEconomy or not MinidoracatEconomy.Client then
-    require "MinidoracatEconomy/ECClient"
+if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
+    require "MinidoracatEconomy/ECWidgets"
 end
 local EC = MinidoracatEconomy
 local C = EC.Client
+local U = C.UI
+require "MinidoracatEconomy/ECAdminPanel"
 
 local P = {}
 C.Panel = P
@@ -34,278 +36,18 @@ C.Panel = P
 local LAYOUT_NAME = "MinidoracatEconomyPanel"
 local WIDTH, HEIGHT = 980, 600
 local MIN_WIDTH, MIN_HEIGHT = 900, 480
-local PAD = 8
-local ROW = 22
+local PAD, ROW, CHIP_H, COIN, COIN_SMALL, T = U.PAD, U.ROW, U.CHIP_H, U.COIN, U.COIN_SMALL, U.T
 local STATUS_H = 20
 local STRIP_H = 44
 local TAB_H = 30
 local TAB_W = 130
-local CHIP_H = 22
-local CARD_TITLE_H = 32
+local CARD_TITLE_H = U.CARD_TITLE_H
 local LEFT_W = 260
-local COIN = 22
-local COIN_SMALL = 18
-local T = "IGUI_MinidoracatEconomy_"
-
--- MOD-own theme tokens (framework tokens: surface/surfaceTitle/well/border/text/textMuted/
--- textFaint/accent/hover/selected/errorSurface/errorText — V1.lua DARK table)
-local MOD_COLORS = {
-    gold = { r = 0.76, g = 0.55, b = 0.12, a = 1 },
-    goldHover = { r = 0.88, g = 0.66, b = 0.18, a = 1 },
-    goldPressed = { r = 0.60, g = 0.42, b = 0.08, a = 1 },
-    goldLight = { r = 1, g = 0.92, b = 0.65, a = 0.28 },   -- top highlight band
-    goldDark = { r = 0.42, g = 0.28, b = 0.04, a = 1 },    -- border / bottom shade
-    goldText = { r = 0.12, g = 0.08, b = 0.02, a = 1 },
-    goldEmboss = { r = 1, g = 0.92, b = 0.65, a = 0.35 }, -- 1px text offset under the label
-    coin = { r = 0.90, g = 0.70, b = 0.25, a = 1 },
-    coinRim = { r = 0.55, g = 0.40, b = 0.10, a = 1 },
-    positive = { r = 0.45, g = 0.85, b = 0.45, a = 1 },
-    negative = { r = 0.95, g = 0.45, b = 0.40, a = 1 },
-    warn = { r = 1, g = 0.72, b = 0.30, a = 1 },
-    card = { r = 1, g = 1, b = 1, a = 0.04 },
-    track = { r = 1, g = 1, b = 1, a = 0.10 },
-}
-
-local UI = nil      -- MinidoracatUI.v1 facade (resolved in P.instance)
-local Skin = nil
-local theme = nil
-local fontH = nil   -- { small, medium }
-
-local function framework()
-    local ui = MinidoracatUI and MinidoracatUI.v1
-    if ui and ui.API_MAJOR == 1 and ui.API_REVISION >= 3 and ui.CAPABILITIES
-        and ui.CAPABILITIES.theme == true and ui.CAPABILITIES.skin == true
-        and ui.CAPABILITIES.virtualList == true then
-        return ui
-    end
-    return nil
-end
-
-local function color(token) return theme.colors[token] end
-
-local function fill(el, x, y, w, h, token, shape)
-    theme:fill(el, x, y, w, h, token, shape)
-end
-
-local function border(el, x, y, w, h, token, shape)
-    theme:border(el, x, y, w, h, token, shape)
-end
-
-local function text(el, str, x, y, token, font)
-    local c = color(token)
-    el:drawText(str, x, y, c.r, c.g, c.b, c.a, font or UIFont.Small)
-end
-
-local function textWidth(str, font)
-    return getTextManager():MeasureStringX(font or UIFont.Small, str)
-end
-
--- Truncate to maxW with an ASCII ellipsis (bind-time only, never per frame). Kahlua strings are
--- UTF-16 code units, so string.sub is safe for BMP text (player names are BMP in practice).
-local function fitText(str, maxW, font)
-    if textWidth(str, font) <= maxW then return str end
-    local n = string.len(str)
-    while n > 0 do
-        n = n - 1
-        local cut = string.sub(str, 1, n) .. "..."
-        if textWidth(cut, font) <= maxW then return cut end
-    end
-    return ""
-end
-
-local function textRight(el, str, rightX, y, token, font)
-    text(el, str, rightX - textWidth(str, font), y, token, font)
-end
-
-local function textCentre(el, str, cx, y, token, font)
-    local c = color(token)
-    el:drawTextCentre(str, cx, y, c.r, c.g, c.b, c.a, font or UIFont.Small)
-end
-
--- 1px line across the text (rolled-back rows)
-local function strike(el, x, y, w, font)
-    local c = color("textFaint")
-    local h = font == UIFont.Medium and fontH.medium or fontH.small
-    el:drawRect(x, y + math.floor(h / 2), w, 1, c.a, c.r, c.g, c.b)
-end
-
--- Currency icon: stage B8 ships the textures (EC.CURRENCIES[id].iconDefault); until then (or when
--- the texture is missing) a gold dot stands in.
-local coinTextures = {}
-local function drawCoin(el, id, x, y, size)
-    local tex = coinTextures[id]
-    if tex == nil then
-        local def = EC.CURRENCIES[id]
-        local ok, t = pcall(getTexture, def and def.iconDefault or "")
-        tex = (ok and t) or false
-        coinTextures[id] = tex
-    end
-    if tex then
-        el:drawTextureScaled(tex, x, y, size, size, 1, 1, 1, 1)
-    else
-        Skin.dot(el, x, y, size, color("coin"), color("coinRim"))
-    end
-end
-
--- ---------- time / number formatting ----------
-
--- Local zone offset in minutes, derived once per open from getHourMinute() (local) vs UTC ms.
-local function localOffsetMinutes()
-    local ok, hm = pcall(getHourMinute)
-    if not ok or type(hm) ~= "string" then return 0 end
-    local h, m = string.match(hm, "^(%d+):(%d+)$")
-    if not h then return 0 end
-    local utcMin = math.floor((EC.now() % 86400000) / 60000)
-    local diff = (tonumber(h) * 60 + tonumber(m)) - utcMin
-    if diff > 840 then diff = diff - 1440 elseif diff < -720 then diff = diff + 1440 end
-    return math.floor((diff + 7) / 15) * 15 -- zones are 15-minute multiples; absorbs the second drift
-end
-
-local function pad2(n) return n < 10 and ("0" .. n) or tostring(n) end
-
-local function clockText(ms, offsetMin)
-    local minutes = math.floor(((ms + offsetMin * 60000) % 86400000) / 60000)
-    return pad2(math.floor(minutes / 60)) .. ":" .. pad2(minutes % 60)
-end
-
-local function stampText(ms, offsetMin)   -- "MM-DD HH:MM"
-    if type(ms) ~= "number" then return "?" end
-    local shifted = ms + offsetMin * 60000
-    local _, mo, d = EC.utcDate(shifted)
-    return pad2(mo) .. "-" .. pad2(d) .. " " .. clockText(ms, offsetMin)
-end
-
-local function durationText(ms)
-    local minutes = math.max(0, math.floor(ms / 60000))
-    if minutes >= 60 then
-        return getText(T .. "Time_HM", tostring(math.floor(minutes / 60)), tostring(minutes % 60))
-    end
-    return getText(T .. "Time_Minutes", tostring(minutes))
-end
-
-local function amountText(n)
-    n = tonumber(n) or 0
-    local s = string.format("%.0f", math.abs(n))
-    local rev = string.gsub(string.reverse(s), "(%d%d%d)", "%1,")
-    local out = string.reverse(rev)
-    if string.sub(out, 1, 1) == "," then out = string.sub(out, 2) end
-    return (n < 0 and "-" or "") .. out
-end
-
-local function signedText(n)
-    n = tonumber(n) or 0
-    return (n >= 0 and "+" or "-") .. amountText(math.abs(n))
-end
-
-local function hasBit(mask, index)
-    return math.floor((tonumber(mask) or 0) / (2 ^ (index - 1))) % 2 == 1
-end
-
-local function kindText(kind)
-    return getTextOrNull(T .. "Kind_" .. tostring(kind)) or getText(T .. "Kind_other")
-end
-
--- ---------- skinned button (tab / chip / primary) ----------
-
-local Button = ISButton:derive("MinidoracatEconomyButton")
-
-function Button.create(x, y, w, h, title, target, onClick, style)
-    local o = ISButton:new(x, y, w, h, title, target, onClick)
-    setmetatable(o, Button)
-    o.style = style or "chip"
-    o.active = false
-    o.displayBackground = false
-    o:initialise()
-    return o
-end
-
-function Button:prerender() end
-
-function Button:render()
-    local w, h = self.width, self.height
-    local hovered = self.enable and self.mouseOver and self:isMouseOver()
-    local font = self.font
-    local textToken
-    if self.style == "primary" then
-        if self.enable then
-            local pressed = self.pressed and hovered
-            fill(self, 0, 0, w, h, pressed and "goldPressed" or (hovered and "goldHover" or "gold"))
-            if not pressed then
-                fill(self, 1, 1, w - 2, math.floor(h / 2), "goldLight", "roundTop") -- bevel highlight
-                local c = color("goldDark")
-                self:drawRect(3, h - 3, w - 6, 1, 0.5, c.r, c.g, c.b)                -- bottom shade
-            end
-            border(self, 0, 0, w, h, "goldDark")
-            textToken = "goldText"
-        else
-            fill(self, 0, 0, w, h, "well")
-            border(self, 0, 0, w, h, "border")
-            textToken = "textFaint"
-        end
-    elseif self.style == "tab" then
-        if hovered then fill(self, 0, 0, w, h, "hover", "rect") end
-        if self.active then
-            fill(self, 0, h - 2, w, 2, "accent", "rect")
-            textToken = "accent"
-        else
-            textToken = hovered and "text" or "textMuted"
-        end
-    else -- chip
-        if self.active then
-            fill(self, 0, 0, w, h, "selected", "pill")
-            border(self, 0, 0, w, h, "accent", "pill")
-            textToken = "accent"
-        else
-            if hovered then fill(self, 0, 0, w, h, "hover", "pill") end
-            border(self, 0, 0, w, h, "border", "pill")
-            textToken = hovered and "text" or "textMuted"
-        end
-    end
-    local fh = font == UIFont.Medium and fontH.medium or fontH.small
-    local ty = math.floor((h - fh) / 2)
-    if self.style == "primary" and self.enable then
-        -- label + coin icon centred as one group; emboss = light copy 1px below
-        local tw = textWidth(self.title, font)
-        local coinW = self.coinId and (COIN_SMALL + 6) or 0
-        local x = math.floor((w - tw - coinW) / 2)
-        local c = color("goldEmboss")
-        self:drawText(self.title, x, ty + 1, c.r, c.g, c.b, c.a, font)
-        text(self, self.title, x, ty, textToken, font)
-        if self.coinId then
-            drawCoin(self, self.coinId, x + tw + 6, math.floor((h - COIN_SMALL) / 2), COIN_SMALL)
-        end
-    else
-        textCentre(self, self.title, w / 2, ty, textToken, font)
-    end
-end
-
--- ---------- statement cell (VirtualList) ----------
-
-local Cell = ISPanel:derive("MinidoracatEconomyStatementCell")
-
-function Cell:render()
-    local e = self.entry
-    if not e then return end
-    local cols = self.list.cols
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
-    local ty = math.floor((h - fontH.small) / 2)
-    local muted = e.rolledBack
-    local tokenText = muted and "textFaint" or "text"
-    local tokenMuted = muted and "textFaint" or "textMuted"
-    text(self, e.time, cols.time, ty, tokenMuted)
-    text(self, e.kindText, cols.kind, ty, tokenText)
-    text(self, self.descText or e.desc, cols.desc, ty, tokenMuted)
-    textRight(self, e.amountText, cols.amountR, ty, muted and "textFaint" or (e.amount >= 0 and "positive" or "negative"))
-    textRight(self, amountText(e.after), cols.balanceR, ty, tokenText)
-    if muted then
-        text(self, getText(T .. "Wallet_RolledBack"), cols.status, ty, "textFaint")
-        strike(self, cols.time, ty, cols.balanceR - cols.time)
-    else
-        text(self, "-", cols.status, ty, "textFaint")
-    end
-end
+local fontH = U.fontH
+local color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin
+local clockText, stampText, durationText, amountText, signedText, hasBit, kindText, card = U.clockText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card
+local localOffsetMinutes = U.localOffsetMinutes
+local Button, Cell = U.Button, U.StatementCell
 
 -- ---------- window ----------
 
@@ -320,7 +62,7 @@ end
 function Panel:createChildren()
     ISCollapsableWindow.createChildren(self)
     self.tabButtons = {}
-    for _, tab in ipairs({ "Wallet", "Rewards" }) do
+    for _, tab in ipairs({ "Wallet", "Rewards", "Admin" }) do
         local b = Button.create(0, 0, TAB_W, TAB_H, getText(T .. "Tab_" .. tab), self, Panel.onTab, "tab")
         b.internal = tab
         self:addChild(b)
@@ -336,24 +78,7 @@ function Panel:createChildren()
         self.periodButtons[#self.periodButtons + 1] = b
     end
 
-    self.list = UI.VirtualList.new({
-        x = 0, y = 0, width = 100, height = 100, rowHeight = ROW, padding = 0,
-        createCell = function(list)
-            local cell = ISPanel.new(Cell, 0, 0, 0, 0)
-            cell.background = false -- ISPanel:prerender would paint a 0.5 alpha black box + border
-            cell.list = list
-            return cell
-        end,
-        bindCell = function(list, cell, item, index)
-            cell.entry = item
-            cell.index = index
-            cell.descText = fitText(item.desc, list.cols.descW)
-        end,
-        unbindCell = function(_, cell) cell.entry = nil end,
-        colors = { thumb = color("textFaint"), thumbHover = color("textMuted"), track = color("track") },
-    })
-    self.list.cols = {}
-    self.list:initialise()
+    self.list = U.newTable(Cell, ROW)
     self:addChild(self.list)
 
     self.claimButton = Button.create(0, 0, 200, 40, "", self, Panel.onClaim, "primary")
@@ -372,6 +97,7 @@ end
 function Panel:onTab(button) self:setTab(button.internal) end
 
 function Panel:setTab(tab)
+    if tab == "Admin" and not C.AdminPanel.canRead() then tab = "Wallet" end
     self.tab = tab
     for _, b in ipairs(self.tabButtons) do b.active = b.internal == tab end
     self:layout()
@@ -384,7 +110,10 @@ function Panel:refresh()
     if self.tab == "Wallet" then
         C.requestWallet()
         if not self.history and self.period ~= "Recent" then self:loadHistory() end
+    elseif self.tab == "Admin" then
+        if self.adminPanel and C.AdminPanel.canRead() then self.adminPanel:refresh() end
     else
+        self.rewardsPolledMs = EC.now()
         C.requestRewards()
         if not C.wallet then C.requestWallet() end
     end
@@ -532,7 +261,7 @@ function Panel:layout()
     g.tabsY = g.stripY + STRIP_H + 4
     g.contentY = g.tabsY + TAB_H + PAD
     local st = C.rewards
-    g.footerH = (st and (tonumber(st.serverCap) or 0) > 0) and ROW or 0
+    g.footerH = (self.tab == "Rewards" and st and (tonumber(st.serverCap) or 0) > 0) and ROW or 0
     g.contentH = h - g.contentY - rh - PAD - g.footerH
     g.leftX, g.leftW = PAD, LEFT_W
     g.rightX = PAD + LEFT_W + PAD
@@ -540,9 +269,26 @@ function Panel:layout()
     self.g = g
 
     local isWallet = self.tab == "Wallet"
+    self.adminAccess = C.AdminPanel.canRead()
     local x = PAD
     for _, b in ipairs(self.tabButtons) do
-        b:setX(x); b:setY(g.tabsY); x = x + TAB_W
+        local visible = b.internal ~= "Admin" or self.adminAccess
+        b:setVisible(visible)
+        if visible then
+            b:setX(x)
+            b:setY(g.tabsY)
+            x = x + b.width
+        end
+    end
+    if self.tab == "Admin" and self.adminAccess and not self.adminPanel then
+        self.adminPanel = C.AdminPanel.create(self)
+        self:addChild(self.adminPanel)
+    end
+    if self.adminPanel then
+        self.adminPanel:setX(PAD)
+        self.adminPanel:setY(g.contentY)
+        self.adminPanel:resize(w - PAD * 2, g.contentH)
+        self.adminPanel:setVisible(self.tab == "Admin" and self.adminAccess and self.shown == true and not self.isCollapsed)
     end
 
     -- wallet: period chips + statement table inside the right card
@@ -560,9 +306,7 @@ function Panel:layout()
     local listH = math.max(ROW * 2, g.contentY + g.contentH - listY - ROW - 2)
     self.list:setVisible(isWallet)
     self.list:setX(listX); self.list:setY(listY)
-    if self.list.width ~= listW or self.list.height ~= listH then
-        self.list:resize(listW, listH)
-    end
+    local listResized = self.list.width ~= listW or self.list.height ~= listH
     -- Columns are measured from the header/typical texts so the player's UI font scale cannot
     -- make them collide; the description column takes whatever is left (truncated at bind time).
     local cols = self.list.cols
@@ -575,32 +319,24 @@ function Panel:layout()
     cols.balanceR = cols.status - PAD
     cols.amountR = cols.balanceR - colW("Wallet_Col_Balance", "999,999,999")
     cols.descW = math.max(0, cols.amountR - colW("Wallet_Col_Amount", "+999,999 " .. C.currencyName(EC.CURRENCY_ORDER[1])) - cols.desc)
+    if listResized then self.list:resize(listW, listH) end
     g.listBottom = listY + listH
 
     -- rewards: claim button inside the daily card, "more history" under the recent ledger
     g.dailyH = CARD_TITLE_H + ROW * 2 + 40 + ROW + PAD * 3
-    self.claimButton:setVisible(not isWallet)
+    self.claimButton:setVisible(self.tab == "Rewards")
     self.claimButton:setX(g.rightX + PAD)
     self.claimButton:setY(g.contentY + CARD_TITLE_H + ROW * 2 + PAD)
     self.claimButton:setWidth(g.rightW - PAD * 2)
-    self.moreButton:setVisible(not isWallet)
+    self.moreButton:setVisible(self.tab == "Rewards")
     self.moreButton:setX(g.leftX + PAD)
     self.moreButton:setY(g.contentY + g.contentH - CHIP_H - PAD)
     self.moreButton:setWidth(g.leftW - PAD * 2)
     self.layoutW, self.layoutH = w, h
+    self.layoutCollapsed = self.isCollapsed
 end
 
 -- ----- drawing -----
-
-local function card(el, x, y, w, h, title)
-    fill(el, x, y, w, h, "card")
-    border(el, x, y, w, h, "border")
-    if title then
-        text(el, title, x + PAD, y + math.floor((CARD_TITLE_H - fontH.medium) / 2), "text", UIFont.Medium)
-        local c = color("border")
-        el:drawRect(x + 1, y + CARD_TITLE_H, w - 2, 1, c.a, c.r, c.g, c.b)
-    end
-end
 
 function Panel:drawStrip()
     local g = self.g
@@ -830,14 +566,21 @@ end
 
 -- prerender/render replace the parent versions (rounded surfaces; see NBPanel.lua:1826-1897)
 function Panel:prerender()
+    if self.adminAccess ~= C.AdminPanel.canRead() then
+        if self.tab == "Admin" and not C.AdminPanel.canRead() then
+            self:setTab("Wallet")
+        else
+            self:layout()
+        end
+    end
     if self.width ~= self.layoutW or self.height ~= self.layoutH
-        or (C.rewards ~= nil) ~= self.hadRewards then
+        or self.layoutCollapsed ~= self.isCollapsed or (C.rewards ~= nil) ~= self.hadRewards then
         self.hadRewards = C.rewards ~= nil
         self:layout()
     end
     -- Rewards state is a snapshot (playtime accrues server-side every 60 s, sandbox thresholds can
     -- change live): re-request while the tab is open instead of asking the player to reopen.
-    if self.tab == "Rewards" then
+    if self.tab == "Rewards" and not self.isCollapsed then
         local now = EC.now()
         if not self.rewardsPolledMs or now - self.rewardsPolledMs > 30000 then
             self.rewardsPolledMs = now
@@ -865,14 +608,14 @@ function Panel:prerender()
     -- status line
     local g = self.g
     if self:remoteReadOnly() then
-        Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color("warn"))
+        U.Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color("warn"))
         text(self, getText(T .. "Band_RemoteReadOnly"), PAD * 2 + 14, g.statusY + math.floor((STATUS_H - fontH.small) / 2), "warn")
     end
     self:drawStrip()
     fill(self, PAD, g.tabsY, w - PAD * 2, TAB_H, "well", "rect")
     if self.tab == "Wallet" then
         self:drawWallet()
-    else
+    elseif self.tab == "Rewards" then
         self:drawRewards()
     end
     self:drawFooter()
@@ -892,7 +635,7 @@ function Panel:render()
     if self.clearStentil then
         self:clearStencilRect()
     end
-    Skin.border(self, 0, 0, w, h, color("border"))
+    U.Skin.border(self, 0, 0, w, h, color("border"))
 end
 
 function Panel:close()
@@ -902,9 +645,11 @@ end
 function Panel:setVisible(visible)
     ISCollapsableWindow.setVisible(self, visible)
     self.shown = visible == true
+    if self.adminPanel and not visible then self.adminPanel:setVisible(false) end
     if visible then
         self.offsetMin = localOffsetMinutes()
         self:bringToTop()
+        self:layout()
         self:refresh()
     end
 end
@@ -914,6 +659,10 @@ function Panel:RestoreLayout(name, layout)
     local visible = layout.visible
     layout.visible = nil
     ISCollapsableWindow.RestoreLayout(self, name, layout)
+    self:setWidth(math.min(getCore():getScreenWidth(), math.max(MIN_WIDTH, self.width)))
+    self:setHeight(math.min(getCore():getScreenHeight(), math.max(MIN_HEIGHT, self.height)))
+    self:setX(math.max(0, math.min(self.x, getCore():getScreenWidth() - self.width)))
+    self:setY(math.max(0, math.min(self.y, getCore():getScreenHeight() - self.height)))
     layout.visible = visible
     self:setVisible(false)
 end
@@ -941,14 +690,7 @@ end
 
 function P.instance()
     if P.window then return P.window end
-    UI = framework()
-    if not UI then
-        EC.log("MinidoracatUI v1 (rev>=3, virtualList) missing: Economy Center window disabled")
-        return nil
-    end
-    Skin = UI.Skin
-    theme = UI.Theme.create({ colors = MOD_COLORS })
-    fontH = { small = getTextManager():getFontHeight(UIFont.Small), medium = getTextManager():getFontHeight(UIFont.Medium) }
+    if not U.init() then return nil end
     P.window = Panel.create()
     if not P.listening then
         P.listening = true
@@ -985,6 +727,7 @@ Events.OnKeyPressed.Add(onKeyPressed)
 -- rebuild against the new server state).
 local function onGameStart()
     if P.window then
+        if P.window.adminPanel then P.window.adminPanel:dispose() end
         P.window:removeFromUIManager()
         P.window = nil
     end

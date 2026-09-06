@@ -35,6 +35,11 @@ function writeLog(_, text) logLines[#logLines + 1] = text end
 function getText(key) return key end
 function print(...) end          -- 受測碼的 log 走 print；harness 靜音，需要時改回
 
+-- getMyDocumentFolder：專用伺服器上是 cachedir 絕對路徑（LuaManager.java:8835-8837）。
+-- docFolder = nil 用來模擬「引擎沒給路徑」，受測碼不得改用相對路徑假裝絕對路徑。
+local docFolder = "C:/fake/Zomboid"
+function getMyDocumentFolder() return docFolder end
+
 ModData = {
     getOrCreate = function(key)
         modDataStore[key] = modDataStore[key] or {}
@@ -108,6 +113,8 @@ local function fakePlayer(username)
     p.getX = function() return p.x end
     p.getY = function() return p.y end
     p.getHoursSurvived = function() return p.hours end
+    p.role = "user"
+    p.getRole = function() return { getName = function() return p.role end } end
     return p
 end
 
@@ -129,6 +136,7 @@ require("MinidoracatEconomy/ECExport")
 require("MinidoracatEconomy/ECConfig")
 require("MinidoracatEconomy/ECRewards")
 require("MinidoracatEconomy/ECWallet")
+require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
@@ -136,10 +144,11 @@ local X = EC.Export
 local Cfg = EC.Config
 local R = EC.Rewards
 local W = EC.Wallet
+local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 127     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 188     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -635,6 +644,348 @@ local ws2 = lastSent("wallet.state").args
 local flagged = 0
 for _, r in ipairs(ws2.receipts) do if r.rolledBack then flagged = flagged + 1 end end
 check(#ws2.receipts == 5 and flagged == 5, "receipt ring entries beyond the rollback point are flagged")
+onlinePlayers = {}
+
+-- ===== 情境十九：管理員（角色閘門、調帳規則、凍結、設定、稽核環、系統） =====
+io.write("scenario 19: admin gate, adjust limits, freeze, config, audit ring, system\n")
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+nowMs = 1788699986478
+SandboxVars.MinidoracatEconomy.AdminRoles = "admin"
+SandboxVars.MinidoracatEconomy.ReadOnlyRoles = "moderator"
+SandboxVars.MinidoracatEconomy.AdminAdjustMaxPerTx = 5000
+SandboxVars.MinidoracatEconomy.AdminAdjustDailyPerAdmin = 10000
+SandboxVars.MinidoracatEconomy.AdminAdjustServerDaily = 12000
+SandboxVars.MinidoracatEconomy.AdminReasonMinChars = 10
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local mod = fakePlayer("mod"); mod.role = "moderator"
+local joe = fakePlayer("joe")
+onlinePlayers = { boss, mod, joe }
+L.credit("joe", "survivor", 100, "SYSTEM_MINT", { requestId = "a-seed", reasonCode = "t" })
+
+-- 閘門：一般玩家全拒、moderator 只讀、admin 可寫；server 依角色名重驗，不看 client
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", joe, { username = "boss" })
+check(lastSent("admin.lookup").args.error == "forbidden", "a plain player cannot use admin commands")
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", mod, { username = "joe" })
+local lk = lastSent("admin.lookup").args
+check(lk.ok == true and lk.found == true and lk.online == true and lk.balances.survivor.available == 100 and #lk.receipts == 1 and lk.adminToday.cap == 10000 and lk.maxPerTx == 5000, "moderator can look up an account (balances, receipts, limits)")
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.adjust", mod, { username = "joe", currency = "survivor", delta = 10, reason = "moderators cannot write", requestId = "m1" })
+check(lastSent("admin.adjust").args.error == "forbidden", "moderator is read-only")
+
+-- 調帳規則：原因長度、自己、系統帳戶、單筆上限、負餘額、rev 不符
+-- expectedRev 現在是必填（server 不再用 tonumber 把 nil 當「不檢查」），所以每筆都要帶當下錢包版本
+local function adjust(who, args) nowMs = nowMs + 600; fire("OnClientCommand", EC.COMMAND_MODULE, "admin.adjust", who, args); return lastSent("admin.adjust").args end
+check(adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "short", requestId = "r1", expectedRev = 1 }).error == "reason_too_short", "reason below AdminReasonMinChars is refused")
+check(adjust(boss, { username = "boss", currency = "survivor", delta = 10, reason = "paying myself is not allowed", requestId = "r2", expectedRev = 0 }).error == "self_target", "admins cannot adjust their own account")
+check(adjust(boss, { username = "SYSTEM_MINT", currency = "survivor", delta = 10, reason = "system accounts are off limits", requestId = "r3", expectedRev = 0 }).error == "invalid_args", "system accounts cannot be targeted")
+check(adjust(boss, { username = "nobody", currency = "survivor", delta = 10, reason = "unknown account should fail", requestId = "r4", expectedRev = 0 }).error == "unknown_account", "unknown accounts are refused")
+check(adjust(boss, { username = "joe", currency = "survivor", delta = 5001, reason = "over the per-transaction cap", requestId = "r5", expectedRev = 1 }).error == "over_max_per_tx", "per-transaction cap enforced")
+check(adjust(boss, { username = "joe", currency = "survivor", delta = -101, reason = "would drive the balance negative", requestId = "r6", expectedRev = 1 }).error == "insufficient_funds", "adjustment cannot make a balance negative")
+check(adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "stale wallet revision check", requestId = "r7", expectedRev = 99 }).error == "revision_mismatch", "expectedRev mismatch is refused")
+local okAdj = adjust(boss, { username = "joe", currency = "survivor", delta = 500, reason = "compensation for lost order", requestId = "r8", expectedRev = 1 })
+check(okAdj.ok == true and okAdj.balance == 600 and L.getBalance("SYSTEM_ADJUST", "survivor").available == -500, "a valid adjustment posts SYSTEM_ADJUST <-> player and reports the new balance")
+local again = adjust(boss, { username = "joe", currency = "survivor", delta = 500, reason = "compensation for lost order", requestId = "r8", expectedRev = 1 })
+check(again.ok == true and again.duplicate == true and L.getBalance("joe", "survivor").available == 600, "same requestId is idempotent (no double payment)")
+check(lastSent("wallet.changed") ~= nil and lastSent("wallet.changed").player == joe and lastSent("wallet.changed").args.kind == "admin_adjust", "target player receives wallet.changed for the adjustment")
+
+-- 每管理員每日加／減各自上限＋全服上限
+check(adjust(boss, { username = "joe", currency = "survivor", delta = 5000, reason = "big correction number one", requestId = "r9", expectedRev = 2 }).ok == true, "5,000 fits the admin daily add cap (500 + 5000 <= 10000)")
+check(adjust(boss, { username = "joe", currency = "survivor", delta = 4501, reason = "this would exceed the admin daily add cap", requestId = "r10", expectedRev = 3 }).error == "over_admin_daily", "admin daily add cap enforced (add and sub are separate)")
+check(adjust(boss, { username = "joe", currency = "survivor", delta = -4501, reason = "subtractions have their own daily cap", requestId = "r11", expectedRev = 3 }).ok == true, "sub side is not consumed by the add side")
+local boss2 = fakePlayer("boss2"); boss2.role = "admin"; onlinePlayers = { boss, boss2, mod, joe }
+check(adjust(boss2, { username = "joe", currency = "survivor", delta = 5000, reason = "server-wide daily total blocks this", requestId = "r12", expectedRev = 4 }).ok == true, "second admin still within the server daily add cap (10500 of 12000)")
+check(adjust(boss2, { username = "joe", currency = "survivor", delta = 2000, reason = "server-wide daily total blocks this", requestId = "r13", expectedRev = 5 }).error == "over_server_daily", "server daily add cap enforced across admins")
+
+-- 凍結：帳本拒新交易、管理員仍可調帳（allowFrozen）、解凍恢復
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", boss, { username = "joe", frozen = true, reason = "suspected duplication exploit" })
+check(lastSent("admin.freeze").args.ok == true and L.isFrozen("joe") == true, "freeze marks the account")
+check(L.credit("joe", "survivor", 1, "SYSTEM_MINT", { requestId = "frozen-1", reasonCode = "t" }).error == "account_frozen", "frozen accounts refuse ordinary transactions")
+check(adjust(boss, { username = "joe", currency = "survivor", delta = -100, reason = "clawback while frozen is allowed", requestId = "r14", expectedRev = 5 }).ok == true, "admin adjustments bypass the freeze (allowFrozen)")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", boss, { username = "joe", frozen = false, reason = "investigation finished, cleared" })
+check(L.isFrozen("joe") == false and L.credit("joe", "survivor", 1, "SYSTEM_MINT", { requestId = "frozen-2", reasonCode = "t" }).ok == true, "unfreeze restores normal transactions")
+
+-- 設定：改名／停用經由 ECConfig（廣播 config）
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "cat", field = "name", value = "Meow", reason = "rename for the season event" })
+local cfgReply = lastSent("admin.config").args
+local catSnap = nil
+for _, c in ipairs(cfgReply.currencies or {}) do if c.id == "cat" then catSnap = c end end
+check(cfgReply.ok == true and catSnap and catSnap.nameOverride == "Meow" and lastSent("config").args.currencies ~= nil, "admin.config name override goes through ECConfig and broadcasts config")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "cat", field = "bogus", value = 1, reason = "unknown field must be rejected" })
+check(lastSent("admin.config").args.error == "invalid_args", "unknown config field rejected")
+
+-- 稽核環：最新在前、reason 截 40 字、含 config／freeze／adjust
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 50 })
+local audit = lastSent("admin.audit").args
+check(audit.ok == true and #audit.entries >= 6 and audit.entries[1].action == "config" and audit.entries[2].action == "unfreeze" and audit.entries[3].action == "adjust", "audit ring is newest-first and covers adjust/freeze/config")
+local longReason = string.rep("x", 60)
+adjust(boss, { username = "joe", currency = "cat", delta = 1, reason = longReason, requestId = "r15", expectedRev = 0 })
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 1 })
+check(#lastSent("admin.audit").args.entries[1].reason == 40, "ring keeps only a 40-char reason prefix (full text only in files)")
+
+-- 系統：供給、前幾名持有者、路徑、發行統計
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", mod, {})
+local sys = lastSent("admin.system").args
+check(sys.ok == true and sys.supply.survivor.players == L.getBalance("joe", "survivor").available and sys.supply.survivor.top[1].account == "joe" and sys.accounts == 1 and sys.seq == S.modData().meta.seq, "admin.system reports supply, top holders and seq")
+check(sys.pathsResolved == true and sys.paths.root == "C:/fake/Zomboid/Lua/MinidoracatEconomy" and sys.paths.audit == "C:/fake/Zomboid/Lua/MinidoracatEconomy/audit/" .. EC.monthKey(nowMs) .. ".json", "data paths are the server cachedir absolute paths the copy button needs")
+
+-- ===== 情境二十：管理端信任邊界（偽造欄位、重送、失權、每幣別上限、環滾動） =====
+io.write("scenario 20: admin trust boundary, replay, per-currency caps, ring rollover\n")
+nowMs = nowMs + 61000                       -- 新的一分鐘：情境十九用掉的速率額度歸零
+onlinePlayers = { boss, boss2, mod, joe }
+local function jbal(cur) return L.getBalance("joe", cur or "survivor").available end
+local function jrev(cur) return L.getBalance("joe", cur or "survivor").rev end
+local bal0, rev0 = jbal(), jrev()
+
+-- expectedRev 必填，且不得用 tonumber 把字串／nil 當成「不檢查」
+local noRev = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "missing expected revision", requestId = "t1" })
+local strRev = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "a string revision is not a number", requestId = "t2", expectedRev = "1" })
+local negRev = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "a negative revision is nonsense", requestId = "t3", expectedRev = -1 })
+check(noRev.error == "expected_rev_required" and strRev.error == "expected_rev_required" and negRev.error == "expected_rev_required" and jbal() == bal0,
+    "expectedRev is mandatory and never coerced (missing / string / negative all refused, no money moved)")
+
+-- 金額必須是有限非零整數
+local infDelta = adjust(boss, { username = "joe", currency = "survivor", delta = 1 / 0, reason = "an infinite delta must not pass", requestId = "t4", expectedRev = rev0 })
+local fracDelta = adjust(boss, { username = "joe", currency = "survivor", delta = 2.5, reason = "a fractional delta must not pass", requestId = "t5", expectedRev = rev0 })
+local strDelta = adjust(boss, { username = "joe", currency = "survivor", delta = "10", reason = "a string delta must not pass", requestId = "t6", expectedRev = rev0 })
+check(infDelta.error == "invalid_args" and fracDelta.error == "invalid_args" and strDelta.error == "invalid_args" and jbal() == bal0 and jrev() == rev0,
+    "delta must be a finite non-zero integer and a string is not coerced into one")
+
+-- 封包被亂塞（args 不是 table）：handler 不得炸掉，也要有明確回覆
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.adjust", boss, 42)
+local junkAdjust = lastSent("admin.adjust").args
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", boss, "not a table")
+check(junkAdjust.error == "invalid_args" and lastSent("admin.lookup").args.error == "invalid_args",
+    "a non-table args packet is answered with invalid_args instead of dying inside the handler")
+
+-- 原因：純空白（含全形空白）不是原因；長度以「字」計，中文有效；控制字元拒收
+local blanks = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "              ", requestId = "t7", expectedRev = rev0 })
+local ideoBlanks = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = string.rep("\227\128\128", 12), requestId = "t8", expectedRev = rev0 })
+check(blanks.error == "reason_blank" and ideoBlanks.error == "reason_blank" and jbal() == bal0,
+    "a reason made of spaces only (ASCII or ideographic) is refused")
+-- standard Lua 的字串是 UTF-8 位元組、Kahlua 是 UTF-16 字元（StringLib.java:760-768）：
+-- 兩邊都必須把「中」算成一個字，所以 30 bytes 的十個字要過、12 bytes 的四個字要被拒
+local cjk10 = string.rep("\228\184\173", 10)
+local cjk4 = string.rep("\228\184\173", 4)
+local okCjk = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = cjk10, requestId = "t9", expectedRev = rev0 })
+local shortCjk = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = cjk4, requestId = "t10", expectedRev = rev0 + 1 })
+check(okCjk.ok == true and shortCjk.error == "reason_too_short" and jbal() == bal0 + 10,
+    "reason length counts characters: a 10-character Chinese reason passes, a 4-character one does not")
+local ctrlReason = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "line\nbreak inside the reason", requestId = "t11", expectedRev = rev0 + 1 })
+check(ctrlReason.error == "reason_invalid" and jbal() == bal0 + 10, "control characters in a reason are refused")
+
+-- 重送：額度已滿也要回原結果，且不再吃額度、不再寫稽核
+local boss3 = fakePlayer("boss3"); boss3.role = "admin"; onlinePlayers = { boss, boss2, boss3, mod, joe }
+local catRev = jrev("cat")
+local p1 = adjust(boss3, { username = "joe", currency = "cat", delta = 5000, reason = "first half of the cat correction", requestId = "p1", expectedRev = catRev })
+local p2 = adjust(boss3, { username = "joe", currency = "cat", delta = 4999, reason = "second half of the cat correction", requestId = "p2", expectedRev = catRev + 1 })
+local p3 = adjust(boss3, { username = "joe", currency = "cat", delta = 2, reason = "this one is over the daily add cap", requestId = "p3", expectedRev = catRev + 2 })
+check(p1.ok and p2.ok and p3.error == "over_admin_daily", "the per-currency admin daily add cap fills up on cat")
+local function auditEntries(who)
+    nowMs = nowMs + 600
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", who, {})
+    return lastSent("admin.audit").args.entries
+end
+local auditBefore = #auditEntries(mod)
+local catBal = jbal("cat")
+local replay = adjust(boss3, { username = "joe", currency = "cat", delta = 5000, reason = "first half of the cat correction", requestId = "p1", expectedRev = catRev })
+check(replay.ok == true and replay.duplicate == true and replay.txId == p1.txId
+    and replay.requestId == "p1" and jbal("cat") == catBal,
+    "a resend of a committed request returns the original txId (and echoes the requestId) although the daily cap is now full")
+check(#auditEntries(mod) == auditBefore, "the resend writes no second audit entry")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", boss3, { username = "joe" })
+local look3 = lastSent("admin.lookup").args
+check(look3.adminToday.currencies.cat.add == 9999 and look3.adminToday.currencies.survivor.add == 0
+    and look3.adminToday.cap == 10000 and look3.adminToday.serverDaily.currencies.cat.add == 10000,
+    "the resend consumed no cap: this admin's cat total is unchanged and the survivor side was never touched")
+
+-- 舊格式資料升級：舊聚合每日額度必須計入所有幣別，舊 200 格稽核環要保留時序
+local legacyRoot = ModData.getOrCreate(EC.MODDATA_KEY)
+local legacyMs = nowMs + 86400000 * 3
+local legacyDay = R.dayKey(legacyMs)
+legacyRoot.adminDaily[legacyDay] = { server = { add = 9000, sub = 0 }, admins = { boss3 = { add = 9000, sub = 0 } } }
+local legacyItems = {}
+for i = 1, 200 do legacyItems[i] = { action = "legacy", seqNo = i } end
+legacyItems[1] = { action = "legacy", seqNo = 201 }
+legacyRoot.audit = { items = legacyItems, head = 2, count = 200 }
+local resumeMs = nowMs
+nowMs = legacyMs
+fire("OnServerStarted")
+onlinePlayers = { boss, boss2, boss3, mod, joe, mia }
+local afterUpgrade = adjust(boss3, { username = "joe", currency = "survivor", delta = 1500, reason = "legacy totals must still count", requestId = "legacy-1", expectedRev = jrev() })
+check(afterUpgrade.error == "over_admin_daily", "an aggregate daily total from the previous save is charged to every currency instead of resetting the cap")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 3 })
+local upgraded = lastSent("admin.audit").args.entries
+check(#upgraded == 3 and upgraded[1].seqNo == 201 and upgraded[2].seqNo == 200 and upgraded[3].seqNo == 199,
+    "an older 200-slot audit ring keeps its newest-first order after the ring grows to 500")
+legacyRoot.adminDaily[legacyDay] = nil
+nowMs = resumeMs + 2000
+fire("OnServerStarted")
+onlinePlayers = { boss, boss2, boss3, mod, joe, mia }
+
+-- 同 requestId 換金額／換帳號＝衝突：不得二次入帳，也不得誤入別的帳戶
+local mia = fakePlayer("mia"); onlinePlayers = { boss, boss2, boss3, mod, joe, mia }
+L.credit("mia", "survivor", 50, "SYSTEM_MINT", { requestId = "mia-seed", reasonCode = "t" })
+local conflictAmount = adjust(boss3, { username = "joe", currency = "cat", delta = 7, reason = "same request id, different amount", requestId = "p1", expectedRev = catRev })
+local conflictTarget = adjust(boss3, { username = "mia", currency = "cat", delta = 5000, reason = "same request id, different account", requestId = "p1", expectedRev = 0 })
+check(conflictAmount.error == "request_conflict" and conflictTarget.error == "request_conflict"
+    and jbal("cat") == catBal and L.getBalance("mia", "cat").available == 0,
+    "one requestId reused with a different amount or account is a conflict: no second posting and nothing lands on the other account")
+
+-- actor 綁定：使用者名稱含 ':' 也不得與別的管理員撞到同一把 idempotency 鑰匙
+local colonAdmin = fakePlayer("root:1"); colonAdmin.role = "admin"
+local plainAdmin = fakePlayer("root"); plainAdmin.role = "admin"
+onlinePlayers = { colonAdmin, plainAdmin, mod, joe }
+local k1 = adjust(colonAdmin, { username = "joe", currency = "survivor", delta = 3, reason = "actor binding first request", requestId = "9", expectedRev = jrev() })
+local k2 = adjust(plainAdmin, { username = "joe", currency = "survivor", delta = 4, reason = "actor binding second request", requestId = "1:9", expectedRev = jrev() })
+check(k1.ok and k2.ok and k1.txId ~= k2.txId and jbal() == bal0 + 17,
+    "requestIds are bound to the actor without collisions: 'root:1' + '9' and 'root' + '1:9' are two different transactions")
+
+-- 失權：角色被降級後同一位管理員立刻不能寫（server 每次重讀角色名，不看 client）
+onlinePlayers = { boss, mod, joe }
+boss.role = "moderator"
+local demoted = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "the role was revoked before this call", requestId = "t20", expectedRev = jrev() })
+check(demoted.error == "forbidden" and jbal() == bal0 + 17, "a demoted admin loses write access immediately")
+boss.role = "admin"
+
+-- 唯讀指令不得建立任何狀態
+local root20 = S.modData()
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", mod, { username = "phantom" })
+local phantom = lastSent("admin.lookup").args
+check(phantom.ok == true and phantom.found == false and root20.wallets["phantom"] == nil and root20.claims["phantom"] == nil,
+    "a lookup for a name that never had an account creates no wallet and no claim record")
+R.state("joe", nowMs)                       -- 讓 joe 有一筆真實的 claim 紀錄
+root20.claims.joe.milestones = 3
+root20.claims.joe.playedMs = 120000
+root20.config.season = "9"                  -- 換季：R.state 會清里程碑，查帳不可以
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", mod, { username = "joe" })
+local lookJoe = lastSent("admin.lookup").args
+check(root20.claims.joe.milestones == 3 and root20.claims.joe.playedMs == 120000
+    and lookJoe.rewards.milestones == 0 and lookJoe.rewards.season == "9" and lookJoe.rewards.playedMs == 120000,
+    "a moderator lookup projects the new season without rewriting the claim record (milestone mask and playtime survive)")
+local day20 = R.dayKey(nowMs)
+local boss4 = fakePlayer("boss4"); boss4.role = "admin"; onlinePlayers = { boss4, mod, joe }
+-- 一筆在讀上限前就被拒（單筆上限），一筆是讀完當日上限才被拒（全服上限）：
+-- 後者會走到讀取路徑，讀取路徑若建表就會留下這位管理員的空額度列
+local deniedEarly = adjust(boss4, { username = "joe", currency = "survivor", delta = 5001, reason = "over the per transaction cap again", requestId = "t21", expectedRev = jrev() })
+local deniedLate = adjust(boss4, { username = "joe", currency = "cat", delta = 5000, reason = "the server daily cat total blocks this", requestId = "t22", expectedRev = jrev("cat") })
+check(deniedEarly.error == "over_max_per_tx" and deniedLate.error == "over_server_daily"
+    and root20.adminDaily[day20].admins["boss4"] == nil,
+    "a refused adjustment leaves no daily-total row behind, including when the refusal came from reading the totals")
+
+-- 布林與型別：亂塞不得被當成「解凍」或「設定成功」
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", boss, { username = "joe", frozen = true, reason = "freeze for the boolean test" })
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", boss, { username = "joe", frozen = "false", reason = "a string is not a boolean here" })
+check(lastSent("admin.freeze").args.error == "invalid_args" and L.isFrozen("joe") == true,
+    "freeze needs a real boolean: a string does not silently unfreeze the account")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", boss, { username = "joe", frozen = false, reason = "cleared after the boolean test" })
+local enabledBefore = Cfg.currency("cat").enabled
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "cat", field = "enabled", value = "yes", reason = "a string is not a boolean either" })
+check(lastSent("admin.config").args.error == "invalid_args" and Cfg.currency("cat").enabled == enabledBefore,
+    "config enabled needs a boolean; a string does not change the currency")
+local rateBefore = Cfg.currency("cat").exchange.rateVersion
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "cat", field = "exchange", value = 5, reason = "a malformed exchange payload" })
+check(lastSent("admin.config").args.error == "invalid_args" and Cfg.currency("cat").exchange.rateVersion == rateBefore,
+    "a malformed exchange value is refused instead of being coerced to an empty no-op reported as success")
+
+-- 稽核環：滾動到上限、limit 有界、回傳是複本、帶 rolledBack
+for i = 1, X.AUDIT_RING + 20 do X.audit({ action = "bulk", seqNo = i, reason = "bulk audit entry " .. i }) end
+local ring20 = root20.audit
+check(ring20.count == X.AUDIT_RING and X.AUDIT_RING == 500, "the audit ring stops growing at 500 entries")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 9999 })
+local aud20 = lastSent("admin.audit").args
+check(#aud20.entries == 500 and aud20.entries[1].seqNo == X.AUDIT_RING + 20 and aud20.entries[500].seqNo == 21 and aud20.max == 500,
+    "a limit beyond the ring is clamped to it: newest first, and the rollover dropped the oldest entries")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 0 })
+local zeroLimit = #lastSent("admin.audit").args.entries
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = "many" })
+check(zeroLimit == 500 and #lastSent("admin.audit").args.entries == 500, "a non-positive or non-numeric limit falls back to the ring default")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 3 })
+local three = lastSent("admin.audit").args.entries
+three[1].action = "tampered"
+check(#three == 3 and ring20.items[ring20.head - 1].action == "bulk",
+    "the reply carries copies: mutating a returned entry does not reach the ModData ring")
+local epoch20 = root20.meta.epoch
+root20.meta.seq = 1
+nowMs = nowMs + 1000
+fire("OnServerStarted")                     -- 模擬回到 seq 1 的存檔
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 5 })
+local rolled = lastSent("admin.audit").args.entries
+check(rolled[1].epoch == epoch20 and rolled[1].rolledBack == true,
+    "audit entries stamped beyond the rollback point come back flagged rolledBack")
+
+-- 系統：估算含管理資料、供給守恆看得到系統保留款、沒有 cachedir 就沒有路徑
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", mod, {})
+local sys20 = lastSent("admin.system").args
+check(sys20.auditCount == 500 and sys20.sizeParts.admin > 500 * 200
+    and sys20.sizeEstimate == sys20.sizeParts.admin + sys20.sizeParts.ledger,
+    "the size estimate counts the admin tables (audit ring, freeze marks, daily totals, request fingerprints), not only the ledger")
+root20.wallets["SYSTEM_ADJUST"].survivor.reserved = 25
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", mod, {})
+local sysRes = lastSent("admin.system").args
+check(sysRes.supply.survivor.systemReserved == 25 and sysRes.supply.survivor.net == 25
+    and sysRes.supply.survivor.net == L.conservation("survivor"),
+    "a reserve parked on a system account shows up in the supply block and in its conservation sum (ignoring it would report a conserved 0 and hide the drift)")
+root20.wallets["SYSTEM_ADJUST"].survivor.reserved = 0
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", mod, {})
+check(lastSent("admin.system").args.supply.survivor.net == 0 and lastSent("admin.system").args.supply.cat.net == 0,
+    "with the reserve cleared every currency sums back to zero")
+docFolder = nil
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", mod, {})
+local noPaths = lastSent("admin.system").args
+check(noPaths.pathsResolved == false and noPaths.paths == nil,
+    "without a cachedir from the engine there are no paths at all, not a relative string dressed up as an absolute one")
+docFolder = "C:/fake/Zomboid"
+
+-- 權限與「沒有的資料不要編」：回覆自己說明 server 端的判定
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", mod, { username = "joe" })
+local modLook = lastSent("admin.lookup").args
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", boss, { username = "joe" })
+check(modLook.perms.read == true and modLook.perms.write == false and lastSent("admin.lookup").args.perms.write == true,
+    "each reply carries the server's own verdict on write permission instead of leaving it to the client role")
+check(modLook.statsAvailable == false and modLook.stats == nil,
+    "season totals are reported as unavailable rather than invented from the 5-entry receipt ring")
+
+-- 每分鐘 10 筆
+local racer = fakePlayer("racer"); racer.role = "admin"; onlinePlayers = { racer, mod, joe }
+local balR = jbal()
+local rateErr = nil
+for i = 1, 12 do
+    local res = adjust(racer, { username = "joe", currency = "survivor", delta = 1, reason = "rate limit probe number " .. i, requestId = "rl-" .. i, expectedRev = jrev() })
+    if not res.ok then rateErr = res.error end
+end
+check(rateErr == "rate_limited" and jbal() == balR + A.RATE_PER_MINUTE,
+    "an admin is limited to RATE_PER_MINUTE adjustments per minute and the refused ones move no money")
 onlinePlayers = {}
 
 io.write("\n")
