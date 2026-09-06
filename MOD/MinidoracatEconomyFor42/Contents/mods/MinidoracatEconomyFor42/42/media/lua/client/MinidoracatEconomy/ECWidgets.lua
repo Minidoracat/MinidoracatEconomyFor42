@@ -247,7 +247,7 @@ function Button.create(x, y, w, h, title, target, onClick, style)
     setmetatable(o, Button)
     o.style = style or "chip"
     o.active = false
-    o.displayBackground = false
+    o.fullTitle = title  -- untruncated label; consumers fit `title` to the budgeted width
     o:initialise()
     return o
 end

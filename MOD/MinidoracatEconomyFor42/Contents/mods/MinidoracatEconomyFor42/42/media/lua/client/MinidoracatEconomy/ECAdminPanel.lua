@@ -733,11 +733,6 @@ function Admin:createChildren()
         self.copyButtons[#self.copyButtons + 1] = b
     end
 
-    -- every button keeps its untruncated label for the width budget in layout()
-    for _, b in ipairs(self.children) do
-        if b.title ~= nil and b.fullTitle == nil then b.fullTitle = b.title end
-    end
-
     self:layout()
 end
 
