@@ -74,7 +74,8 @@ function C.currency(id)
         marketUnit = static.marketUnit,
         directTransfer = static.directTransfer,
         enabled = e.enabled ~= false,
-        balanceMax = type(e.balanceMax) == "number" and e.balanceMax or C.DEFAULT_BALANCE_MAX,
+        balanceMax = type(e.balanceMax) == "number" and e.balanceMax or EC.sandbox("BalanceMax", C.DEFAULT_BALANCE_MAX),
+        balanceMaxOverride = type(e.balanceMax) == "number" and e.balanceMax or nil,
         exchange = e.exchange,
     }
 end
@@ -127,6 +128,24 @@ function C.setIconHash(id, hash, actor, reason)
     if before == hash then return true end
     e.iconHash = hash
     changed(id, "iconHash", before, hash, actor, reason)
+    return true
+end
+
+-- value: positive integer (BALANCE_MAX_MIN..L.MAX_ABS_AMOUNT) or nil to fall back to the sandbox
+-- default. Lowering the cap never touches existing balances: the fuse only refuses new credits.
+C.BALANCE_MAX_MIN = 1000
+function C.setBalanceMax(id, value, actor, reason)
+    if not EC.CURRENCIES[id] then return false, "unknown_currency" end
+    if value ~= nil then
+        if type(value) ~= "number" or value ~= math.floor(value) or value < C.BALANCE_MAX_MIN or value > L.MAX_ABS_AMOUNT then
+            return false, "invalid_args"
+        end
+    end
+    local e = entry(id)
+    local before = e.balanceMax
+    if before == value then return true end
+    e.balanceMax = value
+    changed(id, "balanceMax", before, value, actor, reason)
     return true
 end
 

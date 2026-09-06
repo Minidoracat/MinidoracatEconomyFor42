@@ -262,5 +262,14 @@
   "IGUI_MinidoracatEconomy_Admin_Dash_Net": "純額",
   "IGUI_MinidoracatEconomy_Admin_Sys_SizeParts": "台帳 %1 ／ 管理 %2",
   "IGUI_MinidoracatEconomy_Admin_Sys_AuditRing": "監査リング",
-  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "サーバーがデータフォルダを解決できず、パスは送られていません"
+  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "サーバーがデータフォルダを解決できず、パスは送られていません",
+  "IGUI_MinidoracatEconomy_Admin_Cur_EditBalanceMax": "残高上限",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxDefault": "残高上限 %1（サンドボックス既定）",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxOverride": "残高上限 %1（管理者上書き）",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Title": "残高上限：%1",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Field": "上限（空欄＝サンドボックス既定に戻す）",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Hint": "最低 1,000",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Warn": "新しい入金のみ拒否し、既存残高は減りません",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Confirm": "上限を確定",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "上限は 1,000 以上の整数か、空欄にしてください"
 }

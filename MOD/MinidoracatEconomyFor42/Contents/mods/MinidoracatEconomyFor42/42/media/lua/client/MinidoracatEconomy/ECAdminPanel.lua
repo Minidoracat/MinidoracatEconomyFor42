@@ -195,6 +195,37 @@ local function agoText(ms, now)
     return U.durationText(diff)
 end
 
+-- Display form of a server path: everything before the Lua data dir becomes "..." (the cache dir
+-- carries the host's user name, which a streaming admin may not want on screen), and when the
+-- rest still does not fit the *head* is trimmed so the file name stays readable. The copy button
+-- always copies the full path. Cached per (path, width): drawn every frame.
+local pathCache = {}
+local function pathDisplay(value, maxW)
+    local key = value .. "\1" .. tostring(maxW)
+    local cached = pathCache[key]
+    if cached then return cached end
+    local s = value
+    local i = string.find(s, "[/\\]Lua[/\\]")
+    if i then s = string.sub(s, i) end
+    local shown = "..." .. s
+    if textWidth(shown) > maxW then
+        local low, high, best = 1, #s, ""
+        while low <= high do
+            local mid = math.floor((low + high) / 2)
+            local cut = "..." .. string.sub(s, mid)
+            if textWidth(cut) <= maxW then
+                best = cut
+                high = mid - 1
+            else
+                low = mid + 1
+            end
+        end
+        shown = best
+    end
+    pathCache[key] = shown
+    return shown
+end
+
 -- integer parse for the dialog fields: "-500" / "+30" / "12" only
 local function parseInt(str)
     local digits = string.match(tostring(str or ""), "^%s*([%+%-]?%d+)%s*$")
@@ -343,6 +374,12 @@ local function dialogFields(mode)
         return {
             { key = "amount", label = tr("Admin_Adjust_Amount"), width = 140, maxLen = 14, hint = tr("Admin_Adjust_AmountHint") },
             { key = "reversal", label = tr("Admin_Adjust_Reversal"), width = 220, maxLen = 40 },
+            { key = "reason", label = "", multiline = true, flex = true, maxLen = REASON_MAX },
+        }
+    end
+    if mode == "balanceMax" then
+        return {
+            { key = "balanceMax", label = tr("Admin_BalanceMax_Field"), width = 160, maxLen = 13, hint = tr("Admin_BalanceMax_Hint") },
             { key = "reason", label = "", multiline = true, flex = true, maxLen = REASON_MAX },
         }
     end
@@ -705,6 +742,8 @@ function Admin:createChildren()
     self:addChild(self.toggleButton)
     self.rateButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_EditRate"), self, Admin.onRateClick, "chip")
     self:addChild(self.rateButton)
+    self.balanceMaxButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_EditBalanceMax"), self, Admin.onBalanceMaxClick, "chip")
+    self:addChild(self.balanceMaxButton)
 
     -- audit page
     self.auditEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Admin_Audit_Hint") })
@@ -835,6 +874,18 @@ function Admin:onToggleClick()
         title = getText(T .. "Admin_Enable_Title", currencyName(id)),
         confirm = tr("Admin_Enable_Confirm"), warn = tr("Admin_Enable_Warn"),
     })
+end
+
+function Admin:onBalanceMaxClick()
+    local id = self:selectedCurrency()
+    local def = currencyDef(id)
+    local dlg = self:openDialog("balanceMax", {
+        currency = id, title = getText(T .. "Admin_BalanceMax_Title", currencyName(id)),
+        confirm = tr("Admin_BalanceMax_Confirm"), warn = tr("Admin_BalanceMax_Warn"),
+    })
+    if dlg and def and def.balanceMaxOverride then
+        setEntryText(dlg.boxes.balanceMax, tostring(def.balanceMaxOverride))
+    end
 end
 
 function Admin:onRateClick()
@@ -989,6 +1040,18 @@ function Admin:submitDialog(dlg)
         elseif dlg.mode == "enabled" then
             field = "enabled"
             value = dlg.enabledTarget == true
+        elseif dlg.mode == "balanceMax" then
+            field = "balanceMax"
+            local raw = string.match(entryText(dlg.boxes.balanceMax), "^%s*(.-)%s*$")
+            if raw ~= "" then
+                local n = parseInt(raw)
+                if not n or n < 1000 then
+                    dlg.message = { text = tr("Admin_BalanceMax_BadValue"), error = true }
+                    self:layoutDialog()
+                    return
+                end
+                value = n
+            end
         else
             field = "exchange"
             local values = {}
@@ -1234,6 +1297,7 @@ function Admin:updateEnabled()
     self.toggleButton:setEnable(cfgWrite)
     self:setButtonTitle(self.toggleButton, (def == nil or def.enabled ~= false) and tr("Admin_Cur_Disable") or tr("Admin_Cur_Enable"))
     self.rateButton:setEnable(cfgWrite and def ~= nil and type(def.exchange) == "table")
+    self.balanceMaxButton:setEnable(cfgWrite)
 
     setEntryEditable(self.auditEntry, read and not modal)
     for _, b in ipairs(self.auditFilterButtons) do b:setEnable(read and not modal) end
@@ -1353,12 +1417,13 @@ function Admin:layout()
     g.cfgRowY = g.bodyY + CARD_TITLE_H + rh
     local cfgBtnY = g.bodyY + g.bodyH - actionH
     g.cfgButtonY = cfgBtnY
-    -- three config buttons share the detail column; each keeps at most a third of it
-    local cfgSlot = math.floor((g.cfgDetailW - 12) / 3)
+    -- four config buttons share the detail column; each keeps at most a quarter of it
+    local cfgSlot = math.floor((g.cfgDetailW - 18) / 4)
     local cfgX = g.cfgDetailX
     local toggleFull = math.max(textWidth(tr("Admin_Cur_Disable")), textWidth(tr("Admin_Cur_Enable"))) + 30
     for _, item in ipairs({ { self.renameButton, textWidth(self.renameButton.fullTitle) + 30 },
-        { self.toggleButton, toggleFull }, { self.rateButton, textWidth(self.rateButton.fullTitle) + 30 } }) do
+        { self.toggleButton, toggleFull }, { self.rateButton, textWidth(self.rateButton.fullTitle) + 30 },
+        { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 } }) do
         local b = item[1]
         b:setVisible(currencies)
         b:setHeight(actionH)
@@ -1695,7 +1760,7 @@ function Admin:drawCurrencies()
         else
             self:line(tr("Admin_Cur_NoOverride"), "textMuted")
         end
-        self:line(getText(T .. "Admin_Cur_BalanceMax", amountText(def.balanceMax or 0)), "textMuted")
+        self:line(getText(T .. (def.balanceMaxOverride and "Admin_Cur_BalanceMaxOverride" or "Admin_Cur_BalanceMaxDefault"), amountText(def.balanceMax or 0)), "textMuted")
         local ex = def.exchange
         if type(ex) ~= "table" then
             self:line(tr("Admin_Cur_NoExchange"), "textFaint")
@@ -1782,11 +1847,11 @@ function Admin:drawSystem()
             text(self, label, g.sysRightX + PAD, py, "textMuted")
             py = py + lh
             vy = py + math.floor((button.height - fontH.small) / 2)
-            text(self, fitText(value, button.x - 6 - (g.sysRightX + PAD)), g.sysRightX + PAD, vy, "text")
+            text(self, pathDisplay(value, button.x - 6 - (g.sysRightX + PAD)), g.sysRightX + PAD, vy, "text")
         else
             text(self, fitText(label, g.sysLabelW), g.sysRightX + PAD, vy, "textMuted")
             local vx = g.sysRightX + PAD + g.sysLabelW + PAD
-            text(self, fitText(value, button.x - 6 - vx), vx, vy, "text")
+            text(self, pathDisplay(value, button.x - 6 - vx), vx, vy, "text")
         end
         py = py + button.height + 4
     end

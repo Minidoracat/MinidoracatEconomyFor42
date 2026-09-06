@@ -102,6 +102,18 @@ option MinidoracatEconomy.AdminReasonMinChars
     translation = MinidoracatEconomy_AdminReasonMinChars,
 }
 
+/* Ledger fuse: a credit that would push a player's available balance above this is refused
+   (balance_cap). Default for every currency; admins may override per currency in the panel. */
+option MinidoracatEconomy.BalanceMax
+{
+    type = integer,
+    min = 1000,
+    max = 1000000000,
+    default = 10000000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_BalanceMax,
+}
+
 /* Role-name lists (server re-verifies every admin command against these; capabilities are not
    a stable permission level in B42, stage A13). Separate several names with ';'. */
 option MinidoracatEconomy.AdminRoles

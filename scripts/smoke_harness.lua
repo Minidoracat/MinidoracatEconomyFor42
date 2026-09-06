@@ -148,7 +148,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 188     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 194     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -467,6 +467,21 @@ local capd = L.credit("carol", "survivor", 101, "SYSTEM_MINT", { requestId = "ca
 check(capd.error == "balance_cap" and L.credit("carol", "survivor", 100, "SYSTEM_MINT", { requestId = "cap-2", reasonCode = "t" }).ok, "balanceMax caps player balances (system side unaffected)")
 root.config.currencies.survivor.balanceMax = nil
 
+-- 餘額上限：沙盒值是即時讀取的預設，setBalanceMax 是每幣別覆寫；清除回沙盒；壞值拒絕
+SandboxVars.MinidoracatEconomy.BalanceMax = 1500
+check(Cfg.currency("survivor").balanceMax == 1500 and Cfg.currency("survivor").balanceMaxOverride == nil
+    and L.credit("carol", "survivor", 1401, "SYSTEM_MINT", { requestId = "cap-3", reasonCode = "t" }).error == "balance_cap",
+    "without an override the ledger reads the sandbox BalanceMax live")
+check(Cfg.setBalanceMax("survivor", 999) == false and Cfg.setBalanceMax("survivor", 2000.5) == false
+    and Cfg.setBalanceMax("survivor", "2000") == false and Cfg.setBalanceMax("nope", 2000) == false,
+    "setBalanceMax refuses below-minimum, fractional, string and unknown-currency values")
+check(Cfg.setBalanceMax("survivor", 2000, "root", "raise the fuse") == true and Cfg.currency("survivor").balanceMaxOverride == 2000
+    and L.credit("carol", "survivor", 1401, "SYSTEM_MINT", { requestId = "cap-4", reasonCode = "t" }).ok == true,
+    "an admin override raises the fuse and is reported as an override in the snapshot")
+check(Cfg.setBalanceMax("survivor", nil, "root", "back to default") == true and Cfg.currency("survivor").balanceMax == 1500
+    and Cfg.currency("survivor").balanceMaxOverride == nil, "clearing the override falls back to the sandbox default")
+SandboxVars.MinidoracatEconomy.BalanceMax = nil
+
 nowMs = nowMs + 1000
 fire("OnServerStarted")
 check(Cfg.currency("cat").exchange.rateVersion == 2 and Cfg.currency("cat").exchange.perOrderMax == 9000, "restart keeps runtime exchange overrides (sandbox only seeds the first boot)")
@@ -718,12 +733,28 @@ check(cfgReply.ok == true and catSnap and catSnap.nameOverride == "Meow" and las
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "cat", field = "bogus", value = 1, reason = "unknown field must be rejected" })
 check(lastSent("admin.config").args.error == "invalid_args", "unknown config field rejected")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "survivor", field = "balanceMax", value = 250000, reason = "season cap for survivor coin" })
+local capReply = lastSent("admin.config").args
+local capSnap = nil
+for _, c in ipairs(capReply.currencies or {}) do if c.id == "survivor" then capSnap = c end end
+check(capReply.ok == true and capSnap and capSnap.balanceMax == 250000 and capSnap.balanceMaxOverride == 250000
+    and lastSent("config").args.currencies[1].balanceMaxOverride == 250000, "admin.config balanceMax sets a per-currency override and broadcasts it")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "survivor", field = "balanceMax", value = "250000", reason = "a string cap must be refused" })
+local capStr = lastSent("admin.config").args
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.config", boss, { currency = "survivor", field = "balanceMax", reason = "clear the override again" })
+check(capStr.error == "invalid_args" and lastSent("admin.config").args.ok == true and Cfg.currency("survivor").balanceMaxOverride == nil,
+    "a string cap is refused and omitting the value clears the override")
 
 -- 稽核環：最新在前、reason 截 40 字、含 config／freeze／adjust
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.audit", mod, { limit = 50 })
 local audit = lastSent("admin.audit").args
-check(audit.ok == true and #audit.entries >= 6 and audit.entries[1].action == "config" and audit.entries[2].action == "unfreeze" and audit.entries[3].action == "adjust", "audit ring is newest-first and covers adjust/freeze/config")
+check(audit.ok == true and #audit.entries >= 8 and audit.entries[1].action == "config" and audit.entries[1].field == "balanceMax"
+    and audit.entries[3].field == "nameOverride" and audit.entries[4].action == "unfreeze" and audit.entries[5].action == "adjust",
+    "audit ring is newest-first and covers adjust/freeze/config (including the two balanceMax changes)")
 local longReason = string.rep("x", 60)
 adjust(boss, { username = "joe", currency = "cat", delta = 1, reason = longReason, requestId = "r15", expectedRev = 0 })
 nowMs = nowMs + 600

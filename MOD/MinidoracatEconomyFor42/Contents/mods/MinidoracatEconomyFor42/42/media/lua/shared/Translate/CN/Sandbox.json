@@ -37,5 +37,7 @@
   "Sandbox_MinidoracatEconomy_MilestoneDays": "生存里程碑天数",
   "Sandbox_MinidoracatEconomy_MilestoneDays_tooltip": "以分号分隔的游戏内生存天数清单（例如 1;3;7;14;30）。角色生存达到每个天数时自动发放对应金额；每个帐号每个赛季每个里程碑只发一次，死亡重建角色不会重发。",
   "Sandbox_MinidoracatEconomy_MilestoneAmounts": "生存里程碑金额（幸存币）",
-  "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "以分号分隔、与里程碑天数一一对应的金额清单（例如 100;150;250;400;1000）。长度不一致时只采用两边都有的项目。"
+  "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "以分号分隔、与里程碑天数一一对应的金额清单（例如 100;150;250;400;1000）。长度不一致时只采用两边都有的项目。",
+  "Sandbox_MinidoracatEconomy_BalanceMax": "余额上限（保险丝）",
+  "Sandbox_MinidoracatEconomy_BalanceMax_tooltip": "任何会让玩家单一货币可用余额超过此值的入帐都会被拒绝，用来挡住漏洞或错误造成的无限刷币；不影响既有余额与扣款。所有货币共用此缺省，管理面板可对单一货币另设覆写。"
 }

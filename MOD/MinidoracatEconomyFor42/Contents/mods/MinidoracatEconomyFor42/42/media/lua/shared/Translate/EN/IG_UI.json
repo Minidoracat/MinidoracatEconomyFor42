@@ -262,5 +262,14 @@
   "IGUI_MinidoracatEconomy_Admin_Dash_Net": "Net",
   "IGUI_MinidoracatEconomy_Admin_Sys_SizeParts": "Ledger %1 / admin %2",
   "IGUI_MinidoracatEconomy_Admin_Sys_AuditRing": "Audit ring",
-  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "The server could not resolve its data folder, so no paths were sent"
+  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "The server could not resolve its data folder, so no paths were sent",
+  "IGUI_MinidoracatEconomy_Admin_Cur_EditBalanceMax": "Balance cap",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxDefault": "Balance cap %1 (sandbox default)",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxOverride": "Balance cap %1 (admin override)",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Title": "Balance cap: %1",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Field": "Cap (empty = back to the sandbox default)",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Hint": "at least 1,000",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Warn": "Only refuses new credits; existing balances are not reduced",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Confirm": "Confirm cap",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "The cap must be an integer of at least 1,000, or empty"
 }

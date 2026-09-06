@@ -443,6 +443,10 @@ function A.config(player, args)
         -- that the panel would report as an applied change
         if type(args.value) ~= "table" then return { ok = false, error = "invalid_args" } end
         ok, err = Cfg.setExchange(args.currency, args.value, admin, reason)
+    elseif args.field == "balanceMax" then
+        -- nil clears the override (back to the sandbox default); the setter validates the number
+        if args.value ~= nil and type(args.value) ~= "number" then return { ok = false, error = "invalid_args" } end
+        ok, err = Cfg.setBalanceMax(args.currency, args.value, admin, reason)
     else
         return { ok = false, error = "invalid_args" }
     end

@@ -262,5 +262,14 @@
   "IGUI_MinidoracatEconomy_Admin_Dash_Net": "净额",
   "IGUI_MinidoracatEconomy_Admin_Sys_SizeParts": "帐本 %1 ／ 管理 %2",
   "IGUI_MinidoracatEconomy_Admin_Sys_AuditRing": "审核环",
-  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "服务器取不到数据目录，这次没有回传路径"
+  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "服务器取不到数据目录，这次没有回传路径",
+  "IGUI_MinidoracatEconomy_Admin_Cur_EditBalanceMax": "余额上限",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxDefault": "余额上限 %1（沙盒缺省）",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxOverride": "余额上限 %1（管理员覆写）",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Title": "余额上限：%1",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Field": "上限（留空＝改回沙盒缺省）",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Hint": "最少 1,000",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Warn": "只挡住新的入帐，不会扣掉既有余额",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Confirm": "确认上限",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "上限必须是不小于 1,000 的整数，或留空"
 }

@@ -262,5 +262,14 @@
   "IGUI_MinidoracatEconomy_Admin_Dash_Net": "淨額",
   "IGUI_MinidoracatEconomy_Admin_Sys_SizeParts": "帳本 %1 ／ 管理 %2",
   "IGUI_MinidoracatEconomy_Admin_Sys_AuditRing": "稽核環",
-  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "伺服器取不到資料目錄，這次沒有回傳路徑"
+  "IGUI_MinidoracatEconomy_Admin_Sys_PathsUnavailable": "伺服器取不到資料目錄，這次沒有回傳路徑",
+  "IGUI_MinidoracatEconomy_Admin_Cur_EditBalanceMax": "餘額上限",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxDefault": "餘額上限 %1（沙盒預設）",
+  "IGUI_MinidoracatEconomy_Admin_Cur_BalanceMaxOverride": "餘額上限 %1（管理員覆寫）",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Title": "餘額上限：%1",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Field": "上限（留空＝改回沙盒預設）",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Hint": "最少 1,000",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Warn": "只擋住新的入帳，不會扣掉既有餘額",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_Confirm": "確認上限",
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "上限必須是不小於 1,000 的整數，或留空"
 }

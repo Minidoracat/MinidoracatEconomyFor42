@@ -71,7 +71,7 @@ function L.currency(id)
         id = id,
         enabled = override.enabled ~= false,
         marketUnit = static.marketUnit,
-        balanceMax = type(override.balanceMax) == "number" and override.balanceMax or L.DEFAULT_BALANCE_MAX,
+        balanceMax = type(override.balanceMax) == "number" and override.balanceMax or EC.sandbox("BalanceMax", L.DEFAULT_BALANCE_MAX),
     }
 end
 
