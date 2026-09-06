@@ -43,3 +43,6 @@ scripts/poster/posters/
 scripts/poster/candidates/
 scripts/poster/variant_*.png
 scripts/poster/*.bak
+
+# Node（companion 開發依賴）
+companion/node_modules/

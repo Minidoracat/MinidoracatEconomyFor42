@@ -1,12 +1,12 @@
-// Entry point: node src/index.js  (see config.js for environment variables)
+// Entry point: node src/index.ts  (Node >= 24 strips the types itself; see config.ts for env vars)
 import fs from "node:fs";
-import { config } from "./config.js";
-import { EventStore } from "./events.js";
-import { Accounts } from "./accounts.js";
-import { parseGlobalModData, economyWatermark } from "./bin.js";
-import { createServer } from "./server.js";
+import { config } from "./config.ts";
+import { EventStore, errorCode, errorMessage, type Logger } from "./events.ts";
+import { Accounts } from "./accounts.ts";
+import { parseGlobalModData, economyWatermark } from "./bin.ts";
+import { createServer, type WatermarkState } from "./server.ts";
 
-const log = {
+const log: Logger = {
   info: (m) => console.log(`[companion] ${m}`),
   warn: (m) => console.warn(`[companion] WARN ${m}`),
   error: (m) => console.error(`[companion] ERROR ${m}`),
@@ -18,14 +18,14 @@ const accounts = new Accounts({ whitelistDb: config.whitelistDb, playersDb: conf
 // ---- durable watermark from global_mod_data.bin ----
 // The engine writes global_mod_data.tmp and then copies it over the .bin (GlobalModData.java:258-266):
 // wait until the mtime has been stable for one poll before parsing, and never lower the watermark.
-const wm = { durable: null, mtime: null, seenMtime: null, parsedAt: null, error: null, sizeBytes: null };
+const wm: WatermarkState & { seenMtime: number | null } = { durable: null, mtime: null, seenMtime: null, parsedAt: null, error: null, sizeBytes: null };
 
-function pollModData(force = false) {
-  let st;
+function pollModData(force = false): void {
+  let st: fs.Stats;
   try {
     st = fs.statSync(config.modDataBin);
   } catch (err) {
-    if (err.code !== "ENOENT") wm.error = err.message;
+    if (errorCode(err) !== "ENOENT") wm.error = errorMessage(err);
     return;
   }
   if (st.mtimeMs === wm.mtime) return;                 // already parsed this version
@@ -37,11 +37,11 @@ function pollModData(force = false) {
     wm.parsedAt = Date.now();
     wm.sizeBytes = st.size;
     wm.error = null;
-    if (!mark) {
+    if (mark === null) {
       log.warn(`table ${config.modDataTag} not present in global_mod_data.bin yet`);
       return;
     }
-    if (wm.durable && wm.durable.epoch === mark.epoch && mark.seq < wm.durable.seq) {
+    if (wm.durable !== null && wm.durable.epoch === mark.epoch && mark.seq < wm.durable.seq) {
       log.warn(`watermark went backwards within epoch ${mark.epoch}: ${mark.seq} < ${wm.durable.seq}; keeping the higher value`);
       return;
     }
@@ -49,8 +49,8 @@ function pollModData(force = false) {
     store.setDurable(mark);
     log.info(`durable watermark epoch=${mark.epoch} seq=${mark.seq} (${st.size} bytes)`);
   } catch (err) {
-    wm.error = err.message;
-    log.warn(`global_mod_data.bin parse failed (keeping previous watermark): ${err.message}`);
+    wm.error = errorMessage(err);
+    log.warn(`global_mod_data.bin parse failed (keeping previous watermark): ${wm.error}`);
   }
 }
 
@@ -67,8 +67,8 @@ pollModData(true);
 accounts.refresh();
 
 setInterval(() => {
-  try { store.poll(); } catch (err) { log.error(`poll failed: ${err.message}`); }
-  try { pollModData(); } catch (err) { log.error(`moddata poll failed: ${err.message}`); }
+  try { store.poll(); } catch (err) { log.error(`poll failed: ${errorMessage(err)}`); }
+  try { pollModData(); } catch (err) { log.error(`moddata poll failed: ${errorMessage(err)}`); }
 }, config.pollMs).unref();
 setInterval(() => accounts.refresh(), config.accountsRefreshMs).unref();
 
@@ -77,7 +77,7 @@ server.listen(config.port, config.bind, () => {
   log.info(`listening on http://${config.bind}:${config.port}`);
 });
 
-function shutdown() {
+function shutdown(): void {
   log.info("shutting down");
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();

@@ -3,18 +3,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseGlobalModData, economyWatermark, encodeGlobalModData } from "../src/bin.js";
-import { EventStore } from "../src/events.js";
-import { createServer, sign } from "../src/server.js";
+import { parseGlobalModData, economyWatermark, encodeGlobalModData, type LuaTable } from "../src/bin.ts";
+import { EventStore, type Logger } from "../src/events.ts";
+import { createServer, sign, type AccountSource, type WatermarkState } from "../src/server.ts";
+import type { AccountRecord } from "../src/accounts.ts";
 
-const silent = { info() {}, warn() {}, error() {} };
+const silent: Logger = { info() {}, warn() {}, error() {} };
+const noWatermark = (): WatermarkState => ({ durable: null, mtime: null, parsedAt: null, error: null, sizeBytes: null });
 
-function tmpdir() {
+function tmpdir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "eco-companion-"));
 }
 
 test("bin: round-trips the engine layout and yields the economy watermark", () => {
-  const tables = new Map([
+  const tables = new Map<string, LuaTable>([
     ["OtherMod", { a: 1, list: { 1: "x", 2: "y" }, flag: true }],
     ["MinidoracatEconomy", { schemaVersion: 1, meta: { epoch: "1788700279858", seq: 42, loadedSeq: 40, realmId: "realm-1" }, wallets: { alice: { survivor: { available: 30, reserved: 0, rev: 1 } } } }],
   ]);
@@ -28,7 +30,7 @@ test("bin: round-trips the engine layout and yields the economy watermark", () =
   assert.throws(() => parseGlobalModData(Buffer.from([0, 0, 0, 10, 0, 0, 0, 0])), RangeError);
 });
 
-function writeLines(dir, name, lines, eol = "\r\n") {
+function writeLines(dir: string, name: string, lines: string[], eol = "\r\n"): void {
   fs.appendFileSync(path.join(dir, name), lines.join(eol) + eol);
 }
 
@@ -51,6 +53,7 @@ test("events: tail with CRLF, checkpoint, day rotation, rolled_back and durable 
 
   // Nothing durable yet: no watermark.
   let page = store.ledger("", 10);
+  assert.ok(page);
   assert.equal(page.events.length, 4);
   assert.ok(page.events.every((ev) => ev.durable === false));
   assert.equal(page.next, "idx:3");
@@ -58,6 +61,7 @@ test("events: tail with CRLF, checkpoint, day rotation, rolled_back and durable 
   // Watermark from the .bin: seq 2 saved -> seq 1,2 durable, seq 3 live.
   store.setDurable({ epoch: e1, seq: 2, realmId: "r" });
   page = store.ledger("", 10);
+  assert.ok(page);
   assert.deepEqual(page.events.map((ev) => ev.durable), [true, true, true, false]);
 
   // Crash before the next save; restart loads seq 2 -> seq 3 rolled back; new epoch continues at 3.
@@ -69,23 +73,28 @@ test("events: tail with CRLF, checkpoint, day rotation, rolled_back and durable 
   ], "\n");
   assert.equal(store.poll(), 3);
   page = store.ledger("", 10);
+  assert.ok(page);
   const seq3old = page.events.find((ev) => ev.txId === `${e1}:3`);
+  assert.ok(seq3old);
   assert.equal(seq3old.rolledBack, true);
   assert.equal(seq3old.durable, false);
-  assert.equal(page.events.find((ev) => ev.txId === `${e1}:2`).durable, true, "superseded epoch, not rolled back -> durable");
+  assert.equal(page.events.find((ev) => ev.txId === `${e1}:2`)?.durable, true, "superseded epoch, not rolled back -> durable");
   const seq3new = page.events.find((ev) => ev.txId === `${e2}:3`);
+  assert.ok(seq3new);
   assert.equal(seq3new.rolledBack, false);
   assert.equal(seq3new.durable, false, "new epoch: not durable until the next .bin watermark");
   store.setDurable({ epoch: e2, seq: 3, realmId: "r" });
-  assert.equal(store.ledger("", 10).events.find((ev) => ev.txId === `${e2}:3`).durable, true);
+  assert.equal(store.ledger("", 10)?.events.find((ev) => ev.txId === `${e2}:3`)?.durable, true);
 
   // Cursor paging by arrival index and by (epoch, seq) of an event.
   const p1 = store.ledger("", 2);
+  assert.ok(p1 && p1.next !== null);
   const p2 = store.ledger(p1.next, 2);
+  assert.ok(p2);
   assert.equal(p1.events.length, 2);
-  assert.equal(p2.events[0].cursor, "idx:2");
-  assert.equal(store.ledger(`${e1}:3`, 10).events[0].type, "server.started");
-  assert.equal(store.ledger("idx:999", 10).events.length, 0);
+  assert.equal(p2.events[0]?.cursor, "idx:2");
+  assert.equal(store.ledger(`${e1}:3`, 10)?.events[0]?.type, "server.started");
+  assert.equal(store.ledger("idx:999", 10)?.events.length, 0);
   assert.equal(store.ledger("bogus:1", 10), null);
 
   // Checkpoint survives a companion restart: no re-ingest, indices continue.
@@ -95,29 +104,39 @@ test("events: tail with CRLF, checkpoint, day rotation, rolled_back and durable 
   assert.equal(store.nextIndex, 6);
   writeLines(dir, "events-20260907.json", [JSON.stringify({ type: "tx.committed", epoch: e2, seq: 4, txId: `${e2}:4`, ts: 7 })], "\n");
   assert.equal(store.poll(), 1);
-  assert.equal(store.events[0]._idx, 6, "after restart only new events are in memory, indices continue");
+  assert.equal(store.events[0]?._idx, 6, "after restart only new events are in memory, indices continue");
 
   // A partial trailing line is held back until its newline arrives.
   fs.appendFileSync(path.join(dir, "events-20260907.json"), '{"type":"tx.committed","epoch":"2000","seq":5');
   assert.equal(store.poll(), 0);
   fs.appendFileSync(path.join(dir, "events-20260907.json"), ',"txId":"2000:5","ts":8}\r\n');
   assert.equal(store.poll(), 1);
-  assert.equal(store.events.at(-1).txId, "2000:5");
+  assert.equal(store.events.at(-1)?.txId, "2000:5");
 });
 
 test("http: health/ledger/accounts with HMAC", async () => {
   const dir = tmpdir();
   const store = new EventStore({ economyDir: dir, stateDir: path.join(dir, "state"), log: silent });
-  const accounts = { stats: () => ({}), refreshedAt: 0, forSteam: (id) => (id === "76561198000000001" ? [{ username: "alice" }] : []), forUsername: () => null };
+  const alice: AccountRecord = { username: "alice", steamid: "76561198000000001", lastConnection: null, characters: [] };
+  const accounts: AccountSource = {
+    refreshedAt: 0,
+    stats: () => ({}),
+    forSteam: (id) => (id === alice.steamid ? [alice] : []),
+    forUsername: () => null,
+  };
   const secret = "s3cret";
-  const server = createServer({ config: { hmacSecret: secret, bind: "127.0.0.1" }, store, accounts, watermark: () => ({ durable: null }), log: silent });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const port = server.address().port;
-  const get = async (pathWithQuery, signed = true, skew = 0) => {
+  const server = createServer({ config: { hmacSecret: secret, bind: "127.0.0.1" }, store, accounts, watermark: noWatermark, log: silent });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  const port = address.port;
+  const get = async (pathWithQuery: string, signed = true, skew = 0): Promise<{ status: number; body: Record<string, unknown> }> => {
     const ts = Math.floor(Date.now() / 1000) + skew;
     const headers = signed ? { "x-timestamp": String(ts), "x-signature": sign(secret, ts, "GET", pathWithQuery) } : {};
     const res = await fetch(`http://127.0.0.1:${port}${pathWithQuery}`, { headers });
-    return { status: res.status, body: await res.json() };
+    const body: unknown = await res.json();
+    assert.ok(typeof body === "object" && body !== null);
+    return { status: res.status, body: body as Record<string, unknown> };
   };
   try {
     assert.equal((await get("/health", false)).status, 401);
@@ -129,7 +148,7 @@ test("http: health/ledger/accounts with HMAC", async () => {
     assert.equal(l.status, 200);
     assert.deepEqual(l.body.events, []);
     const a = await get("/accounts?steamId64=76561198000000001");
-    assert.equal(a.body.accounts[0].username, "alice");
+    assert.deepEqual(a.body.accounts, [alice]);
     assert.equal((await get("/accounts")).status, 400);
     assert.equal((await get("/nope")).status, 404);
   } finally {
@@ -138,7 +157,10 @@ test("http: health/ledger/accounts with HMAC", async () => {
 });
 
 test("http: empty secret is refused off-loopback and tolerated on loopback", () => {
-  assert.throws(() => createServer({ config: { hmacSecret: "", bind: "0.0.0.0" }, store: {}, accounts: {}, watermark: () => ({}), log: silent }));
-  const s = createServer({ config: { hmacSecret: "", bind: "127.0.0.1" }, store: {}, accounts: {}, watermark: () => ({}), log: silent });
+  const dir = tmpdir();
+  const store = new EventStore({ economyDir: dir, stateDir: path.join(dir, "state"), log: silent });
+  const accounts: AccountSource = { refreshedAt: 0, stats: () => ({}), forSteam: () => [], forUsername: () => null };
+  assert.throws(() => createServer({ config: { hmacSecret: "", bind: "0.0.0.0" }, store, accounts, watermark: noWatermark, log: silent }));
+  const s = createServer({ config: { hmacSecret: "", bind: "127.0.0.1" }, store, accounts, watermark: noWatermark, log: silent });
   assert.ok(s);
 });

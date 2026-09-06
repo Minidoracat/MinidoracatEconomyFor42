@@ -10,19 +10,37 @@
 // The file is written as global_mod_data.tmp then copied over the .bin (not an atomic rename),
 // so callers must tolerate parse failures and keep the previous watermark.
 
+export type LuaValue = string | number | boolean | LuaTable;
+export interface LuaTable {
+  [key: string]: LuaValue;
+}
+
+export interface Watermark {
+  epoch: string;
+  seq: number;
+  realmId: string | null;
+}
+
+export interface ParsedModData {
+  worldVersion: number;
+  tables: Map<string, LuaTable>;
+}
+
 class Reader {
-  constructor(buf) {
+  pos = 0;
+  readonly buf: Buffer;
+  constructor(buf: Buffer) {
     this.buf = buf;
-    this.pos = 0;
   }
-  need(n) {
+
+  need(n: number): void {
     if (this.pos + n > this.buf.length) throw new RangeError(`truncated at ${this.pos} (+${n} > ${this.buf.length})`);
   }
-  int32() { this.need(4); const v = this.buf.readInt32BE(this.pos); this.pos += 4; return v; }
-  int16() { this.need(2); const v = this.buf.readInt16BE(this.pos); this.pos += 2; return v; }
-  byte() { this.need(1); return this.buf[this.pos++]; }
-  double() { this.need(8); const v = this.buf.readDoubleBE(this.pos); this.pos += 8; return v; }
-  string() {
+  int32(): number { this.need(4); const v = this.buf.readInt32BE(this.pos); this.pos += 4; return v; }
+  int16(): number { this.need(2); const v = this.buf.readInt16BE(this.pos); this.pos += 2; return v; }
+  byte(): number { this.need(1); const v = this.buf[this.pos] ?? 0; this.pos += 1; return v; }
+  double(): number { this.need(8); const v = this.buf.readDoubleBE(this.pos); this.pos += 8; return v; }
+  string(): string {
     const n = this.int16();
     if (n <= 0) return "";
     this.need(n);
@@ -32,7 +50,7 @@ class Reader {
   }
 }
 
-function readValue(r, type) {
+function readValue(r: Reader, type: number): LuaValue {
   switch (type) {
     case 0: return r.string();
     case 1: return r.double();
@@ -42,25 +60,25 @@ function readValue(r, type) {
   }
 }
 
-function readTable(r) {
+function readTable(r: Reader): LuaTable {
   const count = r.int32();
   if (count < 0) throw new RangeError(`negative table count at ${r.pos}`);
-  const out = {};
+  const out: LuaTable = {};
   for (let i = 0; i < count; i++) {
     const key = readValue(r, r.byte());
     const value = readValue(r, r.byte());
-    out[typeof key === "number" ? String(key) : key] = value;
+    if (typeof key === "object") throw new TypeError(`table used as a key at ${r.pos}`);
+    out[String(key)] = value;
   }
   return out;
 }
 
-/** @returns {{ worldVersion: number, tables: Map<string, object> }} */
-export function parseGlobalModData(buf) {
+export function parseGlobalModData(buf: Buffer): ParsedModData {
   const r = new Reader(buf);
   const worldVersion = r.int32();
   if (worldVersion < 25) throw new RangeError(`unsupported worldVersion ${worldVersion}`);
   const size = r.int32();
-  const tables = new Map();
+  const tables = new Map<string, LuaTable>();
   for (let i = 0; i < size; i++) {
     const blockSize = r.int32();
     const start = r.pos;
@@ -75,25 +93,26 @@ export function parseGlobalModData(buf) {
 }
 
 /** Durable watermark of the economy table, or null when the table/meta is absent. */
-export function economyWatermark(parsed, tag) {
-  const table = parsed.tables.get(tag);
-  const meta = table && table.meta;
-  if (!meta || typeof meta.epoch !== "string" || typeof meta.seq !== "number") return null;
-  return { epoch: meta.epoch, seq: meta.seq, realmId: typeof meta.realmId === "string" ? meta.realmId : null };
+export function economyWatermark(parsed: ParsedModData, tag: string): Watermark | null {
+  const meta = parsed.tables.get(tag)?.meta;
+  if (typeof meta !== "object" || meta === null) return null;
+  const { epoch, seq, realmId } = meta;
+  if (typeof epoch !== "string" || typeof seq !== "number") return null;
+  return { epoch, seq, realmId: typeof realmId === "string" ? realmId : null };
 }
 
 // Test helper: serialize a JS object the same way the engine does (used by the unit tests only).
-export function encodeGlobalModData(worldVersion, tables) {
-  const chunks = [];
-  const i32 = (n) => { const b = Buffer.alloc(4); b.writeInt32BE(n); return b; };
-  const str = (s) => { const b = Buffer.from(s, "utf8"); const l = Buffer.alloc(2); l.writeInt16BE(b.length); return Buffer.concat([l, b]); };
-  const value = (v) => {
+export function encodeGlobalModData(worldVersion: number, tables: Map<string, LuaTable>): Buffer {
+  const chunks: Buffer[] = [];
+  const i32 = (n: number): Buffer => { const b = Buffer.alloc(4); b.writeInt32BE(n); return b; };
+  const str = (s: string): Buffer => { const b = Buffer.from(s, "utf8"); const l = Buffer.alloc(2); l.writeInt16BE(b.length); return Buffer.concat([l, b]); };
+  const value = (v: LuaValue): Buffer => {
     if (typeof v === "string") return Buffer.concat([Buffer.from([0]), str(v)]);
     if (typeof v === "number") { const b = Buffer.alloc(9); b[0] = 1; b.writeDoubleBE(v, 1); return b; }
     if (typeof v === "boolean") return Buffer.from([3, v ? 1 : 0]);
     return Buffer.concat([Buffer.from([2]), table(v)]);
   };
-  const table = (obj) => {
+  const table = (obj: LuaTable): Buffer => {
     const entries = Object.entries(obj);
     const parts = [i32(entries.length)];
     for (const [k, v] of entries) {
