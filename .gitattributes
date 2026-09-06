@@ -7,6 +7,9 @@
 *.bat text eol=lf
 *.md text eol=lf
 *.sh text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
 mod.info text eol=lf
 
 # workshop.txt 例外：遊戲內 Workshop 工具上傳時會把整檔回寫成 CRLF。
