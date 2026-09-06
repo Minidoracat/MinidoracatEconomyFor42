@@ -223,15 +223,15 @@ MinidoracatEconomyFor42 不應照搬 Bshop。建議採用「雙貨幣＋小額�
 
 這個分工讓市場只有一種報價單位，避免同一商品出現兩種價格、匯率套利與 UI 混亂。每種 Discord 貨幣對應一種獨立遊戲內貨幣、v1 只進不出，是為了不讓免費積分洗成付費貨幣，也拿掉提領對存檔週期的依賴。若日後開放提領（v2），只回原來源，且前提是該貨幣在遊戲內沒有其他 mint 來源（若遊戲內活動也發社群幣，提領就變成 Discord 積分的水龍頭，須重新評估）。若允許社群幣轉交易幣，轉換率與每日上限必須由 server 設定並寫入帳本。
 
-### 7.2 不建議讓實體物品成為權威錢包
+### 7.2 貨幣沒有實體道具（2026-09-06 主持人定案，不變量）
 
-Bshop 公開頁提及 Money／Silver／Gold／StockCertificate 的固定兌值與 withdraw button。可參考「物品兌換」概念，但本專案第一版應以 server 虛擬帳本為唯一真相：
+Bshop 公開頁提及 Money／Silver／Gold／StockCertificate 的固定兌值與 withdraw button。本專案**不做任何實體貨幣物品**：倖存幣與貓幣只存在於 server 帳本（Global ModData 錢包＋事件檔），沒有可掉落、可交易、可放進容器的硬幣道具，也沒有「提領成物品」「存入物品」的操作——這是不變量，不是「第一版先不做」。理由：
 
-- 實體貨幣物品會增加複製、掉落、容器同步、死亡掉落與其他 MOD loot table 的攻擊面；
+- 實體貨幣物品會增加複製、掉落、容器同步、死亡掉落與其他 MOD loot table 的攻擊面（PZ 的物品複製漏洞歷史上層出不窮，帳本幣完全繞開這一整類問題）；
 - 固定兌值容易與世界掉落率或其他 MOD 形成無限套利；
-- 物品提領與存入必須再多做一次原子性處理。
+- 物品提領與存入必須再多做一次跨存檔線的原子性處理（§19.7 已經因為託管物品付出足夠代價）。
 
-若日後加入，僅允許管理員 allowlist 的物品與明確匯率，deposit／withdraw 都要 server 驗證、同一 transaction 內完成，且有每日上限。
+貨幣圖示只是 UI 貼圖（`media/ui/MinidoracatEconomy/currency_*.png`），不對應任何 `item` 腳本；`verify_mod.py` 日後可加一條「`media/scripts/` 不得出現 currency／coin 類 item」的防線。
 
 ## 8. 簽到與生存獎勵方案
 
@@ -344,7 +344,7 @@ Bshop 公開頁提及 Money／Silver／Gold／StockCertificate 的固定兌值�
 |---|---|---|
 | bundle 與部分數量購買 | 會增加 split、remaining quantity、不同狀態物品、取消歸還與競爭購買的組合數 | 單件固定價交易完成 restart／race／rollback 實測後；啟用時每次部分成交必須遞增 `listingRevision`，或改用獨立 `txSeq` |
 | grid/list 雙檢視 | 兩套 renderer、選取狀態、分頁與 icon layout，沒有增加交易正確性 | list view 已證明不足，且有真實玩家需求時 |
-| 實體貨幣 deposit／withdraw | 增加複製、容器同步、死亡掉落與原子性風險 | 虛擬帳本穩定且有明確 gameplay 用例時 |
+| 實體貨幣 deposit／withdraw | **不做（不變量，§7.2）**：增加複製、容器同步、死亡掉落與原子性風險 | 永不 |
 | auction anti-sniping 自動延長 | 有公平性價值，但會擴充到期狀態機與 UI 倒數同步 | 基本拍賣 settle／restart 恢復穩定後 |
 | Discord sale 通知與市場報表推播 | 不是 Discord 積分兌換的必要條件 | 核心兌換 exactly-once 完成後 |
 | 玩家檢舉刊登 | 需要管理工作流、原因、冷卻與防濫用 | 管理面板與 audit 查詢成熟後 |
@@ -691,7 +691,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 ### 階段 I：以實際需求決定的擴充
 
-只有觀測到真實需求才加入 bundle partial purchase、grid view、實體貨幣 deposit／withdraw、anti-sniping、玩家檢舉、玩家自建攤位、維護費與更多通知。這些功能不是核心正確性的前置條件。
+只有觀測到真實需求才加入 bundle partial purchase、grid view、anti-sniping、玩家檢舉、玩家自建攤位、維護費與更多通知；實體貨幣道具永不加入（§7.2 不變量）。這些功能不是核心正確性的前置條件。
 
 ## 13. 驗證情境
 
@@ -772,7 +772,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 ### 本專案實作前必須決定
 
-- ~~兩種貨幣正式名稱、圖示與用途~~ → 已定（2026-09-06）：預設「倖存幣」「貓幣」，管理員可覆寫名稱與圖示（§18）；貓幣圖示已定案為貓娘頭像（2026-09-06 主持人；貓臉／貓掌保留備用）；
+- ~~兩種貨幣正式名稱、圖示與用途~~ → 已定（2026-09-06）：預設「倖存幣」「貓幣」，管理員可覆寫名稱與圖示（§18）；貓幣圖示已定案為日系動漫貓娘（變體 A，2026-09-06 主持人；極簡版與貓臉／貓掌落選）；
 - 積分→貓幣的比率與上限的**初始沙盒值**（機制已定 2026-09-06：遊戲端 config 擁有、沙盒預設、管理面板可改、Watchcord 建單時讀取；建議 1:1、單筆 10–5,000、每人每日 5,000、全服每日 50,000）；
 - ~~唯讀分頁是否允許遠端開啟~~ → 已定：允許，沙盒 `Economy_RemoteReadOnly` 可關；呈現用 UIFor42 浮鈕＋唯讀狀態帶（§17.1）；~~終端距離門檻~~ → 已定 ≤ 2、同層；
 - ~~含配件武器怎麼處理~~ → 已定：自動拆配件退回背包後上架；未知 modData 鍵一律拒絕（§12 階段 D）；白名單檔的預設內容與流體容器開放時機；
@@ -961,7 +961,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 | 幣別 id | 預設名（CH／CN／EN／JP） | 角色 | 預設圖示 |
 |---|---|---|---|
 | `survivor` | 倖存幣／幸存币／Survivor Coin／サバイバーコイン | `marketUnit=true`：簽到、里程碑、售出的來源；市場唯一報價單位 | `media/ui/MinidoracatEconomy/currency_survivor.png`（小屋剪影硬幣） |
-| `cat` | 貓幣／猫币／Cat Coin／ネココイン | Discord 積分存入（只進不出）；社群目錄消費；不進市場 | `media/ui/MinidoracatEconomy/currency_cat.png`（貓娘頭像硬幣，定稿 `docs/design-proposals/images/icons/currency_cat_girl_*.png`） |
+| `cat` | 貓幣／猫币／Cat Coin／ネココイン | Discord 積分存入（只進不出）；社群目錄消費；不進市場 | `media/ui/MinidoracatEconomy/currency_cat.png`（日系動漫貓娘硬幣，定稿 `docs/design-proposals/images/icons/currency_cat_anime_a_*.png`；主持人 2026-09-06 挑 A） |
 
 ```lua
 EconomyConfig.currencies = {
