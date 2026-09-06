@@ -274,7 +274,7 @@
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "The cap must be an integer of at least 1,000, or empty",
   "IGUI_MinidoracatEconomy_Admin_Cur_ReloadIcons": "Reload icons",
   "IGUI_MinidoracatEconomy_Admin_Cur_IconCustom": "Icon: custom (%1, %2 KB)",
-  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "Icon: built-in. To replace it, put %1 into the icons folder (System page) and press Reload icons (PNG, up to 64 KB)",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "Icon: built-in",
   "IGUI_MinidoracatEconomy_Admin_Cur_IconError": "Icon load failed: %1",
   "IGUI_MinidoracatEconomy_Admin_Icons_Started": "Re-reading icons...",
   "IGUI_MinidoracatEconomy_Admin_Icons_Busy": "Icons are still being read, try again in a moment",
@@ -284,5 +284,6 @@
   "IGUI_MinidoracatEconomy_Admin_IconErr_short_read": "file ended early",
   "IGUI_MinidoracatEconomy_Admin_IconErr_read_failed": "error while reading",
   "IGUI_MinidoracatEconomy_Admin_IconErr_empty": "file is empty",
-  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "Icons re-read"
+  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "Icons re-read",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconHint": "To replace: put %1 into the icons folder, then Reload icons (PNG, up to 64 KB)"
 }

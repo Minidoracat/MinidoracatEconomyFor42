@@ -887,7 +887,8 @@ function Admin:iconLines(def)
     if EC.isIconHash(def.iconHash) and type(def.iconBytes) == "number" then
         self:line(getText(T .. "Admin_Cur_IconCustom", def.iconHash, tostring(math.floor((def.iconBytes + 1023) / 1024))), "textMuted")
     else
-        self:line(getText(T .. "Admin_Cur_IconDefault", def.id .. ".png"), "textMuted")
+        self:line(tr("Admin_Cur_IconDefault"), "textMuted")
+        self:line(getText(T .. "Admin_Cur_IconHint", def.id .. ".png"), "textFaint")
     end
     if status and status.error then
         local code = tostring(status.error)

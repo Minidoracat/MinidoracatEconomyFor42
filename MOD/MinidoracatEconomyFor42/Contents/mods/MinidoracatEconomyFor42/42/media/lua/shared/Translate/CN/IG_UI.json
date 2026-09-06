@@ -274,7 +274,7 @@
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "上限必须是不小于 1,000 的整数，或留空",
   "IGUI_MinidoracatEconomy_Admin_Cur_ReloadIcons": "重读图标",
   "IGUI_MinidoracatEconomy_Admin_Cur_IconCustom": "图标：自订（%1，%2 KB）",
-  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "图标：内置。要换图：把 %1 放进系统页的「图标文件夹」后按「重新加载图标」（PNG，64 KB 以内）",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "图标：内置",
   "IGUI_MinidoracatEconomy_Admin_Cur_IconError": "图标读取失败：%1",
   "IGUI_MinidoracatEconomy_Admin_Icons_Started": "正在重新读取图标…",
   "IGUI_MinidoracatEconomy_Admin_Icons_Busy": "图标正在读取中，稍后再试",
@@ -284,5 +284,6 @@
   "IGUI_MinidoracatEconomy_Admin_IconErr_short_read": "文件读到一半中断",
   "IGUI_MinidoracatEconomy_Admin_IconErr_read_failed": "读取时发生错误",
   "IGUI_MinidoracatEconomy_Admin_IconErr_empty": "文件是空的",
-  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "图标已重新读取"
+  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "图标已重新读取",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconHint": "换图：%1 放进图标文件夹后按「重读图标」（PNG，64 KB 内）"
 }

@@ -274,7 +274,7 @@
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "上限必須是不小於 1,000 的整數，或留空",
   "IGUI_MinidoracatEconomy_Admin_Cur_ReloadIcons": "重讀圖示",
   "IGUI_MinidoracatEconomy_Admin_Cur_IconCustom": "圖示：自訂（%1，%2 KB）",
-  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "圖示：內建。要換圖：把 %1 放進系統頁的「圖示資料夾」後按「重新載入圖示」（PNG，64 KB 以內）",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "圖示：內建",
   "IGUI_MinidoracatEconomy_Admin_Cur_IconError": "圖示讀取失敗：%1",
   "IGUI_MinidoracatEconomy_Admin_Icons_Started": "正在重新讀取圖示…",
   "IGUI_MinidoracatEconomy_Admin_Icons_Busy": "圖示正在讀取中，稍後再試",
@@ -284,5 +284,6 @@
   "IGUI_MinidoracatEconomy_Admin_IconErr_short_read": "檔案讀到一半中斷",
   "IGUI_MinidoracatEconomy_Admin_IconErr_read_failed": "讀取時發生錯誤",
   "IGUI_MinidoracatEconomy_Admin_IconErr_empty": "檔案是空的",
-  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "圖示已重新讀取"
+  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "圖示已重新讀取",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconHint": "換圖：%1 放進圖示資料夾後按「重讀圖示」（PNG，64 KB 內）"
 }
