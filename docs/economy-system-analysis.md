@@ -772,7 +772,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 ### 本專案實作前必須決定
 
-- ~~兩種貨幣正式名稱、圖示與用途~~ → 已定（2026-09-06）：預設「倖存幣」「貓幣」，管理員可覆寫名稱與圖示（§18）；貓幣圖示母題（貓掌／貓臉）在透明版重生時定案；
+- ~~兩種貨幣正式名稱、圖示與用途~~ → 已定（2026-09-06）：預設「倖存幣」「貓幣」，管理員可覆寫名稱與圖示（§18）；貓幣圖示已定案為貓娘頭像（2026-09-06 主持人；貓臉／貓掌保留備用）；
 - 積分→貓幣的比率與上限的**初始沙盒值**（機制已定 2026-09-06：遊戲端 config 擁有、沙盒預設、管理面板可改、Watchcord 建單時讀取；建議 1:1、單筆 10–5,000、每人每日 5,000、全服每日 50,000）；
 - ~~唯讀分頁是否允許遠端開啟~~ → 已定：允許，沙盒 `Economy_RemoteReadOnly` 可關；呈現用 UIFor42 浮鈕＋唯讀狀態帶（§17.1）；~~終端距離門檻~~ → 已定 ≤ 2、同層；
 - ~~含配件武器怎麼處理~~ → 已定：自動拆配件退回背包後上架；未知 modData 鍵一律拒絕（§12 階段 D）；白名單檔的預設內容與流體容器開放時機；
@@ -961,7 +961,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 | 幣別 id | 預設名（CH／CN／EN／JP） | 角色 | 預設圖示 |
 |---|---|---|---|
 | `survivor` | 倖存幣／幸存币／Survivor Coin／サバイバーコイン | `marketUnit=true`：簽到、里程碑、售出的來源；市場唯一報價單位 | `media/ui/MinidoracatEconomy/currency_survivor.png`（小屋剪影硬幣） |
-| `cat` | 貓幣／猫币／Cat Coin／ネココイン | Discord 積分存入（只進不出）；社群目錄消費；不進市場 | `media/ui/MinidoracatEconomy/currency_cat.png`（貓掌硬幣；定稿前為候選稿去背版） |
+| `cat` | 貓幣／猫币／Cat Coin／ネココイン | Discord 積分存入（只進不出）；社群目錄消費；不進市場 | `media/ui/MinidoracatEconomy/currency_cat.png`（貓娘頭像硬幣，定稿 `docs/design-proposals/images/icons/currency_cat_girl_*.png`） |
 
 ```lua
 EconomyConfig.currencies = {

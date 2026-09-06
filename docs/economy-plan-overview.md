@@ -164,10 +164,11 @@ A 引擎原型驗證 → B 錢包＋獎勵＋事件匯出 → C 系統商店 →
 | 幣別 | 64 px | 32 px | 母題 | 狀態 |
 |---|---|---|---|---|
 | 倖存幣 | ![倖存幣 64](design-proposals/images/icons/currency_survivor_64.png) | ![倖存幣 32](design-proposals/images/icons/currency_survivor_32.png) | 褐色硬幣＋小屋剪影＋炊煙 | 定案 |
-| 貓幣（案 A：貓臉） | ![貓幣臉 64](design-proposals/images/icons/currency_cat_64.png) | ![貓幣臉 32](design-proposals/images/icons/currency_cat_32.png) | 靛藍硬幣＋貓臉剪影 | **待選** |
-| 貓幣（案 B：貓掌） | ![貓幣掌 64](design-proposals/images/icons/currency_cat_paw_64.png) | ![貓幣掌 32](design-proposals/images/icons/currency_cat_paw_32.png) | 靛藍硬幣＋貓掌印 | **待選** |
+| 貓幣（定案：貓娘頭像） | ![貓幣 64](design-proposals/images/icons/currency_cat_girl_64.png) | ![貓幣 32](design-proposals/images/icons/currency_cat_girl_32.png) | 靛藍硬幣＋極簡貓娘大頭（三角貓耳、齊瀏海、兩點眼） | **定案（2026-09-06 主持人）**；32px 實測可辨識 |
+| 貓幣（落選：貓臉） | ![貓幣臉 64](design-proposals/images/icons/currency_cat_64.png) | ![貓幣臉 32](design-proposals/images/icons/currency_cat_32.png) | 靛藍硬幣＋貓臉剪影 | 保留作備用 |
+| 貓幣（落選：貓掌） | ![貓幣掌 64](design-proposals/images/icons/currency_cat_paw_64.png) | ![貓幣掌 32](design-proposals/images/icons/currency_cat_paw_32.png) | 靛藍硬幣＋貓掌印 | 保留作備用 |
 
-建議貓臉：32px 時耳朵輪廓比掌印更能一眼認出「貓」，而且不會與其他 MOD 常見的掌印圖示撞。
+貓娘頭像在 32px 的可辨識度靠「貓耳＋人臉輪廓」而非五官，生成規格限制五官為兩點眼＋無鼻；若 32px 實測糊掉，退回貓臉剪影。
 
 當初的三組候選（A 諾克斯幣＋電波幣／B 配給券＋貓掌幣／C 倖存幣＋社群點）保留在 `design-proposals/images/11–13`，供日後主題活動或斗內幣命名參考。
 
@@ -197,7 +198,7 @@ A 引擎原型驗證 → B 錢包＋獎勵＋事件匯出 → C 系統商店 →
 
 | # | 事項 | 選項 | 建議 |
 |---|---|---|---|
-| 1 | ~~貨幣名稱與圖示~~ | 已定：倖存幣／貓幣，可覆寫 | 貓幣圖示母題：貓掌（現行）或貓臉，透明版重生後再選 |
+| 1 | ~~貨幣名稱與圖示~~ | 已定：倖存幣／貓幣，可覆寫 | **貓幣圖示定案：貓娘頭像**（2026-09-06）；貓臉／貓掌保留備用 |
 | 2 | ~~存入比率與上限~~ | 已定：遊戲端沙盒／管理面板可自由調整，同步到 Watchcord | 初始沙盒值建議 1:1；單筆 10–5,000、每人每日 5,000、全服每日 50,000 |
 | 3 | ~~Global ModData 對登入玩家可讀是否接受~~ | 已接受，附 §9 大小預算 | — |
 | 4 | ~~唯讀分頁能否遠端開啟~~ | 已定：遠端可看（沙盒可關）、交易要到終端、距離 ≤ 2 格同層；呈現用家族浮鈕＋唯讀狀態帶 | — |
