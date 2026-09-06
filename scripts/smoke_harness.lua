@@ -63,6 +63,24 @@ Events = setmetatable({}, {
         }
     end,
 })
+
+-- 假檔案系統：getFileWriter(path, createIfNull, append)；append=false 即截斷
+local files = {}
+local writerDeny = {}            -- path -> true 時回 nil（模擬開檔失敗）
+function getFileWriter(path, createIfNull, append)
+    if writerDeny[path] then return nil end
+    local f = files[path]
+    if not f or not append then
+        f = { lines = {}, opens = (f and f.opens or 0) }
+        files[path] = f
+    end
+    f.opens = f.opens + 1
+    return {
+        writeln = function(_, line) f.lines[#f.lines + 1] = line end,
+        write = function(_, s) f.lines[#f.lines + 1] = s end,
+        close = function() end,
+    }
+end
 local function fire(name, ...)
     for _, fn in ipairs(events[name] or {}) do fn(...) end
 end
@@ -85,13 +103,15 @@ end
 require("MinidoracatEconomy/ECCore")
 require("MinidoracatEconomy/ECServer")
 require("MinidoracatEconomy/ECLedger")
+require("MinidoracatEconomy/ECExport")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
+local X = EC.Export
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 57     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 77     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -292,6 +312,76 @@ check(L.sizeEstimate() > 0, "size estimate is computed from counts")
 L.onCommitted(function() error("listener boom") end)
 local lb = L.credit("alice", "survivor", 1, "SYSTEM_MINT", { requestId = "lb-1", reasonCode = "t" })
 check(lb.ok and L.getBalance("alice", "survivor").available == 31, "a throwing listener does not roll back or block the commit")
+
+-- ===== 情境十：啟動即寫 header／server.started／heartbeat =====
+io.write("scenario 10: export on start\n")
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+nowMs = 1788699986478                      -- 2026-09-06 UTC
+fire("OnServerStarted")
+local root2 = S.modData()
+local evPath = X.eventsPath(nowMs)
+check(evPath == "MinidoracatEconomy/events-20260906.json", "events file is named by UTC day under the mod root")
+local ev = files[evPath]
+check(ev and #ev.lines == 2 and string.find(ev.lines[1], '"type":"file.header"', 1, true) and string.find(ev.lines[1], '"startedSeq":0', 1, true), "first line is file.header with startedSeq")
+check(ev and string.find(ev.lines[2], '"type":"server.started"', 1, true) and string.find(ev.lines[2], '"epoch":"' .. root2.meta.epoch .. '"', 1, true), "second line is server.started carrying the epoch")
+local hb = files["MinidoracatEconomy/heartbeat.json"]
+check(hb and #hb.lines == 1 and string.find(hb.lines[1], '"realmId":"' .. root2.meta.realmId .. '"', 1, true), "heartbeat.json has one line with the realmId")
+check(string.find(ev.lines[1], '"realmId":"realm-', 1, true) ~= nil, "realmId is generated once and stamped on file lines")
+
+-- ===== 情境十一：交易 → 事件行＋收據行 =====
+io.write("scenario 11: tx.committed event and receipt lines\n")
+local rc = L.credit("Mini doracat[1]", "survivor", 30, "SYSTEM_MINT", { requestId = "x-1", reasonCode = "daily_checkin", kind = "checkin" })
+check(rc.ok and #ev.lines == 2, "commit only queues; nothing is written before the tick")
+fire("OnTickEvenPaused")
+check(#ev.lines == 3 and string.find(ev.lines[3], '"type":"tx.committed"', 1, true) and string.find(ev.lines[3], '"txId":"' .. rc.txId .. '"', 1, true) and string.find(ev.lines[3], '"availableAfter":30', 1, true), "tick writes the tx.committed line with postings")
+local rp = X.receiptsPath("Mini doracat[1]", nowMs)
+check(rp == "MinidoracatEconomy/receipts/Mini_x0020_doracat_x005b_1_x005d_/202609.json", "receipt path uses the safe account name and UTC month")
+local rf = files[rp]
+check(rf and #rf.lines == 1 and string.find(rf.lines[1], '"availableBefore":0', 1, true) and string.find(rf.lines[1], '"counterparty":"SYSTEM_MINT"', 1, true) and string.find(rf.lines[1], '"delta":30', 1, true), "receipt line carries before/after/counterparty")
+check(files[X.receiptsPath("SYSTEM_MINT", nowMs)] == nil, "system accounts get no receipt file")
+check(X.queuedLines() == 0, "queue drained")
+
+-- ===== 情境十二：每 tick 行數上限 =====
+io.write("scenario 12: per-tick line budget\n")
+for i = 1, 60 do
+    L.credit("bulk", "survivor", 1, "SYSTEM_MINT", { requestId = "bulk-" .. i, reasonCode = "t" })
+end
+check(X.queuedLines() == 120, "60 credits queue 120 lines (event + receipt each)")
+local beforeLines = #ev.lines
+fire("OnTickEvenPaused")
+check(X.queuedLines() == 70 and #ev.lines == beforeLines + 50, "one tick writes exactly MAX_LINES_PER_TICK lines, oldest file first")
+fire("OnTickEvenPaused"); fire("OnTickEvenPaused")
+check(X.queuedLines() == 0 and #files[X.receiptsPath("bulk", nowMs)].lines == 60, "queue drains over the following ticks; every receipt landed")
+
+-- ===== 情境十三：日切、心跳、寫檔失敗不卡佇列 =====
+io.write("scenario 13: day rollover, heartbeat, writer failure\n")
+nowMs = nowMs + 86400000
+fire("OnTickEvenPaused")
+local ev2 = files[X.eventsPath(nowMs)]
+check(X.eventsPath(nowMs) == "MinidoracatEconomy/events-20260907.json" and ev2 and #ev2.lines == 1 and string.find(ev2.lines[1], '"type":"file.header"', 1, true), "day change opens the next file with a header")
+check(#hb.lines == 1 and string.find(files["MinidoracatEconomy/heartbeat.json"].lines[1], '"ts":' .. string.format("%.0f", nowMs), 1, true) and files["MinidoracatEconomy/heartbeat.json"].opens >= 2, "heartbeat rewritten (truncate) once the interval passed")
+
+writerDeny[X.eventsPath(nowMs)] = true
+local bulkBefore = #files[X.receiptsPath("bulk", nowMs)].lines
+L.credit("bulk", "survivor", 1, "SYSTEM_MINT", { requestId = "deny-1", reasonCode = "t" })
+fire("OnTickEvenPaused")
+check(X.queuedLines() == 0 and #files[X.receiptsPath("bulk", nowMs)].lines == bulkBefore + 1 and #ev2.lines == 1, "a failing target is dropped and logged, the receipt file is still written")
+writerDeny[X.eventsPath(nowMs)] = nil
+
+X.emit("ledger.anomaly", { account = "bulk", kind = "test" })
+X.audit({ action = "adjust", admin = "root", target = "bulk", reason = "unit test reason" })
+fire("OnTickEvenPaused")
+local au = files[X.auditPath(nowMs)]
+check(au and #au.lines == 1 and string.find(au.lines[1], '"type":"audit"', 1, true) and string.find(ev2.lines[#ev2.lines], '"type":"audit"', 1, true), "audit goes to audit/YYYYMM.json and to the event stream")
+check(string.find(ev2.lines[#ev2.lines - 1], '"type":"ledger.anomaly"', 1, true) ~= nil, "emit writes a generic event line")
+
+-- ===== 情境十四：重啟後同日續寫（再一個 header）=====
+io.write("scenario 14: restart on the same day appends a new header\n")
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local n2 = #ev2.lines
+check(string.find(ev2.lines[n2 - 1], '"type":"file.header"', 1, true) and string.find(ev2.lines[n2], '"type":"server.started"', 1, true) and string.find(ev2.lines[n2], '"loadedSeq":' .. string.format("%.0f", S.modData().meta.loadedSeq), 1, true), "restart appends file.header + server.started with loadedSeq")
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then

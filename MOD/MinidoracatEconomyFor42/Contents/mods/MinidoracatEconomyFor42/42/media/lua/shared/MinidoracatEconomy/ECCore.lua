@@ -110,6 +110,99 @@ function EC.roleSet(str)
     return set
 end
 
+-- ---------- time ----------
+
+-- Civil date from epoch ms, computed by hand so the harness (standard Lua) and Kahlua agree:
+-- Kahlua's os.date is fixed UTC while standard Lua's is local time (pitfalls.md).
+-- Algorithm: days-from-civil inverse (H. Hinnant), valid for the whole range we care about.
+function EC.utcDate(ms)
+    local days = math.floor(ms / 86400000)
+    local z = days + 719468
+    local era = math.floor(z / 146097)
+    local doe = z - era * 146097
+    local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+    local y = yoe + era * 400
+    local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+    local mp = math.floor((5 * doy + 2) / 153)
+    local d = doy - math.floor((153 * mp + 2) / 5) + 1
+    local m = mp < 10 and mp + 3 or mp - 9
+    if m <= 2 then y = y + 1 end
+    return y, m, d
+end
+
+local function pad2(n) return n < 10 and ("0" .. n) or tostring(n) end
+
+function EC.dayKey(ms)          -- "YYYYMMDD" (UTC)
+    local y, m, d = EC.utcDate(ms)
+    return tostring(y) .. pad2(m) .. pad2(d)
+end
+
+function EC.monthKey(ms)        -- "YYYYMM" (UTC)
+    local y, m = EC.utcDate(ms)
+    return tostring(y) .. pad2(m)
+end
+
+-- ---------- JSON (encode only; one line per record) ----------
+
+local function jsonString(s)
+    local out = string.gsub(s, '[%c"\\]', function(ch)
+        if ch == '"' then return '\\"' end
+        if ch == "\\" then return "\\\\" end
+        if ch == "\n" then return "\\n" end
+        if ch == "\r" then return "\\r" end
+        if ch == "\t" then return "\\t" end
+        return string.format("\\u%04x", string.byte(ch))
+    end)
+    return '"' .. out .. '"'
+end
+
+local function jsonNumber(n)
+    if n ~= n or n == math.huge or n == -math.huge then return "null" end
+    if n == math.floor(n) and math.abs(n) < 1e15 then return string.format("%.0f", n) end
+    return string.format("%.6f", n)
+end
+
+-- Tables with a positive #len and no other keys encode as arrays; everything else as objects
+-- with keys sorted (deterministic lines). Non-string keys are stringified. Depth is capped.
+function EC.jsonEncode(value, depth)
+    depth = depth or 0
+    local t = type(value)
+    if t == "string" then return jsonString(value) end
+    if t == "number" then return jsonNumber(value) end
+    if t == "boolean" then return value and "true" or "false" end
+    if t ~= "table" then return "null" end
+    if depth > 8 then return '"<depth>"' end
+    local n = #value
+    local isArray = n > 0
+    if isArray then
+        for k in pairs(value) do
+            if type(k) ~= "number" or k < 1 or k > n or k ~= math.floor(k) then isArray = false break end
+        end
+    end
+    local parts = {}
+    if isArray then
+        for i = 1, n do parts[i] = EC.jsonEncode(value[i], depth + 1) end
+        return "[" .. table.concat(parts, ",") .. "]"
+    end
+    local keys = {}
+    for k in pairs(value) do keys[#keys + 1] = tostring(k) end
+    EC.sortSafe(keys, function(a, b) return a < b end)
+    for i, k in ipairs(keys) do
+        local v = value[k]
+        if v == nil then v = value[tonumber(k)] end
+        parts[i] = jsonString(k) .. ":" .. EC.jsonEncode(v, depth + 1)
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- File-system safe, collision-free name for a username: [A-Za-z0-9_-] kept, everything else
+-- becomes _xHHHH_ (UTF-16 code unit). Usernames may be non-ASCII on the production server.
+function EC.safeName(name)
+    return (string.gsub(tostring(name), "[^A-Za-z0-9_%-]", function(ch)
+        return string.format("_x%04x_", string.byte(ch))
+    end))
+end
+
 function EC.countKeys(t)
     local n = 0
     for _ in pairs(t) do n = n + 1 end

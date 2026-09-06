@@ -44,9 +44,11 @@ end
 -- for every start so ids from a rolled-back branch never collide (spec 19.7 rule four).
 function S.initModData()
     md = ModData.getOrCreate(EC.MODDATA_KEY)
-    local prevSeq = (type(md.meta) == "table" and type(md.meta.seq) == "number") and md.meta.seq or 0
+    local prevMeta = type(md.meta) == "table" and md.meta or {}
+    local prevSeq = type(prevMeta.seq) == "number" and prevMeta.seq or 0
     md.schemaVersion = md.schemaVersion or EC.SCHEMA_VERSION
     md.meta = {
+        realmId = type(prevMeta.realmId) == "string" and prevMeta.realmId or ("realm-" .. tostring(EC.now())),
         epoch = tostring(EC.now()),
         seq = prevSeq,
         loadedSeq = prevSeq,
