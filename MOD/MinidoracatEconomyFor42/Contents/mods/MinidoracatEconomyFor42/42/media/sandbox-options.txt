@@ -1,0 +1,111 @@
+VERSION = 1,
+
+/* Minidoracat Economy — page is required: without it SandboxVars.MinidoracatEconomy is nil and
+   every option silently falls back to the code default (EC.sandbox). Comments must be block
+   comments; string defaults must not contain commas (ScriptParser splits on them). */
+
+option MinidoracatEconomy.RemoteReadOnly
+{
+    type = boolean,
+    default = true,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RemoteReadOnly,
+}
+
+option MinidoracatEconomy.CheckinAmount
+{
+    type = integer,
+    min = 1,
+    max = 100000,
+    default = 30,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CheckinAmount,
+}
+
+option MinidoracatEconomy.CheckinMinPlaytimeMinutes
+{
+    type = integer,
+    min = 0,
+    max = 600,
+    default = 15,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CheckinMinPlaytimeMinutes,
+}
+
+option MinidoracatEconomy.CheckinServerDailyCap
+{
+    type = integer,
+    min = 0,
+    max = 10000000,
+    default = 0,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CheckinServerDailyCap,
+}
+
+option MinidoracatEconomy.RewardDayResetHourUTC
+{
+    type = integer,
+    min = 0,
+    max = 23,
+    default = 20,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RewardDayResetHourUTC,
+}
+
+option MinidoracatEconomy.AdminAdjustMaxPerTx
+{
+    type = integer,
+    min = 1,
+    max = 10000000,
+    default = 5000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AdminAdjustMaxPerTx,
+}
+
+option MinidoracatEconomy.AdminAdjustDailyPerAdmin
+{
+    type = integer,
+    min = 1,
+    max = 100000000,
+    default = 10000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AdminAdjustDailyPerAdmin,
+}
+
+option MinidoracatEconomy.AdminAdjustServerDaily
+{
+    type = integer,
+    min = 1,
+    max = 1000000000,
+    default = 50000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AdminAdjustServerDaily,
+}
+
+option MinidoracatEconomy.AdminReasonMinChars
+{
+    type = integer,
+    min = 1,
+    max = 200,
+    default = 10,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AdminReasonMinChars,
+}
+
+/* Role-name lists (server re-verifies every admin command against these; capabilities are not
+   a stable permission level in B42, stage A13). Separate several names with ';'. */
+option MinidoracatEconomy.AdminRoles
+{
+    type = string,
+    default = admin,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AdminRoles,
+}
+
+option MinidoracatEconomy.ReadOnlyRoles
+{
+    type = string,
+    default = moderator,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_ReadOnlyRoles,
+}

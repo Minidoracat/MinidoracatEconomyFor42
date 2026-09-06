@@ -339,6 +339,61 @@ if os.path.isfile(_cl):
                     leaks.append(f"CHANGELOG.md:{lineno} {desc}（{mm.group()[:40]}）")
     fail("CHANGELOG 無基礎設施洩漏樣式", leaks) if leaks else ok("CHANGELOG 無基礎設施洩漏樣式")
 
+# ---- 12. Lua 字串字面值不得含非 ASCII ----
+# Kahlua 的 LexState 以 Reader 讀入 char 卻用 byte[] 存 token（LexState.java:70,178,194-199），
+# 任何 code point > 255 的字面值到執行期都是亂碼（Economy A11 實踩：中文 toast 變 !p8）。
+# 玩家可見文字一律走 Translate/<LANG>/*.json；註解不受影響（先剝掉再掃）。
+_LONG_COMMENT = re.compile(r"--\[(=*)\[.*?\]\1\]", re.DOTALL)
+_LONG_STRING = re.compile(r"\[(=*)\[.*?\]\1\]", re.DOTALL)
+_SHORT_STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'')
+nonascii = []
+for f in LUA_FILES:
+    rel = os.path.relpath(f, REPO)
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        src = fh.read()
+    src = _LONG_COMMENT.sub(lambda mm: "\n" * mm.group().count("\n"), src)
+    for mm in _LONG_STRING.finditer(src):
+        if any(ord(ch) > 127 for ch in mm.group()):
+            nonascii.append(f"{rel}:{src.count(chr(10), 0, mm.start()) + 1}: 長字串含非 ASCII")
+    src = _LONG_STRING.sub(lambda mm: "\n" * mm.group().count("\n"), src)
+    for lineno, line in enumerate(src.split("\n"), 1):
+        code = line.split("--", 1)[0]
+        for mm in _SHORT_STRING.finditer(code):
+            if any(ord(ch) > 127 for ch in mm.group()):
+                nonascii.append(f"{rel}:{lineno}: {mm.group()[:30]}")
+fail("Lua 字串字面值純 ASCII（Kahlua 截斷）", nonascii) if nonascii \
+    else ok(f"Lua 字串字面值純 ASCII（{len(LUA_FILES)} 檔）")
+
+# ---- 13. 不得定義貨幣類 item ----
+# 主規格 §7.2 不變量：倖存幣／貓幣只存在於伺服器帳本，沒有可掉落／交易的硬幣道具。
+_ITEM_RE = re.compile(r"(?:^|[\s{])item\s+([A-Za-z0-9_]+)", re.MULTILINE)
+_COIN_RE = re.compile(r"coin|money|cash|currency|banknote|token", re.IGNORECASE)
+coin_items = []
+for m in MEDIA_DIRS:
+    sdir = os.path.join(m, "scripts")
+    if not os.path.isdir(sdir):
+        continue
+    for f in iter_files(sdir, {".txt"}):
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for mm in _ITEM_RE.finditer(fh.read()):
+                if _COIN_RE.search(mm.group(1)):
+                    coin_items.append(f"{os.path.relpath(f, REPO)}: item {mm.group(1)}")
+fail("無貨幣類 item 腳本（§7.2 不變量）", coin_items) if coin_items \
+    else ok("無貨幣類 item 腳本（§7.2 不變量）")
+
+# ---- 14. Lua 煙霧測試 ----
+_lua = shutil.which("lua")
+_harness = os.path.join(REPO, "scripts", "smoke_harness.lua")
+if not _lua:
+    skip("Lua 煙霧測試（smoke_harness.lua）", "PATH 沒有 lua")
+elif not os.path.isfile(_harness):
+    skip("Lua 煙霧測試（smoke_harness.lua）", "找不到 scripts/smoke_harness.lua")
+else:
+    _run = subprocess.run([_lua, _harness], cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    _tail = [ln for ln in (_run.stdout + _run.stderr).splitlines() if ln.strip()][-6:]
+    fail("Lua 煙霧測試（smoke_harness.lua）", _tail) if _run.returncode != 0 \
+        else ok("Lua 煙霧測試（" + (_tail[-1] if _tail else "ok") + "）")
+
 # ---- 總結 ----
 print()
 print(f"PASS {len(passed)} / FAIL {len(failed)} / SKIP {len(skipped)}")
