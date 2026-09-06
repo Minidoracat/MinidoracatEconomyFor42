@@ -88,6 +88,16 @@ function getFileWriter(path, createIfNull, append)
         close = function() end,
     }
 end
+function getFileReader(path, createIfNull)
+    local f = files[path]
+    if not f then return nil end
+    local i = 0
+    return {
+        readLine = function() i = i + 1; return f.lines[i] end,
+        close = function() end,
+    }
+end
+
 local function fire(name, ...)
     for _, fn in ipairs(events[name] or {}) do fn(...) end
 end
@@ -118,16 +128,18 @@ require("MinidoracatEconomy/ECLedger")
 require("MinidoracatEconomy/ECExport")
 require("MinidoracatEconomy/ECConfig")
 require("MinidoracatEconomy/ECRewards")
+require("MinidoracatEconomy/ECWallet")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
 local X = EC.Export
 local Cfg = EC.Config
 local R = EC.Rewards
+local W = EC.Wallet
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 113     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 127     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -457,13 +469,14 @@ io.write("scenario 16: reward day, playtime, check-in\n")
 modDataStore[EC.MODDATA_KEY] = nil
 files = {}
 sentCommands = {}
-SandboxVars.MinidoracatEconomy.RewardDayResetHourUTC = 20
+SandboxVars.MinidoracatEconomy.RewardDayResetHour = 4          -- 台灣 04:00 = UTC 20，日鍵是當地日期
+SandboxVars.MinidoracatEconomy.RewardTimezoneUTC = 8
 SandboxVars.MinidoracatEconomy.CheckinAmount = 30
 SandboxVars.MinidoracatEconomy.CheckinMinPlaytimeMinutes = 2
 SandboxVars.MinidoracatEconomy.CheckinServerDailyCap = 0
-nowMs = 1788699986478                      -- 2026-09-06 ~05:46 UTC -> reward day 20260905 (reset at 20:00 UTC)
+nowMs = 1788699986478                      -- 2026-09-06 ~05:46 UTC = 台灣 13:46 -> reward day 20260906 (換日 台灣 04:00 = 20:00 UTC)
 fire("OnServerStarted")
-check(R.dayKey(nowMs) == "20260905" and R.dayKey(nowMs + 15 * 3600000) == "20260906", "reward day flips at the configured UTC reset hour, not at UTC midnight")
+check(R.dayKey(nowMs) == "20260906" and R.dayKey(nowMs + 15 * 3600000) == "20260907", "reward day key is the local date and flips at the configured local hour, not at UTC midnight")
 check(R.nextResetMs(nowMs) == 1788724800000, "nextResetMs is the next 20:00 UTC")
 
 local dave = fakePlayer("dave")
@@ -488,7 +501,7 @@ fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
 check(lastSent("rewards.checkin").args.error == "already_claimed" and L.getBalance("dave", "survivor").available == 30, "second check-in the same reward day is refused")
 fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.state", dave, {})
 local stc = lastSent("rewards.state").args
-check(stc.claimed == true and stc.day == "20260905" and stc.nextResetMs == 1788724800000 and #stc.milestoneList == 5, "rewards.state reports claimed/day/next reset/milestone list")
+check(stc.claimed == true and stc.day == "20260906" and stc.nextResetMs == 1788724800000 and #stc.milestoneList == 5, "rewards.state reports claimed/day/next reset/milestone list")
 
 -- 跨獎勵日：playtime 歸零、可再簽到
 nowMs = 1788724800000 + 1000
@@ -498,6 +511,16 @@ for i = 1, 3 do nowMs = nowMs + 60000; dave.x = dave.x + 1; fire("OnTickEvenPaus
 nowMs = nowMs + 1000
 fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
 check(lastSent("rewards.checkin").args.ok == true and L.getBalance("dave", "survivor").available == 60, "check-in works again on the new day")
+-- 日鍵回訪（實機踩到：重置時刻 20→0→20 讓同一 requestId 再次出現）：
+-- claim 記錄掉了但帳本冪等快取還在 → 必須回 already_claimed、不動錢、不重複計數
+local rollBefore = ModData.getOrCreate(EC.MODDATA_KEY).rollups[R.dayKey(nowMs)].checkinCount
+ModData.getOrCreate(EC.MODDATA_KEY).claims["dave"].checkinDay = nil
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", dave, {})
+local replay = lastSent("rewards.checkin").args
+check(replay.ok == false and replay.error == "already_claimed" and L.getBalance("dave", "survivor").available == 60
+    and ModData.getOrCreate(EC.MODDATA_KEY).rollups[R.dayKey(nowMs)].checkinCount == rollBefore
+    and R.state("dave", nowMs).claimed == true, "idempotent replay of a paid reward day is reported as already_claimed (no double count, claim mark restored)")
 
 -- 全服保險絲
 SandboxVars.MinidoracatEconomy.CheckinServerDailyCap = 40
@@ -554,6 +577,64 @@ fire("OnServerStarted")
 local st2 = R.state("dave", nowMs)
 check(st2.claimed == true and st2.milestones > 0 and S.modData().claims.dave.season == "2", "claims survive a restart")
 check(L.conservation("survivor") == 0, "conservation still holds after rewards")
+onlinePlayers = {}
+
+
+-- ===== 情境十八：錢包狀態、變動推送、歷史分批讀取、回滾標記 =====
+io.write("scenario 18: wallet state, push, history, rolledBack\n")
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+nowMs = 1788699986478
+fire("OnServerStarted")
+local frank = fakePlayer("frank")
+onlinePlayers = { frank }
+L.credit("frank", "survivor", 40, "SYSTEM_MINT", { requestId = "w-1", reasonCode = "t", kind = "checkin" })
+local push = lastSent("wallet.changed")
+check(push and push.player == frank and push.args.balances.survivor.available == 40 and push.args.kind == "checkin", "wallet.changed pushed to the online player after a tx")
+L.credit("ghost", "survivor", 5, "SYSTEM_MINT", { requestId = "w-2", reasonCode = "t" })
+check(lastSent("wallet.changed").player == frank, "offline accounts get no push")
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", frank, {})
+local ws = lastSent("wallet.state").args
+check(ws.balances.survivor.available == 40 and ws.balances.cat.available == 0 and #ws.receipts == 1 and ws.receipts[1].after == 40 and ws.receipts[1].rolledBack == false and ws.currencies[2] == "cat", "wallet.state has all currencies, receipts with rolledBack=false")
+
+-- 歷史：先把 250 筆寫進當月收據檔（透過真實交易＋tick 沖到檔案）
+for i = 1, 250 do L.credit("frank", "survivor", 1, "SYSTEM_MINT", { requestId = "h-" .. i, reasonCode = "t" }) end
+for _ = 1, 12 do fire("OnTickEvenPaused") end
+local rpath = X.receiptsPath("frank", nowMs)
+check(#files[rpath].lines == 251, "251 receipt lines on disk")
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", frank, { month = EC.monthKey(nowMs) })
+check(lastSent("wallet.history") == nil or lastSent("wallet.history").args.month ~= EC.monthKey(nowMs), "history is not answered synchronously (batched over ticks)")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", frank, { month = EC.monthKey(nowMs) })
+check(lastSent("wallet.history").args.error == "busy", "a second request while one is running is refused as busy")
+fire("OnTickEvenPaused")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", frank, { month = EC.monthKey(nowMs) })
+local h1 = lastSent("wallet.history")
+check(h1.args.error == "busy", "after one tick (200 lines) the job is still running")
+fire("OnTickEvenPaused")
+local h2 = lastSent("wallet.history")
+check(h2.args.month == EC.monthKey(nowMs) and h2.args.total == 251 and #h2.args.entries == 200 and h2.args.truncated == true, "second tick finishes: newest 200 of 251 entries, truncated flag")
+check(h2.args.entries[1].delta == 1 and h2.args.entries[200].availableAfter == 290 and h2.args.entries[200].rolledBack == false, "entries are oldest-first among the kept window, decoded from JSON")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", frank, { month = "bad" })
+check(lastSent("wallet.history").args.error == "invalid_args", "invalid month rejected")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", frank, { month = "199001" })
+check(lastSent("wallet.history").args.total == 0 and #lastSent("wallet.history").args.entries == 0, "missing month file answers empty immediately")
+
+-- 回滾標記：模擬「世界回到 seq 100 的存檔」後重啟，環裡 seq>100 的收據標 rolledBack
+local oldEpoch = S.modData().meta.epoch
+S.modData().meta.seq = 100
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+check(S.isRolledBack(oldEpoch, 101) == true and S.isRolledBack(oldEpoch, 100) == false and S.isRolledBack(S.modData().meta.epoch, 5) == false and S.isRolledBack("unknown", 999) == false, "isRolledBack uses the epoch history (seq > loadedSeq of that epoch)")
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", frank, {})
+local ws2 = lastSent("wallet.state").args
+local flagged = 0
+for _, r in ipairs(ws2.receipts) do if r.rolledBack then flagged = flagged + 1 end end
+check(#ws2.receipts == 5 and flagged == 5, "receipt ring entries beyond the rollback point are flagged")
 onlinePlayers = {}
 
 io.write("\n")

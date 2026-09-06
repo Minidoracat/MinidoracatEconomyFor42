@@ -42,14 +42,24 @@ option MinidoracatEconomy.CheckinServerDailyCap
     translation = MinidoracatEconomy_CheckinServerDailyCap,
 }
 
-option MinidoracatEconomy.RewardDayResetHourUTC
+option MinidoracatEconomy.RewardDayResetHour
 {
     type = integer,
     min = 0,
     max = 23,
-    default = 20,
+    default = 0,
     page = MinidoracatEconomy,
-    translation = MinidoracatEconomy_RewardDayResetHourUTC,
+    translation = MinidoracatEconomy_RewardDayResetHour,
+}
+
+option MinidoracatEconomy.RewardTimezoneUTC
+{
+    type = double,
+    min = -12.0,
+    max = 14.0,
+    default = 8.0,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RewardTimezoneUTC,
 }
 
 option MinidoracatEconomy.AdminAdjustMaxPerTx

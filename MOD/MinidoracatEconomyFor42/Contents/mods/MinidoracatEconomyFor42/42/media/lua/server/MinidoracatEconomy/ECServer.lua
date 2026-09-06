@@ -59,14 +59,31 @@ function S.initModData()
     local prevMeta = type(md.meta) == "table" and md.meta or {}
     local prevSeq = type(prevMeta.seq) == "number" and prevMeta.seq or 0
     md.schemaVersion = md.schemaVersion or EC.SCHEMA_VERSION
+    -- Epoch history: which seq each previous epoch was loaded back to. A receipt line from epoch E
+    -- with seq > history[E].loadedSeq was rolled back (spec 19.6). Bounded to the last 20 starts.
+    local history = type(prevMeta.history) == "table" and prevMeta.history or {}
+    if type(prevMeta.epoch) == "string" then
+        history[#history + 1] = { epoch = prevMeta.epoch, loadedSeq = prevSeq }
+        while #history > 20 do table.remove(history, 1) end
+    end
     md.meta = {
         realmId = type(prevMeta.realmId) == "string" and prevMeta.realmId or ("realm-" .. tostring(EC.now())),
         epoch = tostring(EC.now()),
         seq = prevSeq,
         loadedSeq = prevSeq,
         startedAt = EC.now(),
+        history = history,
     }
     return md
+end
+
+-- True when a record stamped (epoch, seq) did not survive into the save its successor loaded.
+function S.isRolledBack(epoch, seq)
+    if type(epoch) ~= "string" or type(seq) ~= "number" or epoch == md.meta.epoch then return false end
+    for _, h in ipairs(md.meta.history) do
+        if h.epoch == epoch then return seq > h.loadedSeq end
+    end
+    return false
 end
 
 function S.modData()

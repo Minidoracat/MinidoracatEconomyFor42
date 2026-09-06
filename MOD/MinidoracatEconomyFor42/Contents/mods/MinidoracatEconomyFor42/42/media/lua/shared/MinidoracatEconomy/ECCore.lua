@@ -195,6 +195,117 @@ function EC.jsonEncode(value, depth)
     return "{" .. table.concat(parts, ",") .. "}"
 end
 
+-- ---------- JSON decode (strict enough for our own NDJSON, whitelist.json and inbox files) ----------
+-- Returns value, nil on success; nil, message on error. Objects become tables keyed by string,
+-- arrays become 1-based sequences, null becomes EC.JSON_NULL (so keys are not lost).
+EC.JSON_NULL = setmetatable({}, { __tostring = function() return "null" end })
+
+local function decodeError(s, pos, msg)
+    return nil, msg .. " at " .. tostring(pos) .. " near '" .. string.sub(s, pos, pos + 12) .. "'"
+end
+
+local function skipSpace(s, pos)
+    local _, e = string.find(s, "^[ \t\r\n]*", pos)
+    return e + 1
+end
+
+local decodeValue
+
+local function decodeString(s, pos)
+    -- pos is at the opening quote
+    local out = {}
+    local i = pos + 1
+    local n = #s
+    while i <= n do
+        local c = string.sub(s, i, i)
+        if c == '"' then
+            return table.concat(out), i + 1
+        elseif c == "\\" then
+            local e = string.sub(s, i + 1, i + 1)
+            if e == "n" then out[#out + 1] = "\n"
+            elseif e == "t" then out[#out + 1] = "\t"
+            elseif e == "r" then out[#out + 1] = "\r"
+            elseif e == "b" then out[#out + 1] = "\b"
+            elseif e == "f" then out[#out + 1] = "\f"
+            elseif e == "u" then
+                local hex = string.sub(s, i + 2, i + 5)
+                local code = tonumber(hex, 16)
+                if not code or #hex ~= 4 then return nil, i end
+                out[#out + 1] = string.char(code < 256 and code or 63)   -- non-Latin-1 escapes become '?'
+                i = i + 4
+            else
+                out[#out + 1] = e
+            end
+            i = i + 2
+        else
+            out[#out + 1] = c
+            i = i + 1
+        end
+    end
+    return nil, pos
+end
+
+decodeValue = function(s, pos)
+    pos = skipSpace(s, pos)
+    local c = string.sub(s, pos, pos)
+    if c == "{" then
+        local obj = {}
+        pos = skipSpace(s, pos + 1)
+        if string.sub(s, pos, pos) == "}" then return obj, pos + 1 end
+        while true do
+            pos = skipSpace(s, pos)
+            if string.sub(s, pos, pos) ~= '"' then return decodeError(s, pos, "expected key") end
+            local key, np = decodeString(s, pos)
+            if not key then return decodeError(s, pos, "bad string") end
+            pos = skipSpace(s, np)
+            if string.sub(s, pos, pos) ~= ":" then return decodeError(s, pos, "expected ':'") end
+            local value, np2 = decodeValue(s, pos + 1)
+            if type(np2) ~= "number" then return nil, np2 end
+            obj[key] = value
+            pos = skipSpace(s, np2)
+            local d = string.sub(s, pos, pos)
+            if d == "," then pos = pos + 1
+            elseif d == "}" then return obj, pos + 1
+            else return decodeError(s, pos, "expected ',' or '}'") end
+        end
+    elseif c == "[" then
+        local arr = {}
+        pos = skipSpace(s, pos + 1)
+        if string.sub(s, pos, pos) == "]" then return arr, pos + 1 end
+        while true do
+            local value, np = decodeValue(s, pos)
+            if type(np) ~= "number" then return nil, np end
+            arr[#arr + 1] = value
+            pos = skipSpace(s, np)
+            local d = string.sub(s, pos, pos)
+            if d == "," then pos = pos + 1
+            elseif d == "]" then return arr, pos + 1
+            else return decodeError(s, pos, "expected ',' or ']'") end
+        end
+    elseif c == '"' then
+        local str, np = decodeString(s, pos)
+        if not str then return decodeError(s, pos, "unterminated string") end
+        return str, np
+    elseif string.sub(s, pos, pos + 3) == "true" then return true, pos + 4
+    elseif string.sub(s, pos, pos + 4) == "false" then return false, pos + 5
+    elseif string.sub(s, pos, pos + 3) == "null" then return EC.JSON_NULL, pos + 4
+    else
+        local numStr = string.match(s, "^-?%d+%.?%d*[eE]?[-+]?%d*", pos)
+        local num = numStr and tonumber(numStr)
+        if not num then return decodeError(s, pos, "unexpected token") end
+        return num, pos + #numStr
+    end
+end
+
+function EC.jsonDecode(s)
+    if type(s) ~= "string" then return nil, "not a string" end
+    local value, np = decodeValue(s, 1)
+    if type(np) ~= "number" then return nil, np end
+    np = skipSpace(s, np)
+    if np <= #s then return decodeError(s, np, "trailing garbage") end
+    return value
+end
+
 -- File-system safe, collision-free name for a username: [A-Za-z0-9_-] kept, everything else
 -- becomes _xHHHH_ (UTF-16 code unit). Usernames may be non-ASCII on the production server.
 function EC.safeName(name)

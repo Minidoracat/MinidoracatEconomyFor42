@@ -75,17 +75,61 @@ end
 
 handlers["rewards.checkin"] = function(args)
     EC.log("checkin ok=" .. tostring(args.ok) .. " error=" .. tostring(args.error) .. " amount=" .. tostring(args.amount) .. " balance=" .. tostring(args.balance))
-    if args.ok and C.rewards then C.rewards.claimed = true end
+    if args.ok then
+        if C.rewards then C.rewards.claimed = true end
+        C.toast(getText("IGUI_MinidoracatEconomy_Rewards_Granted", tostring(args.amount), C.currencyName(args.currency)))
+    end
     notifyRewards("checkin", args)
 end
 
 handlers["milestone.granted"] = function(args)
     EC.log("milestone " .. tostring(args.index) .. " (" .. tostring(args.days) .. " days) +" .. tostring(args.amount))
+    C.toast(getText("IGUI_MinidoracatEconomy_Rewards_MilestoneGranted", tostring(args.days), tostring(args.amount), C.currencyName(args.currency)))
+    if C.rewards then C.requestRewards() end
     notifyRewards("milestone", args)
 end
 
 function C.requestRewards() send("rewards.state") end
 function C.checkin() send("rewards.checkin") end
+
+-- Wallet (server-authoritative view; ECWallet.lua). C.wallet = { balances, receipts, currencies }.
+C.wallet = nil
+C.walletListeners = {}
+function C.onWallet(fn) C.walletListeners[#C.walletListeners + 1] = fn end
+local function notifyWallet(kind, args)
+    for _, fn in ipairs(C.walletListeners) do
+        local ok, err = pcall(fn, kind, args)
+        if not ok then EC.log("wallet listener failed: " .. tostring(err)) end
+    end
+end
+
+handlers["wallet.state"] = function(args)
+    C.wallet = args
+    notifyWallet("state", args)
+end
+
+-- Balances arrive with the push; the receipt ring is refreshed with one extra round trip
+-- (a player sees at most a few transactions per day, so the cost is irrelevant).
+handlers["wallet.changed"] = function(args)
+    if C.wallet then C.wallet.balances = args.balances or C.wallet.balances end
+    notifyWallet("changed", args)
+    C.requestWallet()
+end
+
+handlers["wallet.history"] = function(args)
+    notifyWallet("history", args)
+end
+
+function C.requestWallet() send("wallet.state") end
+function C.requestHistory(month) send("wallet.history", { month = month }) end
+
+-- Toast through the UI framework when present (family rule: capability probe, never a hard call).
+function C.toast(message)
+    local ui = MinidoracatUI and MinidoracatUI.v1
+    if ui and ui.API_MAJOR == 1 and ui.CAPABILITIES and ui.CAPABILITIES.toast == true then
+        pcall(ui.Toast.show, { title = getText("IGUI_MinidoracatEconomy_Toast_Title"), message = message })
+    end
+end
 
 local function onServerCommand(module, command, args)
     if module ~= EC.COMMAND_MODULE then return end
@@ -109,6 +153,8 @@ local function onGameStart()
     if not isClient() then return end
     sent = false
     C.session = nil
+    C.wallet = nil
+    C.rewards = nil
     Events.OnTick.Add(firstTick)
 end
 

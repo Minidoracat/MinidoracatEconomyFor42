@@ -1,7 +1,8 @@
 -- MinidoracatEconomyFor42 — rewards (server authority, spec section 8.2, decisions 2026-09-06).
 --
---   Daily check-in: once per account per *server reward day* (real-world clock, reset hour from
---   sandbox), fixed amount, after a minimum of effective connected time; no server-wide cap by
+--   Daily check-in: once per account per *server reward day* (real-world clock; the day flips at
+--   RewardDayResetHour in the RewardTimezoneUTC zone, default Taiwan (UTC+8) 00:00),
+--   fixed amount, after a minimum of effective connected time; no server-wide cap by
 --   default (fuse only). Survival milestones: once per account per season, granted automatically
 --   when IsoPlayer.getHoursSurvived() (server-side, IsoPlayer.java:7837-7839) crosses a threshold.
 --   hoursSurvived restarts with every new character (stage A20); the claim record does not.
@@ -34,22 +35,27 @@ local lastPos = {}                -- username -> { x, y, ms }  (AFK heuristic)
 
 -- ---------- reward day ----------
 
-function R.resetHourUTC()
-    local h = EC.sandbox("RewardDayResetHourUTC", 20)
-    if h < 0 or h > 23 then h = 20 end
-    return h
+-- Reward day boundary = RewardDayResetHour in the players' timezone (RewardTimezoneUTC, offset
+-- hours from UTC). Deliberately not the host clock: Kahlua's os.date is fixed UTC (pitfalls.md) and a
+-- dedicated host is often set to UTC, which would silently move the boundary. The day key is the
+-- *local* calendar date of the reward day, so "20260907" reads as the players see it.
+function R.resetShiftMs()
+    local hour = EC.sandbox("RewardDayResetHour", 0)
+    if hour < 0 or hour > 23 then hour = 0 end
+    local tz = EC.sandbox("RewardTimezoneUTC", 8)
+    if tz < -12 or tz > 14 then tz = 8 end
+    local offsetMin = math.floor(tz * 60 + 0.5)   -- 5.5 -> 330; sandbox doubles carry float noise
+    return (hour * 60 - offsetMin) * 60000
 end
 
--- The reward day flips at RewardDayResetHourUTC; shift the clock back by that many hours so the
--- plain UTC day key does the work. Kahlua's os.date is fixed UTC anyway (pitfalls.md).
 function R.dayKey(ms)
-    return EC.dayKey(ms - R.resetHourUTC() * 3600000)
+    return EC.dayKey(ms - R.resetShiftMs())
 end
 
 function R.nextResetMs(ms)
-    local shifted = ms - R.resetHourUTC() * 3600000
-    local startOfDay = math.floor(shifted / 86400000) * 86400000
-    return startOfDay + 86400000 + R.resetHourUTC() * 3600000
+    local shift = R.resetShiftMs()
+    local startOfDay = math.floor((ms - shift) / 86400000) * 86400000
+    return startOfDay + 86400000 + shift
 end
 
 -- ---------- state ----------
@@ -243,6 +249,13 @@ function R.checkin(player)
     })
     if not res.ok then return { ok = false, error = res.error } end
     local c = claim(username)
+    if res.duplicate then
+        -- The ledger already paid this reward day (idempotency hit: the claim record lost the day,
+        -- e.g. the day key revisited after the reset hour/timezone changed). No money moved, so no
+        -- rollup, no success reply — just restore the claim mark.
+        c.checkinDay = st.day
+        return { ok = false, error = "already_claimed", nextResetMs = st.nextResetMs }
+    end
     c.checkinDay = st.day
     local r = rollup(st.day)
     r.checkinTotal = r.checkinTotal + st.amount

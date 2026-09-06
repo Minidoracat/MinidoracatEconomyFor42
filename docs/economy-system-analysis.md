@@ -247,7 +247,7 @@ Bshop 公開頁提及 Money／Silver／Gold／StockCertificate 的固定兌值�
 
 #### 每日簽到
 
-- 以 server 計算的 `rewardDayKey` 判斷每日一次：**現實日**（伺服器壁鐘 `getTimestampMs()`），不是遊戲日——遊戲時間在空服暫停（`PauseEmpty=true`）且日長是伺服器選項（預設一個遊戲日約 1 真實小時，A20 實測 0.4 h／分鐘）；時區與重置時刻由沙盒設定（`Economy_RewardDayResetHourUTC`，建議台灣 04:00＝UTC 20:00）。
+- 以 server 計算的 `rewardDayKey` 判斷每日一次：**現實日**（伺服器壁鐘 `getTimestampMs()`），不是遊戲日——遊戲時間在空服暫停（`PauseEmpty=true`）且日長是伺服器選項（預設一個遊戲日約 1 真實小時，A20 實測 0.4 h／分鐘）；時區與重置時刻由沙盒設定：`RewardDayResetHour`（當地小時，預設 0）＋`RewardTimezoneUTC`（UTC 偏移小時，預設 8＝台灣），即預設台灣 00:00 換日；刻意不用主機時區（Kahlua `os.date` 固定 UTC、容器主機常是 UTC），日鍵是當地日期。
 - 玩家先達到最低有效遊玩時間，才可在「獎勵」頁手動領取。
 - 獎勵只發交易幣、金額固定（沙盒，預設 30）。**簽到不設全服每日上限**（2026-09-06 主持人定案）：每帳號每日一次×固定金額，總發放量已被在線人數綁死（`MaxPlayers` × 金額）；沙盒保留 `Economy_CheckinServerDailyCap`（預設 0＝不限）作為緊急保險絲。全服每日上限只用於 Discord 存入與整合 MOD 來源（§18、§21）。
 - 若保險絲被打開且當日額度已滿：拒絕發放但不消耗該次 claim，當日結束後不追溯補發。
@@ -783,7 +783,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - ~~是否以及何時開放 v2 玩家提領~~ → 已定：不排；日後開放時才決定 `rateOut`／價差、每日提領上限，並評估 `SaveWorldEveryMinutes` 由 60 調 30（由引擎排程，不走 RCON）；贊助幣即使 v2 也預設不提領；
 - 交易站與 ATM 的自製 tile 包範圍（四面向精靈圖；ATM 是否借用原版櫃員機 tile 待查）；交易站電台的頻率、廣播間隔與內容範本；
 - 社群幣消費 catalog 的可轉售性審核（社群商品若可轉售，等於繞過社群幣→交易幣的兌換上限）；
-- ~~每日 reward day 的時區、有效遊玩判定與 server-wide mint cap~~ → 已定：現實日、沙盒重置時刻（建議台灣 04:00）、有效遊玩用壁鐘連線時間；簽到無全服上限（§8.2）；
+- ~~每日 reward day 的時區、有效遊玩判定與 server-wide mint cap~~ → 已定：現實日、沙盒當地小時＋時區偏移（預設台灣 00:00）、有效遊玩用壁鐘連線時間；簽到無全服上限（§8.2）；
 - 生存里程碑門檻與死亡後政策；
 - listing 到期、取消、背包滿、離線交付與無人出價的完整狀態機；
 - 中央託管的可重建物品白名單（type、condition、uses、fluid、有限 modData）；
