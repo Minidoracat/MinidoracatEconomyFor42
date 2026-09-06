@@ -161,4 +161,16 @@ end
 Events.OnGameStart.Add(onGameStart)
 Events.OnServerCommand.Add(onServerCommand)
 
+-- Read-only client half of the integration facade (spec 21.1). Other mods that want to move
+-- money go through their own server handler and MinidoracatEconomy.v1 on the server; the
+-- client only exposes the wallet snapshot this UI already holds. API_MAJOR lives on the server
+-- table on purpose: probing `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
+EC.v1 = EC.v1 or {}
+EC.v1.Client = {
+    API_MAJOR = 1,
+    API_REVISION = 1,
+    getWallet = function() return C.wallet end,
+    onWalletChanged = C.onWallet,
+}
+
 return C

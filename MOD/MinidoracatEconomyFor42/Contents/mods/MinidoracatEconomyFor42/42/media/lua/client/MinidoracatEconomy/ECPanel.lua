@@ -166,7 +166,9 @@ local function normalize(e, offsetMin)
     if cp and not (string.find(tostring(cp), "^SYSTEM_") or string.find(tostring(cp), "^EXTERNAL_") or string.find(tostring(cp), "^MOD:")) then
         desc = tostring(cp)
     elseif e.sourceMod then
+        -- integration postings (spec 21.3): the mod id plus its own wording when it gave one
         desc = tostring(e.sourceMod)
+        if type(e.reasonText) == "string" and e.reasonText ~= "" then desc = desc .. " - " .. e.reasonText end
     end
     local kind = e.kind or e.type
     return {

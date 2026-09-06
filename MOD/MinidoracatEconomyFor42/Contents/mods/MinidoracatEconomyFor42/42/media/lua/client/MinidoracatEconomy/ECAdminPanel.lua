@@ -7,8 +7,8 @@
 --   instance:resize(w, h) / :refresh() / :dispose() / :setVisible(v)
 --
 -- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
--- owns everything below it: five sub pages (Player / Dashboard / Currencies / Audit / System) and
--- the write dialogs (adjust / freeze / rename / enable / exchange).
+-- owns everything below it: six sub pages (Player / Dashboard / Currencies / Sources / Audit /
+-- System) and the write dialogs (adjust / freeze / rename / enable / exchange / source caps).
 --
 -- Permission gate mirrors the server (ECAdmin.lua gate()): sandbox role *name* lists, read through
 -- the client-only getAccessLevel(). The server re-checks every command; this side only decides
@@ -55,8 +55,8 @@ local color, fill, border, text, textWidth, fitText, textRight = U.color, U.fill
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
 local Button, TableCell = U.Button, U.TableCell
 
-local TABS = { "Player", "Dashboard", "Currencies", "Audit", "System" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.system", "admin.icons" }
+local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.system", "admin.icons", "admin.sources" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config" }
@@ -196,6 +196,36 @@ local function currencyName(id)
     local static = EC.CURRENCIES[id]
     if static then return getText(static.nameKey) end
     return tostring(id)
+end
+
+-- Source display names arrive as { CH = ..., EN = ... }. The language option cannot change
+-- without a restart, so it is read once; getOptionLanguageName is absent on old builds.
+local langCode = nil
+local function gameLanguage()
+    if langCode then return langCode end
+    langCode = "EN"
+    if type(getCore) == "function" then
+        local ok, name = pcall(function() return getCore():getOptionLanguageName() end)
+        if ok and type(name) == "string" and name ~= "" then langCode = name end
+    end
+    return langCode
+end
+
+local function sourceName(src)
+    local names = src and src.displayName
+    if type(names) == "table" then
+        local lang = gameLanguage()
+        local pick = (lang == "CH" or lang == "CN") and names.CH or names.EN
+        if type(pick) ~= "string" or pick == "" then pick = names.EN or names.CH end
+        if type(pick) == "string" and pick ~= "" then return pick end
+    end
+    return tostring(src and src.modId or "-")
+end
+
+-- a missing daily burn cap means "no limit" (ECIntegration.setSource stores nil for it)
+local function capText(value)
+    if value == nil then return tr("Admin_Src_Unlimited") end
+    return amountText(value)
 end
 
 local function currencyOrder(lookup)
@@ -418,6 +448,13 @@ local function dialogFields(mode)
         end
         list[#list + 1] = { key = "reason", label = "", multiline = true, flex = true, maxLen = REASON_MAX }
         return list
+    end
+    if mode == "sourceCaps" then
+        return {
+            { key = "mintCap", label = tr("Admin_Src_MintCap"), width = 140, maxLen = 12 },
+            { key = "burnCap", label = tr("Admin_Src_BurnCap"), width = 140, maxLen = 12, hint = tr("Admin_Src_BurnCapNote") },
+            { key = "reason", label = "", multiline = true, flex = true, maxLen = REASON_MAX },
+        }
     end
     -- freeze / enabled: reason only
     return { { key = "reason", label = "", multiline = true, flex = true, maxLen = REASON_MAX } }
@@ -769,6 +806,12 @@ function Admin:createChildren()
     self.iconsButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_ReloadIcons"), self, Admin.onIconsClick, "chip")
     self:addChild(self.iconsButton)
 
+    -- sources page
+    self.srcCapsButton = Button.create(0, 0, 120, btnH(), tr("Admin_Src_EditCaps"), self, Admin.onSourceCapsClick, "primary")
+    self:addChild(self.srcCapsButton)
+    self.srcToggleButton = Button.create(0, 0, 120, btnH(), tr("Admin_Src_Disable"), self, Admin.onSourceToggleClick, "chip")
+    self:addChild(self.srcToggleButton)
+
     -- audit page
     self.auditEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Admin_Audit_Hint") })
     self.auditEntry.target = self
@@ -880,6 +923,16 @@ function Admin:selectedCurrency()
     return self.cfgSelected or EC.CURRENCY_ORDER[1]
 end
 
+-- The integration row the action buttons operate on: the clicked one, else the first the
+-- server sent (the list is already sorted by modId).
+function Admin:selectedSource()
+    local list = self.sources or {}
+    for _, s in ipairs(list) do
+        if s.modId == self.srcSelected then return s end
+    end
+    return list[1]
+end
+
 -- Icon status for a currency: the hash/bytes come from the config snapshot (what every client
 -- sees); the error comes from the last admin.icons reply (host-only detail).
 function Admin:iconLines(def)
@@ -953,6 +1006,31 @@ function Admin:onRateClick()
     end
 end
 
+function Admin:onSourceCapsClick()
+    local src = self:selectedSource()
+    if not src then return end
+    local dlg = self:openDialog("sourceCaps", {
+        modId = src.modId, title = getText(T .. "Admin_Src_CapsTitle", tostring(src.modId)),
+        confirm = tr("Admin_Src_CapsConfirm"),
+    })
+    if dlg then
+        setEntryText(dlg.boxes.mintCap, tostring(src.dailyMintCap or 0))
+        setEntryText(dlg.boxes.burnCap, src.dailyBurnCap ~= nil and tostring(src.dailyBurnCap) or "")
+    end
+end
+
+function Admin:onSourceToggleClick()
+    local src = self:selectedSource()
+    if not src then return end
+    local target = not (src.enabled ~= false)
+    self:openDialog("sourceEnabled", {
+        modId = src.modId, enabledTarget = target,
+        title = getText(T .. (target and "Admin_Src_EnableTitle" or "Admin_Src_DisableTitle"), tostring(src.modId)),
+        confirm = tr(target and "Admin_Src_EnableConfirm" or "Admin_Src_DisableConfirm"),
+        warn = (not target) and tr("Admin_Src_DisableWarn") or nil,
+    })
+end
+
 function Admin:onAdjustClick()
     if not self.lookup then return end
     local currency = (self.selectedReceipt and self.selectedReceipt.currency) or currencyOrder(self.lookup)[1]
@@ -992,6 +1070,7 @@ function Admin:openDialog(mode, ctx)
     dlg.admin = self
     dlg.mode = mode
     dlg.currency = ctx.currency
+    dlg.modId = ctx.modId
     dlg.frozenTarget = ctx.frozenTarget
     dlg.enabledTarget = ctx.enabledTarget
     dlg.titleText = ctx.title
@@ -1074,6 +1153,45 @@ function Admin:submitDialog(dlg)
             return
         end
         self.pendingFreeze = { username = self.lookupUser, frozen = dlg.frozenTarget == true }
+    elseif dlg.mode == "sourceCaps" or dlg.mode == "sourceEnabled" then
+        if type(dlg.modId) ~= "string" or dlg.modId == "" then
+            dlg.message = { text = errorText("invalid_args"), error = true }
+            self:layoutDialog()
+            return
+        end
+        local payload = { action = "set", modId = dlg.modId, reason = reason }
+        if dlg.mode == "sourceCaps" then
+            local mint = parseInt(entryText(dlg.boxes.mintCap))
+            if not mint or mint < 0 then
+                dlg.message = { text = tr("Admin_Src_BadCap"), error = true }
+                self:layoutDialog()
+                return
+            end
+            payload.dailyMintCap = mint
+            -- an empty burn field is an explicit "no limit": the server only clears the stored
+            -- cap when it is told `false` (nil would mean "leave it alone")
+            local raw = string.match(entryText(dlg.boxes.burnCap), "^%s*(.-)%s*$")
+            if raw == "" then
+                payload.dailyBurnCap = false
+            else
+                local burn = parseInt(raw)
+                if not burn or burn < 0 then
+                    dlg.message = { text = tr("Admin_Src_BadCap"), error = true }
+                    self:layoutDialog()
+                    return
+                end
+                payload.dailyBurnCap = burn
+            end
+        else
+            payload.enabled = dlg.enabledTarget == true
+        end
+        payload.requestId = newRequestId()
+        if not send("admin.sources", payload) then
+            dlg.message = { text = tr("Admin_Throttled"), error = true }
+            self:layoutDialog()
+            return
+        end
+        self.pendingSource = { requestId = payload.requestId, modId = dlg.modId }
     else
         local field, value
         if dlg.mode == "name" then
@@ -1237,6 +1355,27 @@ function Admin:onReply(kind, args)
         self.system = args
         self.systemAt = EC.now()
         self:layout()
+    elseif kind == "sources" then
+        -- every reply carries the full list, a write reply included
+        if type(args.sources) == "table" then
+            self.sources = args.sources
+            self.sourcesAt = EC.now()
+            self:rebuildSources()
+        end
+        local req = self.pendingSource
+        if req and req.requestId == args.requestId then
+            self.pendingSource = nil
+            if args.ok then
+                self.srcSelected = req.modId
+                self.message = { text = tr("Admin_Src_Saved") }
+                self:closeDialog()
+            else
+                local msg = { text = errorText(args.error), error = true }
+                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+            end
+        elseif args.ok == false then
+            self.message = { text = errorText(args.error), error = true }
+        end
     end
     self:updateEnabled()
 end
@@ -1244,7 +1383,7 @@ end
 function Admin:onTimeout(command)
     local label = getTextOrNull(T .. "Admin_Cmd_" .. string.sub(command, 7)) or command
     self.message = { text = getText(T .. "Admin_Timeout", label), error = true }
-    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" then
+    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" then
         if self.dialog then
             self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
             self:layoutDialog()
@@ -1325,6 +1464,22 @@ function Admin:rebuildAudit()
     self.auditList:setItems(rows)
 end
 
+-- Rejection counters arrive as a map; the drawn order has to be stable, so the rows are built
+-- and sorted when the reply lands, never per frame.
+function Admin:rebuildSources()
+    for _, s in ipairs(self.sources or {}) do
+        local rows = {}
+        local rejected = type(s.today) == "table" and s.today.rejected or nil
+        if type(rejected) == "table" then
+            for code, n in pairs(rejected) do
+                if (tonumber(n) or 0) > 0 then rows[#rows + 1] = { code = tostring(code), n = tonumber(n) or 0 } end
+            end
+            EC.sortSafe(rows, function(a, b) return a.code < b.code end)
+        end
+        s.rejectedRows = rows
+    end
+end
+
 -- ----- enable state (permission, in-flight command, data presence) -----
 
 -- Local role read (getAccessLevel + sandbox lists) AND, once a reply has told us, the level the
@@ -1365,6 +1520,12 @@ function Admin:updateEnabled()
     self.balanceMaxButton:setEnable(cfgWrite)
     self.iconsButton:setEnable(write and not modal and not isPending("admin.icons") and self.iconsRecheckAt == nil)
 
+    local src = self:selectedSource()
+    local srcWrite = write and not modal and not isPending("admin.sources") and src ~= nil
+    self.srcCapsButton:setEnable(srcWrite)
+    self.srcToggleButton:setEnable(srcWrite)
+    self:setButtonTitle(self.srcToggleButton, (src == nil or src.enabled ~= false) and tr("Admin_Src_Disable") or tr("Admin_Src_Enable"))
+
     setEntryEditable(self.auditEntry, read and not modal)
     for _, b in ipairs(self.auditFilterButtons) do b:setEnable(read and not modal) end
     for _, b in ipairs(self.copyButtons) do
@@ -1372,7 +1533,7 @@ function Admin:updateEnabled()
         b:setEnable(not modal and paths ~= nil and type(paths[b.internal]) == "string")
     end
     if self.dialog then
-        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config"))
+        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources"))
         self.dialog.confirmButton:setEnable(ok)
     end
 end
@@ -1422,6 +1583,7 @@ function Admin:layout()
     local currencies = read and self.tab == "Currencies"
     local audit = read and self.tab == "Audit"
     local system = read and self.tab == "System"
+    local sources = read and self.tab == "Sources"
     for _, b in ipairs(self.subTabButtons) do b:setVisible(read) end
     self.refreshButton:setVisible(read)
 
@@ -1510,6 +1672,37 @@ function Admin:layout()
         b:setX(cfgX); b:setY(cfgBtnY)
         self:setButtonTitle(b, b.fullTitle)
         cfgX = cfgX + b.width + 6
+    end
+
+    -- sources page: table left, detail card plus two action buttons right (the currencies page
+    -- shape, which a host already knows). Same fair share with redistribution for the buttons.
+    g.srcTableW = math.max(240, math.floor((w - PAD) * 0.58))
+    g.srcDetailX = g.srcTableW + PAD
+    g.srcDetailW = math.max(200, w - g.srcDetailX)
+    g.srcRowY = g.bodyY + CARD_TITLE_H + rh
+    g.srcButtonY = g.bodyY + g.bodyH - actionH
+    local srcToggleFull = math.max(textWidth(tr("Admin_Src_Disable")), textWidth(tr("Admin_Src_Enable"))) + 30
+    local srcItems = { { self.srcCapsButton, textWidth(self.srcCapsButton.fullTitle) + 30 },
+        { self.srcToggleButton, srcToggleFull } }
+    local srcByNeed = { srcItems[1], srcItems[2] }
+    EC.sortSafe(srcByNeed, function(a, b) return a[2] < b[2] end)
+    local srcRemaining = g.srcDetailW - 6 * (#srcItems - 1)
+    local srcWidth = {}
+    for i, item in ipairs(srcByNeed) do
+        local share = math.floor(srcRemaining / (#srcByNeed - i + 1))
+        local bw = math.max(40, math.min(item[2], share))
+        srcWidth[item[1]] = bw
+        srcRemaining = srcRemaining - bw
+    end
+    local srcX = g.srcDetailX
+    for _, item in ipairs(srcItems) do
+        local b = item[1]
+        b:setVisible(sources)
+        b:setHeight(actionH)
+        b:setWidth(srcWidth[b])
+        b:setX(srcX); b:setY(g.srcButtonY)
+        self:setButtonTitle(b, b.fullTitle)
+        srcX = srcX + b.width + 6
     end
 
     -- audit page
@@ -1854,6 +2047,77 @@ function Admin:drawCurrencies()
     end
 end
 
+function Admin:drawSources()
+    local g = self.g
+    local rh = rowH()
+    card(self, 0, g.bodyY, g.srcTableW, g.bodyH, tr("Admin_Src_Title"))
+    local headerY = g.bodyY + CARD_TITLE_H
+    fill(self, 1, headerY, g.srcTableW - 2, rh, "well", "rect")
+    local hy = headerY + math.floor((rh - fontH.small) / 2)
+    -- the mod id column takes the widest share: ids are long and identify the row
+    local c1, c2, c3 = PAD, math.floor(g.srcTableW * 0.36), math.floor(g.srcTableW * 0.48)
+    local c4, c5 = math.floor(g.srcTableW * 0.60), math.floor(g.srcTableW * 0.80)
+    text(self, tr("Admin_Src_Col_Mod"), c1, hy, "textMuted")
+    text(self, tr("Admin_Src_Col_Loaded"), c2, hy, "textMuted")
+    text(self, tr("Admin_Src_Col_Enabled"), c3, hy, "textMuted")
+    text(self, tr("Admin_Src_Col_Mint"), c4, hy, "textMuted")
+    text(self, tr("Admin_Src_Col_Burn"), c5, hy, "textMuted")
+
+    local list = self.sources or {}
+    local selected = self:selectedSource()
+    local y = g.srcRowY
+    local rects = self.srcRowRects
+    for i = #rects, 1, -1 do rects[i] = nil end
+    for i, s in ipairs(list) do
+        if y + rh > g.bodyY + g.bodyH - 2 then break end
+        local isSelected = selected ~= nil and selected.modId == s.modId
+        if isSelected then
+            fill(self, 1, y, g.srcTableW - 2, rh, "selected", "rect")
+        elseif i % 2 == 0 then
+            fill(self, 1, y, g.srcTableW - 2, rh, "card", "rect")
+        end
+        local ty = y + math.floor((rh - fontH.small) / 2)
+        local today = s.today or {}
+        local enabled = s.enabled ~= false
+        text(self, fitText(tostring(s.modId), c2 - c1 - PAD), c1, ty, isSelected and "accent" or "text")
+        text(self, fitText(s.loaded and tr("Admin_Src_Loaded") or tr("Admin_Src_NotLoaded"), c3 - c2 - PAD), c2, ty,
+            s.loaded and "textMuted" or "textFaint")
+        text(self, fitText(enabled and tr("Admin_On") or tr("Admin_Off"), c4 - c3 - PAD), c3, ty, enabled and "positive" or "textFaint")
+        text(self, fitText(amountText(today.mint or 0) .. " / " .. amountText(s.dailyMintCap or 0), c5 - c4 - PAD), c4, ty, "text")
+        text(self, fitText(amountText(today.burn or 0) .. " / " .. capText(s.dailyBurnCap), g.srcTableW - c5 - PAD), c5, ty, "text")
+        rects[#rects + 1] = { id = s.modId, y = y, h = rh }
+        y = y + rh
+    end
+    if #list == 0 then
+        text(self, isPending("admin.sources") and tr("Admin_Loading") or tr("Admin_Src_Empty"), PAD, y + 4, "textFaint")
+    end
+
+    -- detail card for the selected source (the MOD account balance is that mod's net take)
+    local detailH = math.max(60, g.srcButtonY - 6 - g.bodyY)
+    card(self, g.srcDetailX, g.bodyY, g.srcDetailW, detailH,
+        getText(T .. "Admin_Src_Detail", selected and tostring(selected.modId) or "-"))
+    self:beginLines(g.srcDetailX + PAD, g.bodyY + CARD_TITLE_H + 4, g.srcDetailW - PAD * 2, g.bodyY + detailH - 2)
+    if not selected then
+        self:line(isPending("admin.sources") and tr("Admin_Loading") or tr("Admin_Src_Empty"), "textMuted")
+        return
+    end
+    self:lineRow(tr("Admin_Src_Name"), sourceName(selected))
+    self:lineRow(tr("Admin_Src_RegisteredAt"),
+        selected.registeredAt and U.clockText(tonumber(selected.registeredAt) or 0, self.offsetMin) or "-", "textFaint")
+    self:lineGap()
+    local bal = selected.balance or {}
+    for _, id in ipairs(EC.CURRENCY_ORDER) do
+        self:lineRow(getText(T .. "Admin_Src_Balance", currencyName(id)), amountText(bal[id] or 0))
+    end
+    self:line(tr("Admin_Src_BalanceNote"), "textFaint")
+    self:lineGap()
+    local today = selected.today or {}
+    self:line(getText(T .. "Admin_Src_Calls", amountText(today.ok or 0), amountText(today.calls or 0)), "textMuted")
+    for _, r in ipairs(selected.rejectedRows or {}) do
+        if not self:lineRow(getText(T .. "Admin_Src_Rejected", errorText(r.code)), amountText(r.n), "warn") then break end
+    end
+end
+
 function Admin:drawAudit()
     local g = self.g
     local rh = rowH()
@@ -2000,8 +2264,10 @@ function Admin:prerender()
         return
     end
     -- the auto refresh has to be visible: the pages without their own stamp show it in the tab bar
-    if (self.tab == "Dashboard" or self.tab == "System") and self.systemAt then
-        textRight(self, getText(T .. "Admin_Updated", U.clockText(self.systemAt, self.offsetMin)),
+    local stampAt = ((self.tab == "Dashboard" or self.tab == "System") and self.systemAt)
+        or (self.tab == "Sources" and self.sourcesAt) or nil
+    if stampAt then
+        textRight(self, getText(T .. "Admin_Updated", U.clockText(stampAt, self.offsetMin)),
             self.refreshButton.x - PAD, math.floor((g.subH - fontH.small) / 2), "textFaint")
     end
     if self.tab == "Player" then
@@ -2010,6 +2276,8 @@ function Admin:prerender()
         self:drawDashboard()
     elseif self.tab == "Currencies" then
         self:drawCurrencies()
+    elseif self.tab == "Sources" then
+        self:drawSources()
     elseif self.tab == "Audit" then
         self:drawAudit()
     else
@@ -2028,12 +2296,21 @@ end
 
 function Admin:render() end
 
--- row click selects the currency the action buttons operate on
+-- row click selects the currency / integration source the action buttons operate on
 function Admin:onMouseDown(x, y)
-    if self.tab == "Currencies" and not self.dialog and x < (self.g and self.g.cfgTableW or 0) then
+    if self.dialog then return true end
+    if self.tab == "Currencies" and x < (self.g and self.g.cfgTableW or 0) then
         for _, r in ipairs(self.cfgRowRects or {}) do
             if y >= r.y and y < r.y + r.h then
                 self.cfgSelected = r.id
+                self:updateEnabled()
+                return true
+            end
+        end
+    elseif self.tab == "Sources" and x < (self.g and self.g.srcTableW or 0) then
+        for _, r in ipairs(self.srcRowRects or {}) do
+            if y >= r.y and y < r.y + r.h then
+                self.srcSelected = r.id
                 self:updateEnabled()
                 return true
             end
@@ -2058,6 +2335,8 @@ function Admin:refresh()
         send("admin.system", {})
     elseif self.tab == "Currencies" and self.icons == nil then
         send("admin.icons", { action = "status" })
+    elseif self.tab == "Sources" then
+        send("admin.sources", { action = "list" })
     end
     self:updateEnabled()
 end
@@ -2085,6 +2364,8 @@ function Admin:dispose()
     self.pendingAdjust = nil
     self.pendingFreeze = nil
     self.pendingConfig = nil
+    self.sources = nil
+    self.pendingSource = nil
     if P.instance == self then P.instance = nil end
 end
 
@@ -2103,6 +2384,7 @@ function P.create(owner)
     o.auditQuery = nil
     o.cfgSelected = EC.CURRENCY_ORDER[1]
     o.cfgRowRects = {}
+    o.srcRowRects = {}
     o.offsetMin = U.localOffsetMinutes()
     o.hadWrite = P.canWrite()
     o.hadRead = o.hadWrite or P.canRead()

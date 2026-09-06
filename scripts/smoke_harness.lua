@@ -153,6 +153,7 @@ require("MinidoracatEconomy/ECConfig")
 require("MinidoracatEconomy/ECRewards")
 require("MinidoracatEconomy/ECWallet")
 require("MinidoracatEconomy/ECIcons")
+require("MinidoracatEconomy/ECIntegration")
 require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
@@ -165,7 +166,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 212     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 250     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1139,6 +1140,140 @@ fire("OnClientCommand", EC.COMMAND_MODULE, "admin.icons", mod, { action = "statu
 local st = lastSent("admin.icons").args
 check(st.ok and st.started == false and st.perms.write == false and st.icons.survivor.error == "too_large",
     "a moderator can read icon status and sees the last outcome")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境二十二：整合 API（來源註冊、額度、冪等、rate limit、閘門、稽核） =====
+io.write("scenario 22: integration facade\n")
+;(function()
+local G = EC.Integration
+local V = EC.v1
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+onlinePlayers = { boss, mod, joe }
+nowMs = nowMs + 61000
+check(V and V.API_MAJOR == 1 and V.API_REVISION >= 1 and V.CAPABILITIES.post == true and V.CAPABILITIES.transfer == false,
+    "facade is versioned like UIFor42 and declares its capabilities")
+
+-- 未初始化：註冊可以，記帳回 not_ready
+local src, regErr = V.registerSource({ modId = "MinidoracatMiniMapFor42", displayName = { CH = "\229\176\143\229\156\176\229\156\150", EN = "MiniMap" },
+    currencies = { "survivor" }, reasonCodes = { "gps_subscription", "nav_route" } })
+check(src ~= nil and src.modId == "MinidoracatMiniMapFor42" and type(src.debit) == "function", "registerSource returns a bound handle")
+check(select(2, V.registerSource({ modId = "bad id", currencies = { "survivor" }, reasonCodes = { "x" } })) == "invalid_args"
+    and select(2, V.registerSource({ modId = "Ok", currencies = { "gold" }, reasonCodes = { "x" } })) == "unknown_currency"
+    and select(2, V.registerSource({ modId = "Ok", currencies = { "survivor" }, reasonCodes = { "Bad-Code" } })) == "invalid_args",
+    "registration validates modId, currencies and reason codes")
+
+fire("OnServerStarted")
+local root = S.modData()
+check(root.config.sources["MinidoracatMiniMapFor42"] and root.config.sources["MinidoracatMiniMapFor42"].dailyMintCap == 0
+    and root.config.sources["MinidoracatMiniMapFor42"].enabled == true, "init creates the source config with mint cap 0 (debit-only by default)")
+L.credit("joe", "survivor", 500, "SYSTEM_MINT", { requestId = "seed-joe", reasonCode = "t" })
+
+-- 未註冊來源
+local res = V.debit("joe", "survivor", 10, { modId = "Nobody", requestId = "n1", reasonCode = "gps_subscription" })
+check(res.ok == false and res.error == "unknown_source" and L.getBalance("joe", "survivor").available == 500,
+    "an unregistered modId is refused with zero change")
+local rejLines = 0
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do if string.find(l, '"type":"integration.rejected"', 1, true) then rejLines = rejLines + 1 end end end
+fire("OnTickEvenPaused")
+rejLines = 0
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do if string.find(l, '"type":"integration.rejected"', 1, true) then rejLines = rejLines + 1 end end end
+check(rejLines >= 1, "refusals are exported as integration.rejected events")
+
+-- debit 成功：MOD 帳戶收到、玩家扣款、收據帶 sourceMod／reasonText、事件 kind=mod
+sentCommands = {}
+res = src.debit("joe", "survivor", 120, { requestId = "gps-joe-202609", reasonCode = "gps_subscription", reasonText = "GPS 2026-09",
+    ref = { type = "subscription", id = "gps:joe" }, meta = { plan = "monthly" } })
+check(res.ok == true and type(res.txId) == "string" and res.duplicate == false, "debit posts a balanced player -> MOD:<modId> transaction")
+check(L.getBalance("joe", "survivor").available == 380 and L.getBalance("MOD:MinidoracatMiniMapFor42", "survivor").available == 120,
+    "the MOD account holds what the mod burned")
+local rc = L.receipts("joe")
+local last = rc[#rc]
+check(last.kind == "mod" and last.sourceMod == "MinidoracatMiniMapFor42" and last.reasonText == "GPS 2026-09" and last.amount == -120,
+    "the receipt ring names the mod and its wording")
+local push = lastSent("wallet.changed")
+check(push == nil or push.player ~= joe or push.args.balances.survivor.available == 380, "wallet push (when online) reflects the debit")
+
+-- 冪等：同 requestId 回原結果；同 id 不同金額 -> request_conflict
+local again = src.debit("joe", "survivor", 120, { requestId = "gps-joe-202609", reasonCode = "gps_subscription" })
+check(again.ok == true and again.duplicate == true and again.txId == res.txId and L.getBalance("joe", "survivor").available == 380,
+    "a resend of the same requestId returns the first result and moves no money")
+check(src.debit("joe", "survivor", 121, { requestId = "gps-joe-202609", reasonCode = "gps_subscription" }).error == "request_conflict",
+    "the same requestId with a different amount is a conflict, not a second posting")
+
+-- 驗證：幣別不在註冊集合、reasonCode 不在集合、非整數、系統帳戶、超長欄位
+check(src.debit("joe", "cat", 1, { requestId = "c1", reasonCode = "gps_subscription" }).error == "currency_not_allowed", "currency outside the registration is refused")
+check(src.debit("joe", "survivor", 1, { requestId = "c2", reasonCode = "steal" }).error == "invalid_args", "reason code outside the registration is refused")
+check(src.debit("joe", "survivor", 1.5, { requestId = "c3", reasonCode = "nav_route" }).error == "invalid_args", "non-integer amounts are refused")
+check(src.debit("SYSTEM_MINT", "survivor", 1, { requestId = "c4", reasonCode = "nav_route" }).error == "invalid_args", "system accounts cannot be targeted")
+check(src.debit("joe", "survivor", 1, { requestId = "c5", reasonCode = "nav_route", reasonText = string.rep("x", 65) }).error == "invalid_args", "reasonText over 64 chars is refused")
+check(src.debit("joe", "survivor", 1, { requestId = "c6", reasonCode = "nav_route", meta = { a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8, i = 9 } }).error == "invalid_args", "meta with more than 8 keys is refused")
+check(src.debit("joe", "survivor", 1000, { requestId = "c7", reasonCode = "nav_route" }).error == "insufficient_funds" and L.getBalance("joe", "survivor").available == 380,
+    "insufficient funds: zero change, consumer degrades on its own")
+
+-- mint 額度：預設 0 -> cap_exceeded；管理員給額度後可發，超過再拒
+check(src.credit("joe", "survivor", 50, { requestId = "m1", reasonCode = "nav_route" }).error == "cap_exceeded", "mint is refused until the host grants a daily cap")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.sources", mod, { action = "set", modId = "MinidoracatMiniMapFor42", dailyMintCap = 100, reason = "moderator tries to grant" })
+check(lastSent("admin.sources").args.error == "forbidden", "a moderator cannot change source caps")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.sources", boss, { action = "set", modId = "MinidoracatMiniMapFor42", dailyMintCap = 100, reason = "grant minimap a daily mint cap" })
+local setRes = lastSent("admin.sources").args
+check(setRes.ok == true and setRes.sources[1].dailyMintCap == 100 and setRes.sources[1].loaded == true and setRes.sources[1].today.burn == 120,
+    "an admin grants a mint cap; the reply lists sources with today's usage")
+local au = X.auditEntries(1)[1]
+check(au.action == "source" and au.target == "MinidoracatMiniMapFor42" and au.field == "dailyMintCap" and au.after == 100 and au.admin == "boss",
+    "cap changes are audited")
+check(src.credit("joe", "survivor", 60, { requestId = "m2", reasonCode = "nav_route" }).ok == true, "mint within the cap succeeds")
+check(src.credit("joe", "survivor", 41, { requestId = "m3", reasonCode = "nav_route" }).error == "cap_exceeded"
+    and src.credit("joe", "survivor", 40, { requestId = "m4", reasonCode = "nav_route" }).ok == true,
+    "the daily mint cap is enforced on the running total")
+check(L.getBalance("MOD:MinidoracatMiniMapFor42", "survivor").available == 20, "MOD account = burned 120 - minted 100")
+
+-- burn 額度（預設無上限）與停用
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.sources", boss, { action = "set", modId = "MinidoracatMiniMapFor42", dailyBurnCap = 130, reason = "cap the burn for the test" })
+check(src.debit("joe", "survivor", 11, { requestId = "b1", reasonCode = "nav_route" }).error == "cap_exceeded"
+    and src.debit("joe", "survivor", 10, { requestId = "b2", reasonCode = "nav_route" }).ok == true,
+    "a burn cap counts today's 120 already burned")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.sources", boss, { action = "set", modId = "MinidoracatMiniMapFor42", dailyBurnCap = false, enabled = false, reason = "disable the source for now" })
+check(src.debit("joe", "survivor", 1, { requestId = "d1", reasonCode = "nav_route" }).error == "source_disabled", "a disabled source is refused")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.sources", boss, { action = "set", modId = "MinidoracatMiniMapFor42", enabled = true, reason = "re-enable the source again" })
+check(S.modData().config.sources["MinidoracatMiniMapFor42"].dailyBurnCap == nil, "dailyBurnCap=false clears the cap (unlimited)")
+
+-- 凍結帳號：拒絕；解凍後同 requestId 重送成功
+S.modData().frozen["joe"] = { by = "boss", at = nowMs }
+check(src.debit("joe", "survivor", 1, { requestId = "f1", reasonCode = "nav_route" }).error == "account_frozen", "frozen accounts are refused")
+S.modData().frozen["joe"] = nil
+check(src.debit("joe", "survivor", 1, { requestId = "f1", reasonCode = "nav_route" }).ok == true, "after unfreezing, the same requestId succeeds (refusals are not cached)")
+
+-- post：多條 postings 只能碰玩家與自己的 MOD 帳戶
+check(src.post({ requestId = "p1", reasonCode = "nav_route", postings = { { account = "joe", currency = "survivor", amount = -5 }, { account = "MOD:Other", currency = "survivor", amount = 5 } } }).error == "invalid_args",
+    "post cannot touch another mod's account")
+check(src.post({ requestId = "p2", reasonCode = "nav_route", postings = { { account = "joe", currency = "survivor", amount = -5 }, { account = "MOD:MinidoracatMiniMapFor42", currency = "survivor", amount = 4 } } }).error == "unbalanced",
+    "post must balance per currency")
+
+-- rate limit：每 tick 20 次
+local limited = 0
+for i = 1, 25 do
+    local r = src.debit("joe", "survivor", 1, { requestId = "rl-" .. i, reasonCode = "nav_route" })
+    if r.error == "rate_limited" then limited = limited + 1 end
+end
+check(limited > 0, "calls beyond CALLS_PER_TICK in one tick are rate limited")
+fire("OnTickEvenPaused")
+check(src.debit("joe", "survivor", 1, { requestId = "rl-next", reasonCode = "nav_route" }).ok == true, "the budget refills on the next tick")
+
+-- 讀取
+check(V.getBalance("joe", "survivor").available == L.getBalance("joe", "survivor").available and V.getBalance("nobody", "survivor").available == 0
+    and S.modData().wallets["nobody"] == nil, "getBalance is read-only and creates no wallet")
+check(#V.currencies() == 2 and V.currencies()[1].id == "survivor", "currencies() is the config snapshot")
+
+-- 守恆
+check(L.conservation("survivor") == 0, "integration postings keep the conservation sum at zero")
 onlinePlayers = {}
 end)()
 

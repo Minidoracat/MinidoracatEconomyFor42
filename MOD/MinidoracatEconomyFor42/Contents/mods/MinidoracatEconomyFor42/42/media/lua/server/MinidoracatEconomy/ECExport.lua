@@ -240,6 +240,8 @@ local function onCommitted(ev)
                 reservedBefore = p.reservedBefore, reservedAfter = p.reservedAfter,
                 counterparty = L.counterparty(ev.postings, p),
                 sourceMod = ev.payload and ev.payload.sourceMod or nil,
+                reasonText = ev.reasonText,
+                ref = ev.payload and ev.payload.ref or nil,
             }))
         end
     end

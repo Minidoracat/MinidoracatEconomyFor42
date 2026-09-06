@@ -641,6 +641,8 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 這一階段先建立貨幣 source、匯出與觀測能力，讓後續市場可以量測供給，而不是先硬編數值。
 
+**進度（2026-09-07，Windows dedicated 42.20.4，離線 harness 250 條）**：B0 骨架 ✓、B1 帳本 ✓、B2 匯出 ✓、B3 companion ✓（TypeScript）、B4 貨幣 config ✓、B5 獎勵 ✓（實機簽到）、B6 錢包／獎勵頁 ✓（實機）、B7 管理面板五子頁 ✓（實機：唯讀角色、貨幣設定、稽核、系統；調帳／凍結待第二 client）、B8 內建圖示＋自訂圖示同步 ✓（實機：下載、套用、移除回內建；A17 完成）、B9 整合 API ✓（harness；管理頁「整合」子分頁）；B10 收尾（雙客戶端 E2E、崩潰重複發幣測試、ModData 大小回歸）進行中。
+
 ### 階段 C：系統商店售出（burn）
 
 - 管理員 catalog、`askPrice`、每帳號每日限購、信箱交付；
@@ -1205,6 +1207,7 @@ local res = E.debit("playerA", "survivor", 120, {
 - 玩家對玩家轉帳（例如租金付給地主）不在 rev 1；`CAPABILITIES.transfer=false`。日後開放時是 additive：`transfer(from, to, currency, amount, opts)` 只對 `marketUnit` 幣、每來源要在 config 明確 `allowTransfer=true`，且同樣計費稅（§14 決策）。
 - 事件：`tx.committed{ kind="mod", payload={ sourceMod, reasonCode, reasonText, ref, meta } }`；收據列顯示「小地圖 · GPS 月租 2026-09 · −120」；收據檔與 Watchcord 副本同樣帶 `sourceMod`／`ref`，所以「這個玩家這個月被哪個 MOD 扣了幾次」一行查詢就有。
 - 不可負餘額、凍結帳號拒絕、停用幣別拒絕 mint——與管理員調整同一套規則（§19.3）。
+- **實作備註（B9，2026-09-07）**：`registerSource` 回傳綁定 modId 的 handle（`src.credit/debit/post`），頂層 `credit/debit/post` 亦可用、以 `opts.modId`／`req.modId` 指明來源；額度以來源為單位跨幣別加總；新增錯誤碼 `source_disabled`（服主停用來源）、`request_conflict`（同 `requestId` 不同內容）、`not_ready`（ModData 尚未載入）、`unbalanced`；每來源每 tick 20 次；額度與停用由 `admin.sources` 指令（管理頁「整合」）調整，變更寫稽核與 `admin.source` 事件；拒絕統計按日按來源保留 31 天供面板顯示。
 
 ### 21.4 訂閱型服務怎麼用
 

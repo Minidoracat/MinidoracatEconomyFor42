@@ -48,6 +48,9 @@ end
 if not MinidoracatEconomy or not MinidoracatEconomy.Icons then
     require "MinidoracatEconomy/ECIcons"
 end
+if not MinidoracatEconomy or not MinidoracatEconomy.Integration then
+    require "MinidoracatEconomy/ECIntegration"
+end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
 local L = EC and EC.Ledger
@@ -56,7 +59,8 @@ local Cfg = EC and EC.Config
 local R = EC and EC.Rewards
 local W = EC and EC.Wallet
 local I = EC and EC.Icons
-if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W or not I then
+local G = EC and EC.Integration
+if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W or not I or not G then
     return
 end
 
@@ -649,6 +653,27 @@ S.handlers["admin.icons"] = function(player, args)
         EC.log("admin " .. tostring(player:getUsername()) .. " icon reload " .. (started and "started" or "refused: busy"))
     end
     S.reply(player, "admin.icons", { ok = true, started = started, busy = I.busy(), icons = I.status(), perms = { read = true, write = A.isAdmin(player) } })
+end
+
+-- admin.sources {action = "list"} (read gate) | {action = "set", modId, dailyMintCap?, dailyBurnCap?
+-- (false = unlimited), enabled?, reason} (write gate): per-source integration caps (spec 21.5).
+S.handlers["admin.sources"] = function(player, args)
+    local set = type(args) == "table" and args.action == "set"
+    if not gate(player, "admin.sources", set) then return end
+    local res = { ok = true, perms = { read = true, write = A.isAdmin(player) } }
+    if set then
+        local reason = args.reason
+        if type(reason) ~= "string" or charCount(reason) < EC.sandbox("AdminReasonMinChars", 10) or #reason > 500 then
+            res = { ok = false, error = "reason_too_short" }
+        else
+            local ok, err = G.setSource(args.modId, { dailyMintCap = args.dailyMintCap, dailyBurnCap = args.dailyBurnCap, enabled = args.enabled },
+                player:getUsername(), reason)
+            if not ok then res = { ok = false, error = err } end
+        end
+        if type(args) == "table" then res.requestId = args.requestId end
+    end
+    res.sources = G.sources()
+    S.reply(player, "admin.sources", res)
 end
 
 function A.init(root)
