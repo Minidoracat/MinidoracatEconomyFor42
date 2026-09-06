@@ -8,7 +8,9 @@
 --
 -- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
 -- owns everything below it: six sub pages (Player / Dashboard / Currencies / Sources / Audit /
--- System) and the write dialogs (adjust / freeze / rename / enable / exchange / source caps).
+-- System) and the write dialogs (adjust / freeze / rename / enable / exchange / source caps). The
+-- player page also owns the account search dropdown: a debounced admin.players query whose
+-- candidates are drawn by a child panel floating under the search box.
 --
 -- Permission gate mirrors the server (ECAdmin.lua gate()): sandbox role *name* lists, read through
 -- the client-only getAccessLevel(). The server re-checks every command; this side only decides
@@ -56,7 +58,7 @@ local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.st
 local Button, TableCell = U.Button, U.TableCell
 
 local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.system", "admin.icons", "admin.sources" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.system", "admin.icons", "admin.sources", "admin.players" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config" }
@@ -67,7 +69,10 @@ local POLL_MS = 30000
 local PERM_POLL_MS = 500
 local ICONS_RECHECK_MS = 2500   -- an icon reload reads a few KB per tick; the outcome is asked for after this
 local AUDIT_LIMIT = 500
-local REASON_MAX = 200
+local PLAYERS_DEBOUNCE_MS = 250   -- keystrokes are coalesced; the server also throttles per command
+local PLAYERS_ROWS_MAX = 8        -- rows the dropdown ever draws, the "type more" line included
+local PLAYERS_MIN_W = 260
+local REASON_MAX = 1000
 local NAME_MAX = 24
 local USERNAME_MAX = 64
 
@@ -424,8 +429,8 @@ local Dialog = ISPanel:derive("MinidoracatEconomyAdminDialog")
 local function dialogFields(mode)
     if mode == "adjust" then
         return {
-            { key = "amount", label = tr("Admin_Adjust_Amount"), width = 140, maxLen = 14, hint = tr("Admin_Adjust_AmountHint") },
-            { key = "reversal", label = tr("Admin_Adjust_Reversal"), width = 220, maxLen = 40 },
+            { key = "amount", label = tr("Admin_Adjust_Amount"), width = 180, maxLen = 14, hint = tr("Admin_Adjust_AmountHint") },
+            { key = "reversal", label = tr("Admin_Adjust_Reversal"), width = 300, maxLen = 40 },
             { key = "reason", label = "", multiline = true, flex = true, maxLen = REASON_MAX },
         }
     end
@@ -564,7 +569,7 @@ local function dialogMetrics(level)
             line = small + 1, title = math.max(20, medium + 4), reason = 16, chip = math.max(16, small + 2) }
     end
     return { gap = 8, entry = entryH(), button = btnH(), line = lineH(),
-        title = math.max(26, medium + 10), reason = math.max(24, rowH() * 2), chip = math.max(22, small + 8) }
+        title = math.max(26, medium + 10), reason = math.max(24, rowH() * 3), chip = math.max(22, small + 8) }
 end
 
 local function planRowHeight(row, m)
@@ -582,7 +587,9 @@ function Dialog:layoutInside(maxW, maxH)
         if f.key ~= "reason" then labelW = math.max(labelW, textWidth(f.label)) end
     end
     labelW = math.max(labelW, textWidth(tr("Admin_Adjust_Currency")))
-    local width = math.min(maxW, math.max(360, labelW + 300))
+    -- 560 wide by default, growing with the window up to 720: the dialog is the admin's main
+    -- working surface, not a confirmation popup
+    local width = math.min(maxW, math.max(560, math.min(720, math.floor(maxW * 0.7)), labelW + 380))
     -- a long label is truncated instead of pushing its field out of the dialog
     labelW = math.min(labelW, math.max(60, math.floor(width * 0.45)))
     local half = math.floor((width - PAD * 4 - labelW * 2) / 2)
@@ -627,7 +634,7 @@ function Dialog:layoutInside(maxW, maxH)
         if total <= maxH then break end
     end
     local height = math.min(maxH, total)
-    local reasonH = m.reason + math.max(0, math.min(height - total, rowH()))
+    local reasonH = m.reason + math.max(0, math.min(height - total, rowH() * 2))
 
     self.rows = rows
     self.titleH = m.title
@@ -753,6 +760,63 @@ function Dialog:unfocusAll()
     end
 end
 
+-- ---------- account search dropdown ----------
+
+-- Candidate list under the player page's search box. Owns no data: the rows are the reply the
+-- panel is holding (admin.players) and the row plan the panel computed in layoutSuggest, so this
+-- child only paints and turns a click into a lookup. It is added last, which puts it over every
+-- sibling without a per-frame bringToTop (that reorders the parent's child list).
+local Suggest = ISPanel:derive("MinidoracatEconomyAdminSuggest")
+
+function Suggest:rowAt(y)
+    local i = math.floor((y - 1) / rowH()) + 1
+    if i < 1 or i > (self.admin.suggestShown or 0) then return nil end
+    return (self.admin.players or {})[i]
+end
+
+function Suggest:prerender()
+    local admin = self.admin
+    local w, h = self.width, self.height
+    fill(self, 0, 0, w, h, "surface")
+    border(self, 0, 0, w, h, "accent")
+    local rh = rowH()
+    local hover = self:isMouseOver() and (math.floor(self:getMouseY() / rh) + 1) or 0
+    local online = tr("Admin_Player_Online")
+    local onlineW = textWidth(online) + PAD
+    local players = admin.players or {}
+    local shown = admin.suggestShown or 0
+    local y = 1
+    for i = 1, shown do
+        local p = players[i]
+        if hover == i then fill(self, 1, y, w - 2, rh, "selected", "rect") end
+        local ty = y + math.floor((rh - fontH.small) / 2)
+        text(self, fitText(tostring(p.username), w - PAD * 2 - (p.online and onlineW or 0)), PAD, ty, "text")
+        if p.online then textRight(self, online, w - PAD, ty, "accent") end
+        y = y + rh
+    end
+    local note = nil
+    if admin.suggestMore then
+        note = getText(T .. "Admin_Players_More", amountText(math.max(0, (tonumber(admin.playersTotal) or shown) - shown)))
+    elseif admin.suggestEmpty then
+        note = tr("Admin_Players_Empty")
+    end
+    if note then
+        text(self, fitText(note, w - PAD * 2), PAD, y + math.floor((rh - fontH.small) / 2), "textFaint")
+    end
+end
+
+function Suggest:render() end
+
+function Suggest:onMouseDown(x, y)
+    local p = self:rowAt(y)
+    if p and type(p.username) == "string" and p.username ~= "" then
+        self.admin:pickPlayer(p.username)
+    end
+    return true
+end
+
+function Suggest:onMouseUp(x, y) return true end
+
 -- ---------- admin panel ----------
 
 local Admin = ISPanel:derive("MinidoracatEconomyAdminPanel")
@@ -780,6 +844,8 @@ function Admin:createChildren()
 
     -- player page
     self.userEntry = newEntry(180, entryH(), { maxLen = USERNAME_MAX, clear = true, placeholder = tr("Admin_Player_Hint") })
+    self.userEntry.target = self
+    self.userEntry.onTextChangeFunction = Admin.onUserQueryChanged
     self:addChild(self.userEntry)
     local look = tr("Admin_Player_Search")
     self.lookupButton = Button.create(0, 0, textWidth(look) + 26, entryH(), look, self, Admin.onLookupClick, "chip")
@@ -839,6 +905,17 @@ function Admin:createChildren()
         self.copyButtons[#self.copyButtons + 1] = b
     end
 
+    -- last child: the search dropdown paints over the page and takes the click before the row
+    -- underneath it (the dialog is added later still, and hides the dropdown while it is open)
+    local sug = ISPanel:new(0, 0, PLAYERS_MIN_W, rowH())
+    setmetatable(sug, Suggest)
+    sug.background = false
+    sug.admin = self
+    sug:initialise()
+    sug:setVisible(false)
+    self.suggestList = sug
+    self:addChild(sug)
+
     self:layout()
 end
 
@@ -850,6 +927,8 @@ function Admin:onSubTab(button)
     for _, b in ipairs(self.subTabButtons) do b.active = b.internal == self.tab end
     self.message = nil
     self:closeDialog()
+    self:closeSuggest()
+    pcall(function() self.userEntry:unfocus() end)   -- a hidden text box must not keep the keyboard
     self:layout()
     self:refresh()
 end
@@ -888,11 +967,104 @@ function Admin:requestLookup(username)
         self.pendingFreeze = nil
         self.message = nil
     end
+    self:closeSuggest()
     self.lookupUser = username
     local ok, why = send("admin.lookup", { username = username })
     self.lookupRetryUser = (not ok) and username or nil
     self:updateEnabled()
     return ok, why
+end
+
+-- ----- account search candidates -----
+
+-- A keystroke only arms the debounce; the request itself goes out from prerender, so a fast
+-- typist costs one command per PLAYERS_DEBOUNCE_MS instead of one per key.
+function Admin:onUserQueryChanged()
+    self.playersQueryAt = EC.now()
+    self.playersOpen = true
+end
+
+-- Forget the candidates: a pick, a lookup, Escape, a tab switch and a permission collapse all
+-- invalidate them, and the next focus asks again.
+function Admin:closeSuggest()
+    self.playersOpen = false
+    self.players = nil
+    self.playersTotal = nil
+    self.playersTruncated = nil
+    self.playersSentQuery = nil
+    self.playersQueryAt = nil
+    self.suggestShown = 0
+    self.suggestMore = false
+    self.suggestEmpty = false
+    if self.suggestList then self.suggestList:setVisible(false) end
+end
+
+function Admin:pickPlayer(username)
+    setEntryText(self.userEntry, username)
+    pcall(function() self.userEntry:unfocus() end)
+    self:requestLookup(username)   -- closes the dropdown
+end
+
+-- Row plan and geometry of the dropdown. Called per frame from tickPlayers, so it only does
+-- arithmetic: no row tables, no text measuring, and no bringToTop (the panel is the last child).
+function Admin:layoutSuggest()
+    local list, g = self.suggestList, self.g
+    if not (list and g) then return end
+    local rh = rowH()
+    -- the dropdown never runs past the panel: the room below the search box caps the row count
+    local cap = math.min(PLAYERS_ROWS_MAX, math.floor((self.height - g.suggestY - 2) / rh))
+    local players = self.players
+    local shown, more, empty = 0, false, false
+    if players and cap > 0 then
+        local n = #players
+        if n == 0 then
+            empty = self.playersSentQuery ~= nil and self.playersSentQuery ~= ""
+        else
+            shown = math.min(n, cap)
+            local total = tonumber(self.playersTotal) or n
+            more = shown < n or total > n or self.playersTruncated == true
+            if more and shown >= cap then shown = cap - 1 end
+            if shown < 1 then shown, more = 1, false end
+        end
+    end
+    self.suggestShown = shown
+    self.suggestMore = more
+    self.suggestEmpty = empty
+    local rows = shown + ((more or empty) and 1 or 0)
+    local open = rows > 0 and self.playersOpen == true and self.dialog == nil
+        and self.tab == "Player" and self.hadRead == true
+        and (self.playersFocused == true or list:isMouseOver())
+    list:setVisible(open)
+    if not open then return end
+    list:setX(0)
+    list:setY(g.suggestY)
+    list:setWidth(g.suggestW)
+    list:setHeight(rows * rh + 2)
+end
+
+-- Debounce clock, the focus-driven first query and the dropdown's visibility.
+function Admin:tickPlayers(now)
+    local focused = false
+    local ok, v = pcall(function() return self.userEntry:isFocused() end)
+    if ok and v == true then focused = true end
+    if focused and not self.playersFocused then
+        self.playersOpen = true
+        -- nothing cached yet: an empty query lists whoever is online
+        if self.players == nil then self.playersQueryAt = now - PLAYERS_DEBOUNCE_MS end
+    end
+    self.playersFocused = focused
+    local at = self.playersQueryAt
+    -- a query still in flight is left to finish: nothing is measured, cut or allocated per frame
+    if at and now - at >= PLAYERS_DEBOUNCE_MS and not isPending("admin.players") then
+        local q = string.match(entryText(self.userEntry), "^%s*(.-)%s*$")
+        if q == self.playersSentQuery then
+            self.playersQueryAt = nil
+        elseif send("admin.players", { query = q }) then
+            self.playersSentQuery = q
+            self.playersQueryAt = nil
+        end
+    end
+    self:layoutSuggest()
 end
 
 function Admin:onAuditQueryChanged()
@@ -1076,7 +1248,7 @@ function Admin:openDialog(mode, ctx)
     dlg.titleText = ctx.title
     dlg.confirmLabel = ctx.confirm
     dlg.warnText = ctx.warn
-    dlg.reasonMin = (self.lookup and tonumber(self.lookup.reasonMinChars)) or EC.sandbox("AdminReasonMinChars", 10)
+    dlg.reasonMin = (self.lookup and tonumber(self.lookup.reasonMinChars)) or EC.sandbox("AdminReasonMinChars", 1)
     dlg.info = {}
     dlg.message = nil
     dlg:initialise()
@@ -1376,11 +1548,29 @@ function Admin:onReply(kind, args)
         elseif args.ok == false then
             self.message = { text = errorText(args.error), error = true }
         end
+    elseif kind == "players" then
+        -- the server echoes the query it answered (trimmed and lowercased); anything that is not
+        -- the answer to the text we last sent is a late reply and is dropped. A refusal is
+        -- silent: the search box is a convenience, not a result.
+        local sent = self.playersSentQuery
+        if args.ok == false or sent == nil or string.lower(sent) ~= tostring(args.query or "") then
+            return
+        end
+        self.players = type(args.players) == "table" and args.players or {}
+        self.playersTotal = tonumber(args.total) or #self.players
+        self.playersTruncated = args.truncated == true
     end
     self:updateEnabled()
 end
 
 function Admin:onTimeout(command)
+    -- a candidate query is a background nicety: it never takes over the footer, and the same text
+    -- may be asked for again
+    if command == "admin.players" then
+        self.playersSentQuery = nil
+        self:updateEnabled()
+        return
+    end
     local label = getTextOrNull(T .. "Admin_Cmd_" .. string.sub(command, 7)) or command
     self.message = { text = getText(T .. "Admin_Timeout", label), error = true }
     if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" then
@@ -1599,6 +1789,9 @@ function Admin:layout()
     self.lookupButton:setX(self.userEntry.width + 6); self.lookupButton:setY(g.queryY)
     self:setButtonTitle(self.lookupButton, self.lookupButton.fullTitle)
     g.statusX = self.lookupButton.x + self.lookupButton.width + PAD
+    -- the candidate dropdown hangs directly below the search box, never over it
+    g.suggestY = g.queryY + eh
+    g.suggestW = math.min(w, math.max(PLAYERS_MIN_W, self.userEntry.width))
 
     local actionH = btnH()
     g.cardsY = g.queryY + eh + 6
@@ -1763,6 +1956,7 @@ function Admin:layout()
     self:rebuildAudit()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
     if self.dialog then self:layoutDialog() end
+    self:layoutSuggest()
     self.layoutW, self.layoutH = w, h
     self:updateEnabled()
 end
@@ -2224,6 +2418,7 @@ function Admin:prerender()
         local write, read = self:writeAllowed(), self:readAllowed()
         if write ~= self.hadWrite or read ~= self.hadRead then
             if not write then self:closeDialog() end
+            if not read then self:closeSuggest() end
             self:layout()   -- hides/shows the page children for the new permission level
         end
     end
@@ -2263,6 +2458,9 @@ function Admin:prerender()
         self.polledAt = now
         self:refresh()
     end
+
+    -- search candidates: debounce clock and the dropdown's own geometry
+    if self.tab == "Player" and self.hadRead then self:tickPlayers(now) end
 
     local g = self.g
     fill(self, 0, 0, self.width, g.subH, "well", "rect")
@@ -2356,6 +2554,7 @@ function Admin:setVisible(visible)
         self.polledAt = nil
     else
         self:closeDialog()
+        self:closeSuggest()
         pcall(function() self.userEntry:unfocus() end)
         pcall(function() self.auditEntry:unfocus() end)
     end
@@ -2363,6 +2562,7 @@ end
 
 function Admin:dispose()
     self:closeDialog()
+    self:closeSuggest()
     pcall(function() self.userEntry:unfocus() end)
     pcall(function() self.auditEntry:unfocus() end)
     self.lookup = nil
@@ -2410,5 +2610,12 @@ for _, command in ipairs(COMMANDS) do
         if inst then inst:onReply(kind, args or {}) end
     end
 end
+
+-- Escape folds the candidate dropdown away: a text entry has no key hook of its own, and ECPanel
+-- reads its own hotkey the same way (ECPanel.lua:723-728).
+Events.OnKeyPressed.Add(function(key)
+    local inst = P.instance
+    if inst and key ~= 0 and Keyboard and key == Keyboard.KEY_ESCAPE then inst:closeSuggest() end
+end)
 
 return P

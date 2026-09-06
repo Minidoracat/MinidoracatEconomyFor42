@@ -19,7 +19,7 @@
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily": "Admin adjustment daily limit (server)",
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily_tooltip": "All admins combined per reward day: separate totals for credits and debits.",
   "Sandbox_MinidoracatEconomy_AdminReasonMinChars": "Adjustment reason minimum length",
-  "Sandbox_MinidoracatEconomy_AdminReasonMinChars_tooltip": "Minimum number of characters of the mandatory reason when adjusting a balance; the reason is written to the audit log and the external ledger.",
+  "Sandbox_MinidoracatEconomy_AdminReasonMinChars_tooltip": "Minimum number of characters of the mandatory reason for admin actions (default 1 = just non-empty); the reason is written to the audit log and the external ledger, up to 1000 characters.",
   "Sandbox_MinidoracatEconomy_AdminRoles": "Roles allowed to write",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "Server role names that may adjust balances, change currency settings and register terminals; separate several with semicolons (e.g. admin;gm). The server re-checks the role name on every admin command; the client display is not authorization.",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "Read-only roles",

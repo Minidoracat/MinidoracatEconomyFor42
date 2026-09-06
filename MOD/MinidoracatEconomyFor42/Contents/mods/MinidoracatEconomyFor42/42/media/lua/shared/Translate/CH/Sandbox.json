@@ -19,7 +19,7 @@
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily": "管理員調帳每日上限（全服）",
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily_tooltip": "所有管理員合計每個獎勵日加款與扣款各自的總額上限。",
   "Sandbox_MinidoracatEconomy_AdminReasonMinChars": "調帳原因最少字數",
-  "Sandbox_MinidoracatEconomy_AdminReasonMinChars_tooltip": "管理員調整餘額時必填原因的最少字元數；原因會進稽核紀錄與外部帳本。",
+  "Sandbox_MinidoracatEconomy_AdminReasonMinChars_tooltip": "管理員調整餘額等操作必填原因的最少字元數（預設 1＝只要有填）；原因會進稽核紀錄與外部帳本，最多 1000 字。",
   "Sandbox_MinidoracatEconomy_AdminRoles": "可寫入的管理角色",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "可以調整餘額、修改貨幣設定、登錄終端的伺服器角色名稱，多個以分號分隔（例如 admin;gm）。伺服器對每個管理指令都會重新核對角色名，客戶端的顯示不算授權。",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "唯讀的管理角色",

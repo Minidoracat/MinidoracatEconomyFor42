@@ -19,7 +19,7 @@
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily": "管理者の残高調整 日次上限（サーバー全体）",
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily_tooltip": "全管理者合計の報酬日ごとの加算・減算それぞれの合計上限。",
   "Sandbox_MinidoracatEconomy_AdminReasonMinChars": "調整理由の最小文字数",
-  "Sandbox_MinidoracatEconomy_AdminReasonMinChars_tooltip": "残高調整時に必須となる理由の最小文字数。理由は監査ログと外部台帳に記録されます。",
+  "Sandbox_MinidoracatEconomy_AdminReasonMinChars_tooltip": "管理操作で必須となる理由の最小文字数（既定 1＝入力さえあればよい）。理由は監査ログと外部台帳に記録され、最大 1000 文字です。",
   "Sandbox_MinidoracatEconomy_AdminRoles": "書き込み可能な管理ロール",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "残高調整・通貨設定・端末登録ができるサーバーロール名。複数はセミコロンで区切ります（例：admin;gm）。サーバーはすべての管理コマンドでロール名を再確認し、クライアント表示は認可ではありません。",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "閲覧専用の管理ロール",

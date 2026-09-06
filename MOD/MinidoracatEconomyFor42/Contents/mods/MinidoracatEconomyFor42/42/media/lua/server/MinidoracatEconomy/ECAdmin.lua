@@ -69,7 +69,7 @@ local A = EC.Admin
 
 A.ADJUST_ACCOUNT = "SYSTEM_ADJUST"
 A.RATE_PER_MINUTE = 10
-A.REASON_MAX = 200
+A.REASON_MAX = 1000                -- one JSON line in the event / audit files; "unlimited" for a text box
 A.REQUEST_ID_MAX = 64
 A.TOP_HOLDERS = 5
 A.DAILY_VERSION = 2               -- md.adminDaily shape: per currency add/sub buckets
@@ -168,7 +168,7 @@ local function reasonError(reason)
     bare = string.gsub(bare, "[ \t]", "")
     if bare == "" then return "reason_blank" end
     local chars = charCount(text)
-    if chars < EC.sandbox("AdminReasonMinChars", 10) then return "reason_too_short" end
+    if chars < EC.sandbox("AdminReasonMinChars", 1) then return "reason_too_short" end
     if chars > A.REASON_MAX then return "reason_too_long" end
     return nil, text
 end
@@ -297,7 +297,7 @@ function A.lookup(admin, username, write)
         hoursSurvived = player and player:getHoursSurvived() or nil,
         adminToday = dailyView(R.dayKey(ms), admin),
         maxPerTx = EC.sandbox("AdminAdjustMaxPerTx", 5000),
-        reasonMinChars = EC.sandbox("AdminReasonMinChars", 10),
+        reasonMinChars = EC.sandbox("AdminReasonMinChars", 1),
         -- Spec 19.2 wants season-to-date earned/spent from a `stats` table. That table does not
         -- exist in this build, and the 5-entry receipt ring is not a season total: say so instead
         -- of shipping a number the panel would present as a season figure.
@@ -663,7 +663,7 @@ S.handlers["admin.sources"] = function(player, args)
     local res = { ok = true, perms = { read = true, write = A.isAdmin(player) } }
     if set then
         local reason = args.reason
-        if type(reason) ~= "string" or charCount(reason) < EC.sandbox("AdminReasonMinChars", 10) or #reason > 500 then
+        if type(reason) ~= "string" or charCount(reason) < EC.sandbox("AdminReasonMinChars", 1) or #reason > A.REASON_MAX * 3 then
             res = { ok = false, error = "reason_too_short" }
         else
             local ok, err = G.setSource(args.modId, { dailyMintCap = args.dailyMintCap, dailyBurnCap = args.dailyBurnCap, enabled = args.enabled },
@@ -674,6 +674,52 @@ S.handlers["admin.sources"] = function(player, args)
     end
     res.sources = G.sources()
     S.reply(player, "admin.sources", res)
+end
+
+-- admin.players {query} (read gate): candidate usernames for the search box. Everyone online plus
+-- every account the ledger knows (wallets, claims, frozen marks), case-insensitive substring match,
+-- online first then alphabetical, at most PLAYERS_MAX. An empty query lists only the online
+-- players: scanning and sorting thousands of dormant accounts for no filter is not worth a tick.
+A.PLAYERS_MAX = 30
+A.PLAYERS_SCAN_MAX = 200
+S.handlers["admin.players"] = function(player, args)
+    if not gate(player, "admin.players", false) then return end
+    local query = type(args) == "table" and type(args.query) == "string" and args.query or ""
+    query = string.lower(string.sub((string.gsub(query, "^%s*(.-)%s*$", "%1")), 1, 64))
+    local seen, list, truncated = {}, {}, false
+    local function add(name, online)
+        local rec = seen[name]
+        if rec then
+            if online then rec.online = true end
+            return
+        end
+        if query ~= "" and not string.find(string.lower(name), query, 1, true) then return end
+        if #list >= A.PLAYERS_SCAN_MAX then truncated = true return end
+        rec = { username = name, online = online }
+        seen[name] = rec
+        list[#list + 1] = rec
+    end
+    local players = getOnlinePlayers()
+    if players then
+        for i = 0, players:size() - 1 do
+            local p = players:get(i)
+            if p then add(p:getUsername(), true) end
+        end
+    end
+    if query ~= "" then
+        for name in pairs(md.wallets) do
+            if not L.isSystemAccount(name) then add(name, false) end
+        end
+        for name in pairs(md.claims or {}) do add(name, false) end
+        for name in pairs(md.frozen or {}) do add(name, false) end
+    end
+    EC.sortSafe(list, function(a, b)
+        if a.online ~= b.online then return a.online end
+        return string.lower(a.username) < string.lower(b.username)
+    end)
+    local total = #list
+    while #list > A.PLAYERS_MAX do table.remove(list) end
+    S.reply(player, "admin.players", { ok = true, query = query, players = list, total = total, truncated = truncated })
 end
 
 function A.init(root)

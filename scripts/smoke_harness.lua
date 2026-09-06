@@ -166,7 +166,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 250     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 260     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1274,6 +1274,70 @@ check(#V.currencies() == 2 and V.currencies()[1].id == "survivor", "currencies()
 
 -- 守恆
 check(L.conservation("survivor") == 0, "integration postings keep the conservation sum at zero")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境二十三：崩潰前沒存檔的 epoch，靠 epochs.json 判定回滾 =====
+io.write("scenario 23: crashed-before-save epoch is flagged from epochs.json\n")
+;(function()
+local function deepCopy(t)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do out[k] = deepCopy(v) end
+    return out
+end
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")                       -- E1: fresh world
+local e1 = S.modData().meta.epoch
+L.credit("zed", "survivor", 10, "SYSTEM_MINT", { requestId = "z1", reasonCode = "t" })
+L.credit("zed", "survivor", 10, "SYSTEM_MINT", { requestId = "z2", reasonCode = "t" })
+local saved = deepCopy(modDataStore[EC.MODDATA_KEY])   -- world save at seq 2
+nowMs = nowMs + 1000
+fire("OnServerStarted")                       -- E2 loads the save (seq 2)
+local e2 = S.modData().meta.epoch
+L.credit("zed", "survivor", 10, "SYSTEM_MINT", { requestId = "z3", reasonCode = "t" })   -- seq 3, never saved
+check(S.modData().meta.seq == 3 and e2 ~= e1, "E2 posted seq 3 without a save")
+modDataStore[EC.MODDATA_KEY] = deepCopy(saved)        -- SIGKILL: the next start loads the E1 save again
+nowMs = nowMs + 1000
+fire("OnServerStarted")                       -- E3
+local meta = S.modData().meta
+check(meta.loadedSeq == 2 and meta.epoch ~= e2, "E3 loads seq 2 under a new epoch")
+check(S.isRolledBack(e2, 3) == true, "E2's seq 3 is flagged rolled back although the save never heard of E2")
+check(S.isRolledBack(e1, 2) == false and S.isRolledBack(e1, 1) == false, "E1's saved rows stay valid")
+check(S.isRolledBack(e2, 2) == false, "E2's inherited rows (seq <= loadedSeq) are not rolled back")
+local ef = files["MinidoracatEconomy/epochs.json"]
+check(ef and #ef.lines == 3, "epochs.json holds one line per start")
+-- a saved epoch that the bounded ModData history has forgotten must not be mistaken for a crash
+local h = S.modData().meta.history
+local forgotten = nil
+for _, x in ipairs(h) do if x.epoch == e1 then forgotten = x end end
+check(forgotten ~= nil and forgotten.loadedSeq == 2, "history keeps E1 with the seq its successor loaded (2), not its own loadedSeq (0)")
+
+-- admin.players：候選清單（線上優先、子字串、不分大小寫、空查詢只列線上）
+local boss2 = fakePlayer("boss"); boss2.role = "admin"
+local zed = fakePlayer("zed")
+local ann = fakePlayer("Anna")
+onlinePlayers = { boss2, zed, ann }
+L.credit("Zack", "survivor", 5, "SYSTEM_MINT", { requestId = "zk", reasonCode = "t" })
+L.credit("bob", "survivor", 5, "SYSTEM_MINT", { requestId = "bb", reasonCode = "t" })
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.players", boss2, { query = "" })
+local pl = lastSent("admin.players").args
+local names = {}
+for _, p in ipairs(pl.players) do names[#names + 1] = p.username .. (p.online and "*" or "") end
+check(pl.ok and table.concat(names, ",") == "Anna*,boss*,zed*", "empty query lists online players only, alphabetical")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.players", boss2, { query = "  Z " })
+pl = lastSent("admin.players").args
+names = {}
+for _, p in ipairs(pl.players) do names[#names + 1] = p.username .. (p.online and "*" or "") end
+check(table.concat(names, ",") == "zed*,Zack" and pl.query == "z", "substring match is trimmed, case-insensitive, online first")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.players", zed, { query = "b" })
+check(lastSent("admin.players").args.error == "forbidden", "a plain player cannot list accounts")
 onlinePlayers = {}
 end)()
 

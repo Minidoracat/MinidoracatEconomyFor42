@@ -51,6 +51,49 @@ end
 
 -- ---------- ModData root ----------
 
+-- Every server start appends one line {epoch, loadedSeq} to this file (append-only, tiny). ModData
+-- only remembers epochs that reached a world save: an epoch that crashed before its first save
+-- leaves no trace in the save, yet its receipts and events are already on disk. On start every
+-- epoch in this file that ModData does not know about is a crashed one, and everything it wrote
+-- above the seq it loaded from was rolled back (the companion derives the same from the event
+-- stream, spec 4.2). Kept in ECServer because it must run before ECExport initialises.
+S.EPOCHS_FILE = "MinidoracatEconomy/epochs.json"
+S.EPOCHS_KEEP = 60
+
+local function readEpochLines()
+    local out = {}
+    local reader = nil
+    local ok = pcall(function() reader = getFileReader(S.EPOCHS_FILE, false) end)
+    if not ok or not reader then return out end
+    pcall(function()
+        for _ = 1, 10000 do
+            local line = reader:readLine()
+            if line == nil then break end
+            local rec = EC.jsonDecode(line)
+            if type(rec) == "table" and type(rec.epoch) == "string" and type(rec.loadedSeq) == "number" then
+                out[#out + 1] = { epoch = rec.epoch, loadedSeq = rec.loadedSeq }
+            end
+        end
+    end)
+    pcall(function() reader:close() end)
+    return out
+end
+
+local function writeEpochLines(lines, append)
+    local writer = nil
+    local ok = pcall(function() writer = getFileWriter(S.EPOCHS_FILE, true, append) end)
+    if not ok or not writer then
+        EC.log("epochs file unavailable; crashed epochs will not be flagged as rolled back")
+        return
+    end
+    pcall(function()
+        for _, h in ipairs(lines) do
+            writer:writeln(EC.jsonEncode({ epoch = h.epoch, loadedSeq = h.loadedSeq }))
+        end
+    end)
+    pcall(function() writer:close() end)
+end
+
 -- Returns the root table; creates the meta block on first run. `seq` survives restarts (it is
 -- part of the saved table); `loadedSeq` is the rollback point of this process; `epoch` is new
 -- for every start so ids from a rolled-back branch never collide (spec 19.7 rule four).
@@ -64,8 +107,26 @@ function S.initModData()
     local history = type(prevMeta.history) == "table" and prevMeta.history or {}
     if type(prevMeta.epoch) == "string" then
         history[#history + 1] = { epoch = prevMeta.epoch, loadedSeq = prevSeq }
-        while #history > 20 do table.remove(history, 1) end
     end
+    local known = {}
+    local oldestRemembered = nil
+    for _, h in ipairs(history) do
+        known[h.epoch] = true
+        local n = tonumber(h.epoch)
+        if n and (oldestRemembered == nil or n < oldestRemembered) then oldestRemembered = n end
+    end
+    local fileLines = readEpochLines()
+    for _, h in ipairs(fileLines) do
+        -- Unknown to ModData and newer than the oldest epoch it still remembers: it crashed before
+        -- its first save. Older unknown lines are epochs the bounded history has simply forgotten.
+        local n = tonumber(h.epoch)
+        if not known[h.epoch] and (oldestRemembered == nil or (n and n > oldestRemembered)) then
+            known[h.epoch] = true
+            history[#history + 1] = h
+        end
+    end
+    EC.sortSafe(history, function(a, b) return (tonumber(a.epoch) or 0) < (tonumber(b.epoch) or 0) end)
+    while #history > 20 do table.remove(history, 1) end
     md.meta = {
         realmId = type(prevMeta.realmId) == "string" and prevMeta.realmId or ("realm-" .. tostring(EC.now())),
         epoch = tostring(EC.now()),
@@ -74,6 +135,15 @@ function S.initModData()
         startedAt = EC.now(),
         history = history,
     }
+    local mine = { epoch = md.meta.epoch, loadedSeq = prevSeq }
+    if #fileLines >= S.EPOCHS_KEEP then
+        local keep = {}
+        for i = #fileLines - math.floor(S.EPOCHS_KEEP / 2) + 1, #fileLines do keep[#keep + 1] = fileLines[i] end
+        keep[#keep + 1] = mine
+        writeEpochLines(keep, false)
+    else
+        writeEpochLines({ mine }, true)
+    end
     return md
 end
 

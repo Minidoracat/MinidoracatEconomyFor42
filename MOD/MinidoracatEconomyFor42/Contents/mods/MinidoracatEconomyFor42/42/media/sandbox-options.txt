@@ -97,7 +97,7 @@ option MinidoracatEconomy.AdminReasonMinChars
     type = integer,
     min = 1,
     max = 200,
-    default = 10,
+    default = 1,
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_AdminReasonMinChars,
 }

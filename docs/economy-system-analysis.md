@@ -641,7 +641,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 這一階段先建立貨幣 source、匯出與觀測能力，讓後續市場可以量測供給，而不是先硬編數值。
 
-**進度（2026-09-07，Windows dedicated 42.20.4，離線 harness 250 條）**：B0 骨架 ✓、B1 帳本 ✓、B2 匯出 ✓、B3 companion ✓（TypeScript）、B4 貨幣 config ✓、B5 獎勵 ✓（實機簽到）、B6 錢包／獎勵頁 ✓（實機）、B7 管理面板五子頁 ✓（實機：唯讀角色、貨幣設定、稽核、系統；調帳／凍結待第二 client）、B8 內建圖示＋自訂圖示同步 ✓（實機：下載、套用、移除回內建；A17 完成）、B9 整合 API ✓（harness；管理頁「整合」子分頁）；B10 收尾進行中：ModData 回歸（2026-09-07 本機 1 帳號、5 筆收據、稽核環 8 筆）Economy 表 3,120 bytes、`Saving GlobalModData` 6 ms；每活躍帳號約 1.1 KB（wallets 186／receipts 環 5 筆 810／claims 119），idempotency 上限 2,000 筆約 80 KB——正式服月活 600 帳號估 0.7 MB、約 30 ms，遠低於 §20 的 8 MB 警戒；雙客戶端 E2E 與崩潰重複發幣測試待第二 client。
+**進度（2026-09-07，Windows dedicated 42.20.4，離線 harness 250 條）**：B0 骨架 ✓、B1 帳本 ✓、B2 匯出 ✓、B3 companion ✓（TypeScript）、B4 貨幣 config ✓、B5 獎勵 ✓（實機簽到）、B6 錢包／獎勵頁 ✓（實機）、B7 管理面板五子頁 ✓（實機：唯讀角色、貨幣設定、稽核、系統；調帳／凍結待第二 client）、B8 內建圖示＋自訂圖示同步 ✓（實機：下載、套用、移除回內建；A17 完成）、B9 整合 API ✓（harness；管理頁「整合」子分頁）；B10 收尾進行中：ModData 回歸（2026-09-07 本機 1 帳號、5 筆收據、稽核環 8 筆）Economy 表 3,120 bytes、`Saving GlobalModData` 6 ms；每活躍帳號約 1.1 KB（wallets 186／receipts 環 5 筆 810／claims 119），idempotency 上限 2,000 筆約 80 KB——正式服月活 600 帳號估 0.7 MB、約 30 ms，遠低於 §20 的 8 MB 警戒；雙客戶端 E2E ✓（第二 client 以 `-nosteam` 另一帳號登入：簽到、管理員調帳、凍結／解凍皆過）；崩潰重複發幣測試 ✓（未存檔即殺 `java.exe`：餘額與稽核環回到上一份存檔、簽到可再領、companion 標 `rolledBack`）——並修正「從未存檔就崩潰的 epoch 在 ModData 無痕跡」：以 `epochs.json` 記錄每次啟動，客戶端收據檔列才標得出「已回滾」。
 
 ### 階段 C：系統商店售出（burn）
 
