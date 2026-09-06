@@ -1,0 +1,36 @@
+module Base
+{
+    entity MinidoracatEconomyProtoTerminal
+    {
+        component UiConfig
+        {
+            xuiSkin = default,
+            entityStyle = ES_Cooking_Pit,
+            uiEnabled = false,
+        }
+        component SpriteConfig
+        {
+            isProp = true,
+            face SINGLE
+            {
+                layer
+                {
+                    row = location_business_bank_01_0,
+                }
+            }
+        }
+        component CraftRecipe
+        {
+            OnAddToMenu = MinidoracatEconomyProto_AdminOnly,
+            timedAction = BuildWoodenStructureMedium,
+            time = 10,
+            category = Furniture,
+            Tags = Furniture,
+            inputs
+            {
+                item 1 tags[base:hammer] mode:keep flags[Prop1;MayDegradeVeryLight],
+                item 1 [Base.Plank],
+            }
+        }
+    }
+}
