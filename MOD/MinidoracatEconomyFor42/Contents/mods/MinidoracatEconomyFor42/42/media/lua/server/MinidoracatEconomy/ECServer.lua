@@ -116,6 +116,7 @@ function S.initModData()
         if n and (oldestRemembered == nil or n < oldestRemembered) then oldestRemembered = n end
     end
     local fileLines = readEpochLines()
+    S.crashedEpochs = {}   -- newly discovered this start; ECExport writes one epoch.rolledback line each
     for _, h in ipairs(fileLines) do
         -- Unknown to ModData and newer than the oldest epoch it still remembers: it crashed before
         -- its first save. Older unknown lines are epochs the bounded history has simply forgotten.
@@ -123,6 +124,7 @@ function S.initModData()
         if not known[h.epoch] and (oldestRemembered == nil or (n and n > oldestRemembered)) then
             known[h.epoch] = true
             history[#history + 1] = h
+            S.crashedEpochs[#S.crashedEpochs + 1] = h
         end
     end
     EC.sortSafe(history, function(a, b) return (tonumber(a.epoch) or 0) < (tonumber(b.epoch) or 0) end)

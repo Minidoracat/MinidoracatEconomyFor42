@@ -722,6 +722,19 @@ S.handlers["admin.players"] = function(player, args)
     S.reply(player, "admin.players", { ok = true, query = query, players = list, total = total, truncated = truncated })
 end
 
+-- admin.auditFile (read gate): the newest entries of the previous and current month's audit
+-- files, each line annotated with rolledBack. The ModData audit ring forgets what a crash rolled
+-- back; the files do not, so this is how an admin learns which of their actions must be redone.
+S.handlers["admin.auditFile"] = function(player, args)
+    if not gate(player, "admin.auditFile", false) then return end
+    local ms = EC.now()
+    local months = { EC.monthKey(ms - 30 * 86400000), EC.monthKey(ms) }
+    if months[1] == months[2] then months = { months[2] } end
+    local paths = {}
+    for _, m in ipairs(months) do paths[#paths + 1] = X.ROOT .. "/audit/" .. m .. ".json" end
+    W.tail(player, "admin.auditFile", paths, { months = months, perms = { read = true, write = A.isAdmin(player) } })
+end
+
 function A.init(root)
     md = root
     md.adminDaily = md.adminDaily or {}

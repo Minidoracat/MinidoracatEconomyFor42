@@ -325,5 +325,7 @@
   "IGUI_MinidoracatEconomy_Admin_Src_DisableConfirm": "確認停用",
   "IGUI_MinidoracatEconomy_Admin_Error_cap_exceeded": "超過這個模組的今日額度",
   "IGUI_MinidoracatEconomy_Admin_Error_source_disabled": "這個整合來源已停用",
-  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "這個模組不能使用這個幣別"
+  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "這個模組不能使用這個幣別",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Rolled": "已回滾",
+  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "伺服器未存檔就關閉時被回滾的管理操作（讀稽核檔，本月與上月）；這些操作沒有生效，需要的話請重做"
 }

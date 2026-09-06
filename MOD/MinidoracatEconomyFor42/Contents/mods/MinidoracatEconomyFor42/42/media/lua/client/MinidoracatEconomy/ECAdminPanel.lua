@@ -58,10 +58,10 @@ local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.st
 local Button, TableCell = U.Button, U.TableCell
 
 local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.system", "admin.icons", "admin.sources", "admin.players" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
-local AUDIT_FILTERS = { "all", "adjust", "freeze", "config" }
+local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
 
 local COOLDOWN_MS = 500
 local TIMEOUT_MS = 8000
@@ -1076,6 +1076,11 @@ end
 function Admin:onAuditFilter(button)
     self.auditFilter = button.internal
     for _, b in ipairs(self.auditFilterButtons) do b.active = b.internal == self.auditFilter end
+    -- the rolled-back view comes from the audit files (the ModData ring forgot those lines)
+    if self.auditFilter == "rolled" and self.auditFile == nil then
+        send("admin.auditFile", {})
+        self:updateEnabled()
+    end
     self:rebuildAudit()
 end
 
@@ -1519,6 +1524,14 @@ function Admin:onReply(kind, args)
         self.audit = args.entries or {}
         self.auditAt = EC.now()
         self:rebuildAudit()
+    elseif kind == "auditFile" then
+        if args.error then
+            if args.error ~= "busy" then self.message = { text = errorText(args.error), error = true } end
+            return
+        end
+        self.auditFile = args.entries or {}
+        self.auditFileAt = EC.now()
+        self:rebuildAudit()
     elseif kind == "system" then
         if args.ok == false then
             self.message = { text = errorText(args.error), error = true }
@@ -1608,14 +1621,20 @@ end
 
 function Admin:rebuildAudit()
     local rows = {}
-    local src = self.audit or {}
     local filter = self.auditFilter
+    -- "rolled" reads the audit files newest-last; every other filter reads the ModData ring
+    local fromFile = filter == "rolled"
+    local src = fromFile and (self.auditFile or {}) or (self.audit or {})
     local q = self.auditQuery
-    for _, e in ipairs(src) do
+    local n = #src
+    for step = 1, n do
+        -- the ring arrives newest-first; the files are in write order, so walk them backwards
+        local e = src[fromFile and (n - step + 1) or step]
         if type(e) == "table" then
             local action = tostring(e.action or "?")
             local keep
-            if filter == "all" then keep = true
+            if fromFile then keep = e.rolledBack == true
+            elseif filter == "all" then keep = true
             elseif filter == "freeze" then keep = action == "freeze" or action == "unfreeze"
             else keep = action == filter end
             local target = e.target or e.field or "-"
@@ -2323,14 +2342,16 @@ function Admin:drawAudit()
         stampW = textWidth(stamp) + PAD
         textRight(self, stamp, self.width - PAD, filterY, "textFaint")
     end
-    text(self, fitText(getText(T .. "Admin_Audit_Count", tostring(#(self.auditRows or {})), tostring(#(self.audit or {}))),
+    local rolled = self.auditFilter == "rolled"
+    local total = rolled and #(self.auditFile or {}) or #(self.audit or {})
+    text(self, fitText(getText(T .. "Admin_Audit_Count", tostring(#(self.auditRows or {})), tostring(total)),
         self.width - g.auditCountX - stampW), g.auditCountX, filterY, "textMuted")
     drawColumnHeaders(self, self.auditList, AUDIT_COLS, self.auditList.x, g.auditHeaderY, rh)
     if #(self.auditRows or {}) == 0 then
-        text(self, isPending("admin.audit") and tr("Admin_Loading") or tr("Admin_Audit_Empty"),
+        text(self, (isPending("admin.audit") or isPending("admin.auditFile")) and tr("Admin_Loading") or tr("Admin_Audit_Empty"),
             self.auditList.x + PAD, g.auditHeaderY + rh + 4, "textFaint")
     end
-    text(self, fitText(tr("Admin_Audit_ReasonNote"), self.width - PAD * 2), PAD, g.auditBottom + 2, "textFaint")
+    text(self, fitText(tr(rolled and "Admin_Audit_RolledNote" or "Admin_Audit_ReasonNote"), self.width - PAD * 2), PAD, g.auditBottom + 2, "textFaint")
 end
 
 function Admin:drawSystem()
@@ -2536,6 +2557,7 @@ function Admin:refresh()
         if self.lookupUser then send("admin.lookup", { username = self.lookupUser }) end
     elseif self.tab == "Audit" then
         send("admin.audit", { limit = AUDIT_LIMIT })
+        if self.auditFilter == "rolled" then send("admin.auditFile", {}) end
     elseif self.tab == "Dashboard" or self.tab == "System" then
         send("admin.system", {})
     elseif self.tab == "Currencies" and self.icons == nil then

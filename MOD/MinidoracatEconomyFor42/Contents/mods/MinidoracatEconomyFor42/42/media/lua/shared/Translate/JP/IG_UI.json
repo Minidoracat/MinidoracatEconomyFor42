@@ -325,5 +325,7 @@
   "IGUI_MinidoracatEconomy_Admin_Src_DisableConfirm": "無効化を確定",
   "IGUI_MinidoracatEconomy_Admin_Error_cap_exceeded": "このモッドの本日の上限を超えています",
   "IGUI_MinidoracatEconomy_Admin_Error_source_disabled": "この連携ソースは無効です",
-  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "このモッドはその通貨を使えません"
+  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "このモッドはその通貨を使えません",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Rolled": "ロールバック済み",
+  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "サーバーが保存前に停止したため取り消された管理操作（監査ファイルより、今月と先月）。これらは反映されていません。必要ならやり直してください"
 }

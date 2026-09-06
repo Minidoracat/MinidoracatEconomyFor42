@@ -166,7 +166,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 260     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 263     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1315,6 +1315,34 @@ local h = S.modData().meta.history
 local forgotten = nil
 for _, x in ipairs(h) do if x.epoch == e1 then forgotten = x end end
 check(forgotten ~= nil and forgotten.loadedSeq == 2, "history keeps E1 with the seq its successor loaded (2), not its own loadedSeq (0)")
+
+-- 啟動時 journal 自己交代崩潰邊界；稽核檔視圖把崩潰班次的管理操作標成回滾
+local rbLine = nil
+for _, f in pairs(files) do
+    for _, l in ipairs(f.lines) do
+        if string.find(l, '"type":"epoch.rolledback"', 1, true) then rbLine = EC.jsonDecode(l) end
+    end
+end
+check(rbLine ~= nil and rbLine.crashedEpoch == e2 and rbLine.fromSeq == 3 and rbLine.epoch == meta.epoch,
+    "start writes epoch.rolledback{crashedEpoch, fromSeq} under the current epoch")
+-- 崩潰班次裡的一筆管理操作（稽核檔還在、稽核環已回滾）
+local admin3 = fakePlayer("boss"); admin3.role = "admin"
+onlinePlayers = { admin3 }
+X.audit({ action = "adjust", target = "zed", currency = "survivor", delta = 7, admin = "boss", reason = "before the crash", seq = 3, epoch = e2 })
+fire("OnTickEvenPaused")                      -- the queued audit line reaches the file
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.auditFile", admin3, {})
+for _ = 1, 5 do fire("OnTickEvenPaused") end
+local af = lastSent("admin.auditFile")
+check(af ~= nil and af.args.entries ~= nil and #af.args.entries >= 1 and af.args.months ~= nil, "admin.auditFile replies the audit file entries with the months it read")
+local flagged, unflagged = 0, 0
+for _, e in ipairs(af.args.entries) do
+    if e.epoch == e2 and e.seq == 3 then
+        if e.rolledBack then flagged = flagged + 1 else unflagged = unflagged + 1 end
+    end
+end
+check(flagged == 1 and unflagged == 0, "an audit line stamped with the crashed epoch above its loadedSeq is marked rolledBack")
+onlinePlayers = {}
 
 -- admin.players：候選清單（線上優先、子字串、不分大小寫、空查詢只列線上）
 local boss2 = fakePlayer("boss"); boss2.role = "admin"

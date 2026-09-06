@@ -290,6 +290,13 @@ function X.init(root)
     lastDay = EC.dayKey(ms)
     X.enqueue(eventsPath(ms), fileHeader(ms))
     X.emit("server.started", { loadedSeq = md.meta.loadedSeq, schemaVersion = md.schemaVersion, version = EC.VERSION })
+    -- Epochs that crashed before their first save (ECServer epochs.json): the journal states the
+    -- rolled-back range itself so a reader does not need the save to know it. The line belongs to
+    -- the current epoch; the crashed one is a payload field.
+    for _, h in ipairs(S.crashedEpochs or {}) do
+        X.emit("epoch.rolledback", { crashedEpoch = h.epoch, fromSeq = h.loadedSeq + 1 })
+        EC.log("epoch " .. h.epoch .. " crashed before saving; entries from seq " .. tostring(h.loadedSeq + 1) .. " are rolled back")
+    end
     X.flush()                      -- startup lines go out immediately
     X.heartbeat(ms)
 end

@@ -325,5 +325,7 @@
   "IGUI_MinidoracatEconomy_Admin_Src_DisableConfirm": "Confirm disable",
   "IGUI_MinidoracatEconomy_Admin_Error_cap_exceeded": "Over this mod's daily cap",
   "IGUI_MinidoracatEconomy_Admin_Error_source_disabled": "This integration source is disabled",
-  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "This mod may not use that currency"
+  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "This mod may not use that currency",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Rolled": "Rolled back",
+  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "Admin actions rolled back because the server stopped before saving (from the audit files, this and last month); they did not take effect, redo them if needed"
 }

@@ -325,5 +325,7 @@
   "IGUI_MinidoracatEconomy_Admin_Src_DisableConfirm": "确认禁用",
   "IGUI_MinidoracatEconomy_Admin_Error_cap_exceeded": "超过这个模块的今日额度",
   "IGUI_MinidoracatEconomy_Admin_Error_source_disabled": "这个集成来源已禁用",
-  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "这个模块不能使用这个币别"
+  "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "这个模块不能使用这个币别",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Rolled": "已回滚",
+  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "服务器未存盘就关闭时被回滚的管理操作（读稽核档，本月与上月）；这些操作没有生效，需要的话请重做"
 }

@@ -27,7 +27,7 @@ W.HISTORY_MAX_ENTRIES = 200          -- newest entries kept per reply (packet bu
 W.HISTORY_MAX_JOBS = 8               -- concurrent readers across all players
 
 local md = nil
-local jobs = {}                      -- username -> { reader, month, ring, head, count, truncated, player }
+local jobs = {}                      -- key (username:command) -> { paths, index, reader, ring, head, count, truncated, player, command, extra }
 
 local function playerByUsername(username)
     local players = getOnlinePlayers()
@@ -61,10 +61,14 @@ function W.state(username)
     return { balances = W.balances(username), receipts = list, currencies = EC.CURRENCY_ORDER }
 end
 
--- ---------- history jobs ----------
+-- ---------- tail-of-file jobs ----------
+--
+-- Reads one or more NDJSON files a batch per tick and replies with the newest MAX entries, each
+-- annotated with rolledBack (S.isRolledBack on the line's epoch/seq). Shared by wallet.history
+-- (receipt files) and admin.auditFile (audit files): one job per player per command.
 
-local function finishJob(username, job)
-    jobs[username] = nil
+local function finishJob(key, job)
+    jobs[key] = nil
     if job.reader then pcall(function() job.reader:close() end) end
     local entries = {}
     local n = job.count
@@ -75,7 +79,9 @@ local function finishJob(username, job)
     end
     local p = job.player
     if p then
-        S.reply(p, "wallet.history", { month = job.month, entries = entries, truncated = job.truncated, total = n })
+        local reply = { entries = entries, truncated = job.truncated, total = n }
+        for k, v in pairs(job.extra) do reply[k] = v end
+        S.reply(p, job.command, reply)
     end
 end
 
@@ -90,14 +96,30 @@ local function pushEntry(job, entry)
     end
 end
 
-local function stepJob(username, job)
-    for _ = 1, W.HISTORY_LINES_PER_TICK do
-        local line = job.reader:readLine()
-        if line == nil then
-            finishJob(username, job)
-            return
+-- Opens the next path that exists; false when every path is exhausted.
+local function openNext(job)
+    while job.index < #job.paths do
+        job.index = job.index + 1
+        local reader = getFileReader(job.paths[job.index], false)
+        if reader then
+            job.reader = reader
+            return true
         end
-        if line ~= "" then
+    end
+    job.reader = nil
+    return false
+end
+
+local function stepJob(key, job)
+    for _ = 1, W.HISTORY_LINES_PER_TICK do
+        local line = job.reader and job.reader:readLine() or nil
+        if line == nil then
+            if job.reader then pcall(function() job.reader:close() end) end
+            if not openNext(job) then
+                finishJob(key, job)
+                return
+            end
+        elseif line ~= "" then
             local entry = EC.jsonDecode(line)
             if type(entry) == "table" then
                 local epoch = entry.txId and EC.parseId(entry.txId) or entry.epoch
@@ -109,37 +131,46 @@ local function stepJob(username, job)
 end
 
 function W.onTick()
-    for username, job in pairs(jobs) do
-        local ok, err = pcall(stepJob, username, job)
+    for key, job in pairs(jobs) do
+        local ok, err = pcall(stepJob, key, job)
         if not ok then
-            EC.log("history job for " .. username .. " failed: " .. tostring(err))
-            finishJob(username, job)
+            EC.log("file job " .. key .. " failed: " .. tostring(err))
+            finishJob(key, job)
         end
     end
 end
 
+-- Starts a job for `player`: the newest entries of `paths` (read in order) are replied through
+-- `command` merged with `extra`. Refuses with error=busy (same player+command still reading) or
+-- server_busy (too many readers); missing files simply contribute nothing.
+function W.tail(player, command, paths, extra)
+    local key = player:getUsername() .. ":" .. command
+    local function refuse(code)
+        local reply = { entries = {}, error = code }
+        for k, v in pairs(extra) do reply[k] = v end
+        S.reply(player, command, reply)
+    end
+    if jobs[key] then return refuse("busy") end
+    if EC.countKeys(jobs) >= W.HISTORY_MAX_JOBS then return refuse("server_busy") end
+    local job = { paths = paths, index = 0, reader = nil, ring = {}, head = 1, count = 0, truncated = false,
+        player = player, command = command, extra = extra }
+    if not openNext(job) then
+        local reply = { entries = {}, total = 0, truncated = false }
+        for k, v in pairs(extra) do reply[k] = v end
+        S.reply(player, command, reply)
+        return
+    end
+    jobs[key] = job
+end
+
 -- month: "YYYYMM"; the file may not exist (no activity that month) -> empty reply.
 function W.requestHistory(player, month)
-    local username = player:getUsername()
     if type(month) ~= "string" or not string.match(month, "^%d%d%d%d%d%d$") then
         S.reply(player, "wallet.history", { month = tostring(month), entries = {}, error = "invalid_args" })
         return
     end
-    if jobs[username] then
-        S.reply(player, "wallet.history", { month = month, entries = {}, error = "busy" })
-        return
-    end
-    if EC.countKeys(jobs) >= W.HISTORY_MAX_JOBS then
-        S.reply(player, "wallet.history", { month = month, entries = {}, error = "server_busy" })
-        return
-    end
-    local path = X.ROOT .. "/receipts/" .. EC.safeName(username) .. "/" .. month .. ".json"
-    local reader = getFileReader(path, false)
-    if not reader then
-        S.reply(player, "wallet.history", { month = month, entries = {}, total = 0 })
-        return
-    end
-    jobs[username] = { reader = reader, month = month, ring = {}, head = 1, count = 0, truncated = false, player = player }
+    local path = X.ROOT .. "/receipts/" .. EC.safeName(player:getUsername()) .. "/" .. month .. ".json"
+    W.tail(player, "wallet.history", { path }, { month = month })
 end
 
 -- ---------- push on change ----------
@@ -162,9 +193,9 @@ end
 local listenerRegistered = false
 function W.init(root)
     md = root
-    for username, job in pairs(jobs) do
+    for key, job in pairs(jobs) do
         if job.reader then pcall(function() job.reader:close() end) end
-        jobs[username] = nil
+        jobs[key] = nil
     end
     if not listenerRegistered then
         L.onCommitted(onCommitted)
