@@ -961,7 +961,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 | 幣別 id | 預設名（CH／CN／EN／JP） | 角色 | 預設圖示 |
 |---|---|---|---|
-| `survivor` | 倖存幣／幸存币／Survivor Coin／サバイバーコイン | `marketUnit=true`：簽到、里程碑、售出的來源；市場唯一報價單位 | `media/ui/MinidoracatEconomy/currency_survivor.png`（小屋剪影硬幣） |
+| `survivor` | 倖存幣／幸存币／Survivor Coin／サバイバーコイン | `marketUnit=true`：簽到、里程碑、售出的來源；市場唯一報價單位 | `media/ui/MinidoracatEconomy/currency_survivor.png`（日系動漫水彩小屋＋炊煙硬幣，定稿 `docs/design-proposals/images/icons/currency_survivor_anime_*.png`） |
 | `cat` | 貓幣／猫币／Cat Coin／ネココイン | Discord 積分存入（只進不出）；社群目錄消費；不進市場 | `media/ui/MinidoracatEconomy/currency_cat.png`（日系動漫貓娘硬幣，定稿 `docs/design-proposals/images/icons/currency_cat_anime_a_*.png`；主持人 2026-09-06 挑 A） |
 
 ```lua

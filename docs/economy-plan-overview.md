@@ -165,14 +165,15 @@ A 引擎原型驗證 → B 錢包＋獎勵＋事件匯出 → C 系統商店 →
 
 | 幣別 | 64 px | 32 px | 母題 | 狀態 |
 |---|---|---|---|---|
-| 倖存幣 | ![倖存幣 64](design-proposals/images/icons/currency_survivor_64.png) | ![倖存幣 32](design-proposals/images/icons/currency_survivor_32.png) | 褐色硬幣＋小屋剪影＋炊煙 | 定案 |
+| 倖存幣（**定案：同風格重繪**） | ![倖存幣 64](design-proposals/images/icons/currency_survivor_anime_64.png) | ![倖存幣 32](design-proposals/images/icons/currency_survivor_anime_32.png) | 金色外圈＋黃昏暖褐底＋木板釘窗的小屋與炊煙（無人物） | **定案（2026-09-06，#14）**；32px 與貓幣並排：暖褐小屋 vs 粉髮貓娘一眼可分 |
+| 倖存幣（落選：扁平版） | ![倖存幣舊 64](design-proposals/images/icons/currency_survivor_64.png) | ![倖存幣舊 32](design-proposals/images/icons/currency_survivor_32.png) | 褐色硬幣＋小屋剪影＋炊煙 | 落選（風格與貓幣不一致） |
 | 貓幣（**定案：日系動漫貓娘，變體 A**） | ![貓幣 64](design-proposals/images/icons/currency_cat_anime_a_64.png) | ![貓幣 32](design-proposals/images/icons/currency_cat_anime_a_32.png) | 金色外圈＋靛藍星空底＋粉髮綠眼 chibi 貓娘（貓耳白絨毛、鈴鐺項圈、小虎牙） | **定案（2026-09-06 主持人挑 A）**；64px 清楚、32px 靠金圈與粉髮辨識 |
 | 貓幣（備用：動漫變體 B） | ![貓幣 B 64](design-proposals/images/icons/currency_cat_anime_b_64.png) | ![貓幣 B 32](design-proposals/images/icons/currency_cat_anime_b_32.png) | 玫瑰褐外圈＋櫻花粉底＋淡藍長髮紫眼 | 備用（32px 對比較弱） |
 | 貓幣（落選：極簡貓娘） | ![貓幣極簡 64](design-proposals/images/icons/currency_cat_girl_64.png) | ![貓幣極簡 32](design-proposals/images/icons/currency_cat_girl_32.png) | 靛藍硬幣＋扁平貓娘大頭 | 落選（主持人：不要極簡風） |
 | 貓幣（落選：貓臉） | ![貓幣臉 64](design-proposals/images/icons/currency_cat_64.png) | ![貓幣臉 32](design-proposals/images/icons/currency_cat_32.png) | 靛藍硬幣＋貓臉剪影 | 落選 |
 | 貓幣（落選：貓掌） | ![貓幣掌 64](design-proposals/images/icons/currency_cat_paw_64.png) | ![貓幣掌 32](design-proposals/images/icons/currency_cat_paw_32.png) | 靛藍硬幣＋貓掌印 | 落選 |
 
-風格定調：貓幣用**日系動漫 kawaii chibi**（大眼、腮紅、小虎牙、貓耳白絨毛、鈴鐺項圈、賽璐璐＋水彩感），不用極簡扁平；倖存幣維持現有褐色小屋硬幣（若要整體風格一致，日後可再出一版同風格的倖存幣）。
+風格定調：貓幣用**日系動漫 kawaii chibi**（大眼、腮紅、小虎牙、貓耳白絨毛、鈴鐺項圈、賽璐璐＋水彩感），不用極簡扁平；倖存幣已同風格重繪（#14），兩顆並排一致。
 
 當初的三組候選（A 諾克斯幣＋電波幣／B 配給券＋貓掌幣／C 倖存幣＋社群點）保留在 `design-proposals/images/11–13`，供日後主題活動或斗內幣命名參考。
 
@@ -216,7 +217,7 @@ A 引擎原型驗證 → B 錢包＋獎勵＋事件匯出 → C 系統商店 →
 | 11 | ~~管理員調整餘額的門檻~~ | **已定：沙盒選項** | 單筆 5,000、每位管理員每日加／減各 10,000、原因 ≥ 10 字、全服每日管理調整總額 50,000；只能在沙盒／ini 改，管理面板不提供（這是限制管理員的設定，屬服主層級） |
 | 12 | moderator 能否看玩家餘額與收據 | 能（唯讀）／只有 admin | **已定（A13 實測）**：能（唯讀），操作限 admin；server 以角色名清單重驗，不用 capability（moderator 也有 `AddItem`） |
 | 13 | ~~圖示同步管線放哪~~ | **已定：Economy 自帶一份**（主持人：沿用 NoticeBoard 作法、不依賴 UIFor42） | 複製 NoticeBoard 的 `NBImage`／`NBImageCache`／server 掃描器到 Economy 命名空間；UI 框架仍用 UIFor42，只有圖片同步自帶；A17 在階段 B 測。日後 UIFor42 若抽出 `ImageSync` 再遷移 |
-| 14 | ~~倖存幣是否跟貓幣同風格重繪~~ | **已定：同風格重繪，母題維持小屋＋炊煙、不放人物** | `icons/currency_survivor_anime_*.png`（生成中） |
+| 14 | ~~倖存幣是否跟貓幣同風格重繪~~ | **已定：同風格重繪，母題維持小屋＋炊煙、不放人物** | `icons/currency_survivor_anime_*.png` 已完成並定案 |
 
 ### 6.2 「Global ModData 對登入玩家可讀」是什麼、有什麼差
 
