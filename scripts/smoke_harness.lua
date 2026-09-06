@@ -84,12 +84,14 @@ function require(name)
 end
 require("MinidoracatEconomy/ECCore")
 require("MinidoracatEconomy/ECServer")
+require("MinidoracatEconomy/ECLedger")
 local EC = MinidoracatEconomy
 local S = EC.Server
+local L = EC.Ledger
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 25     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 57     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -185,6 +187,111 @@ local roles = EC.roleSet(" Admin; gm ;;")
 check(roles.admin and roles.gm and not roles.moderator, "roleSet parses ';'-separated names case-insensitively")
 check(EC.sandbox("AdminRoles", "admin") == "admin;gm" and EC.sandbox("NoSuchKey", 7) == 7 and EC.sandbox("RemoteReadOnly", "x") == "x", "sandbox returns value, default when missing, default when wrong type")
 check(EC.countKeys({ a = 1, b = 2 }) == 2 and EC.CURRENCIES.survivor.marketUnit == true and EC.CURRENCIES.cat.marketUnit == false, "currency registry static half")
+
+-- ===== 情境六：帳本 post／守恆／餘額鏈 =====
+io.write("scenario 6: ledger post, conservation, balance chain\n")
+modDataStore[EC.MODDATA_KEY] = nil          -- 全新世界
+fire("OnServerStarted")
+local root = S.modData()
+check(root.wallets ~= nil and root.idempotency ~= nil and root.receipts ~= nil, "ledger init created wallets/idempotency/receipts tables")
+local events = {}
+L.onCommitted(function(ev) events[#events + 1] = ev end)
+
+local r1 = L.credit("alice", "survivor", 30, "SYSTEM_MINT", { requestId = "checkin-1", reasonCode = "daily_checkin", kind = "checkin" })
+check(r1.ok and r1.duplicate == false and select(2, EC.parseId(r1.txId)) == r1.seq, "credit returns ok with a <epoch>:<seq> txId")
+check(L.getBalance("alice", "survivor").available == 30 and L.getBalance("SYSTEM_MINT", "survivor").available == -30, "player +30, SYSTEM_MINT -30")
+check(L.conservation("survivor") == 0, "conservation: sum over all accounts is 0")
+check(#events == 1 and events[1].txId == r1.txId and #events[1].postings == 2 and events[1].postings[1].availableBefore == 0 and events[1].postings[1].availableAfter == 30, "committed event carries postings with before/after")
+
+local r2 = L.credit("alice", "survivor", 30, "SYSTEM_MINT", { requestId = "checkin-1", reasonCode = "daily_checkin", kind = "checkin" })
+check(r2.ok and r2.duplicate == true and r2.txId == r1.txId and L.getBalance("alice", "survivor").available == 30, "same requestId is idempotent: same txId, no double credit")
+check(#events == 1, "duplicate does not emit a second event")
+
+local r3 = L.debit("alice", "survivor", 50, "SYSTEM_TAX", { requestId = "tax-1", reasonCode = "test" })
+check(not r3.ok and r3.error == "insufficient_funds" and L.getBalance("alice", "survivor").available == 30, "debit beyond balance is rejected with zero change")
+local r4 = L.debit("alice", "survivor", 10, "SYSTEM_TAX", { requestId = "tax-2", reasonCode = "test" })
+check(r4.ok and L.getBalance("alice", "survivor").available == 20 and L.getBalance("alice", "survivor").rev == 2, "debit succeeds and wallet rev increments per posting")
+
+local rec = L.receipts("alice")
+check(#rec == 2 and rec[1].before == 0 and rec[1].after == 30 and rec[2].before == 30 and rec[2].after == 20, "receipts are oldest-first with a continuous before/after chain")
+check(rec[1].counterparty == "SYSTEM_MINT" and rec[2].counterparty == "SYSTEM_TAX", "receipt counterparty is the other side of the same currency")
+check(L.receipts("SYSTEM_MINT")[1] == nil, "system accounts keep no receipt ring")
+
+-- ===== 情境七：驗證拒絕（零變動）=====
+io.write("scenario 7: validation rejects with zero change\n")
+local function balanceSnapshot()
+    return L.getBalance("alice", "survivor").available .. "/" .. L.getBalance("SYSTEM_MINT", "survivor").available
+end
+local snap = balanceSnapshot()
+local bad = {}
+bad[#bad + 1] = L.post({ kind = "x", requestId = "u-1", reasonCode = "t", postings = { { account = "alice", currency = "survivor", amount = 5 } } })
+bad[#bad + 1] = L.post({ kind = "x", requestId = "u-2", reasonCode = "t", postings = { { account = "alice", currency = "nope", amount = 5 }, { account = "SYSTEM_MINT", currency = "nope", amount = -5 } } })
+bad[#bad + 1] = L.post({ kind = "x", requestId = "u-3", reasonCode = "t", postings = { { account = "alice", currency = "survivor", amount = 1.5 }, { account = "SYSTEM_MINT", currency = "survivor", amount = -1.5 } } })
+bad[#bad + 1] = L.post({ kind = "x", requestId = "u-4", reasonCode = "t", postings = { { account = "alice", currency = "survivor", amount = 0 }, { account = "SYSTEM_MINT", currency = "survivor", amount = 0 } } })
+bad[#bad + 1] = L.post({ kind = "x", reasonCode = "t", postings = { { account = "alice", currency = "survivor", amount = 5 }, { account = "SYSTEM_MINT", currency = "survivor", amount = -5 } } })
+bad[#bad + 1] = L.post({ kind = "x", requestId = "u-6", reasonCode = "t", postings = { { account = "alice", currency = "survivor", amount = 5 }, { account = "alice", currency = "survivor", amount = -5 } } })
+check(bad[1].error == "unbalanced", "unbalanced postings rejected")
+check(bad[2].error == "unknown_currency", "unknown currency rejected")
+check(bad[3].error == "invalid_args" and bad[4].error == "invalid_args", "non-integer and zero amounts rejected")
+check(bad[5].error == "invalid_args", "missing requestId rejected")
+check(bad[6].error == "invalid_args", "two postings on the same account+currency rejected")
+check(balanceSnapshot() == snap and #events == 2, "no balance change and no event from any rejected post")
+
+root.config.currencies.cat = { enabled = false }
+local d1 = L.credit("alice", "cat", 5, "EXTERNAL_DISCORD_cat", { requestId = "cat-1", reasonCode = "t" })
+check(d1.error == "currency_disabled", "disabled currency cannot be credited to a player")
+root.config.currencies.cat = nil
+local d2 = L.credit("alice", "cat", 5, "EXTERNAL_DISCORD_cat", { requestId = "cat-1", reasonCode = "t" })
+check(d2.ok, "failed requestId was not cached: the retry after enabling succeeds")
+root.config.currencies.cat = { enabled = false }
+local d3 = L.debit("alice", "cat", 5, "SYSTEM_TAX", { requestId = "cat-2", reasonCode = "t" })
+check(d3.ok and L.getBalance("alice", "cat").available == 0, "disabled currency can still be debited (spend/refund allowed)")
+root.config.currencies.cat = nil
+
+root.frozen["alice"] = { by = "admin", at = nowMs }
+local f1 = L.credit("alice", "survivor", 5, "SYSTEM_MINT", { requestId = "fz-1", reasonCode = "t" })
+local f2 = L.credit("alice", "survivor", 5, "SYSTEM_MINT", { requestId = "fz-2", reasonCode = "t", allowFrozen = true })
+check(f1.error == "account_frozen" and f2.ok, "frozen account rejects new transactions unless allowFrozen (existing obligations)")
+root.frozen["alice"] = nil
+
+local rv = L.credit("alice", "survivor", 5, "SYSTEM_MINT", { requestId = "rev-1", reasonCode = "t", expectedRev = 1 })
+check(rv.error == "revision_mismatch", "expectedRev mismatch rejected (admin adjust safety)")
+local cur = L.getBalance("alice", "survivor").rev
+local rv2 = L.credit("alice", "survivor", 5, "SYSTEM_MINT", { requestId = "rev-2", reasonCode = "t", expectedRev = cur })
+check(rv2.ok, "expectedRev matching current rev succeeds")
+
+-- ===== 情境八：收據環與冪等 LRU 上界 =====
+io.write("scenario 8: bounded rings\n")
+for i = 1, 8 do
+    L.credit("bob", "survivor", i, "SYSTEM_MINT", { requestId = "bob-" .. i, reasonCode = "t" })
+end
+local bobRec = L.receipts("bob")
+check(#bobRec == L.RECEIPT_RING and bobRec[1].amount == 4 and bobRec[5].amount == 8, "receipt ring keeps only the newest RECEIPT_RING entries, oldest first")
+check(L.getBalance("bob", "survivor").available == 36, "bob balance is the sum of all 8 credits")
+
+local saveMax = L.IDEMPOTENCY_MAX
+L.IDEMPOTENCY_MAX = 3
+root.idempotency = { keys = {}, head = 1, count = 0, map = {} }
+for i = 1, 5 do
+    L.credit("carol", "survivor", 1, "SYSTEM_MINT", { requestId = "c-" .. i, reasonCode = "t" })
+end
+check(root.idempotency.count == 3 and root.idempotency.map["c-1"] == nil and root.idempotency.map["c-5"] ~= nil, "idempotency LRU evicts the oldest beyond IDEMPOTENCY_MAX")
+local again = L.credit("carol", "survivor", 1, "SYSTEM_MINT", { requestId = "c-1", reasonCode = "t" })
+check(again.ok and again.duplicate == false and L.getBalance("carol", "survivor").available == 6, "an evicted requestId is no longer deduplicated (documented window; requestId carries a timestamp upstream)")
+L.IDEMPOTENCY_MAX = saveMax
+
+-- ===== 情境九：跨重啟保留＋守恆 =====
+io.write("scenario 9: ledger state survives restart and stays conserved\n")
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+check(L.getBalance("alice", "survivor").available == 30 and L.getBalance("bob", "survivor").available == 36, "balances persist across restart (same saved table)")
+check(L.conservation("survivor") == 0 and L.conservation("cat") == 0, "conservation holds for every currency after all scenarios")
+check(L.sizeEstimate() > 0, "size estimate is computed from counts")
+
+-- listener 例外不得影響 commit
+L.onCommitted(function() error("listener boom") end)
+local lb = L.credit("alice", "survivor", 1, "SYSTEM_MINT", { requestId = "lb-1", reasonCode = "t" })
+check(lb.ok and L.getBalance("alice", "survivor").available == 31, "a throwing listener does not roll back or block the commit")
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then

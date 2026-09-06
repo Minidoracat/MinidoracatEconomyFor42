@@ -129,9 +129,22 @@ end
 
 -- ---------- lifecycle ----------
 
+-- Modules register their ModData initializers here; they run in registration order right after
+-- the root/meta block exists (both on start and when the harness simulates a restart).
+local initializers = {}
+function S.onInit(fn)
+    initializers[#initializers + 1] = fn
+end
+
 function S.onServerStarted()
     S.initModData()
     lastCommandAt = {}
+    for _, fn in ipairs(initializers) do
+        local ok, err = pcall(fn, md)
+        if not ok then
+            EC.log("module init failed: " .. tostring(err))
+        end
+    end
     EC.log("server ready version=" .. EC.VERSION .. " schema=" .. tostring(md.schemaVersion)
         .. " epoch=" .. md.meta.epoch .. " loadedSeq=" .. tostring(md.meta.loadedSeq)
         .. " remoteReadOnly=" .. tostring(EC.sandbox("RemoteReadOnly", true)))
