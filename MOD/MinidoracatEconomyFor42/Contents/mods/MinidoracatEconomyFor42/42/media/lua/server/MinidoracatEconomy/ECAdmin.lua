@@ -45,6 +45,9 @@ end
 if not MinidoracatEconomy or not MinidoracatEconomy.Wallet then
     require "MinidoracatEconomy/ECWallet"
 end
+if not MinidoracatEconomy or not MinidoracatEconomy.Icons then
+    require "MinidoracatEconomy/ECIcons"
+end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
 local L = EC and EC.Ledger
@@ -52,7 +55,8 @@ local X = EC and EC.Export
 local Cfg = EC and EC.Config
 local R = EC and EC.Rewards
 local W = EC and EC.Wallet
-if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W then
+local I = EC and EC.Icons
+if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W or not I then
     return
 end
 
@@ -474,6 +478,7 @@ local function dataPaths(ms)
         receipts = root .. "/receipts",
         audit = root .. "/audit/" .. EC.monthKey(ms) .. ".json",
         heartbeat = root .. "/heartbeat.json",
+        icons = root .. "/icons",
     }
 end
 
@@ -630,6 +635,20 @@ end
 S.handlers["admin.system"] = function(player, args)
     if not gate(player, "admin.system", false) then return end
     S.reply(player, "admin.system", A.system(A.isAdmin(player)))
+end
+
+-- admin.icons {action = "reload" | "status"}: reload re-reads icons/<id>.png for every currency
+-- (write gate; the resulting hash changes are audited by ECConfig), status only reports the
+-- outcome of the last read (read gate). `busy` = a reload is still in flight.
+S.handlers["admin.icons"] = function(player, args)
+    local reload = type(args) == "table" and args.action == "reload"
+    if not gate(player, "admin.icons", reload) then return end
+    local started = false
+    if reload then
+        started = I.reload(player:getUsername(), "admin_reload")
+        EC.log("admin " .. tostring(player:getUsername()) .. " icon reload " .. (started and "started" or "refused: busy"))
+    end
+    S.reply(player, "admin.icons", { ok = true, started = started, busy = I.busy(), icons = I.status(), perms = { read = true, write = A.isAdmin(player) } })
 end
 
 function A.init(root)

@@ -29,20 +29,22 @@ local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
 require "MinidoracatEconomy/ECAdminPanel"
+require "MinidoracatEconomy/ECIconCache"
 
 local P = {}
 C.Panel = P
 
 local LAYOUT_NAME = "MinidoracatEconomyPanel"
-local WIDTH, HEIGHT = 980, 600
-local MIN_WIDTH, MIN_HEIGHT = 900, 480
+local WIDTH, HEIGHT = 1120, 700
+local MIN_WIDTH, MIN_HEIGHT = 1000, 560
 local PAD, ROW, CHIP_H, COIN, COIN_SMALL, T = U.PAD, U.ROW, U.CHIP_H, U.COIN, U.COIN_SMALL, U.T
-local STATUS_H = 20
-local STRIP_H = 44
-local TAB_H = 30
-local TAB_W = 130
+local STATUS_H = 24
+local STRIP_H = 60
+local COIN_STRIP = 36            -- the balance strip is the one place the icon is the hero
+local TAB_H = 36
+local TAB_W = 140
 local CARD_TITLE_H = U.CARD_TITLE_H
-local LEFT_W = 260
+local LEFT_W = 300
 local fontH = U.fontH
 local color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin
 local clockText, stampText, durationText, amountText, signedText, hasBit, kindText, card = U.clockText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card
@@ -343,7 +345,7 @@ function Panel:drawStrip()
     local w = self.width
     fill(self, PAD, g.stripY, w - PAD * 2, STRIP_H, "well")
     local x = PAD * 2
-    local cy = g.stripY + math.floor((STRIP_H - COIN) / 2)
+    local cy = g.stripY + math.floor((STRIP_H - COIN_STRIP) / 2)
     local ty = g.stripY + math.floor((STRIP_H - fontH.medium) / 2)
     local sep = color("border")
     for i, id in ipairs(self:currencies()) do
@@ -352,8 +354,8 @@ function Panel:drawStrip()
             self:drawRect(x, g.stripY + 8, 1, STRIP_H - 16, sep.a, sep.r, sep.g, sep.b)
             x = x + PAD * 2
         end
-        drawCoin(self, id, x, cy, COIN)
-        x = x + COIN + PAD
+        drawCoin(self, id, x, cy, COIN_STRIP)
+        x = x + COIN_STRIP + PAD
         local name = C.currencyName(id)
         text(self, name, x, ty, "text", UIFont.Medium)
         x = x + textWidth(name, UIFont.Medium) + PAD
@@ -382,7 +384,7 @@ function Panel:drawBalanceCard(x, y, w, h, withMonth)
         if cy + blockH > y + h then break end
         local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
         fill(self, x + PAD, cy, w - PAD * 2, blockH, "well")
-        drawCoin(self, id, x + PAD * 2, cy + 4, COIN)
+        drawCoin(self, id, x + PAD * 2, cy + math.floor((ROW + 4 - COIN) / 2), COIN)
         text(self, C.currencyName(id), x + PAD * 2 + COIN + PAD, cy + math.floor((ROW + 4 - fontH.medium) / 2) + 1, "text", UIFont.Medium)
         local ry = cy + ROW + 6
         local right = x + w - PAD * 3

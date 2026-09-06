@@ -71,6 +71,7 @@ function C.currency(id)
         nameOverride = e.nameOverride,
         iconDefault = static.iconDefault,
         iconHash = e.iconHash,
+        iconBytes = e.iconBytes,
         marketUnit = static.marketUnit,
         directTransfer = static.directTransfer,
         enabled = e.enabled ~= false,
@@ -120,13 +121,18 @@ function C.setEnabled(id, enabled, actor, reason)
     return true
 end
 
-function C.setIconHash(id, hash, actor, reason)
+-- hash: 8 hex chars (EC.hashHex) + bytes, or nil/nil to fall back to the shipped icon. The
+-- byte count travels with the hash so clients can validate a cached file before asking for it.
+function C.setIconHash(id, hash, bytes, actor, reason)
     if not EC.CURRENCIES[id] then return false, "unknown_currency" end
-    if hash ~= nil and (type(hash) ~= "string" or #hash > 16) then return false, "invalid_args" end
+    if hash ~= nil and not (EC.isIconHash(hash) and type(bytes) == "number" and bytes > 0 and bytes <= EC.ICON_MAX_BYTES) then
+        return false, "invalid_args"
+    end
     local e = entry(id)
     local before = e.iconHash
-    if before == hash then return true end
+    if before == hash and e.iconBytes == bytes then return true end
     e.iconHash = hash
+    e.iconBytes = hash and bytes or nil
     changed(id, "iconHash", before, hash, actor, reason)
     return true
 end

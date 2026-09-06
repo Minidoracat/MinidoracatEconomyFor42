@@ -271,5 +271,18 @@
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_Hint": "at least 1,000",
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_Warn": "Only refuses new credits; existing balances are not reduced",
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_Confirm": "Confirm cap",
-  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "The cap must be an integer of at least 1,000, or empty"
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "The cap must be an integer of at least 1,000, or empty",
+  "IGUI_MinidoracatEconomy_Admin_Cur_ReloadIcons": "Reload icons",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconCustom": "Icon: custom (%1, %2 KB)",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "Icon: built-in. To replace it, put %1 into the icons folder (System page) and press Reload icons (PNG, up to 64 KB)",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconError": "Icon load failed: %1",
+  "IGUI_MinidoracatEconomy_Admin_Icons_Started": "Re-reading icons...",
+  "IGUI_MinidoracatEconomy_Admin_Icons_Busy": "Icons are still being read, try again in a moment",
+  "IGUI_MinidoracatEconomy_Admin_Sys_Path_icons": "Icons folder",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_too_large": "file exceeds 64 KB",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_unreadable": "file could not be opened",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_short_read": "file ended early",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_read_failed": "error while reading",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_empty": "file is empty",
+  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "Icons re-read"
 }

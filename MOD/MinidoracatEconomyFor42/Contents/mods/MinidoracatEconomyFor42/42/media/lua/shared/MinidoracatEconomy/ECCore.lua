@@ -320,4 +320,46 @@ function EC.countKeys(t)
     return n
 end
 
+-- ---------- currency icon sync (stage B8; server ECIcons.lua, client ECIconCache.lua) ----------
+--
+-- Bytes travel as Lua strings whose chars are 0..255 ("byte strings"): a command-table string is
+-- serialised as int16 byteLength + UTF-8 (TableNetworkUtils.java:80-81 -> ByteBufferWriter.putUTF
+-- -> GameWindow.StringUTF.save, GameWindow.java:1263-1272) and decoded with new String(bytes,
+-- UTF_8) (ByteBufferReader.java:48-53), so every char U+0000..U+00FF round-trips exactly (1-2
+-- bytes each). The int16 is signed: a chunk of ICON_CHUNK_CHARS chars is at most 2x that in
+-- bytes and must stay below 32767. DataOutputStream.writeBytes(String) on the client writes the
+-- low 8 bits of each char (NoticeBoard NBImageCache, verified in production).
+EC.ICON_MAX_BYTES = 65536        -- hard cap on both ends (a 64 px PNG is ~10 KB)
+EC.ICON_CHUNK_CHARS = 8192       -- <= 16384 bytes on the wire
+EC.ICON_HASH_LEN = 8
+
+-- Streaming DJB2 over byte values (Kahlua has no bit ops; 33*h + b stays exact below 2^53 when
+-- reduced mod 2^32 every step). Same function on both ends; the hex form names the cache file.
+function EC.hashInit() return 5381 end
+
+function EC.hashUpdate(hash, byteString, fromIndex, toIndex)
+    local h = hash
+    for i = fromIndex or 1, toIndex or #byteString do
+        h = (h * 33 + string.byte(byteString, i)) % 4294967296
+    end
+    return h
+end
+
+-- Manual hex: Kahlua's string.format("%x") on a double above 2^31 is not something this mod
+-- has verified in-engine, and eight iterations cost nothing.
+local HEX = "0123456789abcdef"
+function EC.hashHex(hash)
+    local out, v = {}, hash
+    for i = EC.ICON_HASH_LEN, 1, -1 do
+        local d = v % 16
+        out[i] = string.sub(HEX, d + 1, d + 1)
+        v = (v - d) / 16
+    end
+    return table.concat(out)
+end
+
+function EC.isIconHash(text)
+    return type(text) == "string" and #text == EC.ICON_HASH_LEN and string.match(text, "^[0-9a-f]+$") ~= nil
+end
+
 return EC

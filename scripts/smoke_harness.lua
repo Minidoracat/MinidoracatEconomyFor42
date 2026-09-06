@@ -102,6 +102,22 @@ function getFileReader(path, createIfNull)
         close = function() end,
     }
 end
+-- 假二進位檔：getFileInput(path) 回 DataInputStream 形狀（available／read／close）
+binFiles = {}                    -- path -> byte string（全域：主函式已逼近 200 個 local）
+function getFileInput(path)
+    local data = binFiles[path]
+    if not data then return nil end
+    local pos = 0
+    return {
+        available = function() return #data - pos end,
+        read = function()
+            if pos >= #data then return -1 end
+            pos = pos + 1
+            return string.byte(data, pos)
+        end,
+        close = function() end,
+    }
+end
 
 local function fire(name, ...)
     for _, fn in ipairs(events[name] or {}) do fn(...) end
@@ -136,6 +152,7 @@ require("MinidoracatEconomy/ECExport")
 require("MinidoracatEconomy/ECConfig")
 require("MinidoracatEconomy/ECRewards")
 require("MinidoracatEconomy/ECWallet")
+require("MinidoracatEconomy/ECIcons")
 require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
@@ -148,7 +165,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 194     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 212     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1018,6 +1035,112 @@ end
 check(rateErr == "rate_limited" and jbal() == balR + A.RATE_PER_MINUTE,
     "an admin is limited to RATE_PER_MINUTE adjustments per minute and the refused ones move no money")
 onlinePlayers = {}
+
+-- ===== 情境二十一：貨幣圖示（掃描、分 tick 讀取、hash、分塊回覆、上限、移除、閘門） =====
+io.write("scenario 21: currency icons scan, chunked reply, cap, removal, gate\n")
+;(function() -- own function: locals in a do-block still count toward the main chunk's 200 limit
+local I = EC.Icons
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+onlinePlayers = { boss, mod, joe, alice }
+local catPath = X.ROOT .. "/icons/cat.png"
+local iconBytes = {}
+local seed = 7
+for i = 1, 10000 do
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    iconBytes[i] = string.char(seed % 256)
+end
+local catData = table.concat(iconBytes)
+binFiles[catPath] = catData
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+check(Cfg.currency("cat").iconHash == nil and I.busy(), "start only queues the read; nothing is hashed synchronously")
+local ticks = 0
+while I.busy() and ticks < 20 do fire("OnTickEvenPaused"); ticks = ticks + 1 end
+local expectHash = 5381
+for i = 1, #catData do expectHash = (expectHash * 33 + string.byte(catData, i)) % 4294967296 end
+local catCfg = Cfg.currency("cat")
+check(ticks == 4 and EC.isIconHash(catCfg.iconHash) and catCfg.iconHash == EC.hashHex(expectHash) and catCfg.iconBytes == 10000,
+    "10000 bytes take 3 read ticks + 1 open tick; hash is DJB2 over the bytes and the byte count is published")
+check(Cfg.currency("survivor").iconHash == nil and I.status().survivor.error == nil and I.status().survivor.hash == nil,
+    "a currency without a file keeps the shipped icon and reports no error")
+local cfgPush = lastSent("config")
+check(cfgPush and cfgPush.args.currencies[2].iconHash == catCfg.iconHash and cfgPush.args.currencies[2].iconBytes == 10000,
+    "the new hash is broadcast through config")
+check(EC.hashHex(0) == "00000000" and EC.hashHex(4294967295) == "ffffffff" and EC.hashHex(EC.hashUpdate(EC.hashInit(), "a")) == "0002b606",
+    "hashHex pads to 8 lower-case hex digits and djb2('a') = 0x0002b606")
+
+-- 分塊回覆
+sentCommands = {}
+fire("OnClientCommand", EC.COMMAND_MODULE, "icon.get", alice, { currency = "cat" })
+local parts, got = {}, {}
+for _, c in ipairs(sentCommands) do
+    if c.command == "icon.data" then
+        got[#got + 1] = c.args
+        parts[c.args.i] = c.args.text
+    end
+end
+check(#got == 2 and got[1].n == 2 and got[1].i == 1 and got[2].i == 2 and got[1].hash == catCfg.iconHash and got[1].bytes == 10000,
+    "icon.get replies one icon.data per chunk with hash, byte count and chunk index")
+check(#parts[1] == EC.ICON_CHUNK_CHARS and #parts[2] == 10000 - EC.ICON_CHUNK_CHARS and table.concat(parts) == catData,
+    "chunks are ICON_CHUNK_CHARS long and concatenate back to the exact bytes")
+sentCommands = {}
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "icon.get", alice, { currency = "cat", from = 2 })
+check(#sentCommands == 1 and sentCommands[1].args.i == 2, "from=N resumes at chunk N")
+sentCommands = {}
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "icon.get", alice, { currency = "survivor" })
+check(#sentCommands == 1 and sentCommands[1].args.hash == nil and sentCommands[1].args.text == nil,
+    "asking for a currency without an override replies hash=nil and no bytes")
+
+-- 超過上限：拒絕、不動已載入的貓幣、稽核只記真正的變更
+binFiles[X.ROOT .. "/icons/survivor.png"] = string.rep("x", EC.ICON_MAX_BYTES + 1)
+local auditBefore = #X.auditEntries(500)
+sentCommands = {}
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.icons", boss, { action = "reload" })
+local rl = lastSent("admin.icons").args
+check(rl.ok and rl.started == true and rl.busy == true, "admin reload starts a rescan and reports busy")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.icons", boss, { action = "reload" })
+check(lastSent("admin.icons").args.started == false, "a reload while one is in flight is refused, not queued twice")
+ticks = 0
+while I.busy() and ticks < 20 do fire("OnTickEvenPaused"); ticks = ticks + 1 end
+check(Cfg.currency("survivor").iconHash == nil and I.status().survivor.error == "too_large",
+    "an oversized file is refused and the shipped icon stays")
+check(Cfg.currency("cat").iconHash == catCfg.iconHash and #X.auditEntries(500) == auditBefore,
+    "re-reading an unchanged icon writes no audit line and keeps the hash")
+
+-- 移除檔案 -> 回內建圖示，且有稽核
+binFiles[catPath] = nil
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.icons", boss, { action = "reload" })
+ticks = 0
+while I.busy() and ticks < 20 do fire("OnTickEvenPaused"); ticks = ticks + 1 end
+local removedAudit = X.auditEntries(1)[1]
+check(Cfg.currency("cat").iconHash == nil and Cfg.currency("cat").iconBytes == nil
+    and removedAudit.action == "config" and removedAudit.field == "iconHash" and removedAudit.after == nil and removedAudit.admin == "boss",
+    "removing the file clears the override and audits who reloaded")
+sentCommands = {}
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "icon.get", alice, { currency = "cat" })
+check(sentCommands[1].args.hash == nil, "chunks of a removed icon are no longer served")
+
+-- 閘門：一般玩家全拒、唯讀角色只能查狀態
+sentCommands = {}
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.icons", joe, { action = "status" })
+check(lastSent("admin.icons").args.error == "forbidden", "a plain player cannot query icon status")
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.icons", mod, { action = "reload" })
+check(lastSent("admin.icons").args.error == "forbidden", "a moderator cannot reload")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.icons", mod, { action = "status" })
+local st = lastSent("admin.icons").args
+check(st.ok and st.started == false and st.perms.write == false and st.icons.survivor.error == "too_large",
+    "a moderator can read icon status and sees the last outcome")
+onlinePlayers = {}
+end)()
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then

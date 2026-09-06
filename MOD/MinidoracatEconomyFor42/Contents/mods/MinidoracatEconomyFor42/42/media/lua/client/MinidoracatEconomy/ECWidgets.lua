@@ -21,11 +21,13 @@ local C = EC.Client
 local U = {}
 C.UI = U
 
-U.PAD = 8
-U.ROW = 22
-U.CHIP_H = 22
-U.COIN = 22
-U.COIN_SMALL = 18
+-- Spacing scale (a "comfortable" default; the admin panel additionally derives its row heights
+-- from the font). Icons are 64 px textures drawn scaled, so larger sizes cost nothing.
+U.PAD = 12
+U.ROW = 28
+U.CHIP_H = 26
+U.COIN = 30
+U.COIN_SMALL = 22
 U.T = "IGUI_MinidoracatEconomy_"
 local PAD, ROW, COIN, COIN_SMALL, T = U.PAD, U.ROW, U.COIN, U.COIN_SMALL, U.T
 
@@ -159,16 +161,20 @@ function U.strike(el, x, y, w, font)
     el:drawRect(x, y + math.floor(h / 2), w, 1, c.a, c.r, c.g, c.b)
 end
 
--- Currency icon: stage B8 ships the textures (EC.CURRENCIES[id].iconDefault); until then (or when
--- the texture is missing) a gold dot stands in.
+-- Currency icon: the admin-supplied texture (ECIconCache) when one is cached, else the shipped
+-- 64 px texture (EC.CURRENCIES[id].iconDefault), else a gold dot.
 local coinTextures = {}
 function U.drawCoin(el, id, x, y, size)
-    local tex = coinTextures[id]
-    if tex == nil then
-        local def = EC.CURRENCIES[id]
-        local ok, t = pcall(getTexture, def and def.iconDefault or "")
-        tex = (ok and t) or false
-        coinTextures[id] = tex
+    local cache = EC.IconCache
+    local tex = cache and cache.texture(id) or nil
+    if not tex then
+        tex = coinTextures[id]
+        if tex == nil then
+            local def = EC.CURRENCIES[id]
+            local ok, t = pcall(getTexture, def and def.iconDefault or "")
+            tex = (ok and t) or false
+            coinTextures[id] = tex
+        end
     end
     if tex then
         el:drawTextureScaled(tex, x, y, size, size, 1, 1, 1, 1)
@@ -402,7 +408,7 @@ function U.newTable(cellClass, rowHeight)
 end
 
 -- Card frame with an optional title row (CARD_TITLE_H tall).
-U.CARD_TITLE_H = 32
+U.CARD_TITLE_H = 36
 function U.card(el, x, y, w, h, title)
     fill(el, x, y, w, h, "card")
     border(el, x, y, w, h, "border")

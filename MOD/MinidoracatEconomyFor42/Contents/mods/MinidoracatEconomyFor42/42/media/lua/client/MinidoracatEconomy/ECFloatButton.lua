@@ -17,7 +17,7 @@ local LAYOUT_NAME = "MinidoracatEconomyFloatButton"
 local SIZE = 40
 local RIGHT_MARGIN = 8
 local ICON_SIZE = 28
-local ICON_PATH = EC.CURRENCIES.survivor.iconDefault -- shipped in stage B8; text fallback until then
+local ICON_PATH = EC.CURRENCIES.survivor.iconDefault -- shipped 64 px texture; text fallback if it fails to load
 local TEXT = { r = 1, g = 0.85, b = 0.4, a = 1 }
 
 local function framework()

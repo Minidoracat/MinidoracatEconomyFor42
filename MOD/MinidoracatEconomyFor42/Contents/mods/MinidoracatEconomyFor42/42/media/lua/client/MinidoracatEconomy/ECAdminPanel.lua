@@ -56,8 +56,8 @@ local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.st
 local Button, TableCell = U.Button, U.TableCell
 
 local TABS = { "Player", "Dashboard", "Currencies", "Audit", "System" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.system" }
-local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.system", "admin.icons" }
+local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config" }
 
@@ -65,6 +65,7 @@ local COOLDOWN_MS = 500
 local TIMEOUT_MS = 8000
 local POLL_MS = 30000
 local PERM_POLL_MS = 500
+local ICONS_RECHECK_MS = 2500   -- an icon reload reads a few KB per tick; the outcome is asked for after this
 local AUDIT_LIMIT = 500
 local REASON_MAX = 200
 local NAME_MAX = 24
@@ -96,19 +97,40 @@ end
 
 local sentAt = {}        -- command -> ms of the last send (client cooldown)
 local pendingAt = {}     -- command -> ms of the request still waiting for a reply
+local deferred = {}      -- command -> { args, at }: held until the server's 500 ms window has passed
 local requestSeq = 0
 
+-- The server drops a repeat of the same command from the same player inside 500 ms
+-- (ECServer COMMAND_COOLDOWN_MS) without replying. A click that lands right after an automatic
+-- request (status re-check, page poll) used to be refused with a red "too fast": instead the
+-- request is held and sent when the window has passed. `pendingAt` is set at once so the
+-- buttons disable and the timeout clock starts from the click.
 local function send(command, args)
     local player = getPlayer()
     if not player then return false, "no_player" end
     local now = EC.now()
     if pendingAt[command] then return false, "busy" end
-    local last = sentAt[command]
-    if last and now - last < COOLDOWN_MS then return false, "throttled" end
-    sentAt[command] = now
     pendingAt[command] = now
+    local last = sentAt[command]
+    if last and now - last < COOLDOWN_MS then
+        deferred[command] = { args = args or {}, at = last + COOLDOWN_MS }
+        return true
+    end
+    sentAt[command] = now
     sendClientCommand(player, EC.COMMAND_MODULE, command, args or {})
     return true
+end
+
+local function flushDeferred(now)
+    local player = getPlayer()
+    if not player then return end
+    for command, d in pairs(deferred) do
+        if now >= d.at then
+            deferred[command] = nil
+            sentAt[command] = now
+            sendClientCommand(player, EC.COMMAND_MODULE, command, d.args)
+        end
+    end
 end
 
 local function isPending(command)
@@ -135,10 +157,10 @@ end
 
 -- ---------- small helpers ----------
 
-local function lineH() return fontH.small + 4 end
-local function rowH() return math.max(22, fontH.small + 8) end
-local function entryH() return math.max(24, fontH.small + 10) end
-local function btnH() return math.max(26, fontH.medium + 8) end
+local function lineH() return fontH.small + 6 end
+local function rowH() return math.max(26, fontH.small + 12) end
+local function entryH() return math.max(26, fontH.small + 12) end
+local function btnH() return math.max(28, fontH.medium + 10) end
 
 local function tr(key) return getText(T .. key) end
 
@@ -504,8 +526,8 @@ local function dialogMetrics(level)
         return { gap = 2, entry = math.max(18, small + 6), button = math.max(20, small + 8),
             line = small + 1, title = math.max(20, medium + 4), reason = 16, chip = math.max(16, small + 2) }
     end
-    return { gap = 6, entry = entryH(), button = btnH(), line = lineH(),
-        title = math.max(24, medium + 8), reason = math.max(20, rowH() * 2), chip = math.max(20, small + 6) }
+    return { gap = 8, entry = entryH(), button = btnH(), line = lineH(),
+        title = math.max(26, medium + 10), reason = math.max(24, rowH() * 2), chip = math.max(22, small + 8) }
 end
 
 local function planRowHeight(row, m)
@@ -744,6 +766,8 @@ function Admin:createChildren()
     self:addChild(self.rateButton)
     self.balanceMaxButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_EditBalanceMax"), self, Admin.onBalanceMaxClick, "chip")
     self:addChild(self.balanceMaxButton)
+    self.iconsButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_ReloadIcons"), self, Admin.onIconsClick, "chip")
+    self:addChild(self.iconsButton)
 
     -- audit page
     self.auditEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Admin_Audit_Hint") })
@@ -854,6 +878,28 @@ end
 
 function Admin:selectedCurrency()
     return self.cfgSelected or EC.CURRENCY_ORDER[1]
+end
+
+-- Icon status for a currency: the hash/bytes come from the config snapshot (what every client
+-- sees); the error comes from the last admin.icons reply (host-only detail).
+function Admin:iconLines(def)
+    local status = self.icons and self.icons[def.id] or nil
+    if EC.isIconHash(def.iconHash) and type(def.iconBytes) == "number" then
+        self:line(getText(T .. "Admin_Cur_IconCustom", def.iconHash, tostring(math.floor((def.iconBytes + 1023) / 1024))), "textMuted")
+    else
+        self:line(getText(T .. "Admin_Cur_IconDefault", def.id .. ".png"), "textMuted")
+    end
+    if status and status.error then
+        local code = tostring(status.error)
+        self:line(getText(T .. "Admin_Cur_IconError", getTextOrNull(T .. "Admin_IconErr_" .. code) or code), "errorText")
+    end
+end
+
+function Admin:onIconsClick()
+    self.message = nil
+    local ok, err = send("admin.icons", { action = "reload" })
+    if not ok then self.message = { text = errorText(err), error = true } end
+    self:updateEnabled()
 end
 
 function Admin:onRenameClick()
@@ -1156,6 +1202,24 @@ function Admin:onReply(kind, args)
             local msg = { text = errorText(args.error), error = true }
             if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
         end
+    elseif kind == "icons" then
+        if args.ok == false then
+            self.message = { text = errorText(args.error), error = true }
+            return
+        end
+        if type(args.icons) == "table" then self.icons = args.icons end
+        if args.started then
+            self.iconsReloading = true
+            self.message = { text = tr("Admin_Icons_Started") }
+        elseif args.busy then
+            self.message = { text = tr("Admin_Icons_Busy") }
+        elseif self.iconsReloading then
+            -- the status re-check after a reload: replace the "reading..." line with the outcome
+            self.iconsReloading = nil
+            self.message = { text = tr("Admin_Icons_Done") }
+        end
+        -- the read runs over the next ticks: ask for the outcome once it had time to finish
+        if args.busy then self.iconsRecheckAt = EC.now() + ICONS_RECHECK_MS end
     elseif kind == "audit" then
         if args.ok == false then
             self.message = { text = errorText(args.error), error = true }
@@ -1298,6 +1362,7 @@ function Admin:updateEnabled()
     self:setButtonTitle(self.toggleButton, (def == nil or def.enabled ~= false) and tr("Admin_Cur_Disable") or tr("Admin_Cur_Enable"))
     self.rateButton:setEnable(cfgWrite and def ~= nil and type(def.exchange) == "table")
     self.balanceMaxButton:setEnable(cfgWrite)
+    self.iconsButton:setEnable(write and not modal and not isPending("admin.icons") and self.iconsRecheckAt == nil)
 
     setEntryEditable(self.auditEntry, read and not modal)
     for _, b in ipairs(self.auditFilterButtons) do b:setEnable(read and not modal) end
@@ -1417,17 +1482,30 @@ function Admin:layout()
     g.cfgRowY = g.bodyY + CARD_TITLE_H + rh
     local cfgBtnY = g.bodyY + g.bodyH - actionH
     g.cfgButtonY = cfgBtnY
-    -- four config buttons share the detail column; each keeps at most a quarter of it
-    local cfgSlot = math.floor((g.cfgDetailW - 18) / 4)
-    local cfgX = g.cfgDetailX
+    -- five config buttons share the detail column. Fair share with redistribution: buttons whose
+    -- natural width is below their share keep it, and what they leave over goes to the wider ones
+    -- (an equal fifth would truncate the longest label at the minimum window with large fonts).
     local toggleFull = math.max(textWidth(tr("Admin_Cur_Disable")), textWidth(tr("Admin_Cur_Enable"))) + 30
-    for _, item in ipairs({ { self.renameButton, textWidth(self.renameButton.fullTitle) + 30 },
+    local cfgItems = { { self.renameButton, textWidth(self.renameButton.fullTitle) + 30 },
         { self.toggleButton, toggleFull }, { self.rateButton, textWidth(self.rateButton.fullTitle) + 30 },
-        { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 } }) do
+        { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 },
+        { self.iconsButton, textWidth(self.iconsButton.fullTitle) + 30 } }
+    local byNeed = { cfgItems[1], cfgItems[2], cfgItems[3], cfgItems[4], cfgItems[5] }
+    EC.sortSafe(byNeed, function(a, b) return a[2] < b[2] end)
+    local remaining = g.cfgDetailW - 6 * (#cfgItems - 1)
+    local cfgWidth = {}
+    for i, item in ipairs(byNeed) do
+        local share = math.floor(remaining / (#byNeed - i + 1))
+        local bw = math.max(40, math.min(item[2], share))
+        cfgWidth[item[1]] = bw
+        remaining = remaining - bw
+    end
+    local cfgX = g.cfgDetailX
+    for _, item in ipairs(cfgItems) do
         local b = item[1]
         b:setVisible(currencies)
         b:setHeight(actionH)
-        b:setWidth(math.max(40, math.min(item[2], cfgSlot)))
+        b:setWidth(cfgWidth[b])
         b:setX(cfgX); b:setY(cfgBtnY)
         self:setButtonTitle(b, b.fullTitle)
         cfgX = cfgX + b.width + 6
@@ -1560,7 +1638,7 @@ function Admin:drawPlayer()
     -- account summary: available / reserved / wallet revision per currency
     card(self, 0, g.cardsY, g.leftW, g.cardsH, tr("Admin_Player_Summary"))
     local cy = g.cardsY + CARD_TITLE_H + 4
-    local coin = math.max(16, fontH.medium)
+    local coin = math.max(24, fontH.medium + 8)
     for _, id in ipairs(currencyOrder(lookup)) do
         local blockH = rh + lh * 3 + 4
         if cy + blockH > bottom then break end
@@ -1761,6 +1839,7 @@ function Admin:drawCurrencies()
             self:line(tr("Admin_Cur_NoOverride"), "textMuted")
         end
         self:line(getText(T .. (def.balanceMaxOverride and "Admin_Cur_BalanceMaxOverride" or "Admin_Cur_BalanceMaxDefault"), amountText(def.balanceMax or 0)), "textMuted")
+        self:iconLines(def)
         local ex = def.exchange
         if type(ex) ~= "table" then
             self:line(tr("Admin_Cur_NoExchange"), "textFaint")
@@ -1877,6 +1956,15 @@ function Admin:prerender()
         end
     end
 
+    -- outcome of an icon reload started a moment ago
+    if self.iconsRecheckAt and now >= self.iconsRecheckAt then
+        self.iconsRecheckAt = nil
+        if self:readAllowed() then send("admin.icons", { action = "status" }) end
+        self:updateEnabled()
+    end
+
+    flushDeferred(now)
+
     -- one timed-out command per frame at most (pendingAt holds at most #COMMANDS keys)
     local stale = nil
     for command, at in pairs(pendingAt) do
@@ -1884,6 +1972,7 @@ function Admin:prerender()
     end
     if stale then
         pendingAt[stale] = nil
+        deferred[stale] = nil
         self:onTimeout(stale)
     end
 
@@ -1966,6 +2055,8 @@ function Admin:refresh()
         send("admin.audit", { limit = AUDIT_LIMIT })
     elseif self.tab == "Dashboard" or self.tab == "System" then
         send("admin.system", {})
+    elseif self.tab == "Currencies" and self.icons == nil then
+        send("admin.icons", { action = "status" })
     end
     self:updateEnabled()
 end

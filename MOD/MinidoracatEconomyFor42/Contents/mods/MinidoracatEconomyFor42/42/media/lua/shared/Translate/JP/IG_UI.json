@@ -271,5 +271,18 @@
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_Hint": "最低 1,000",
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_Warn": "新しい入金のみ拒否し、既存残高は減りません",
   "IGUI_MinidoracatEconomy_Admin_BalanceMax_Confirm": "上限を確定",
-  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "上限は 1,000 以上の整数か、空欄にしてください"
+  "IGUI_MinidoracatEconomy_Admin_BalanceMax_BadValue": "上限は 1,000 以上の整数か、空欄にしてください",
+  "IGUI_MinidoracatEconomy_Admin_Cur_ReloadIcons": "アイコン更新",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconCustom": "アイコン：カスタム（%1、%2 KB）",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconDefault": "アイコン：内蔵。差し替えるにはシステムページの「アイコンフォルダ」に %1 を置き、「アイコン再読込」を押してください（PNG、64 KB まで）",
+  "IGUI_MinidoracatEconomy_Admin_Cur_IconError": "アイコンの読み込みに失敗：%1",
+  "IGUI_MinidoracatEconomy_Admin_Icons_Started": "アイコンを再読込しています…",
+  "IGUI_MinidoracatEconomy_Admin_Icons_Busy": "アイコンを読み込み中です。しばらくしてからもう一度お試しください",
+  "IGUI_MinidoracatEconomy_Admin_Sys_Path_icons": "アイコンフォルダ",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_too_large": "ファイルが 64 KB を超えています",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_unreadable": "ファイルを開けません",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_short_read": "ファイルが途中で終わっています",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_read_failed": "読み込み中にエラーが発生しました",
+  "IGUI_MinidoracatEconomy_Admin_IconErr_empty": "ファイルが空です",
+  "IGUI_MinidoracatEconomy_Admin_Icons_Done": "アイコンを再読込しました"
 }
