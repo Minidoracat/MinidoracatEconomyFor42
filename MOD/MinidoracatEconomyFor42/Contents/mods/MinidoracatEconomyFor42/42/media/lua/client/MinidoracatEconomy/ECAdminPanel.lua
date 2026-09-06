@@ -2214,6 +2214,13 @@ function Admin:prerender()
     -- permission collapse: re-read the role at most twice a second
     if not self.permCheckedAt or now - self.permCheckedAt > PERM_POLL_MS then
         self.permCheckedAt = now
+        -- the server's last verdict (serverPerms) is bound to the role it judged: once the local
+        -- role changes, drop it so a re-promoted admin is not locked out until the window reopens
+        local level = accessLevel()
+        if level ~= self.lastLevel then
+            self.lastLevel = level
+            self.serverPerms = nil
+        end
         local write, read = self:writeAllowed(), self:readAllowed()
         if write ~= self.hadWrite or read ~= self.hadRead then
             if not write then self:closeDialog() end
