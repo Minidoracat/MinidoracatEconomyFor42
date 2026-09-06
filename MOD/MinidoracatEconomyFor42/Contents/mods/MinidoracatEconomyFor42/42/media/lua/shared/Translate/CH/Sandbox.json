@@ -21,5 +21,15 @@
   "Sandbox_MinidoracatEconomy_AdminRoles": "可寫入的管理角色",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "可以調整餘額、修改貨幣設定、登錄終端的伺服器角色名稱，多個以分號分隔（例如 admin;gm）。伺服器對每個管理指令都會重新核對角色名，客戶端的顯示不算授權。",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "唯讀的管理角色",
-  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "可以查看玩家餘額、收據、稽核與儀表板但不能操作的伺服器角色名稱，多個以分號分隔。"
+  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "可以查看玩家餘額、收據、稽核與儀表板但不能操作的伺服器角色名稱，多個以分號分隔。",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin": "貓幣存入比率（幾點積分換 1 貓幣）",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin_tooltip": "Discord 積分存入遊戲時，幾點積分換成 1 枚貓幣（預設 1，即 1:1）。只是啟動時的預設值：管理員可在管理面板隨時調整，調整後版本號加一並同步給 Discord 端，新訂單才採用新比率。",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin": "貓幣單筆存入下限",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin_tooltip": "一筆 Discord 存入訂單最少換得的貓幣數。啟動預設值，管理面板可改。",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax": "貓幣單筆存入上限",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax_tooltip": "一筆 Discord 存入訂單最多換得的貓幣數。啟動預設值，管理面板可改。",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily": "貓幣每帳號每日存入上限",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily_tooltip": "同一個遊戲帳號每個獎勵日最多存入的貓幣總數；超過的訂單會被拒絕並退回積分。啟動預設值，管理面板可改。",
+  "Sandbox_MinidoracatEconomy_CatServerDaily": "貓幣全服每日存入上限",
+  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "全伺服器每個獎勵日最多存入的貓幣總數。啟動預設值，管理面板可改。"
 }

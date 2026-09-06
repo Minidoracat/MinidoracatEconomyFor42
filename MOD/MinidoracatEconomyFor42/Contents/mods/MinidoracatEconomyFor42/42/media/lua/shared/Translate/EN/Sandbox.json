@@ -21,5 +21,15 @@
   "Sandbox_MinidoracatEconomy_AdminRoles": "Roles allowed to write",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "Server role names that may adjust balances, change currency settings and register terminals; separate several with semicolons (e.g. admin;gm). The server re-checks the role name on every admin command; the client display is not authorization.",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "Read-only roles",
-  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "Server role names that may view player balances, receipts, audit and dashboard but cannot act; separate several with semicolons."
+  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "Server role names that may view player balances, receipts, audit and dashboard but cannot act; separate several with semicolons.",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin": "Cat Coin deposit rate (points per coin)",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin_tooltip": "How many Discord points become one Cat Coin when depositing (default 1 = 1:1). Boot default only: admins can change it any time in the admin panel; the rate version increments and is synced to the Discord side, new orders use the new rate.",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin": "Cat Coin minimum per deposit",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin_tooltip": "Smallest number of Cat Coins a single Discord deposit order may yield. Boot default; adjustable in the admin panel.",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax": "Cat Coin maximum per deposit",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax_tooltip": "Largest number of Cat Coins a single Discord deposit order may yield. Boot default; adjustable in the admin panel.",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily": "Cat Coin daily deposit cap per account",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily_tooltip": "Total Cat Coins one game account may deposit per reward day; orders above it are refused and the points refunded. Boot default; adjustable in the admin panel.",
+  "Sandbox_MinidoracatEconomy_CatServerDaily": "Cat Coin daily deposit cap (server)",
+  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "Total Cat Coins the whole server may deposit per reward day. Boot default; adjustable in the admin panel."
 }

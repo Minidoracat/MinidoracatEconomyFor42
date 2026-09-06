@@ -28,8 +28,33 @@ C.handlers = handlers
 
 handlers["hello.ack"] = function(args)
     C.session = args
+    C.currencies = args.currencies or C.currencies
     EC.log("session epoch=" .. tostring(args.epoch) .. " loadedSeq=" .. tostring(args.loadedSeq)
-        .. " server=" .. tostring(args.version) .. " remoteReadOnly=" .. tostring(args.remoteReadOnly))
+        .. " server=" .. tostring(args.version) .. " remoteReadOnly=" .. tostring(args.remoteReadOnly)
+        .. " currencies=" .. tostring(args.currencies and #args.currencies or 0))
+end
+
+-- Runtime currency changes (name override, enabled, rates) pushed by the server.
+handlers["config"] = function(args)
+    if type(args.currencies) == "table" then
+        C.currencies = args.currencies
+    end
+end
+
+-- Display name: admin override -> translation key -> id. Never cache the result across ticks.
+function C.currencyName(id)
+    local cur = C.currency(id)
+    if cur and cur.nameOverride then return cur.nameOverride end
+    local static = EC.CURRENCIES[id]
+    if static then return getText(static.nameKey) end
+    return tostring(id)
+end
+
+function C.currency(id)
+    for _, cur in ipairs(C.currencies or {}) do
+        if cur.id == id then return cur end
+    end
+    return nil
 end
 
 local function onServerCommand(module, command, args)

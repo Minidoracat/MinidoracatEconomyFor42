@@ -49,6 +49,13 @@ function sendServerCommand(player, module, command, args)
     sentCommands[#sentCommands + 1] = { player = player, module = module, command = command, args = args }
 end
 
+-- java 風格清單（size()/get(i)，0-based）——PZ 回傳的容器幾乎都是這個形狀
+local function javaList(items)
+    return { size = function() return #items end, get = function(_, i) return items[i + 1] end }
+end
+local onlinePlayers = {}
+function getOnlinePlayers() return javaList(onlinePlayers) end
+
 local events = {}
 Events = setmetatable({}, {
     __index = function(_, name)
@@ -104,14 +111,16 @@ require("MinidoracatEconomy/ECCore")
 require("MinidoracatEconomy/ECServer")
 require("MinidoracatEconomy/ECLedger")
 require("MinidoracatEconomy/ECExport")
+require("MinidoracatEconomy/ECConfig")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
 local X = EC.Export
+local Cfg = EC.Config
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 77     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 93     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -382,6 +391,58 @@ nowMs = nowMs + 1000
 fire("OnServerStarted")
 local n2 = #ev2.lines
 check(string.find(ev2.lines[n2 - 1], '"type":"file.header"', 1, true) and string.find(ev2.lines[n2], '"type":"server.started"', 1, true) and string.find(ev2.lines[n2], '"loadedSeq":' .. string.format("%.0f", S.modData().meta.loadedSeq), 1, true), "restart appends file.header + server.started with loadedSeq")
+
+
+-- ===== 情境十五：貨幣 config（覆寫、停用、匯率版本、廣播、事件）=====
+io.write("scenario 15: currency config\n")
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+SandboxVars.MinidoracatEconomy.CatRatePointsPerCoin = 2
+SandboxVars.MinidoracatEconomy.CatPerOrderMax = 7000
+fire("OnServerStarted")
+local cat = Cfg.currency("cat")
+check(cat.exchange.pointsPerCoin == 2 and cat.exchange.perOrderMax == 7000 and cat.exchange.perOrderMin == 10 and cat.exchange.rateVersion == 1, "first boot seeds the exchange block from sandbox (missing keys use defaults)")
+check(Cfg.currency("survivor").exchange == nil and Cfg.currency("survivor").enabled and Cfg.currency("nope") == nil, "market unit has no exchange block; unknown id is nil")
+local snapshot = Cfg.snapshot()
+check(#snapshot == 2 and snapshot[1].id == "survivor" and snapshot[2].id == "cat" and snapshot[2].balanceMax == Cfg.DEFAULT_BALANCE_MAX, "snapshot lists currencies in registry order with balanceMax")
+
+onlinePlayers = { fakePlayer("alice"), fakePlayer("bob") }
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", onlinePlayers[1], {})
+local ack2 = lastSent("hello.ack")
+check(ack2 and #ack2.args.currencies == 2 and ack2.args.currencies[2].exchange.pointsPerCoin == 2, "hello.ack carries the currency snapshot")
+
+local ok1, e1 = Cfg.setNameOverride("cat", "Nyan", "root", "rename")
+local pushes = 0
+for _, s in ipairs(sentCommands) do if s.command == "config" then pushes = pushes + 1 end end
+check(ok1 and Cfg.currency("cat").nameOverride == "Nyan" and pushes == 2, "name override applied and pushed to both online players")
+fire("OnTickEvenPaused")
+local evf = files[X.eventsPath(nowMs)]
+local lastEv = evf.lines[#evf.lines]
+check(string.find(lastEv, '"type":"audit"', 1, true) and string.find(lastEv, '"field":"nameOverride"', 1, true) and string.find(evf.lines[#evf.lines - 1], '"type":"admin.config"', 1, true), "config change writes admin.config + audit")
+check(Cfg.setNameOverride("cat", string.rep("x", 25)) == false and Cfg.setNameOverride("cat", "bad\nname") == false and Cfg.setNameOverride("nope", "x") == false, "name override rejects too long / control chars / unknown currency")
+check(Cfg.setNameOverride("cat", "Nyan") == true and Cfg.setNameOverride("cat", "") and Cfg.currency("cat").nameOverride == nil, "same value is a no-op; empty clears the override")
+
+check(Cfg.setEnabled("cat", false, "root", "pause") and L.currency("cat").enabled == false, "disable propagates to the ledger view")
+local dis = L.credit("alice", "cat", 5, "EXTERNAL_DISCORD_cat", { requestId = "cfg-1", reasonCode = "t" })
+check(dis.error == "currency_disabled" and Cfg.setEnabled("cat", true, "root", "resume"), "disabled currency refuses mint; re-enable works")
+check(Cfg.setEnabled("cat", "yes") == false, "enabled must be boolean")
+
+local okx = Cfg.setExchange("cat", { perOrderMax = 9000 }, "root", "raise cap")
+check(okx and Cfg.currency("cat").exchange.perOrderMax == 9000 and Cfg.currency("cat").exchange.rateVersion == 2 and Cfg.currency("cat").exchange.pointsPerCoin == 2, "partial exchange update keeps other fields and bumps rateVersion")
+check(Cfg.setExchange("cat", { perOrderMax = 9000 }) == true and Cfg.currency("cat").exchange.rateVersion == 2, "no-op exchange update does not bump rateVersion")
+check(Cfg.setExchange("cat", { perOrderMin = 10000 }) == false and Cfg.setExchange("cat", { pointsPerCoin = 0 }) == false and Cfg.setExchange("survivor", { pointsPerCoin = 1 }) == false, "exchange rejects min>max, non-positive, and non-exchangeable currency")
+
+root = S.modData()
+root.config.currencies.survivor.balanceMax = 100
+local capd = L.credit("carol", "survivor", 101, "SYSTEM_MINT", { requestId = "cap-1", reasonCode = "t" })
+check(capd.error == "balance_cap" and L.credit("carol", "survivor", 100, "SYSTEM_MINT", { requestId = "cap-2", reasonCode = "t" }).ok, "balanceMax caps player balances (system side unaffected)")
+root.config.currencies.survivor.balanceMax = nil
+
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+check(Cfg.currency("cat").exchange.rateVersion == 2 and Cfg.currency("cat").exchange.perOrderMax == 9000, "restart keeps runtime exchange overrides (sandbox only seeds the first boot)")
+onlinePlayers = {}
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then

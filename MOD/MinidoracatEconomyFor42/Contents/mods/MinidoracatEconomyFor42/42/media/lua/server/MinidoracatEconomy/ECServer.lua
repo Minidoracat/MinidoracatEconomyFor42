@@ -36,6 +36,18 @@ local lastCommandAt = {}                -- [username][command] = ms
 local function reply(player, command, args)
     sendServerCommand(player, EC.COMMAND_MODULE, command, args or {})
 end
+S.reply = reply
+
+-- Server-side player list (LuaManager.java:4437-4443); the client-side getConnectedPlayers is
+-- unavailable on a dedicated server (AGENTS.md API table).
+function S.broadcast(command, args)
+    local players = getOnlinePlayers()
+    if not players then return end
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        if p then reply(p, command, args) end
+    end
+end
 
 -- ---------- ModData root ----------
 
@@ -105,6 +117,7 @@ handlers.hello = function(player, args)
         schemaVersion = md.schemaVersion,
         version = EC.VERSION,
         remoteReadOnly = EC.sandbox("RemoteReadOnly", true),
+        currencies = S.Config and S.Config.snapshot() or nil,
     })
 end
 

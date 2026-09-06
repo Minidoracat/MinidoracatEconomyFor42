@@ -109,3 +109,55 @@ option MinidoracatEconomy.ReadOnlyRoles
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_ReadOnlyRoles,
 }
+
+/* Discord points -> Cat Coin deposit (v1 in-only). Boot defaults only: admins override at runtime
+   in the admin panel (rateVersion +1, projected to Watchcord via the companion). */
+option MinidoracatEconomy.CatRatePointsPerCoin
+{
+    type = integer,
+    min = 1,
+    max = 1000000,
+    default = 1,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CatRatePointsPerCoin,
+}
+
+option MinidoracatEconomy.CatPerOrderMin
+{
+    type = integer,
+    min = 1,
+    max = 1000000000,
+    default = 10,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CatPerOrderMin,
+}
+
+option MinidoracatEconomy.CatPerOrderMax
+{
+    type = integer,
+    min = 1,
+    max = 1000000000,
+    default = 5000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CatPerOrderMax,
+}
+
+option MinidoracatEconomy.CatPerAccountDaily
+{
+    type = integer,
+    min = 1,
+    max = 1000000000,
+    default = 5000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CatPerAccountDaily,
+}
+
+option MinidoracatEconomy.CatServerDaily
+{
+    type = integer,
+    min = 1,
+    max = 1000000000,
+    default = 50000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CatServerDaily,
+}

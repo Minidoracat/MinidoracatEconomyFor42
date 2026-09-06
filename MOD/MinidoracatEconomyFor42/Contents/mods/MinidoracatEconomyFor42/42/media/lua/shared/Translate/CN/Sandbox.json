@@ -21,5 +21,15 @@
   "Sandbox_MinidoracatEconomy_AdminRoles": "可写入的管理角色",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "可以调整余额、修改货币设置、登录终端的服务器角色名称，多个以分号分隔（例如 admin;gm）。服务器对每个管理指令都会重新核对角色名，客户端的显示不算授权。",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "唯读的管理角色",
-  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "可以查看玩家余额、收据、稽核与仪表板但不能操作的服务器角色名称，多个以分号分隔。"
+  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "可以查看玩家余额、收据、稽核与仪表板但不能操作的服务器角色名称，多个以分号分隔。",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin": "猫币存入比率（几点积分换 1 猫币）",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin_tooltip": "Discord 积分存入游戏时，几点积分换成 1 枚猫币（缺省 1，即 1:1）。只是启动时的默认值：管理员可在管理面板随时调整，调整后版本号加一并同步给 Discord 端，新订单才采用新比率。",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin": "猫币单笔存入下限",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin_tooltip": "一笔 Discord 存入订单最少换得的猫币数。启动默认值，管理面板可改。",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax": "猫币单笔存入上限",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax_tooltip": "一笔 Discord 存入订单最多换得的猫币数。启动默认值，管理面板可改。",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily": "猫币每帐号每日存入上限",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily_tooltip": "同一个游戏帐号每个奖励日最多存入的猫币总数；超过的订单会被拒绝并退回积分。启动默认值，管理面板可改。",
+  "Sandbox_MinidoracatEconomy_CatServerDaily": "猫币全服每日存入上限",
+  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "全服务器每个奖励日最多存入的猫币总数。启动默认值，管理面板可改。"
 }

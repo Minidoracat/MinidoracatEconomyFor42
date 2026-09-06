@@ -21,5 +21,15 @@
   "Sandbox_MinidoracatEconomy_AdminRoles": "書き込み可能な管理ロール",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "残高調整・通貨設定・端末登録ができるサーバーロール名。複数はセミコロンで区切ります（例：admin;gm）。サーバーはすべての管理コマンドでロール名を再確認し、クライアント表示は認可ではありません。",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "閲覧専用の管理ロール",
-  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "プレイヤーの残高・明細・監査・ダッシュボードを閲覧できるが操作はできないサーバーロール名。複数はセミコロンで区切ります。"
+  "Sandbox_MinidoracatEconomy_ReadOnlyRoles_tooltip": "プレイヤーの残高・明細・監査・ダッシュボードを閲覧できるが操作はできないサーバーロール名。複数はセミコロンで区切ります。",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin": "ネココイン入金レート（1 コインあたりのポイント）",
+  "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin_tooltip": "Discord ポイントを入金するとき、何ポイントで 1 ネココインになるか（既定 1 ＝ 1:1）。起動時の既定値です。管理者は管理パネルでいつでも変更でき、レートのバージョンが上がって Discord 側に同期され、新しい注文から新レートが使われます。",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin": "ネココイン 1 回あたり最小入金額",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMin_tooltip": "Discord 入金注文 1 件で得られるネココインの最小数。起動既定値。管理パネルで変更可。",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax": "ネココイン 1 回あたり最大入金額",
+  "Sandbox_MinidoracatEconomy_CatPerOrderMax_tooltip": "Discord 入金注文 1 件で得られるネココインの最大数。起動既定値。管理パネルで変更可。",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily": "ネココイン アカウント日次入金上限",
+  "Sandbox_MinidoracatEconomy_CatPerAccountDaily_tooltip": "同じゲームアカウントが報酬日ごとに入金できるネココインの総数。超えた注文は拒否され、ポイントは返却されます。起動既定値。管理パネルで変更可。",
+  "Sandbox_MinidoracatEconomy_CatServerDaily": "ネココイン サーバー日次入金上限",
+  "Sandbox_MinidoracatEconomy_CatServerDaily_tooltip": "サーバー全体が報酬日ごとに入金できるネココインの総数。起動既定値。管理パネルで変更可。"
 }

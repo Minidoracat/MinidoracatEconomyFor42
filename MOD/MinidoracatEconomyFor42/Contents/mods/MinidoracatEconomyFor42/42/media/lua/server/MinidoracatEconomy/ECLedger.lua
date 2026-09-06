@@ -27,6 +27,7 @@ local L = EC.Ledger
 L.RECEIPT_RING = 5              -- per account, spec 20 revision (full history lives in receipt files)
 L.IDEMPOTENCY_MAX = 2000        -- LRU, spec 20
 L.MAX_ABS_AMOUNT = 1000000000000
+L.DEFAULT_BALANCE_MAX = 10000000   -- spec 18 caps.balanceMax default
 L.SYSTEM_PREFIXES = { "SYSTEM_", "EXTERNAL_", "MOD:" }
 
 -- Account kinds
@@ -61,7 +62,7 @@ function L.init()
     return md
 end
 
--- Runtime currency view: static registry + ModData overrides (stage B4 fills the overrides).
+-- Runtime currency view: static registry + ModData overrides (ECConfig owns the override block).
 function L.currency(id)
     local static = EC.CURRENCIES[id]
     if not static then return nil end
@@ -70,6 +71,7 @@ function L.currency(id)
         id = id,
         enabled = override.enabled ~= false,
         marketUnit = static.marketUnit,
+        balanceMax = type(override.balanceMax) == "number" and override.balanceMax or L.DEFAULT_BALANCE_MAX,
     }
 end
 
@@ -184,6 +186,7 @@ local function validate(tx)
             local w = wallet(p.account, p.currency, false)
             local available = w and w.available or 0
             if available + p.amount < 0 then return "insufficient_funds" end
+            if available + p.amount > cur.balanceMax then return "balance_cap" end
             if p.expectedRev ~= nil and (w and w.rev or 0) ~= p.expectedRev then return "revision_mismatch" end
         end
     end
