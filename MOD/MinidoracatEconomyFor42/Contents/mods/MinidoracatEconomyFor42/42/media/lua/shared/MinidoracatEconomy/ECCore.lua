@@ -460,6 +460,9 @@ EC.OPTIONS = {
     { key = "CatPerAccountDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 5000, page = "Currencies" },
     { key = "CatServerDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 50000, page = "Currencies" },
     { key = "RemoteReadOnly", group = "general", kind = "bool", default = true },
+    { key = "ShopBuybackEnabled", group = "shop", kind = "bool", default = false },
+    { key = "ShopBuybackPerAccountDaily", group = "shop", kind = "int", min = 1, max = 100000000, step = 100, default = 500, unit = "coin" },
+    { key = "ShopBuybackServerDaily", group = "shop", kind = "int", min = 1, max = 100000000, step = 1000, default = 20000, unit = "coin" },
     { key = "MarketListingFeePercent", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 2, unit = "percent" },
     { key = "MarketSalesTaxPercent", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 5, unit = "percent" },
     { key = "MarketListingDays", group = "market", kind = "int", min = 1, max = 30, step = 1, default = 7, unit = "days" },
@@ -476,7 +479,7 @@ EC.OPTIONS = {
     { key = "RadioRange", group = "radio", kind = "int", min = 0, max = 5000, step = 50, default = 500, unit = "tiles", zeroUnlimited = true },
     { key = "RadioLanguage", group = "radio", kind = "text", default = "auto", unit = "lang" },
 }
-EC.OPTION_GROUPS = { "rewards", "admin", "currency", "market", "auction", "radio", "general" }
+EC.OPTION_GROUPS = { "rewards", "admin", "currency", "shop", "market", "auction", "radio", "general" }
 EC.OPTION_BY_KEY = {}
 for _, o in ipairs(EC.OPTIONS) do EC.OPTION_BY_KEY[o.key] = o end
 

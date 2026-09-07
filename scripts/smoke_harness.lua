@@ -344,7 +344,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 502     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 537     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2614,6 +2614,146 @@ check(action == "extended" and modDataStore[EC.MODDATA_KEY].auctions.items[c5.au
 check(S.Auction.applyDowntime(nowMs + 3 * 60000, nowMs) == "ignored", "a 3 min downtime changes nothing")
 local action2 = S.Auction.applyDowntime(nowMs + 25 * 3600000, nowMs)
 check(action2 == "cancelled" and not S.Auction.hasAuction(c5.auctionId) and M.unclaimed("ann") >= 1, "a 25 h downtime cancels every auction and returns the items")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境三十三：系統收購（mint） =====
+io.write("scenario 33: system buyback\n")
+;(function()
+local M, Shop, Codec = S.Mailbox, S.Shop, S.Codec
+local KEY = EC.PLAYER_MODDATA_KEY
+local function deepCopyTable(t)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do out[k] = deepCopyTable(v) end
+    return out
+end
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local zed = fakePlayer("zed"); zed.x, zed.y = 101, 200; zed.inventory = fakeInventory(50)
+onlinePlayers = { boss, zed }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local sent = lastSent(name)
+    return sent and sent.args or {}
+end
+local function bal() return L.getBalance("zed", "survivor").available end
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+-- catalog: the default file has no buyback; the panel turns it on for two SKUs
+local list = cmd(zed, "shop.list")
+check(list.buyback.enabled == false and list.items[1].buyback == false and list.items[1].bidPrice == 0, "the default catalog buys nothing and the faucet is closed")
+check(cmd(boss, "admin.catalog", { action = "set", id = "axe", bidPrice = 150 }).error == "invalid_args", "bidPrice must stay below the price")
+check(cmd(boss, "admin.catalog", { action = "set", id = "axe", buyback = true }).error == "invalid_args", "buyback needs a bidPrice first")
+local set = cmd(boss, "admin.catalog", { action = "set", id = "axe", bidPrice = 60, buyback = true, buybackCap = 2 })
+local fileText = table.concat(files["MinidoracatEconomy/catalog.json"].lines, "\n")
+check(set.ok == true and Shop.sku("axe").bidPrice == 60 and Shop.sku("axe").buyback == true and Shop.sku("axe").buybackCap == 2
+    and string.find(fileText, '"bidPrice":60', 1, true) ~= nil and string.find(fileText, '"buyback":true', 1, true) ~= nil, "buyback fields are written into catalog.json")
+check(cmd(boss, "admin.catalog", { action = "set", id = "nails", bidPrice = 10, buyback = true }).ok == true, "setup: nails (qty 20) are bought at 10 per 20")
+local rev = Shop.revision()
+local axe = instanceItem("Base.Axe"); zed.inventory:AddItem(axe)
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { axe.id }, revision = rev }).error == "buyback_disabled", "the faucet is closed until the sandbox switch is on")
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = 200
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = 250
+check(cmd(zed, "shop.list").buyback.enabled == true and cmd(zed, "shop.list").buyback.accountRemaining == 200, "shop.list shows the open faucet and the remaining room")
+check(cmd(zed, "shop.sell", { id = "bandage", itemIds = { axe.id }, revision = rev }).error == "unknown_sku", "a SKU without buyback cannot be sold")
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { axe.id }, revision = "0:stale" }).error == "catalog_changed", "a stale revision is refused")
+zed.x = 150
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { axe.id }, revision = rev }).error == "not_at_terminal" and bal() == 0, "selling away from a terminal is refused with zero mint")
+zed.x = 101
+axe.condition = 6
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { axe.id }, revision = rev }).error == "not_canonical" and zed.inventory.count("Base.Axe") == 1, "a worn axe is not canonical: refused, nothing destroyed")
+axe.condition = 10
+local saw = instanceItem("Base.Saw"); zed.inventory:AddItem(saw)
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { saw.id }, revision = rev }).error == "not_canonical", "an item of another type is refused")
+axe.equipped = true
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { axe.id }, revision = rev }).error == "equipped", "an equipped item is refused")
+axe.equipped = false
+sentItemPackets = {}
+local sale = cmd(zed, "shop.sell", { id = "axe", itemIds = { axe.id }, revision = rev, requestId = "s1" })
+check(sale.ok == true and sale.total == 60 and sale.balance == 60 and bal() == 60 and zed.inventory.count("Base.Axe") == 0
+    and sentItemPackets[#sentItemPackets].remove == axe, "a canonical axe is destroyed and 60 coins are minted in the same tick")
+check(sale.buyback.accountRemaining == 140 and sale.buyback.skuRemaining == 1, "the reply carries the remaining room")
+check(zed.modData[KEY].pendingOuts[next(zed.modData[KEY].pendingOuts)].kind == "buyback", "the pending record is a buyback")
+local dup = cmd(zed, "shop.sell", { id = "axe", itemIds = { axe.id }, revision = rev, requestId = "s1" })
+check(dup.duplicate == true and dup.txId == sale.txId and bal() == 60, "resending the same requestId returns the first result without a second mint")
+local rc = L.receipts("zed")
+check(rc[#rc].kind == "shop_sell" and rc[#rc].amount == 60 and rc[#rc].counterparty == "SYSTEM_MINT" and rc[#rc].item == "Base.Axe", "the receipt shows the mint")
+check(L.conservation("survivor") == 0, "the mint is conserved through SYSTEM_MINT")
+-- caps: per SKU units, per account coins, server coins; a partial sale is never made
+local a2, a3 = instanceItem("Base.Axe"), instanceItem("Base.Axe")
+zed.inventory:AddItem(a2); zed.inventory:AddItem(a3)
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { a2.id, a3.id }, revision = rev }).error == "buyback_cap_sku" and zed.inventory.count("Base.Axe") == 2,
+    "two more axes exceed the SKU's daily cap of 2: refused whole")
+check(cmd(zed, "shop.sell", { id = "axe", itemIds = { a2.id }, revision = rev }).ok == true and bal() == 120, "one more fits the SKU cap")
+local nails = {}
+for i = 1, 40 do nails[i] = instanceItem("Base.Nails"); zed.inventory:AddItem(nails[i]) end
+local nailIds = {}
+for i = 1, 40 do nailIds[i] = nails[i].id end
+check(cmd(zed, "shop.sell", { id = "nails", itemIds = { nails[1].id, nails[2].id }, revision = rev }).error == "invalid_args", "a partial SKU unit (2 of 20 nails) is refused")
+check(cmd(zed, "shop.sell", { id = "nails", itemIds = nailIds, revision = rev }).ok == true and bal() == 140 and zed.inventory.count("Base.Nails") == 0, "two units of nails (40) pay 20")
+for i = 1, 40 do nails[i] = instanceItem("Base.Nails"); zed.inventory:AddItem(nails[i]); nailIds[i] = nails[i].id end
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = 150
+check(cmd(zed, "shop.sell", { id = "nails", itemIds = nailIds, revision = rev }).error == "buyback_cap_account" and bal() == 140, "the per-account daily cap refuses the whole sale")
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = 200
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = 150
+check(cmd(zed, "shop.sell", { id = "nails", itemIds = nailIds, revision = rev }).error == "buyback_cap_server", "the server-wide daily cap refuses the whole sale")
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = 250
+check(Shop.buybackStatus(nowMs).mintedToday == 140, "buybackStatus reports today's gross mint")
+-- the kill switch closes at once
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = false
+check(cmd(zed, "shop.sell", { id = "nails", itemIds = nailIds, revision = rev }).error == "buyback_disabled", "closing the switch stops sales immediately")
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+-- dashboard rollups: mint / buyback / burn by day
+L.credit("zed", "survivor", 100, "SYSTEM_MINT", { requestId = "au-seed-zed33", reasonCode = "t" })
+cmd(zed, "shop.buy", { id = "bandage", count = 1, revision = rev })
+local sys = cmd(boss, "admin.system")
+check(sys.issued.today.buyback == 140 and sys.issued.today.mint == 240 and sys.issued.today.burn == 12 and sys.buyback.enabled == true and sys.buyback.mintedToday == 140,
+    "admin.system reports today's mint, buyback share and burn: " .. tostring(sys.issued.today.mint) .. "/" .. tostring(sys.issued.today.buyback) .. "/" .. tostring(sys.issued.today.burn))
+-- rollback: a sale after the save point is paid again from the player save (row 4)
+fire("OnTickEvenPaused")
+local saved = deepCopyTable(modDataStore[EC.MODDATA_KEY])
+local before = bal()
+local s2 = cmd(zed, "shop.sell", { id = "nails", itemIds = nailIds, revision = rev })
+check(s2.ok == true and bal() == before + 20, "setup: a sale after the save point")
+local playerInv, playerMd = deepCopyTable(zed.inventory.items), deepCopyTable(zed.modData)
+modDataStore[EC.MODDATA_KEY] = saved
+fire("OnServerStarted")
+check(bal() == before, "setup: the world rolled back below the sale")
+zed.inventory.items = playerInv; zed.modData = playerMd
+cmd(zed, "hello")
+check(bal() == before + 20 and zed.inventory.count("Base.Nails") == 0, "after a rollback the sale is paid again from the pending record")
+check(L.conservation("survivor") == 0, "the repaid mint is conserved")
+-- rollback with the balance cap in the way: the items come back through the mailbox instead
+fire("OnTickEvenPaused")
+saved = deepCopyTable(modDataStore[EC.MODDATA_KEY])
+local a4 = instanceItem("Base.Axe"); zed.inventory:AddItem(a4)
+nowMs = nowMs + 86400000        -- next reward day: fresh caps
+local s3 = cmd(zed, "shop.sell", { id = "axe", itemIds = { a4.id }, revision = rev })
+check(s3.ok == true, "setup: an axe sold on the next day")
+playerInv, playerMd = deepCopyTable(zed.inventory.items), deepCopyTable(zed.modData)
+modDataStore[EC.MODDATA_KEY] = saved
+fire("OnServerStarted")
+zed.inventory.items = playerInv; zed.modData = playerMd
+SandboxVars.MinidoracatEconomy.BalanceMax = 1000
+L.credit("zed", "survivor", 1000 - bal(), "SYSTEM_MINT", { requestId = "fill-zed33", reasonCode = "t" })
+cmd(zed, "hello")
+check(bal() == 1000 and M.unclaimed("zed") == 1, "when the repayment would break the balance cap the axe is returned through the mailbox")
+SandboxVars.MinidoracatEconomy.BalanceMax = nil
+cmd(zed, "mail.list")
+local entries = lastSent("mail.list").args.entries
+check(#entries == 1 and entries[1].item == "Base.Axe" and entries[1].kind == "return", "the return entry is the axe")
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = nil
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = nil
 onlinePlayers = {}
 end)()
 

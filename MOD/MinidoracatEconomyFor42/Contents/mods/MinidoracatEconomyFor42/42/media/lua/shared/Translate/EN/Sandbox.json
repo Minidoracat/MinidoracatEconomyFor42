@@ -67,5 +67,11 @@
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer": "Max auctions per player",
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer_tooltip": "How many auctions one player may run at the same time (market listings have their own cap).",
   "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent": "Minimum bid increment (%%)",
-  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "A new bid must beat the current high bid by at least this percentage (minimum 1 coin)."
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "A new bid must beat the current high bid by at least this percentage (minimum 1 coin).",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "System buyback enabled",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "When on, players can sell items the catalog marks for buyback to the server at a terminal for newly minted coins. Turning it off stops buyback at once; balances are untouched. Off by default; watch mint and burn on the dashboard before opening it",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "Buyback per account per day (coins)",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily_tooltip": "Most coins one account can receive from buyback per reward day (gross mint; burns do not reopen it). A sale beyond it is refused whole. Default 500",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily": "Buyback server-wide per day (coins)",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily_tooltip": "Most coins the whole server mints through buyback per reward day (burns do not reopen it). A sale beyond it is refused whole. Default 20000"
 }

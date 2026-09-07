@@ -663,11 +663,18 @@ function CatalogCell:render()
     text(self, e.enabledLabel, e.labelLeftX, e.textY1, labelToken)
     text(self, e.priceLabel, e.labelX, e.textY1, labelToken)
     text(self, e.capLabel, e.labelX, e.textY2, labelToken)
+    text(self, e.buybackLabel, e.labelLeftX, e.textY3, labelToken)
+    text(self, e.bidLabel, e.labelX, e.textY3, labelToken)
+    text(self, e.bcapLabel, e.labelX, e.textY4, labelToken)
     local valueToken = off and "textFaint" or "accent"
     textCentre(self, e.priceText, e.valueX + e.valueW / 2, e.textY1, valueToken)
     textCentre(self, e.capText, e.valueX + e.valueW / 2, e.textY2, valueToken)
+    textCentre(self, e.bidText, e.valueX + e.valueW / 2, e.textY3, e.buybackOn and valueToken or "textFaint")
+    textCentre(self, e.bcapText, e.valueX + e.valueW / 2, e.textY4, e.buybackOn and valueToken or "textFaint")
     local t = e.toggle
     paintToggle(self, t.x, t.y, t.w, t.h, e.toggleOn, off, e.toggleLabel, e.textY1)
+    t = e.buybackToggle
+    paintToggle(self, t.x, t.y, t.w, t.h, e.buybackOn, off, e.buybackToggleLabel, e.textY3)
     for _, hit in ipairs(e.hits) do
         if hit.label then
             border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
@@ -896,6 +903,12 @@ local function dialogFields(mode)
     if mode == "catalogCap" then
         return { { key = "value", label = tr("Admin_Shop_Cap"), width = 160, maxLen = 10 } }
     end
+    if mode == "catalogBid" then
+        return { { key = "value", label = tr("Admin_Shop_BidPrice"), width = 160, maxLen = 12 } }
+    end
+    if mode == "catalogBuybackCap" then
+        return { { key = "value", label = tr("Admin_Shop_BuybackCap"), width = 160, maxLen = 10 } }
+    end
     if mode == "adjust" then
         return {
             { key = "amount", label = tr("Admin_Adjust_Amount"), width = 180, maxLen = 14, hint = tr("Admin_Adjust_AmountHint") },
@@ -1021,7 +1034,8 @@ function Dialog:updateInfo()
         else
             info[#info + 1] = { text = tr("Admin_Cur_NoOverride"), token = "textFaint" }
         end
-    elseif self.hintText and (self.mode == "option" or self.mode == "catalogPrice" or self.mode == "catalogCap") then
+    elseif self.hintText and (self.mode == "option" or self.mode == "catalogPrice" or self.mode == "catalogCap"
+        or self.mode == "catalogBid" or self.mode == "catalogBuybackCap") then
         info[#info + 1] = { text = self.hintText, token = "textFaint" }
     end
     self.info = info
@@ -1674,7 +1688,7 @@ function Admin:createChildren()
     local reload = tr("Admin_Shop_Reload")
     self.shopReloadButton = Button.create(0, 0, textWidth(reload) + 24, 22, reload, self, Admin.onShopReloadClick, "chip")
     self:addChild(self.shopReloadButton)
-    self.catalogList = U.newTable(CatalogCell, lineH() * 2 + 12)
+    self.catalogList = U.newTable(CatalogCell, math.max(lineH() * 2 + 12, math.max(20, fontH.small + 6) * 4 + 14))
     local catalogDown = self.catalogList.onMouseDown
     self.catalogList.onMouseDown = function(list, x, y)
         self.catalogClickX = x
@@ -2362,6 +2376,8 @@ function Admin:onCatalogAction(item, id)
     local sku = item.sku
     local price = math.floor(tonumber(sku.price) or 0)
     local cap = math.floor(tonumber(sku.dailyCap) or 0)
+    local bid = math.floor(tonumber(sku.bidPrice) or 0)
+    local bcap = math.floor(tonumber(sku.buybackCap) or 0)
     if id == "toggle" then
         self:sendCatalog({ action = "set", id = sku.id, enabled = sku.enabled == false }, nil)
     elseif id == "priceMinus" or id == "pricePlus" then
@@ -2388,6 +2404,39 @@ function Admin:onCatalogAction(item, id)
             confirm = tr("Admin_Set_Edit"), catalogId = sku.id,
             hint = getText(T .. "Admin_Set_NumberHint", "0", tostring(CAP_MAX)),
             value = tostring(cap),
+        })
+    elseif id == "buybackToggle" then
+        -- the server refuses a flag without a bid price; say so here instead of a bare error
+        if sku.buyback ~= true and bid < 1 then
+            self.message = { text = tr("Admin_Shop_BuybackHint"), error = true }
+            return
+        end
+        self:sendCatalog({ action = "set", id = sku.id, buyback = sku.buyback ~= true }, nil)
+    elseif id == "bidMinus" or id == "bidPlus" then
+        local step = priceStep(math.max(1, bid))
+        local target = bid + (id == "bidPlus" and step or -step)
+        if target < 0 then target = 0 end
+        if target > price - 1 then target = price - 1 end
+        if sku.buyback == true and target < 1 then target = 1 end
+        if target ~= bid then self:sendCatalog({ action = "set", id = sku.id, bidPrice = target }, nil) end
+    elseif id == "bcapMinus" or id == "bcapPlus" then
+        local target = bcap + (id == "bcapPlus" and 1 or -1)
+        if target < 0 then target = 0 end
+        if target > CAP_MAX then target = CAP_MAX end
+        if target ~= bcap then self:sendCatalog({ action = "set", id = sku.id, buybackCap = target }, nil) end
+    elseif id == "bidEdit" then
+        self:openDialog("catalogBid", {
+            title = getText(T .. "Admin_Shop_EditBidPrice", item.plainName),
+            confirm = tr("Admin_Set_Edit"), catalogId = sku.id, catalogMax = price - 1,
+            hint = getText(T .. "Admin_Set_NumberHint", "0", tostring(price - 1)),
+            value = tostring(bid),
+        })
+    elseif id == "bcapEdit" then
+        self:openDialog("catalogBuybackCap", {
+            title = getText(T .. "Admin_Shop_EditBuybackCap", item.plainName),
+            confirm = tr("Admin_Set_Edit"), catalogId = sku.id,
+            hint = getText(T .. "Admin_Set_NumberHint", "0", tostring(CAP_MAX)),
+            value = tostring(bcap),
         })
     end
 end
@@ -2683,6 +2732,7 @@ function Admin:openDialog(mode, ctx)
     dlg.optionKey = ctx.optionKey
     dlg.optionGroup = ctx.optionGroup
     dlg.catalogId = ctx.catalogId
+    dlg.catalogMax = ctx.catalogMax   -- bid price: the ceiling is price - 1, not a constant
     dlg.listingId = ctx.listingId
     dlg.auctionId = ctx.auctionId
     dlg.hintText = ctx.hint
@@ -2722,7 +2772,9 @@ end
 -- are answered before the reason gate every other write has to pass.
 function Admin:submitDialog(dlg)
     if dlg.mode == "option" then return self:submitOption(dlg) end
-    if dlg.mode == "catalogPrice" or dlg.mode == "catalogCap" then return self:submitCatalogValue(dlg) end
+    if dlg.mode == "catalogPrice" or dlg.mode == "catalogCap" or dlg.mode == "catalogBid" or dlg.mode == "catalogBuybackCap" then
+        return self:submitCatalogValue(dlg)
+    end
     if dlg.mode == "optionReset" then
         local keys = self:overriddenKeys(dlg.optionGroup)
         self:closeDialog()
@@ -2936,15 +2988,21 @@ end
 -- checked here too, and the hint line doubles as the refusal message because it says what is
 -- accepted. The server re-validates regardless.
 function Admin:submitCatalogValue(dlg)
-    local price = dlg.mode == "catalogPrice"
+    local mode = dlg.mode
+    local lo, hi = 0, CAP_MAX
+    if mode == "catalogPrice" then lo, hi = 1, PRICE_MAX
+    elseif mode == "catalogBid" then hi = math.max(0, math.floor(tonumber(dlg.catalogMax) or 0)) end
     local n = parseInt(entryText(dlg.boxes.value))
-    if n == nil or n < (price and 1 or 0) or n > (price and PRICE_MAX or CAP_MAX) then
+    if n == nil or n < lo or n > hi then
         dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
         self:layoutDialog()
         return
     end
     local args = { action = "set", id = dlg.catalogId }
-    if price then args.price = n else args.dailyCap = n end
+    if mode == "catalogPrice" then args.price = n
+    elseif mode == "catalogCap" then args.dailyCap = n
+    elseif mode == "catalogBid" then args.bidPrice = n
+    else args.buybackCap = n end
     self:sendCatalog(args, dlg)
 end
 
@@ -3536,7 +3594,8 @@ end
 -- in the player's font, two steppers, a value that fits "1,000,000", the edit chip) instead of a
 -- fixed number: a fixed 300 px lost the price digits at large UI fonts.
 function Admin:catalogGeometry(width, chipH)
-    local labelW = math.max(textWidth(tr("Admin_Shop_Enabled")), textWidth(tr("Admin_Shop_Price")), textWidth(tr("Admin_Shop_Cap")))
+    local labelW = math.max(textWidth(tr("Admin_Shop_Enabled")), textWidth(tr("Admin_Shop_Price")), textWidth(tr("Admin_Shop_Cap")),
+        textWidth(tr("Admin_Shop_Buyback")), textWidth(tr("Admin_Shop_BidPrice")), textWidth(tr("Admin_Shop_BuybackCap")))
     local editLabel = tr("Admin_Set_Edit")
     local geo = {
         chipH = chipH, chipTextY = math.floor((chipH - fontH.small) / 2), labelW = labelW,
@@ -3557,17 +3616,24 @@ end
 
 -- One catalog row: icon plus item name (and its untranslated name) over "id / category /
 -- per-unit count" on the left, the listed toggle and the price steppers on the right's first
--- line, the daily cap steppers on its second.
-function Admin:catalogRow(sku, geo, lh, rowHeight, y1, y2)
+-- line, the daily cap steppers on its second, the buyback toggle and bid price on the third and
+-- the buyback cap on the fourth.
+function Admin:catalogRow(sku, geo, lh, rowHeight, y1, y2, y3, y4)
     local name = itemName(sku.item)
     local size = math.min(math.max(12, rowHeight - 10), 28)
     local item = {
         id = sku.id, sku = sku, plainName = name, hits = {},
         line1Y = 5, line2Y = 5 + lh, chipTextY = geo.chipTextY,
-        textY1 = y1 + geo.chipTextY, textY2 = y2 + geo.chipTextY,
-        icon = itemTexture(sku.item), iconSize = size, iconY = math.floor((rowHeight - size) / 2),
-        toggleOn = sku.enabled ~= false,
+        textY1 = y1 + geo.chipTextY, textY2 = y2 + geo.chipTextY, textY3 = y3 + geo.chipTextY, textY4 = y4 + geo.chipTextY,
+        icon = itemTexture(sku.item), iconSize = size, iconY = math.max(0, math.floor(5 + lh - size / 2)),   -- centred on the two text lines
+        toggleOn = sku.enabled ~= false, buybackOn = sku.buyback == true,
         toggle = { x = geo.toggleX, y = y1, w = CATALOG_TOGGLE_W, h = geo.chipH },
+        buybackToggle = { x = geo.toggleX, y = y3, w = CATALOG_TOGGLE_W, h = geo.chipH },
+        buybackLabel = fitText(tr("Admin_Shop_Buyback"), geo.labelW),
+        bidLabel = fitText(tr("Admin_Shop_BidPrice"), geo.labelW),
+        bcapLabel = fitText(tr("Admin_Shop_BuybackCap"), geo.labelW),
+        bidText = fitText(amountText(sku.bidPrice or 0), geo.valueW),
+        bcapText = fitText(capValueText(sku.buybackCap or 0), geo.valueW),
         valueX = geo.valueX, valueW = geo.valueW,
         labelLeftX = geo.ctrlX, labelX = geo.labelX,
         enabledLabel = fitText(tr("Admin_Shop_Enabled"), geo.labelW),
@@ -3577,7 +3643,15 @@ function Admin:catalogRow(sku, geo, lh, rowHeight, y1, y2)
         capText = fitText(capValueText(sku.dailyCap), geo.valueW),
     }
     item.toggleLabel = tr(item.toggleOn and "Admin_On" or "Admin_Off")
+    item.buybackToggleLabel = tr(item.buybackOn and "Admin_On" or "Admin_Off")
     item.hits[#item.hits + 1] = { id = "toggle", x = geo.toggleX, y = y1, w = CATALOG_TOGGLE_W, h = geo.chipH }
+    item.hits[#item.hits + 1] = { id = "buybackToggle", x = geo.toggleX, y = y3, w = CATALOG_TOGGLE_W, h = geo.chipH }
+    item.hits[#item.hits + 1] = { id = "bidMinus", x = geo.minusX, y = y3, w = CATALOG_STEP_W, h = geo.chipH, label = "-" }
+    item.hits[#item.hits + 1] = { id = "bidPlus", x = geo.plusX, y = y3, w = CATALOG_STEP_W, h = geo.chipH, label = "+" }
+    item.hits[#item.hits + 1] = { id = "bidEdit", x = geo.editX, y = y3, w = geo.editW, h = geo.chipH, label = geo.editLabel }
+    item.hits[#item.hits + 1] = { id = "bcapMinus", x = geo.minusX, y = y4, w = CATALOG_STEP_W, h = geo.chipH, label = "-" }
+    item.hits[#item.hits + 1] = { id = "bcapPlus", x = geo.plusX, y = y4, w = CATALOG_STEP_W, h = geo.chipH, label = "+" }
+    item.hits[#item.hits + 1] = { id = "bcapEdit", x = geo.editX, y = y4, w = geo.editW, h = geo.chipH, label = geo.editLabel }
     item.hits[#item.hits + 1] = { id = "priceMinus", x = geo.minusX, y = y1, w = CATALOG_STEP_W, h = geo.chipH, label = "-" }
     item.hits[#item.hits + 1] = { id = "pricePlus", x = geo.plusX, y = y1, w = CATALOG_STEP_W, h = geo.chipH, label = "+" }
     item.hits[#item.hits + 1] = { id = "priceEdit", x = geo.editX, y = y1, w = geo.editW, h = geo.chipH, label = geo.editLabel }
@@ -3611,10 +3685,12 @@ function Admin:rebuildCatalog()
         local width = math.max(120, list.width - 12)   -- 12 = the scrollbar gutter
         local chipH = math.max(20, fontH.small + 6)
         local y1 = 3
-        local y2 = math.max(y1 + chipH + 1, list.rowHeight - chipH - 3)
+        local y2 = y1 + chipH + 2
+        local y3 = y2 + chipH + 2
+        local y4 = y3 + chipH + 2
         local geo = self:catalogGeometry(width, chipH)
         for _, sku in ipairs(snap.items) do
-            rows[#rows + 1] = self:catalogRow(sku, geo, lineH(), list.rowHeight, y1, y2)
+            rows[#rows + 1] = self:catalogRow(sku, geo, lineH(), list.rowHeight, y1, y2, y3, y4)
         end
     end
     self.catalogRows = rows
@@ -4720,6 +4796,21 @@ function Admin:drawDashboard()
             textRight(self, "+" .. amountText(row.milestone or 0), PAD + colW * 3, y, "positive")
             y = y + lh
         end
+        -- the faucet and the drains (every SYSTEM_MINT / SYSTEM_BURN posting, buyback on its own
+        -- line): the numbers a host watches before opening buyback
+        y = y + 4
+        textRight(self, tr("Admin_Dash_Mint"), PAD + colW, y, "textMuted")
+        textRight(self, tr("Admin_Dash_Buyback"), PAD + colW * 2, y, "textMuted")
+        textRight(self, tr("Admin_Dash_Burn"), PAD + colW * 3, y, "textMuted")
+        y = y + lh + 2
+        for _, period in ipairs(ISSUE_PERIODS) do
+            local row = issued[period] or {}
+            text(self, tr("Admin_Dash_" .. string.upper(string.sub(period, 1, 1)) .. string.sub(period, 2)), PAD, y, "text")
+            textRight(self, "+" .. amountText(row.mint or 0), PAD + colW, y, "positive")
+            textRight(self, "+" .. amountText(row.buyback or 0), PAD + colW * 2, y, (tonumber(row.buyback) or 0) > 0 and "positive" or "textFaint")
+            textRight(self, "-" .. amountText(row.burn or 0), PAD + colW * 3, y, "negative")
+            y = y + lh
+        end
         self:beginLines(PAD, y + 4, leftW - PAD * 2, bottom)
         self:line(tr("Admin_Dash_IssuedNote"), "textFaint")
     end
@@ -5123,6 +5214,11 @@ function Admin:drawSystem()
         local au = sys.auctions
         self:lineRow(tr("Admin_Sys_Auctions"), amountText((type(au) == "table" and au.auctions) or 0)
             .. " / " .. tostring((type(au) == "table" and au.max) or "?"))
+        local bb = sys.buyback
+        if type(bb) == "table" then
+            self:lineRow(tr("Admin_Sys_Buyback"), getText(T .. "Admin_Sys_BuybackValue", tr(bb.enabled == true and "Admin_On" or "Admin_Off"),
+                amountText(bb.mintedToday or 0), amountText(bb.serverCap or 0)), bb.enabled == true and "warn" or "text")
+        end
         local wl = sys.whitelist
         if type(wl) == "table" and type(wl.error) == "string" and wl.error ~= "" then
             self:lineRow(tr("Admin_Sys_Whitelist"), fitText(wl.error, math.floor(self.lw * 0.6)), "errorText")

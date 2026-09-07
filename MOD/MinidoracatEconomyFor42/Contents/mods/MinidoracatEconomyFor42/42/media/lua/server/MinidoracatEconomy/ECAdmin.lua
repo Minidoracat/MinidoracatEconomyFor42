@@ -493,16 +493,36 @@ local function dataPaths(ms)
 end
 
 local function sumRollups(days, ms)
-    local out = { checkin = 0, milestone = 0 }
+    local out = { checkin = 0, milestone = 0, mint = 0, burn = 0, buyback = 0 }
     for i = 0, days - 1 do
         local r = md.rollups and md.rollups[R.dayKey(ms - i * 86400000)]
         if r then
             out.checkin = out.checkin + (r.checkinTotal or 0)
             out.milestone = out.milestone + (r.milestoneTotal or 0)
+            out.mint = out.mint + (r.mint or 0)
+            out.burn = out.burn + (r.burn or 0)
+            out.buyback = out.buyback + (r.buyback or 0)
         end
     end
     return out
 end
+
+-- Dashboard observability for the faucet and the drains (spec 12 stage G): every commit adds
+-- what left SYSTEM_MINT and what reached SYSTEM_BURN to the day's rollup, buyback on its own
+-- line. Market currency only; incremental, never a rescan of the ledger.
+L.onCommitted(function(ev)
+    local r = R.rollup(R.dayKey(ev.ts or EC.now()))
+    for _, p in ipairs(ev.postings or {}) do
+        if p.currency == R.CURRENCY then
+            if p.account == "SYSTEM_MINT" and p.amount < 0 then
+                r.mint = (r.mint or 0) - p.amount
+                if ev.kind == "shop_sell" then r.buyback = (r.buyback or 0) - p.amount end
+            elseif p.account == "SYSTEM_BURN" and p.amount > 0 then
+                r.burn = (r.burn or 0) + p.amount
+            end
+        end
+    end
+end)
 
 -- Player-held supply, system balances and the top holders per currency (single pass over
 -- wallets). `net` is the conservation sum for that currency (players + reserved + system side):
@@ -594,6 +614,7 @@ function A.system(write)
         sandbox = Cfg.options(),
         terminals = T.count(),
         catalog = Shop.fileStatus(),
+        buyback = Shop.buybackStatus(ms),
         mailboxUnclaimed = md.mailbox and md.mailbox.unclaimed or 0,
         market = Mk.stats(),
         auctions = S.Auction and S.Auction.stats() or nil,
@@ -761,7 +782,8 @@ S.handlers["admin.option"] = function(player, args)
     S.reply(player, "admin.option", res)
 end
 
--- admin.catalog {action=list|set|reload, id?, price?, dailyCap?, enabled?, reason?, requestId}:
+-- admin.catalog {action=list|set|reload, id?, price?, dailyCap?, enabled?, bidPrice?, buyback?,
+-- buybackCap?, reason?, requestId}:
 -- list = the catalog with this admin's own remaining caps (read gate); set = edit one SKU in
 -- catalog.json (write gate, audited, pushed to everyone online); reload = re-read the file
 -- (write gate). Every reply carries the whole catalog snapshot so the page redraws from one source.
@@ -775,7 +797,10 @@ S.handlers["admin.catalog"] = function(player, args)
             res = { ok = false, error = "invalid_args" }
         else
             local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
-            local ok, err = Shop.update(args.id, { price = args.price, dailyCap = args.dailyCap, enabled = args.enabled }, player:getUsername(), reason)
+            local ok, err = Shop.update(args.id, {
+                price = args.price, dailyCap = args.dailyCap, enabled = args.enabled,
+                bidPrice = args.bidPrice, buyback = args.buyback, buybackCap = args.buybackCap,
+            }, player:getUsername(), reason)
             if not ok then res = { ok = false, error = err } end
             res.id = args.id
         end

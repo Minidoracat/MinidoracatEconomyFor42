@@ -485,6 +485,8 @@ function Mk.restoreFromPending(username, id, pend)
     if pend.kind == "auction" then
         local Au = S.Auction
         return Au ~= nil and Au.restoreFromPending(username, id, pend)
+    elseif pend.kind == "buyback" then
+        return S.Shop.restoreFromPending(username, id, pend)
     end
     if md.market.listings[id] then return false end
     local l = {
@@ -502,8 +504,13 @@ function Mk.restoreFromPending(username, id, pend)
     return true
 end
 
--- An escrow record of either kind: the reconcile treats a pending auction like a pending listing.
-function Mk.hasListing(id)
+-- "The world side of this pending op happened": a listing or auction record for a list-out, the
+-- mint itself for a buyback (nothing to look up: it happened unless the world rolled back below
+-- it). The reconcile treats all three alike.
+function Mk.hasListing(id, pend)
+    if type(pend) == "table" and pend.kind == "buyback" then
+        return not S.isRolledBack(pend.epoch, tonumber(pend.seq) or 0)
+    end
     if md.market.listings[id] ~= nil then return true end
     local Au = S.Auction
     return Au ~= nil and Au.hasAuction(id)

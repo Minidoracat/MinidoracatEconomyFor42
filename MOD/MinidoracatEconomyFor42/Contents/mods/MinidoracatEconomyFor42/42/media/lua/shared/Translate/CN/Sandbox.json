@@ -67,5 +67,11 @@
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer": "每人同时拍卖上限",
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer_tooltip": "一名玩家同时可挂的拍卖数（另计市场刊登上限）。",
   "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent": "最低加价幅度（%%）",
-  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新出价至少要比目前最高价高出这个百分比（最少 1 币）。"
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新出价至少要比目前最高价高出这个百分比（最少 1 币）。",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "开放系统收购",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "打开后玩家可在终端旁把目录中标示「收购」的物品卖给服务器换取幸存币（发行新币）。关闭时立即停止收购，既有余额不受影响。缺省关闭；建议先观察仪表板的发行／销毁量再开放",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "每人每日收购上限（币）",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily_tooltip": "每个帐号每个奖励日最多能从系统收购拿到的币数（以发行量计，销毁不会回补）。超过整笔拒绝。缺省 500",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily": "全服每日收购上限（币）",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily_tooltip": "整个服务器每个奖励日经由收购发行的币数上限（销毁不会回补）。超过整笔拒绝。缺省 20000"
 }

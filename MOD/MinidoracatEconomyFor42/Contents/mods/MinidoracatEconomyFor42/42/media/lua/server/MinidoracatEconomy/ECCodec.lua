@@ -291,9 +291,20 @@ local function copyModData(md, depth, leaves)
     return copy, leaves
 end
 
--- Returns ok, reason. Vanilla itself writes modData (customName, condition:<type>,
+-- State an item must not be in to leave a backpack through us, whatever the list says. Returns
+-- ok, reason. Vanilla itself writes modData (customName, condition:<type>,
 -- InventoryItem.java:3253-3256, 3262-3271), so a mod-data key is never a reason by itself: the
 -- data travels in the snapshot and only an oversized blob is refused (moddata_too_big).
+function Codec.stateCheck(item)
+    if call(item, "isEquipped") == true then return false, "equipped" end
+    if call(item, "isFavorite") == true then return false, "favorite" end
+    if call(item, "isBroken") == true then return false, "broken" end
+    if call(item, "isRotten") == true then return false, "perishable" end
+    local md = call(item, "getModData")
+    if type(md) == "table" and copyModData(md, 0, 0) == nil then return false, "moddata_too_big" end
+    return true
+end
+
 function Codec.check(item)
     local fullType = call(item, "getFullType")
     if type(fullType) ~= "string" then return false, "invalid_item" end
@@ -302,13 +313,30 @@ function Codec.check(item)
     if EC.isFixedType(script) then return false, "not_whitelisted" end
     local display = call(item, "getDisplayCategory")
     if not wl.types[fullType] and not (type(display) == "string" and wl.categories[display]) then return false, "not_whitelisted" end
-    if call(item, "isEquipped") == true then return false, "equipped" end
-    if call(item, "isFavorite") == true then return false, "favorite" end
-    if call(item, "isBroken") == true then return false, "broken" end
-    if call(item, "isRotten") == true then return false, "perishable" end
-    local md = call(item, "getModData")
-    if type(md) == "table" and copyModData(md, 0, 0) == nil then return false, "moddata_too_big" end
-    return true
+    return Codec.stateCheck(item)
+end
+
+-- The system buys only what it could have handed out itself: the item must look like a freshly
+-- created one of that type in everything the shop pays for (condition, uses, repairs, read
+-- pages, food state, fluid, no custom name). Age and modData are not compared: vanilla writes
+-- both on ordinary items (planks carry customName, Food.updateAge ticks age; Food.java:774).
+local canonical = {}
+local function canonicalSignature(s)
+    local copy = {}
+    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" then copy[k] = v end end
+    return Codec.signature(copy)
+end
+
+function Codec.isCanonical(item, fullType)
+    if call(item, "getFullType") ~= fullType then return false end
+    local ref = canonical[fullType]
+    if not ref then
+        local fresh = instanceItem(fullType)
+        if not fresh then return false end
+        ref = canonicalSignature(Codec.snapshot(fresh))
+        canonical[fullType] = ref
+    end
+    return canonicalSignature(Codec.snapshot(item)) == ref
 end
 
 -- Bounded snapshot; call after Codec.check passed. Food keeps its edible state and the world

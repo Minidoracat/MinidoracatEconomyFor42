@@ -347,7 +347,7 @@ reconcileOuts = function(player, p, inv)
     local username = player:getUsername()
     local changed = false
     for id, pend in pairs(p.pendingOuts) do
-        local hasListing = Mk.hasListing(id)
+        local hasListing = Mk.hasListing(id, pend)
         local originals = {}
         for _, itemId in ipairs(type(pend.itemIds) == "table" and pend.itemIds or { pend.itemId }) do
             pcall(function()
@@ -384,7 +384,7 @@ reconcileOuts = function(player, p, inv)
                     -- the pending now guards the rebuilt listing: durability is judged from here
                     pend.epoch = md.meta.epoch
                     pend.seq = S.nextSeq()
-                    anomaly(username, id, "listing-restored", { price = pend.price })
+                    anomaly(username, id, "listing-restored", { price = pend.price, kind = pend.kind })
                 else
                     anomaly(username, id, "listing-restore-failed")
                     p.pendingOuts[id] = nil

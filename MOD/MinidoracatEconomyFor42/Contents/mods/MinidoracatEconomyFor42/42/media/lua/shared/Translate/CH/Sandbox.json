@@ -67,5 +67,11 @@
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer": "每人同時拍賣上限",
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer_tooltip": "一名玩家同時可掛的拍賣數（另計市場刊登上限）。",
   "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent": "最低加價幅度（%%）",
-  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新出價至少要比目前最高價高出這個百分比（最少 1 幣）。"
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新出價至少要比目前最高價高出這個百分比（最少 1 幣）。",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "開放系統收購",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "開啟後玩家可在終端旁把目錄中標示「收購」的物品賣給伺服器換取倖存幣（發行新幣）。關閉時立即停止收購，既有餘額不受影響。預設關閉；建議先觀察儀表板的發行／銷毀量再開放",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "每人每日收購上限（幣）",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily_tooltip": "每個帳號每個獎勵日最多能從系統收購拿到的幣數（以發行量計，銷毀不會回補）。超過整筆拒絕。預設 500",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily": "全服每日收購上限（幣）",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily_tooltip": "整個伺服器每個獎勵日經由收購發行的幣數上限（銷毀不會回補）。超過整筆拒絕。預設 20000"
 }

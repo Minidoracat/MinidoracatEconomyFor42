@@ -327,7 +327,7 @@ end
 
 -- One catalog row: every string the cell paints is built here (they change with the snapshot,
 -- never per frame), `remaining` keeps the raw number the buy dialog clamps its count with.
-local function shopRow(it, currency)
+local function shopRow(it, currency, buybackOpen)
     local cap = tonumber(it.dailyCap) or 0
     local remaining = tonumber(it.remaining)
     local remainText, remainToken, soldOut = getText(T .. "Shop_Unlimited"), "textMuted", false
@@ -345,6 +345,10 @@ local function shopRow(it, currency)
         qtyText = getText(T .. "Shop_QtyPer", tostring(qty)),
         priceText = amountText(it.price), remainText = remainText, remainToken = remainToken,
         buyLabel = getText(T .. "Shop_Buy"),
+        -- buyback (stage G): the chip shows the bid price; it is painted only while the faucet is open
+        bidPrice = tonumber(it.bidPrice) or 0, buyback = it.buyback == true and buybackOpen == true,
+        buybackCap = tonumber(it.buybackCap) or 0, buybackRemaining = tonumber(it.buybackRemaining),
+        sellLabel = getText(T .. "Shop_Sell", amountText(it.bidPrice or 0)),
     }
 end
 
@@ -380,6 +384,11 @@ function ShopCell:render()
     local off = self.list.buyDisabled == true or e.soldOut
     border(self, cols.buyX, math.floor((h - CHIP_H) / 2), cols.buyW, CHIP_H, off and "border" or "accent", "pill")
     textCentre(self, e.buyLabel, cols.buyX + cols.buyW / 2, ty, off and "textFaint" or "text")
+    if e.buyback then
+        local soff = self.list.buyDisabled == true or e.buybackRemaining == 0
+        border(self, cols.sellX, math.floor((h - CHIP_H) / 2), cols.sellW, CHIP_H, soff and "border" or "accent", "pill")
+        textCentre(self, fitText(e.sellLabel, cols.sellW - 6), cols.sellX + cols.sellW / 2, ty, soff and "textFaint" or "text")
+    end
 end
 
 -- Mailbox row: icon + name x count over its source, the timestamp, the claim chip.
@@ -1023,7 +1032,7 @@ function BuyDialog:createChildren()
     self.plusButton = Button.create(0, 0, step + 6, step, "+", self, BuyDialog.onStep, "chip")
     self.plusButton.internal = 1
     self:addChild(self.plusButton)
-    local buy = getText(T .. "Shop_Buy")
+    local buy = getText(T .. (self.sell and "Shop_SellConfirm" or "Shop_Buy"))
     local bh = math.max(28, fontH.medium + 10)
     self.confirmButton = Button.create(0, 0, math.max(120, textWidth(buy, UIFont.Medium) + 40), bh, buy, self, BuyDialog.onConfirm, "primary")
     self.confirmButton.font = UIFont.Medium
@@ -1033,15 +1042,32 @@ function BuyDialog:createChildren()
     self:addChild(self.cancelButton)
 end
 
--- Lots per purchase: the server cap, and never more than today's remaining share.
+-- Lots per purchase: the server cap, and never more than today's remaining share. Selling: whole
+-- SKU units the backpack holds, within every remaining cap the server reported (units for the
+-- SKU, coins for the account and the server); 0 when there is nothing to sell.
 function BuyDialog:maxCount()
     local max = math.max(1, tonumber(C.shop and C.shop.countMax) or 1)
     local row = self.row
+    if self.sell then
+        local c = self.cand
+        if not c then return 0 end
+        local unitQty = math.max(1, math.floor(tonumber(c.unitQty) or 1))
+        local units = math.floor((tonumber(c.count) or 0) / unitQty)
+        local bb = c.buyback or {}
+        local bid = math.max(1, math.floor(tonumber(c.bidPrice) or row.bidPrice or 1))
+        if bb.skuRemaining ~= nil then units = math.min(units, math.floor(tonumber(bb.skuRemaining) or 0)) end
+        if bb.accountRemaining ~= nil then units = math.min(units, math.floor((tonumber(bb.accountRemaining) or 0) / bid)) end
+        if bb.serverRemaining ~= nil then units = math.min(units, math.floor((tonumber(bb.serverRemaining) or 0) / bid)) end
+        return math.max(0, math.min(max, units))
+    end
     if row.dailyCap > 0 and row.remaining then max = math.min(max, math.max(1, row.remaining)) end
     return max
 end
 
-function BuyDialog:total() return self.count * self.row.price end
+function BuyDialog:total()
+    if self.sell then return self.count * math.floor(tonumber(self.cand and self.cand.bidPrice) or self.row.bidPrice or 0) end
+    return self.count * self.row.price
+end
 
 function BuyDialog:available()
     local bal = C.wallet and C.wallet.balances and C.wallet.balances[self.row.currency]
@@ -1054,7 +1080,9 @@ function BuyDialog:onStep(button)
 end
 
 function BuyDialog:onCancel() self.panel:closeBuy() end
-function BuyDialog:onConfirm() self.panel:submitBuy(self) end
+function BuyDialog:onConfirm()
+    if self.sell then self.panel:submitSell(self) else self.panel:submitBuy(self) end
+end
 
 function BuyDialog:layoutInside(maxW)
     local line = fontH.small + 8
@@ -1066,6 +1094,7 @@ function BuyDialog:layoutInside(maxW)
     self.countY = y; y = y + math.max(step, line) + 6
     self.totalY = y; y = y + line
     self.afterY = y; y = y + line + 6
+    if self.sell then self.roomY = y; y = y + line * 2 + 4 end
     -- the error line is always reserved: an answer from the server must not make the dialog
     -- (and with it the confirm button under the cursor) jump
     self.messageY = y; y = y + line + 6
@@ -1087,31 +1116,51 @@ end
 function BuyDialog:prerender()
     local row = self.row
     local w, h = self.width, self.height
+    local sell = self.sell == true
     fill(self, 0, 0, w, h, "surface")
     border(self, 0, 0, w, h, "accent")
-    text(self, fitText(getText(T .. "Shop_BuyTitle", row.name), w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
+    text(self, fitText(getText(T .. (sell and "Shop_SellTitle" or "Shop_BuyTitle"), row.name), w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
     drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
     local tx = PAD + ITEM_ICON + PAD
     text(self, fitText(row.name, w - tx - PAD), tx, self.itemY, "text")
-    text(self, row.qtyText, tx, self.itemY + fontH.small + 4, "textFaint")
+    local c = self.cand
+    if sell then
+        -- what the backpack holds, in the server's words (only canonical copies count)
+        local have
+        if not c then have = getText(T .. "Wallet_Loading")
+        elseif (tonumber(c.count) or 0) < 1 then have = getText(T .. "Shop_SellNone")
+        else have = getText(T .. "Shop_SellHave", tostring(math.floor(tonumber(c.count) or 0)), tostring(math.floor(tonumber(c.unitQty) or 1)), amountText(c.bidPrice)) end
+        text(self, fitText(have, w - tx - PAD), tx, self.itemY + fontH.small + 4, (c and (tonumber(c.count) or 0) < 1) and "warn" or "textFaint")
+    else
+        text(self, row.qtyText, tx, self.itemY + fontH.small + 4, "textFaint")
+    end
     local max = self:maxCount()
     if self.count > max then self.count = max end
+    if sell and self.count < 1 and max >= 1 then self.count = 1 end
     local stepH = self.minusButton.height
-    text(self, getText(T .. "Shop_Count"), PAD, self.countY + math.floor((stepH - fontH.small) / 2), "textMuted")
+    text(self, getText(T .. (sell and "Shop_SellUnits" or "Shop_Count")), PAD, self.countY + math.floor((stepH - fontH.small) / 2), "textMuted")
     textCentre(self, tostring(self.count), self.numX + self.numW / 2, self.countY + math.floor((stepH - fontH.medium) / 2), "text", UIFont.Medium)
     local total = self:total()
-    local after = self:available() - total
+    local after = sell and (self:available() + total) or (self:available() - total)
     local totalText = amountText(total)
-    text(self, getText(T .. "Shop_Total"), PAD, self.totalY, "textMuted")
-    textRight(self, totalText, w - PAD, self.totalY, "accent")
+    text(self, getText(T .. (sell and "Shop_SellTotal" or "Shop_Total")), PAD, self.totalY, "textMuted")
+    textRight(self, totalText, w - PAD, self.totalY, sell and "positive" or "accent")
     drawCoin(self, row.currency, w - PAD - textWidth(totalText) - COIN_SMALL - 4, self.totalY + math.floor((fontH.small - COIN_SMALL) / 2), COIN_SMALL)
     text(self, getText(T .. "Shop_AfterBalance"), PAD, self.afterY, "textMuted")
     textRight(self, amountText(after), w - PAD, self.afterY, after < 0 and "warn" or "text")
+    if sell and c and type(c.buyback) == "table" then
+        local bb = c.buyback
+        text(self, fitText(getText(T .. "Shop_SellRoom", amountText(bb.accountRemaining or 0), amountText(bb.serverRemaining or 0)), w - PAD * 2), PAD, self.roomY, "textFaint")
+        if bb.skuRemaining ~= nil then
+            text(self, fitText(getText(T .. "Shop_SellRoomSku", tostring(math.floor(tonumber(bb.skuRemaining) or 0))), w - PAD * 2), PAD, self.roomY + fontH.small + 4, "textFaint")
+        end
+    end
     if self.message then text(self, fitText(self.message, w - PAD * 2), PAD, self.messageY, "errorText") end
     local pending = self.panel.buyPending ~= nil
     self.minusButton:setEnable(self.count > 1 and not pending)
     self.plusButton:setEnable(self.count < max and not pending)
-    self.confirmButton:setEnable(after >= 0 and not pending and self.panel:tradeAllowed())
+    local ok = sell and (max >= 1 and self.count >= 1) or (not sell and after >= 0)
+    self.confirmButton:setEnable(ok and not pending and self.panel:tradeAllowed())
 end
 
 function BuyDialog:render() end
@@ -1704,6 +1753,11 @@ function Panel:createChildren()
     self:addChild(self.shopEntry)
     self.shopList = U.newTable(ShopCell, itemRowHeight())
     self.shopList.onSelect = function(_, item) self:onShopRow(item) end
+    local shopDown = self.shopList.onMouseDown
+    self.shopList.onMouseDown = function(list, x, y)
+        self.shopClickX = x    -- which chip of the row was hit (buy / sell)
+        return shopDown(list, x, y)
+    end
     self:addChild(self.shopList)
 
     -- mailbox page
@@ -2129,7 +2183,7 @@ function Panel:rebuildShop()
     local rows = {}
     for _, it in ipairs(shop and shop.items or {}) do
         if it.enabled ~= false and (self.shopCat == nil or it.category == self.shopCat) then
-            local row = shopRow(it, shop.currency)
+            local row = shopRow(it, shop.currency, shop.buyback and shop.buyback.enabled == true)
             if query == nil or string.find(string.lower(row.name), query, 1, true)
                 or (row.altName and string.find(string.lower(row.altName), query, 1, true))
                 or string.find(string.lower(tostring(row.id)), query, 1, true)
@@ -2187,22 +2241,33 @@ function Panel:canBuy(row)
 end
 
 function Panel:onShopRow(row)
-    if row and self:canBuy(row) then self:openBuy(row) end
+    if not row or self.buyDialog or self.buyPending or not self:tradeAllowed() then return end
+    local cols = self.shopList.cols
+    local x = self.shopClickX
+    if row.buyback and x and x >= cols.sellX and x < cols.sellX + cols.sellW then
+        if row.buybackRemaining ~= 0 then self:openBuy(row, true) end
+        return
+    end
+    if not row.soldOut then self:openBuy(row) end
 end
 
-function Panel:openBuy(row)
+-- sell = the buyback dialog: same panel, count in SKU units, the candidates come from the server
+function Panel:openBuy(row, sell)
     self:closeBuy()
     local dlg = ISPanel:new(0, 0, 360, 200)
     setmetatable(dlg, BuyDialog)
     dlg.background = false
     dlg.panel = self
     dlg.row = row
+    dlg.sell = sell == true
+    dlg.cand = nil
     dlg.count = 1
     dlg.message = nil
     dlg:initialise()
     self:addChild(dlg)      -- the buttons exist from here on (instantiate -> createChildren)
     self.buyDialog = dlg
     self:layoutBuy()
+    if dlg.sell then C.requestSellCandidates(row.id) end
 end
 
 function Panel:layoutBuy()
@@ -2243,6 +2308,23 @@ function Panel:submitBuy(dlg)
     C.buy(dlg.row.id, dlg.count, shop.revision, self.buyPending.requestId)
 end
 
+function Panel:submitSell(dlg)
+    local shop, c = C.shop, dlg.cand
+    if not shop or not c or self.buyPending then return end
+    if not self:tradeAllowed() then
+        self:buyMessage(shopError("not_at_terminal"))
+        return
+    end
+    local unitQty = math.max(1, math.floor(tonumber(c.unitQty) or 1))
+    local n = dlg.count * unitQty
+    local ids = {}
+    for i = 1, n do ids[i] = c.itemIds[i] end
+    if #ids < 1 or #ids ~= n then return end
+    dlg.message = nil
+    self.buyPending = { requestId = C.newRequestId(), at = EC.now(), name = dlg.row.name, sell = true }
+    C.sell(dlg.row.id, ids, shop.revision, self.buyPending.requestId)
+end
+
 function Panel:onMailRow(row)
     if not row or self.mailPending or not self:tradeAllowed() then return end
     self.mailPending = { requestId = C.newRequestId(), at = EC.now(), name = row.name }
@@ -2260,31 +2342,50 @@ function Panel:onShop(kind, args)
         if dlg then
             local fresh = nil
             for _, it in ipairs(args.items or {}) do
-                if it.id == dlg.row.id and it.enabled ~= false then fresh = shopRow(it, args.currency) end
+                if it.id == dlg.row.id and it.enabled ~= false then fresh = shopRow(it, args.currency, args.buyback and args.buyback.enabled == true) end
             end
-            if fresh then
+            if fresh and (not dlg.sell or fresh.buyback) then
                 dlg.row = fresh
                 self:layoutBuy()
             else
                 self:closeBuy()
-                C.toast(shopError("unknown_sku"))
+                C.toast(shopError(dlg.sell and "buyback_disabled" or "unknown_sku"))
             end
         end
         return
     end
-    -- shop.buy: only the reply this page is waiting for (the server echoes the requestId)
+    if kind == "candidates" then
+        local dlg = self.buyDialog
+        if dlg and dlg.sell and args.id == dlg.row.id then
+            dlg.cand = args.ok ~= false and args or { count = 0, itemIds = {}, unitQty = 1, bidPrice = dlg.row.bidPrice, buyback = args.buyback }
+            if args.ok == false then dlg.message = shopError(args.error) end
+            self:layoutBuy()
+        end
+        return
+    end
+    -- shop.buy / shop.sell: only the reply this page is waiting for (the server echoes the requestId)
     local pending = self.buyPending
     if pending and args.requestId ~= nil and args.requestId ~= pending.requestId then return end
     self.buyPending = nil
     if args.ok then
         local name = (args.item and itemName(args.item)) or (pending and pending.name) or ""
         self:closeBuy()
+        if kind == "sell" then
+            C.toast(getText(T .. "Shop_Sold", name, tostring(tonumber(args.qty) or 0), amountText(args.total)))
+            return
+        end
         C.toast(getText(T .. "Shop_Bought", name, tostring(tonumber(args.qty) or 0)))
         if args.delivered == false then C.toast(getText(T .. "Shop_Parked")) end
         return
     end
     if args.error == "catalog_changed" then C.requestShop() end
-    self:buyMessage(shopError(args.error))
+    -- the buyback cap refusals carry how much room is left today
+    local code = tostring(args.error or "unknown")
+    if args.remaining ~= nil and getTextOrNull(T .. "Shop_Error_" .. code) then
+        self:buyMessage(getText(T .. "Shop_Error_" .. code, tostring(math.floor(tonumber(args.remaining) or 0))))
+    else
+        self:buyMessage(shopError(args.error))
+    end
 end
 
 function Panel:onMail(kind, args)
@@ -3194,7 +3295,11 @@ function Panel:layout()
     shopCols.name = PAD + ITEM_ICON + PAD
     shopCols.buyW = textWidth(getText(T .. "Shop_Buy")) + 22
     shopCols.buyX = math.max(shopCols.name, inner - shopCols.buyW - PAD)
-    shopCols.remainR = shopCols.buyX - PAD
+    -- the sell chip (only painted on buyback rows) sits left of the buy chip; its width fits
+    -- "Sell 1,000,000" so the columns never move when the faucet opens
+    shopCols.sellW = textWidth(getText(T .. "Shop_Sell", "1,000,000")) + 16
+    shopCols.sellX = math.max(shopCols.name, shopCols.buyX - 6 - shopCols.sellW)
+    shopCols.remainR = shopCols.sellX - PAD
     shopCols.priceR = math.max(shopCols.name + PAD, shopCols.remainR
         - math.max(textWidth(getText(T .. "Shop_Col_Remaining")), textWidth(getText(T .. "Shop_SoldOut"))) - PAD)
     shopCols.nameW = math.max(0, shopCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - shopCols.name)
@@ -3685,8 +3790,11 @@ function Panel:drawShop()
         text(self, getText(T .. "Wallet_Loading"), g.rightX + PAD, ty, "textMuted")
         return
     end
-    text(self, fitText(getText(T .. "Shop_Note", C.currencyName(shop.currency)), g.rightW - PAD * 2),
-        g.rightX + PAD, ty, "textMuted")
+    local note = getText(T .. "Shop_Note", C.currencyName(shop.currency))
+    if shop.buyback and shop.buyback.enabled == true then
+        note = note .. "  " .. getText(T .. "Shop_BuybackNote", amountText(shop.buyback.accountRemaining or 0), amountText(shop.buyback.serverRemaining or 0))
+    end
+    text(self, fitText(note, g.rightW - PAD * 2), g.rightX + PAD, ty, "textMuted")
     local cols = self.shopList.cols
     local hx, hy = self.shopList.x, g.shopHeaderY
     fill(self, hx, hy, self.shopList.width, ROW, "well", "rect")

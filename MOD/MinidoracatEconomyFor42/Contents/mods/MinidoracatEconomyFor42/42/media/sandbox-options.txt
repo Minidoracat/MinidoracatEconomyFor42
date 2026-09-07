@@ -340,3 +340,31 @@ option MinidoracatEconomy.AuctionMinIncrementPercent
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_AuctionMinIncrementPercent,
 }
+
+option MinidoracatEconomy.ShopBuybackEnabled
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_ShopBuybackEnabled,
+}
+
+option MinidoracatEconomy.ShopBuybackPerAccountDaily
+{
+    type = integer,
+    min = 1,
+    max = 100000000,
+    default = 500,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_ShopBuybackPerAccountDaily,
+}
+
+option MinidoracatEconomy.ShopBuybackServerDaily
+{
+    type = integer,
+    min = 1,
+    max = 100000000,
+    default = 20000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_ShopBuybackServerDaily,
+}

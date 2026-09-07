@@ -83,6 +83,7 @@ local function claim(username)
     return c
 end
 
+-- Day bucket of the dashboard rollups (ECAdmin adds mint / burn to the same buckets).
 local function rollup(day)
     local r = md.rollups[day]
     if not r then
@@ -98,6 +99,7 @@ local function rollup(day)
     end
     return r
 end
+R.rollup = rollup
 
 local function touchDay(c, day)
     if c.day ~= day then

@@ -67,5 +67,11 @@
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer": "プレイヤーごとの同時オークション上限",
   "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer_tooltip": "1 人が同時に出せるオークション数（マーケット出品の上限とは別）。",
   "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent": "最低入札増加幅（%%）",
-  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新しい入札は現在の最高額をこの割合以上（最低 1 コイン）上回る必要があります。"
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新しい入札は現在の最高額をこの割合以上（最低 1 コイン）上回る必要があります。",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "システム買い取りを有効化",
+  "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "有効にすると、プレイヤーは端末でカタログの「買い取り」対象アイテムをサーバーに売って新規発行のコインを得られます。無効にすると即座に停止し、残高は影響を受けません。既定は無効。ダッシュボードで発行／消却量を確認してから開放してください",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "1 人あたりの 1 日買い取り上限（コイン）",
+  "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily_tooltip": "1 アカウントが 1 報酬日に買い取りで受け取れるコインの上限（発行量ベース。消却しても回復しません）。超える売却は丸ごと拒否されます。既定 500",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily": "サーバー全体の 1 日買い取り上限（コイン）",
+  "Sandbox_MinidoracatEconomy_ShopBuybackServerDaily_tooltip": "サーバー全体が 1 報酬日に買い取りで発行するコインの上限（消却しても回復しません）。超える売却は丸ごと拒否されます。既定 20000"
 }

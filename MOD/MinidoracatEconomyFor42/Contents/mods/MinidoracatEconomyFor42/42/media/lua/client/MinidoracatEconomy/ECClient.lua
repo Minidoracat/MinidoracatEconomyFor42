@@ -220,8 +220,23 @@ handlers["shop.buy"] = function(args)
     C.requestShop()
 end
 
+-- Buyback (stage G). shop.candidates: { ok, id, item, itemIds, count, unitQty, bidPrice, revision,
+-- buyback = { enabled, accountRemaining, serverRemaining, skuRemaining? } }; shop.sell: { ok, error?,
+-- requestId, txId?, item, qty, count, total, currency, balance, revision, buyback }.
+handlers["shop.candidates"] = function(args)
+    notifyShop("candidates", args)
+end
+
+handlers["shop.sell"] = function(args)
+    if args.ok then C.requestWallet() end
+    notifyShop("sell", args)
+    C.requestShop()
+end
+
 function C.requestShop() send("shop.list") end
 function C.buy(id, count, revision, requestId) send("shop.buy", { id = id, count = count, revision = revision, requestId = requestId }) end
+function C.requestSellCandidates(id) send("shop.candidates", { id = id }) end
+function C.sell(id, itemIds, revision, requestId) send("shop.sell", { id = id, itemIds = itemIds, revision = revision, requestId = requestId }) end
 
 -- Mailbox: { entries = { {id, kind, item, qty, price, txId, at}, ... }, unclaimed, atTerminal }.
 C.mail = nil
