@@ -694,6 +694,8 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - 白名單 codec 的 round-trip 矩陣擴充（流體容器、可修理物、有限 modData 的 MOD 物品）；
 - 交易站電台廣播（§17.3）：定時行情摘要、拍賣即將到期。
 
+**進度（2026-09-08）**：信箱容量已改沙盒 `MailboxPerAccount`＋刊登佔格（階段 D 上限規則修訂）；codec 矩陣已涵蓋流體、修理、modData、食物老化、無線電 DeviceData；**電台 ✓**：`ECRadio.lua`，`kind=trade` 終端每 `RadioIntervalMinutes`（0＝關）從終端座標 `SendTransmission` 一則 ≤200 字摘要（刊登數、賣家數、最新三筆），`RadioFrequency`（預設 101100）、`RadioRange`（0＝全服＝strength −1）、`RadioLanguage`（auto 或 CH／CN／EN／JP，指定時讀 mod 自己的翻譯檔當模板；物品名仍為伺服器語言）；server／client 各自 `addChannelName`；harness 情境三十一。「拍賣即將到期」留給階段 F。A14b（交易站本身當雙向 HAM 電台）未做。
+
 ### 階段 F：拍賣
 
 - 獨立 Auction service／UI，只接受中央託管白名單物品；
