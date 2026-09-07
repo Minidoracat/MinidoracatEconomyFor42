@@ -37,5 +37,17 @@
   "Sandbox_MinidoracatEconomy_MilestoneAmounts": "生存里程碑金额（幸存币）",
   "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "以分号分隔、与里程碑天数一一对应的金额清单（例如 100;150;250;400;1000）。长度不一致时只采用两边都有的项目。",
   "Sandbox_MinidoracatEconomy_BalanceMax": "余额上限（保险丝）",
-  "Sandbox_MinidoracatEconomy_BalanceMax_tooltip": "任何会让玩家单一货币可用余额超过此值的入帐都会被拒绝，用来挡住漏洞或错误造成的无限刷币；不影响既有余额与扣款。所有货币共用此缺省，管理面板可对单一货币另设覆写。"
+  "Sandbox_MinidoracatEconomy_BalanceMax_tooltip": "任何会让玩家单一货币可用余额超过此值的入帐都会被拒绝，用来挡住漏洞或错误造成的无限刷币；不影响既有余额与扣款。所有货币共用此缺省，管理面板可对单一货币另设覆写。",
+  "Sandbox_MinidoracatEconomy_MarketListingFeePercent": "市场刊登费（百分比）",
+  "Sandbox_MinidoracatEconomy_MarketListingFeePercent_tooltip": "上架时依定价收取的百分比，向上取整、最少 1 币；烧毁不进任何帐户。0＝免费上架。",
+  "Sandbox_MinidoracatEconomy_MarketSalesTaxPercent": "市场成交税（百分比）",
+  "Sandbox_MinidoracatEconomy_MarketSalesTaxPercent_tooltip": "成交时从卖家所得扣除的百分比，向上取整；烧毁不进任何帐户。",
+  "Sandbox_MinidoracatEconomy_MarketListingDays": "刊登有效天数",
+  "Sandbox_MinidoracatEconomy_MarketListingDays_tooltip": "超过天数未售出的刊登会自动退回卖家信箱（刊登费不退）。",
+  "Sandbox_MinidoracatEconomy_MarketMaxListings": "每人同时刊登上限",
+  "Sandbox_MinidoracatEconomy_MarketMaxListings_tooltip": "一名玩家同时可挂在市场上的刊登数。",
+  "Sandbox_MinidoracatEconomy_MarketPriceMin": "刊登最低价",
+  "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "刊登定价下限（幸存币）。",
+  "Sandbox_MinidoracatEconomy_MarketPriceMax": "刊登最高价",
+  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "刊登定价上限（幸存币）。"
 }

@@ -65,13 +65,16 @@ function M.hasFreeSlot(username)
     return M.unclaimed(username) < M.PER_ACCOUNT and md.mailbox.unclaimed < M.GLOBAL_MAX
 end
 
--- fields = { kind, item, qty, txId, price? }. Caller checked hasFreeSlot; this never fails.
+-- fields = { kind, item, qty, txId, price?, snapshot?, listingId? }. A snapshot entry rebuilds one
+-- item through ECCodec; without one the entry is `qty` fresh items of `item` (system shop).
+-- Caller checked hasFreeSlot (or is a system return allowed past the cap); this never fails.
 function M.add(username, fields)
     local o = owner(username, true)
     local id = S.newId()
     local entry = {
         id = id, owner = username, kind = fields.kind, item = fields.item, qty = fields.qty,
-        txId = fields.txId, price = fields.price, state = "ready", at = EC.now(),
+        txId = fields.txId, price = fields.price, snapshot = fields.snapshot, listingId = fields.listingId,
+        state = "ready", at = EC.now(),
     }
     o.entries[id] = entry
     o.unclaimed = o.unclaimed + 1
@@ -122,6 +125,7 @@ local function playerData(player)
         t[EC.PLAYER_MODDATA_KEY] = p
     end
     if type(p.claims) ~= "table" then p.claims = {} end
+    if type(p.pendingOuts) ~= "table" then p.pendingOuts = {} end
     return p
 end
 
@@ -182,17 +186,26 @@ local function itemWeight(item)
 end
 
 -- Rebuild + stamp + hand over; returns ok, error. The entry is untouched on failure.
+local function build(entry)
+    if type(entry.snapshot) == "table" and S.Codec then
+        return S.Codec.rebuild(entry.snapshot)
+    end
+    local item = instanceItem(entry.item)
+    if not item then return nil, "item_unavailable" end
+    return item
+end
+
 local function deliver(player, entry, claimSeq)
     local inv = player:getInventory()
     if not inv then return false, "no_inventory" end
-    local first = instanceItem(entry.item)
-    if not first then return false, "item_unavailable" end
-    local n = math.max(1, math.min(M.ITEMS_MAX, entry.qty or 1))
+    local first, err = build(entry)
+    if not first then return false, err or "item_unavailable" end
+    local n = type(entry.snapshot) == "table" and 1 or math.max(1, math.min(M.ITEMS_MAX, entry.qty or 1))
     local okRoom, room = pcall(function() return inv:hasRoomFor(player, itemWeight(first) * n) end)
     if not okRoom or room ~= true then return false, "backpack_full" end
     local list = ArrayList.new()
     for i = 1, n do
-        local item = i == 1 and first or instanceItem(entry.item)
+        local item = i == 1 and first or build(entry)
         if not item then return false, "item_unavailable" end
         item:getModData()[EC.PLAYER_MODDATA_KEY] = { mailId = entry.id, txId = entry.txId, epoch = md.meta.epoch, seq = claimSeq }
         inv:AddItem(item)
@@ -236,6 +249,8 @@ function M.claim(player, mailId)
 end
 
 -- ---------- login reconciliation (rule three) ----------
+
+local reconcileOuts   -- rows 4-6 (list-out), defined below
 
 function M.reconcile(player)
     local username = player:getUsername()
@@ -294,15 +309,88 @@ function M.reconcile(player)
             changed = true
         end
     end
+    if reconcileOuts(player, p, inv) then changed = true end
     if changed then transmit(player) end
 end
 
+-- ---------- login reconciliation of list-out (rule three rows 4-6) ----------
+
+-- pendingOuts[listingId] = { itemId, snapshot, price, seq, epoch, at }. Cleared only here (or
+-- by an eviction): a listing is durable once it came from an earlier epoch's save.
+reconcileOuts = function(player, p, inv)
+    local Mk = S.Market
+    if not Mk then return false end
+    local username = player:getUsername()
+    local changed = false
+    for id, pend in pairs(p.pendingOuts) do
+        local hasListing = Mk.hasListing(id)
+        local original = nil
+        pcall(function() original = inv:getItemWithID(pend.itemId) end)
+        local durable = pend.epoch ~= md.meta.epoch and not S.isRolledBack(pend.epoch, tonumber(pend.seq) or 0)
+        if original and hasListing then
+            -- row 6: the world has the listing, the (older) player save still has the item: the
+            -- listing is authoritative, the original goes
+            pcall(function()
+                inv:Remove(original)
+                sendRemoveItemFromContainer(inv, original)
+            end)
+            anomaly(username, id, "removed-listed-original", { itemId = pend.itemId })
+            if durable then p.pendingOuts[id] = nil end
+            changed = true
+        elseif original and not hasListing then
+            -- row 5: crashed before the removal (or the listing rolled back with the world while
+            -- the player save still has the item): nothing left the backpack, forget the op
+            p.pendingOuts[id] = nil
+            anomaly(username, id, "pending-cleared-item-present")
+            changed = true
+        elseif not original and not hasListing then
+            if S.isRolledBack(pend.epoch, tonumber(pend.seq) or 0) then
+                -- row 4: the world rolled back below the listing while the player save already lost
+                -- the item: rebuild the listing from the pending snapshot, never reuse the seq
+                S.bumpSeq(tonumber(pend.seq) or 0)
+                if Mk.restoreFromPending(username, id, pend) then
+                    -- the pending now guards the rebuilt listing: durability is judged from here
+                    pend.epoch = md.meta.epoch
+                    pend.seq = S.nextSeq()
+                    anomaly(username, id, "listing-restored", { price = pend.price })
+                else
+                    anomaly(username, id, "listing-restore-failed")
+                    p.pendingOuts[id] = nil
+                end
+            else
+                -- durable and gone = sold, cancelled, expired or delisted: the op completed
+                p.pendingOuts[id] = nil
+            end
+            changed = true
+        elseif durable then
+            -- listing present and durable, item gone: the op completed
+            p.pendingOuts[id] = nil
+            changed = true
+        end
+    end
+    return changed
+end
+
 -- ---------- death (rule five, part one) ----------
+
+-- Rule five: the dead character's modData is gone with the corpse, but its pendingOuts are
+-- still needed to rebuild listings after a rollback; keep them in memory until the next
+-- character exists (OnNewGame) and write them into that one (spec 19.7 rule five, part two).
+local carryOver = {}
 
 function M.onDeath(character)
     if not md then return end
     local ok, username = pcall(function() return character:getUsername() end)
     if not ok or type(username) ~= "string" then return end
+    local okData, data = pcall(function() return character:getModData()[EC.PLAYER_MODDATA_KEY] end)
+    if okData and type(data) == "table" and type(data.pendingOuts) == "table" then
+        local copy, n = {}, 0
+        for id, pend in pairs(data.pendingOuts) do copy[id] = pend n = n + 1 end
+        if n > 0 then
+            carryOver[username] = copy
+            X.emit("player.died", { username = username, pendingOuts = n })
+        end
+    end
     local o = owner(username, false)
     if not o then return end
     local n = 0
@@ -315,6 +403,17 @@ function M.onDeath(character)
     if n > 0 then
         X.emit("mailbox.settled", { username = username, count = n })
     end
+end
+
+function M.onNewGame(player)
+    local ok, username = pcall(function() return player:getUsername() end)
+    if not ok or type(username) ~= "string" then return end
+    local pending = carryOver[username]
+    if not pending then return end
+    carryOver[username] = nil
+    local p = playerData(player)
+    for id, pend in pairs(pending) do p.pendingOuts[id] = pend end
+    transmit(player)
 end
 
 -- ---------- retention ----------
@@ -379,4 +478,5 @@ S.Mailbox = M
 S.onInit(M.init)
 Events.OnTickEvenPaused.Add(M.onTick)
 Events.OnCharacterDeath.Add(M.onDeath)
+Events.OnNewGame.Add(M.onNewGame)
 return M

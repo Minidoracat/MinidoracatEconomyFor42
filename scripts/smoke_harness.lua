@@ -123,21 +123,75 @@ local function fire(name, ...)
     for _, fn in ipairs(events[name] or {}) do fn(...) end
 end
 
--- 假物品／背包（階段 C：信箱 claim-in、收斂）。全域：主函式已逼近 200 個 local。
-knownItems = { ["Base.Bandage"] = 0.1, ["Base.Antibiotics"] = 0.1, ["Base.RippedSheets"] = 0.1, ["Base.CannedCorn"] = 0.5,
-    ["Base.Nails"] = 0.01, ["Base.Screws"] = 0.01, ["Base.Plank"] = 3, ["Base.Rope"] = 0.5, ["Base.Twine"] = 0.1,
-    ["Base.Lighter"] = 0.1, ["Base.Hammer"] = 1.5, ["Base.Saw"] = 1.5, ["Base.Axe"] = 3, ["Base.Heavy"] = 30 }
-ScriptManager = { instance = { FindItem = function(_, name) return knownItems[name] and { name = name } or nil end } }
+-- 假物品／背包（階段 C／D：信箱 claim-in、收斂、白名單 codec）。全域：主函式已逼近 200 個 local。
+-- knownItems[fullType] = { w=重量, cat=DisplayCategory, main=主類別, rots=daysTotallyRotten, fluid=bool, weapon=bool }
+knownItems = {
+    ["Base.Bandage"] = { w = 0.1, cat = "FirstAid", main = "Normal" }, ["Base.Antibiotics"] = { w = 0.1, cat = "FirstAid", main = "Normal" },
+    ["Base.RippedSheets"] = { w = 0.1, cat = "FirstAid", main = "Normal" }, ["Base.CannedCorn"] = { w = 0.5, cat = "Food", main = "Food" },
+    ["Base.Nails"] = { w = 0.01, cat = "Material", main = "Normal" }, ["Base.Screws"] = { w = 0.01, cat = "Material", main = "Normal" },
+    ["Base.Plank"] = { w = 3, cat = "MaterialWeapon", main = "Weapon" }, ["Base.Rope"] = { w = 0.5, cat = "Material", main = "Normal" },
+    ["Base.Twine"] = { w = 0.1, cat = "Material", main = "Normal" }, ["Base.Lighter"] = { w = 0.1, cat = "LightSource", main = "Drainable" },
+    ["Base.Hammer"] = { w = 1.5, cat = "Tool", main = "Weapon" }, ["Base.Saw"] = { w = 1.5, cat = "Tool", main = "Normal" },
+    ["Base.Axe"] = { w = 3, cat = "ToolWeapon", main = "Weapon", weapon = true }, ["Base.Heavy"] = { w = 30, cat = "Material", main = "Normal" },
+    ["Base.Apple"] = { w = 0.2, cat = "Food", main = "Food", rots = 8 }, ["Base.Bag_ALICEpack"] = { w = 1, cat = "Bag", main = "Container" },
+    ["Base.PetrolCan"] = { w = 1.5, cat = "VehicleMaintenance", main = "Normal", fluid = true },
+    ["Base.x2Scope"] = { w = 0.3, cat = "WeaponPart", main = "Normal" }, ["Base.BookCarpentry1"] = { w = 0.8, cat = "SkillBook", main = "Literature" },
+}
+ScriptManager = { instance = { FindItem = function(_, name)
+    local k = knownItems[name]
+    if not k then return nil end
+    return { name = name, getDisplayName = function() return name end, getDisplayCategory = function() return k.cat end,
+        getDaysTotallyRotten = function() return k.rots or 1000000000 end }
+end } }
+Fluid = { Get = function(name) return { name = name } end }
 Capability = { AddItem = "AddItem", SaveWorld = "SaveWorld" }
 nextItemId = 1
 function instanceItem(fullType)
-    if not knownItems[fullType] then return nil end
+    local k = knownItems[fullType]
+    if not k then return nil end
     local id = nextItemId
     nextItemId = nextItemId + 1
-    local modData = {}
-    return { fullType = fullType, id = id, getFullType = function() return fullType end, getID = function() return id end,
-        getModData = function() return modData end, getUnequippedWeight = function() return knownItems[fullType] end,
-        getActualWeight = function() return knownItems[fullType] end }
+    local it = { fullType = fullType, id = id, modData = {}, condition = 10, uses = 1, age = 0, repaired = 0, readPages = 0,
+        equipped = false, favorite = false, broken = false, parts = {} }
+    it.getFullType = function() return fullType end
+    it.getID = function() return id end
+    it.getModData = function() return it.modData end
+    it.getUnequippedWeight = function() return k.w end
+    it.getActualWeight = function() return k.w end
+    it.getCategory = function() return k.main end
+    it.getDisplayCategory = function() return k.cat end
+    it.getScriptItem = function() return ScriptManager.instance:FindItem(fullType) end
+    it.isEquipped = function() return it.equipped end
+    it.isFavorite = function() return it.favorite end
+    it.isBroken = function() return it.broken end
+    it.getCondition = function() return it.condition end
+    it.setCondition = function(_, v) it.condition = v end
+    it.getCurrentUses = function() return it.uses end
+    it.setCurrentUses = function(_, v) it.uses = v end
+    it.getAge = function() return it.age end
+    it.setAge = function(_, v) it.age = v end
+    it.getHaveBeenRepaired = function() return it.repaired end
+    it.setHaveBeenRepaired = function(_, v) it.repaired = v end
+    if k.main == "Literature" then
+        it.getAlreadyReadPages = function() return it.readPages end
+        it.setAlreadyReadPages = function(_, v) it.readPages = v end
+    end
+    if k.main == "Food" then it.isRotten = function() return false end end
+    if k.fluid then
+        it.fluidName, it.fluidAmount = "", 0
+        it.getFluidContainer = function()
+            return { Empty = function() it.fluidName, it.fluidAmount = "", 0 end,
+                addFluid = function(_, fl, amount) it.fluidName, it.fluidAmount = fl.name, amount end,
+                getAmount = function() return it.fluidAmount end,
+                getPrimaryFluid = function() if it.fluidName == "" then return nil end; return { getFluidTypeString = function() return it.fluidName end } end }
+        end
+    end
+    if k.weapon then
+        it.getAllWeaponParts = function() return javaList(it.parts) end
+        it.attachWeaponPart = function(_, part) it.parts[#it.parts + 1] = part end
+        it.detachWeaponPart = function(_, part) for i = #it.parts, 1, -1 do if it.parts[i] == part then table.remove(it.parts, i) end end end
+    end
+    return it
 end
 ArrayList = { new = function() local items = {}; return { add = function(_, it) items[#items + 1] = it end, size = function() return #items end, get = function(_, i) return items[i + 1] end, items = items } end }
 sentItemPackets = {}
@@ -151,6 +205,7 @@ function fakeInventory(maxWeight)
     inv.AddItem = function(_, it) inv.items[#inv.items + 1] = it; return it end
     inv.Remove = function(_, it) for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i) end end end
     inv.getItems = function() return javaList(inv.items) end
+    inv.getItemWithID = function(_, id) for _, it in ipairs(inv.items) do if it.id == id then return it end end; return nil end
     inv.count = function(fullType) local n = 0; for _, it in ipairs(inv.items) do if not fullType or it.fullType == fullType then n = n + 1 end end; return n end
     return inv
 end
@@ -201,6 +256,8 @@ require("MinidoracatEconomy/ECIntegration")
 require("MinidoracatEconomy/ECTerminal")
 require("MinidoracatEconomy/ECMailbox")
 require("MinidoracatEconomy/ECShop")
+require("MinidoracatEconomy/ECCodec")
+require("MinidoracatEconomy/ECMarket")
 require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
@@ -213,7 +270,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 341     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 390     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1810,6 +1867,256 @@ zed.inventory = fakeInventory(50)
 zed.modData = {}
 cmd(zed, "hello")
 check(M.unclaimed("zed") == 1 and cmd(zed, "mail.claim", { mailId = b6.mailId }).ok == true and zed.inventory.count("Base.Plank") == 5, "ready entries stay claimable after death")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境二十八：白名單與快照 codec =====
+io.write("scenario 28: whitelist + codec\n")
+;(function()
+local Codec = S.Codec
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+check(files["MinidoracatEconomy/whitelist.json"] ~= nil and Codec.status().error == nil and Codec.status().counts.categories >= 20, "first start writes the default whitelist.json")
+local axe = instanceItem("Base.Axe"); axe.condition = 3; axe.repaired = 2
+check(Codec.check(axe) == true, "a tool weapon is whitelisted")
+local bag = instanceItem("Base.Bag_ALICEpack")
+local okB, whyB = Codec.check(bag)
+check(okB == false and whyB == "not_whitelisted", "containers are refused whatever the file says")
+local apple = instanceItem("Base.Apple")
+local okA, whyA = Codec.check(apple)
+check(okA == false and whyA == "perishable", "perishable food is refused")
+local corn = instanceItem("Base.CannedCorn")
+check(Codec.check(corn) == true, "non-perishable food passes")
+local book = instanceItem("Base.BookCarpentry1"); book.readPages = 3
+local okK, whyK = Codec.check(book)
+check(okK == false and whyK == "read_book", "a partly read book is refused")
+axe.equipped = true
+local okE, whyE = Codec.check(axe)
+check(okE == false and whyE == "equipped", "an equipped item is refused")
+axe.equipped = false
+axe.modData.SomeModState = 1
+local okM, whyM, keyM = Codec.check(axe)
+check(okM == false and whyM == "unlisted_moddata" and keyM == "SomeModState", "a modData key outside the allowed list fails closed and names the key")
+axe.modData.SomeModState = nil
+axe.modData[EC.PLAYER_MODDATA_KEY] = { mailId = "old" }
+check(Codec.check(axe) == true, "our own claim stamp never blocks a listing")
+-- snapshot / rebuild round trip incl. fluid + allowed modData
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["ToolWeapon","VehicleMaintenance"],"types":["Base.Nails"],"excludeTypes":["Base.Saw"],"modDataKeys":["Keep"]}' }, opens = 0 }
+check(Codec.load() == true and Codec.status().counts.types == 1, "a hand-edited whitelist loads")
+check(Codec.check(instanceItem("Base.Nails")) == true and Codec.check(instanceItem("Base.Saw")) == false and Codec.check(instanceItem("Base.Bandage")) == false,
+    "types / excludeTypes / categories from the file are honoured")
+local can = instanceItem("Base.PetrolCan"); can:getFluidContainer():addFluid(Fluid.Get("Petrol"), 3.5); can.condition = 7; can.modData.Keep = "yes"; can.modData[EC.PLAYER_MODDATA_KEY] = { mailId = "x" }
+local snap = Codec.snapshot(can)
+check(snap.type == "Base.PetrolCan" and snap.condition == 7 and snap.fluid.name == "Petrol" and snap.fluid.amount == 3.5 and snap.modData.Keep == "yes" and snap.modData[EC.PLAYER_MODDATA_KEY] == nil,
+    "the snapshot keeps condition, fluid and allowed modData and drops the claim stamp")
+local back = Codec.rebuild(snap)
+check(back ~= nil and back.condition == 7 and back.fluidName == "Petrol" and back.fluidAmount == 3.5 and back.modData.Keep == "yes", "rebuild restores the same fields")
+local weapon = instanceItem("Base.Axe"); local scope = instanceItem("Base.x2Scope"); weapon:attachWeaponPart(scope)
+local inv = fakeInventory(50)
+check(Codec.detachParts(weapon, inv) == 1 and #weapon.parts == 0 and inv.count("Base.x2Scope") == 1, "weapon parts are detached back into the backpack")
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories": 5}' }, opens = 0 }
+local okL, errL = Codec.load()
+check(okL == false and Codec.status().error ~= nil and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected and the previous whitelist stays")
+end)()
+
+-- ===== 情境二十九：市場全流程（上架、瀏覽、購買、取消、到期、費稅守恆） =====
+io.write("scenario 29: market\n")
+;(function()
+local Mk, M, T = S.Market, S.Mailbox, S.Terminal
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+sentItemPackets = {}
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+SandboxVars.MinidoracatEconomy.MarketListingFeePercent = 2
+SandboxVars.MinidoracatEconomy.MarketSalesTaxPercent = 5
+SandboxVars.MinidoracatEconomy.MarketMaxListings = 2
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local ann = fakePlayer("ann"); ann.x, ann.y = 101, 200; ann.inventory = fakeInventory(50)
+local bob = fakePlayer("bob"); bob.x, bob.y = 101, 201; bob.inventory = fakeInventory(50)
+local cat = fakePlayer("cat"); cat.x, cat.y = 101, 199; cat.inventory = fakeInventory(50)
+onlinePlayers = { boss, ann, bob, cat }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("ann", "survivor", 100, "SYSTEM_MINT", { requestId = "s-ann", reasonCode = "t" })
+L.credit("bob", "survivor", 500, "SYSTEM_MINT", { requestId = "s-bob", reasonCode = "t" })
+L.credit("cat", "survivor", 500, "SYSTEM_MINT", { requestId = "s-cat", reasonCode = "t" })
+local axe = instanceItem("Base.Axe"); axe.condition = 4; ann.inventory:AddItem(axe)
+local bag = instanceItem("Base.Bag_ALICEpack"); ann.inventory:AddItem(bag)
+local cands = cmd(ann, "market.candidates")
+local okRows, badRows = 0, 0
+for _, r in ipairs(cands.items) do if r.ok then okRows = okRows + 1 else badRows = badRows + 1 end end
+check(okRows == 1 and badRows == 1 and cands.feePercent == 2 and cands.priceMin == 1, "candidates list every backpack item with its verdict")
+check(cmd(ann, "market.list", { itemId = axe.id, price = 0 }).error == "price_range", "a price outside the sandbox range is refused")
+ann.x = 150
+check(cmd(ann, "market.list", { itemId = axe.id, price = 200 }).error == "not_at_terminal" and ann.inventory.count("Base.Axe") == 1, "listing away from a terminal is refused and the item stays")
+ann.x = 101
+check(cmd(ann, "market.list", { itemId = bag.id, price = 50 }).error == "not_whitelisted", "a container cannot be listed")
+local listed = cmd(ann, "market.list", { itemId = axe.id, price = 200, requestId = "l1" })
+check(listed.ok == true and listed.fee == 4 and ann.inventory.count("Base.Axe") == 0 and L.getBalance("ann", "survivor").available == 96
+    and Mk.hasListing(listed.listingId) and #listed.mine == 1, "listing removes the item, burns the 2 percent fee and creates the listing")
+local pend = ann.modData[EC.PLAYER_MODDATA_KEY].pendingOuts[listed.listingId]
+check(pend ~= nil and pend.itemId == axe.id and pend.snapshot.condition == 4 and pend.price == 200 and ann.transmitted >= 1, "the seller's own modData keeps the pending list-out record with the snapshot")
+check(cmd(ann, "market.list", { itemId = axe.id, price = 200, requestId = "l1" }).duplicate == true and #Mk.mine("ann") == 1, "resending the same listing request is idempotent")
+-- browse
+local page = cmd(bob, "market.browse", { sort = "time" })
+check(page.total == 1 and page.items[1].id == listed.listingId and page.items[1].seller == "ann" and page.items[1].condition == 4 and page.categories[1] == "ToolWeapon" and page.currency == "survivor",
+    "browse lists the listing with its snapshot summary and category")
+check(cmd(bob, "market.browse", { query = "axe" }).total == 1 and cmd(bob, "market.browse", { query = "hammer" }).total == 0 and cmd(bob, "market.browse", { category = "Food" }).total == 0,
+    "browse filters by query and category")
+-- max listings
+local n1 = instanceItem("Base.Nails"); ann.inventory:AddItem(n1)
+local n2 = instanceItem("Base.Nails"); ann.inventory:AddItem(n2)
+check(cmd(ann, "market.list", { itemId = n1.id, price = 5 }).ok == true and cmd(ann, "market.list", { itemId = n2.id, price = 5 }).error == "too_many_listings",
+    "the per-player listing cap is enforced")
+-- buy: own listing refused, wrong price refused, two buyers race
+check(cmd(ann, "market.buy", { listingId = listed.listingId }).error == "own_listing", "a seller cannot buy their own listing")
+check(cmd(bob, "market.buy", { listingId = listed.listingId, price = 150 }).error == "price_changed", "a confirmation price that differs is refused")
+local bought = cmd(bob, "market.buy", { listingId = listed.listingId, price = 200, requestId = "b1" })
+check(bought.ok == true and bought.tax == 10 and bought.delivered == true and bob.inventory.count("Base.Axe") == 1 and bob.inventory.items[#bob.inventory.items].condition == 4
+    and L.getBalance("bob", "survivor").available == 300 and L.getBalance("ann", "survivor").available == 285 and not Mk.hasListing(listed.listingId),
+    "a sale moves 200 from the buyer, 190 to the seller (96 - 1 nails fee + 190), burns 10 tax and delivers the rebuilt item")
+check(cmd(cat, "market.buy", { listingId = listed.listingId, price = 200 }).error == "unknown_listing" and L.getBalance("cat", "survivor").available == 500,
+    "the second buyer of the same listing is refused with zero debit")
+check(cmd(bob, "market.buy", { listingId = listed.listingId, price = 200, requestId = "b1" }).duplicate == true and L.getBalance("bob", "survivor").available == 300,
+    "resending the purchase is idempotent")
+check(L.conservation("survivor") == 0, "fee and tax burns keep the currency conserved")
+local rc = L.receipts("ann")
+check(rc[#rc].kind == "market_buy" and rc[#rc].amount == 190 and rc[#rc].item == "Base.Axe", "the seller's receipt shows the net proceeds and the item")
+-- cancel: back to the seller through the mailbox
+local mine = Mk.mine("ann")
+local nailsId = mine[1].id
+check(cmd(bob, "market.cancel", { listingId = nailsId }).error == "not_owner", "only the seller can cancel")
+local cancelled = cmd(ann, "market.cancel", { listingId = nailsId })
+check(cancelled.ok == true and cancelled.delivered == true and ann.inventory.count("Base.Nails") == 2 and not Mk.hasListing(nailsId) and L.getBalance("ann", "survivor").available == 285,
+    "cancel returns the item through the mailbox; the fee is not refunded")
+-- expiry returns to the mailbox even past the cap
+local n3 = cmd(ann, "market.list", { itemId = n2.id, price = 5 })
+local keep = M.PER_ACCOUNT
+M.PER_ACCOUNT = 0
+nowMs = nowMs + 8 * 86400000
+fire("OnTickEvenPaused")
+check(not Mk.hasListing(n3.listingId) and M.unclaimed("ann") == 1, "an expired listing goes back to the seller's mailbox even when it is full")
+M.PER_ACCOUNT = keep
+local expired = 0
+fire("OnTickEvenPaused")
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do if string.find(l, '"type":"market.expired"', 1, true) then expired = expired + 1 end end end
+check(expired == 1, "expiry is journaled")
+-- admin delist
+local h1 = instanceItem("Base.Hammer"); cat.inventory:AddItem(h1)
+local lh = cmd(cat, "market.list", { itemId = h1.id, price = 80 })
+check(cmd(bob, "admin.listings", { action = "delist", listingId = lh.listingId }).error == "forbidden", "a player cannot delist")
+local dl = cmd(boss, "admin.listings", { action = "delist", listingId = lh.listingId, reason = "spam" })
+check(dl.ok == true and not Mk.hasListing(lh.listingId) and M.unclaimed("cat") == 1 and dl.total == 0, "an admin delist returns the item to the seller mailbox and is audited")
+local au = X.auditEntries(5)
+check(au[1].action == "delist" and au[1].target == "cat", "delist audit row")
+onlinePlayers = {}
+SandboxVars.MinidoracatEconomy.MarketMaxListings = nil
+end)()
+
+-- ===== 情境三十：list-out 的崩潰收斂（規則三第 4-6 列）與死亡 carryOver（規則五第 2 條） =====
+io.write("scenario 30: list-out reconciliation\n")
+;(function()
+local function deepCopy(t)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do out[k] = deepCopy(v) end
+    return out
+end
+local Mk, M = S.Market, S.Mailbox
+local KEY = EC.PLAYER_MODDATA_KEY
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+sentItemPackets = {}
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local ann = fakePlayer("ann"); ann.x, ann.y = 101, 200; ann.inventory = fakeInventory(50)
+onlinePlayers = { boss, ann }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function anomalies(resolution)
+    fire("OnTickEvenPaused")
+    local n = 0
+    for _, f in pairs(files) do for _, l in ipairs(f.lines) do
+        if string.find(l, '"type":"ledger.anomaly"', 1, true) and string.find(l, '"resolution":"' .. resolution .. '"', 1, true) then n = n + 1 end
+    end end
+    return n
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("ann", "survivor", 100, "SYSTEM_MINT", { requestId = "s-ann", reasonCode = "t" })
+fire("OnTickEvenPaused")
+local saved = deepCopy(modDataStore[EC.MODDATA_KEY])           -- world save point (no listing yet)
+local axe = instanceItem("Base.Axe"); axe.condition = 5; ann.inventory:AddItem(axe)
+local listed = cmd(ann, "market.list", { itemId = axe.id, price = 120 })
+check(listed.ok == true and ann.inventory.count("Base.Axe") == 0, "setup: listed after the save point")
+local playerSave = { inv = deepCopy(ann.inventory.items), md = deepCopy(ann.modData) }  -- player save AFTER the listing (item gone, pending present)
+-- row 4: world rolls back below the listing, player save is newer -> listing rebuilt from the pending snapshot
+modDataStore[EC.MODDATA_KEY] = deepCopy(saved)
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+onlinePlayers = { boss, ann }
+cmd(ann, "hello")
+check(Mk.hasListing(listed.listingId) and anomalies("listing-restored") == 1 and ann.modData[KEY].pendingOuts[listed.listingId] ~= nil,
+    "row 4: a rolled-back listing is rebuilt from the seller's pending record (pending kept until durable)")
+local restored = Mk.mine("ann")[1]
+check(restored.price == 120 and restored.condition == 5 and S.modData().meta.seq >= (select(2, EC.parseId(listed.listingId))), "the rebuilt listing keeps price and snapshot and the seq never goes backwards")
+local restoredPend = deepCopy(ann.modData[KEY].pendingOuts[listed.listingId])
+check(restoredPend.epoch == S.modData().meta.epoch, "the pending record now points at the rebuild point")
+-- durable listing: after the next epoch the pending is cleared on login
+fire("OnTickEvenPaused")
+local saved2 = deepCopy(modDataStore[EC.MODDATA_KEY])
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+onlinePlayers = { boss, ann }
+cmd(ann, "hello")
+check(Mk.hasListing(listed.listingId) and ann.modData[KEY].pendingOuts[listed.listingId] == nil, "a listing that survived into a save clears the pending record at the next login")
+-- row 6: the listing is durable but the player's save is older (item still there) -> the original is removed
+local ghost = instanceItem("Base.Axe"); ghost.id = axe.id; ann.inventory:AddItem(ghost)
+ann.modData[KEY].pendingOuts[listed.listingId] = deepCopy(restoredPend)
+sentItemPackets = {}
+cmd(ann, "hello")
+check(ann.inventory.count("Base.Axe") == 0 and anomalies("removed-listed-original") == 1 and ann.modData[KEY].pendingOuts[listed.listingId] == nil,
+    "row 6: an original that is still in an older player save is removed because the listing is authoritative")
+-- row 5: crashed before the removal (pending present, item present, no listing) -> pending cleared, item stays
+local hammer = instanceItem("Base.Hammer"); ann.inventory:AddItem(hammer)
+ann.modData[KEY].pendingOuts["9999:1"] = { itemId = hammer.id, snapshot = { type = "Base.Hammer" }, price = 10, seq = 1, epoch = "9999" }
+cmd(ann, "hello")
+check(ann.inventory.count("Base.Hammer") == 1 and ann.modData[KEY].pendingOuts["9999:1"] == nil and anomalies("pending-cleared-item-present") == 1,
+    "row 5: a pending op whose item never left the backpack is simply forgotten")
+-- sold then durable: pending gone, no rebuild
+ann.modData[KEY].pendingOuts["oldsold"] = { itemId = 424242, snapshot = { type = "Base.Nails" }, price = 3, seq = 1, epoch = "1000" }
+cmd(ann, "hello")
+check(ann.modData[KEY].pendingOuts["oldsold"] == nil and not Mk.hasListing("oldsold"), "a durable op whose listing is gone (sold / cancelled) clears without rebuilding")
+-- rule five part two: death carries pendingOuts to the next character
+local saw = instanceItem("Base.Saw"); ann.inventory:AddItem(saw)
+local ls = cmd(ann, "market.list", { itemId = saw.id, price = 30 })
+check(ann.modData[KEY].pendingOuts[ls.listingId] ~= nil, "setup: fresh pending on the character that is about to die")
+fire("OnCharacterDeath", ann)
+ann.inventory = fakeInventory(50)
+ann.modData = {}
+fire("OnNewGame", ann, nil)
+check(ann.modData[KEY] ~= nil and ann.modData[KEY].pendingOuts[ls.listingId] ~= nil, "the new character inherits the dead one's pendingOuts")
 onlinePlayers = {}
 end)()
 

@@ -378,8 +378,14 @@ EC.OPTIONS = {
     { key = "CatPerAccountDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 5000, page = "Currencies" },
     { key = "CatServerDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 50000, page = "Currencies" },
     { key = "RemoteReadOnly", group = "general", kind = "bool", default = true },
+    { key = "MarketListingFeePercent", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 2, unit = "percent" },
+    { key = "MarketSalesTaxPercent", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 5, unit = "percent" },
+    { key = "MarketListingDays", group = "market", kind = "int", min = 1, max = 30, step = 1, default = 7, unit = "days" },
+    { key = "MarketMaxListings", group = "market", kind = "int", min = 1, max = 50, step = 1, default = 5 },
+    { key = "MarketPriceMin", group = "market", kind = "int", min = 1, max = 1000000, step = 1, default = 1, unit = "coin" },
+    { key = "MarketPriceMax", group = "market", kind = "int", min = 1, max = 1000000000, step = 1000, default = 1000000, unit = "coin" },
 }
-EC.OPTION_GROUPS = { "rewards", "admin", "currency", "general" }
+EC.OPTION_GROUPS = { "rewards", "admin", "currency", "market", "general" }
 EC.OPTION_BY_KEY = {}
 for _, o in ipairs(EC.OPTIONS) do EC.OPTION_BY_KEY[o.key] = o end
 

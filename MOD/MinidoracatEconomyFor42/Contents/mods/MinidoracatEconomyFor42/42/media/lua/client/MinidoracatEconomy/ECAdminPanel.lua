@@ -470,6 +470,8 @@ local function optionValueText(spec, value)
     if spec.zeroUnlimited and n <= 0 then return tr("Admin_Set_Unlimited") end
     if spec.unit == "minutes" then return getText(T .. "Admin_Set_Minutes", amountText(n)) end
     if spec.unit == "hour" then return getText(T .. "Admin_Set_Hour", tostring(math.floor(n))) end
+    if spec.unit == "percent" then return getText(T .. "Admin_Set_Percent", tostring(math.floor(n))) end
+    if spec.unit == "days" then return getText(T .. "Admin_Set_Days", tostring(math.floor(n))) end
     if spec.unit == "tz" then return offsetText(n) end
     return amountText(n)
 end

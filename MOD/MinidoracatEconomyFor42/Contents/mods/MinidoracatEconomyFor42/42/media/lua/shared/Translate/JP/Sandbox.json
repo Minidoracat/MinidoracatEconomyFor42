@@ -37,5 +37,17 @@
   "Sandbox_MinidoracatEconomy_MilestoneAmounts": "生存マイルストーン金額（サバイバーコイン）",
   "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "マイルストーン日数と 1 対 1 で対応する、セミコロン区切りの金額リスト（例：100;150;250;400;1000）。長さが異なる場合は両方に存在する項目のみ使われます。",
   "Sandbox_MinidoracatEconomy_BalanceMax": "残高上限（ヒューズ）",
-  "Sandbox_MinidoracatEconomy_BalanceMax_tooltip": "プレイヤーの一通貨あたり利用可能残高がこの値を超える入金は拒否されます。不具合や不正による無限増殖を止めるためのもので、既存残高と出金には影響しません。全通貨共通の既定値で、管理パネルから通貨ごとに上書きできます。"
+  "Sandbox_MinidoracatEconomy_BalanceMax_tooltip": "プレイヤーの一通貨あたり利用可能残高がこの値を超える入金は拒否されます。不具合や不正による無限増殖を止めるためのもので、既存残高と出金には影響しません。全通貨共通の既定値で、管理パネルから通貨ごとに上書きできます。",
+  "Sandbox_MinidoracatEconomy_MarketListingFeePercent": "マーケット出品手数料（百分比）",
+  "Sandbox_MinidoracatEconomy_MarketListingFeePercent_tooltip": "出品時に希望価格の一定割合を徴収（切り上げ、最低 1 コイン）。焼却されます。0 = 無料。",
+  "Sandbox_MinidoracatEconomy_MarketSalesTaxPercent": "マーケット売買税（百分比）",
+  "Sandbox_MinidoracatEconomy_MarketSalesTaxPercent_tooltip": "成約時に売主の受取額から徴収する割合（切り上げ）。焼却されます。",
+  "Sandbox_MinidoracatEconomy_MarketListingDays": "出品の有効日数",
+  "Sandbox_MinidoracatEconomy_MarketListingDays_tooltip": "未売却の出品は日数経過後、売主の受信箱へ返却されます（手数料は返金されません）。",
+  "Sandbox_MinidoracatEconomy_MarketMaxListings": "1人あたり同時出品数",
+  "Sandbox_MinidoracatEconomy_MarketMaxListings_tooltip": "1人のプレイヤーが同時にマーケットに出せる出品数。",
+  "Sandbox_MinidoracatEconomy_MarketPriceMin": "出品の最低価格",
+  "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "出品価格の下限（マーケット通貨）。",
+  "Sandbox_MinidoracatEconomy_MarketPriceMax": "出品の最高価格",
+  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "出品価格の上限（マーケット通貨）。"
 }

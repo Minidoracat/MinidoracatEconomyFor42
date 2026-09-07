@@ -192,3 +192,63 @@ option MinidoracatEconomy.MilestoneAmounts
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_MilestoneAmounts,
 }
+
+option MinidoracatEconomy.MarketListingFeePercent
+{
+    type = integer,
+    min = 0,
+    max = 50,
+    default = 2,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MarketListingFeePercent,
+}
+
+option MinidoracatEconomy.MarketSalesTaxPercent
+{
+    type = integer,
+    min = 0,
+    max = 50,
+    default = 5,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MarketSalesTaxPercent,
+}
+
+option MinidoracatEconomy.MarketListingDays
+{
+    type = integer,
+    min = 1,
+    max = 30,
+    default = 7,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MarketListingDays,
+}
+
+option MinidoracatEconomy.MarketMaxListings
+{
+    type = integer,
+    min = 1,
+    max = 50,
+    default = 5,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MarketMaxListings,
+}
+
+option MinidoracatEconomy.MarketPriceMin
+{
+    type = integer,
+    min = 1,
+    max = 1000000,
+    default = 1,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MarketPriceMin,
+}
+
+option MinidoracatEconomy.MarketPriceMax
+{
+    type = integer,
+    min = 1,
+    max = 1000000000,
+    default = 1000000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MarketPriceMax,
+}

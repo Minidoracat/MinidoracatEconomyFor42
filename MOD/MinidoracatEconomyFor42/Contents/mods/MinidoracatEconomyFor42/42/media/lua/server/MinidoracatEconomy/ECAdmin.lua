@@ -51,8 +51,8 @@ end
 if not MinidoracatEconomy or not MinidoracatEconomy.Integration then
     require "MinidoracatEconomy/ECIntegration"
 end
-if not MinidoracatEconomy or not MinidoracatEconomy.Shop then
-    require "MinidoracatEconomy/ECShop"
+if not MinidoracatEconomy or not MinidoracatEconomy.Market then
+    require "MinidoracatEconomy/ECMarket"
 end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
@@ -66,7 +66,9 @@ local G = EC and EC.Integration
 local T = EC and EC.Terminal
 local M = EC and EC.Mailbox
 local Shop = EC and EC.Shop
-if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W or not I or not G or not T or not M or not Shop then
+local Codec = EC and EC.Codec
+local Mk = EC and EC.Market
+if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W or not I or not G or not T or not M or not Shop or not Codec or not Mk then
     return
 end
 
@@ -587,6 +589,8 @@ function A.system(write)
         terminals = T.count(),
         catalog = Shop.fileStatus(),
         mailboxUnclaimed = md.mailbox and md.mailbox.unclaimed or 0,
+        market = Mk.stats(),
+        whitelist = Codec.status(),
     }
 end
 
@@ -777,6 +781,41 @@ S.handlers["admin.catalog"] = function(player, args)
     for k, v in pairs(snap) do res[k] = v end
     res.perms = { read = true, write = A.isAdmin(player) }
     S.reply(player, "admin.catalog", res)
+end
+
+-- admin.listings {action=list|delist, listingId?, reason?, requestId} : every active listing (read
+-- gate) or a forced return to the seller's mailbox (write gate, audited, allowed past the cap).
+S.handlers["admin.listings"] = function(player, args)
+    local delist = type(args) == "table" and args.action == "delist"
+    if not gate(player, "admin.listings", delist) then return end
+    local res = { ok = true }
+    if delist then
+        local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
+        local ok, err = Mk.delist(player:getUsername(), args.listingId, reason)
+        if not ok then res = { ok = false, error = err } end
+        res.listingId = args.listingId
+    end
+    if type(args) == "table" then res.requestId = args.requestId end
+    local snap = Mk.browse(player:getUsername(), { page = type(args) == "table" and args.page or 1, query = type(args) == "table" and args.query or nil, sort = "time" })
+    for k, v in pairs(snap) do res[k] = v end
+    res.perms = { read = true, write = A.isAdmin(player) }
+    S.reply(player, "admin.listings", res)
+end
+
+-- admin.whitelist {action=status|reload} : the listing whitelist file (reload = write gate).
+S.handlers["admin.whitelist"] = function(player, args)
+    local reload = type(args) == "table" and args.action == "reload"
+    if not gate(player, "admin.whitelist", reload) then return end
+    local res = { ok = true }
+    if reload then
+        local ok, err = Codec.load()
+        X.audit({ action = "whitelist", target = "file", field = "reload", after = ok and "ok" or ("error: " .. tostring(err)), admin = player:getUsername() })
+        if not ok then res = { ok = false, error = "whitelist_invalid", detail = err } end
+    end
+    if type(args) == "table" then res.requestId = args.requestId end
+    res.whitelist = Codec.status()
+    res.perms = { read = true, write = A.isAdmin(player) }
+    S.reply(player, "admin.whitelist", res)
 end
 
 -- admin.auditFile (read gate): the newest entries of the previous and current month's audit

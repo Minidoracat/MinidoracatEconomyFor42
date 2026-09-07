@@ -37,5 +37,17 @@
   "Sandbox_MinidoracatEconomy_MilestoneAmounts": "Survival milestone amounts (Survivor Coins)",
   "Sandbox_MinidoracatEconomy_MilestoneAmounts_tooltip": "Semicolon-separated amounts matching the milestone days one by one (e.g. 100;150;250;400;1000). If the lists differ in length only the shared entries are used.",
   "Sandbox_MinidoracatEconomy_BalanceMax": "Balance cap (fuse)",
-  "Sandbox_MinidoracatEconomy_BalanceMax_tooltip": "Any credit that would push a player's available balance of one currency above this value is refused. It stops runaway minting from bugs or exploits; existing balances and debits are unaffected. Default for every currency; the admin panel can override it per currency."
+  "Sandbox_MinidoracatEconomy_BalanceMax_tooltip": "Any credit that would push a player's available balance of one currency above this value is refused. It stops runaway minting from bugs or exploits; existing balances and debits are unaffected. Default for every currency; the admin panel can override it per currency.",
+  "Sandbox_MinidoracatEconomy_MarketListingFeePercent": "Market listing fee (percent)",
+  "Sandbox_MinidoracatEconomy_MarketListingFeePercent_tooltip": "Percentage of the asking price charged when an item is listed, rounded up, at least 1 coin; burned. 0 = free listings.",
+  "Sandbox_MinidoracatEconomy_MarketSalesTaxPercent": "Market sales tax (percent)",
+  "Sandbox_MinidoracatEconomy_MarketSalesTaxPercent_tooltip": "Percentage of the sale price taken from the seller on a sale, rounded up; burned.",
+  "Sandbox_MinidoracatEconomy_MarketListingDays": "Listing duration (days)",
+  "Sandbox_MinidoracatEconomy_MarketListingDays_tooltip": "Unsold listings are returned to the seller mailbox after this many days (the fee is not refunded).",
+  "Sandbox_MinidoracatEconomy_MarketMaxListings": "Max listings per player",
+  "Sandbox_MinidoracatEconomy_MarketMaxListings_tooltip": "How many listings one player may have on the market at the same time.",
+  "Sandbox_MinidoracatEconomy_MarketPriceMin": "Minimum listing price",
+  "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "Lowest asking price allowed (market currency).",
+  "Sandbox_MinidoracatEconomy_MarketPriceMax": "Maximum listing price",
+  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "Highest asking price allowed (market currency)."
 }
