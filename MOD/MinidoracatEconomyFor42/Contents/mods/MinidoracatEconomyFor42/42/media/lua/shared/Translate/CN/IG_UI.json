@@ -192,7 +192,7 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_config": "变更设置",
   "IGUI_MinidoracatEconomy_Admin_Audit_Count": "显示 %1／%2 笔",
   "IGUI_MinidoracatEconomy_Admin_Audit_Empty": "尚无审核纪录",
-  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "这里的原因只保留前 40 字，完整内容在审核档",
+  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "本月与上月的原因是完整内容；更早的纪录只保留前 40 字，完整内容在稽核档",
   "IGUI_MinidoracatEconomy_Admin_Sys_State": "服务器状态",
   "IGUI_MinidoracatEconomy_Admin_Sys_Seq": "事件序号",
   "IGUI_MinidoracatEconomy_Admin_Sys_Epoch": "启动代号",
@@ -330,5 +330,6 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "服务器未存盘就关闭时被回滚的管理操作（读稽核档，本月与上月）；这些操作没有生效，需要的话请重做",
   "IGUI_MinidoracatEconomy_Band_Frozen": "帐号已冻结：无法入帐或扣款，请联系管理员",
   "IGUI_MinidoracatEconomy_Toast_Frozen": "你的帐号已被管理员冻结",
-  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "你的帐号已解除冻结"
+  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "你的帐号已解除冻结",
+  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "点这里到稽核页看完整原因"
 }

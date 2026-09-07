@@ -639,10 +639,18 @@ function Dialog:layoutInside(maxW, maxH)
         end
         if core <= maxH then break end
     end
-    -- spare room (up to three more lines) goes to the reason box
-    local extra = math.max(0, math.min(maxH - total, rowH() * 3))
-    local height = math.min(maxH, total) + extra
-    local reasonH = m.reason + extra
+    -- Reason box budget, in this order: (1) at least three lines when the core rows leave room,
+    -- (2) the informational rows, (3) whatever is still spare, up to three more lines. The info
+    -- rows are the droppable ones, so a tight window loses them before the reason box shrinks.
+    local infoH = total - core
+    local spare = math.max(0, maxH - core)
+    local grow = math.min(spare, math.max(0, rowH() * 3 - m.reason))
+    spare = spare - grow
+    local shownInfo = math.min(spare, infoH)
+    spare = spare - shownInfo
+    grow = grow + math.min(spare, rowH() * 3)
+    local reasonH = m.reason + grow
+    local height = math.min(maxH, core + grow + shownInfo)
 
     self.rows = rows
     self.titleH = m.title
@@ -1638,22 +1646,34 @@ function Admin:rebuildReceipts()
     self.selectedReceipt = nil
 end
 
+-- One audit action = one line in the files and one entry in the ring; the same fields identify it.
+local function auditKey(e)
+    return tostring(e.epoch) .. ":" .. tostring(e.seq) .. ":" .. tostring(e.ts) .. ":" .. tostring(e.action) .. ":" .. tostring(e.target or e.field)
+end
+
 function Admin:rebuildAudit()
     local rows = {}
     local filter = self.auditFilter
-    -- The ring (newest-first) holds what survived; the audit files add what a crash rolled back.
-    -- Every filter sees both: rolled-back lines are merged in (muted) and "rolled" shows only them.
+    -- Sources: the audit files (this and last month) carry full reasons and the rolled-back lines;
+    -- the ModData ring (40-char reasons) only adds what the files do not have (older months).
+    -- "rolled" shows the rolled-back file lines alone.
     local fromFile = filter == "rolled"
-    local src = {}
-    if not fromFile then
-        for _, e in ipairs(self.audit or {}) do src[#src + 1] = e end
-    end
+    local src, seen = {}, {}
     local file = self.auditFile or {}
     for i = #file, 1, -1 do
-        if type(file[i]) == "table" and file[i].rolledBack == true then src[#src + 1] = file[i] end
+        local e = file[i]
+        if type(e) == "table" and (not fromFile or e.rolledBack == true) then
+            seen[auditKey(e)] = true
+            src[#src + 1] = e
+        end
     end
-    if not fromFile and #file > 0 then
-        EC.sortSafe(src, function(a, b) return (tonumber(a.ts) or 0) > (tonumber(b.ts) or 0) end)
+    if not fromFile then
+        for _, e in ipairs(self.audit or {}) do
+            if type(e) == "table" and not seen[auditKey(e)] then src[#src + 1] = e end
+        end
+        if #file > 0 then
+            EC.sortSafe(src, function(a, b) return (tonumber(a.ts) or 0) > (tonumber(b.ts) or 0) end)
+        end
     end
     local q = self.auditQuery
     for _, e in ipairs(src) do
@@ -1697,6 +1717,7 @@ function Admin:rebuildAudit()
         end
     end
     self.auditRows = rows
+    self.auditTotal = #src
     self.auditList:setItems(rows)
 end
 
@@ -2112,10 +2133,15 @@ function Admin:drawPlayer()
             if hasBit(rewards.milestones, m.index) then done = done + 1 end
         end
         self:line(getText(T .. "Admin_Player_Milestones", tostring(done), tostring(total), tostring(rewards.season or "-")))
+        self.frozenLink = nil
         if lookup.frozen then
             local info = lookup.frozenInfo or {}
+            -- both lines are one click target: the audit page shows the full freeze reason
+            local top = self.ly
             self:line(getText(T .. "Admin_Player_FrozenBy", tostring(info.by or "-"), stampText(info.ts, self.offsetMin)), "warn")
             if info.reason then self:line(getText(T .. "Admin_Player_FrozenReason", tostring(info.reason)), "warn") end
+            self:line(tr("Admin_Player_FrozenLink"), "accent")
+            self.frozenLink = { x = self.lx, y = top, w = self.lw, h = self.ly - top }
         end
         self:lineGap()
         self:line(tr("Admin_Player_MyDaily"), "textMuted")
@@ -2370,9 +2396,7 @@ function Admin:drawAudit()
         textRight(self, stamp, self.width - PAD, filterY, "textFaint")
     end
     local rolled = self.auditFilter == "rolled"
-    local rolledLines = 0
-    for _, e in ipairs(self.auditFile or {}) do if type(e) == "table" and e.rolledBack == true then rolledLines = rolledLines + 1 end end
-    local total = rolled and rolledLines or (#(self.audit or {}) + rolledLines)
+    local total = self.auditTotal or 0
     text(self, fitText(getText(T .. "Admin_Audit_Count", tostring(#(self.auditRows or {})), tostring(total)),
         self.width - g.auditCountX - stampW), g.auditCountX, filterY, "textMuted")
     drawColumnHeaders(self, self.auditList, AUDIT_COLS, self.auditList.x, g.auditHeaderY, rh)
@@ -2552,8 +2576,26 @@ end
 function Admin:render() end
 
 -- row click selects the currency / integration source the action buttons operate on
+-- Jump to the audit page filtered to one account's freeze history (full reasons come from the
+-- audit files, which the page loads on open).
+function Admin:showAuditFor(username, filter)
+    for _, b in ipairs(self.subTabButtons) do
+        if b.internal == "Audit" then self:onSubTab(b) end
+    end
+    setEntryText(self.auditEntry, username)
+    self.auditQuery = string.lower(username)
+    self.auditFilter = filter or "all"
+    for _, b in ipairs(self.auditFilterButtons) do b.active = b.internal == self.auditFilter end
+    self:rebuildAudit()
+end
+
 function Admin:onMouseDown(x, y)
     if self.dialog then return true end
+    local link = self.frozenLink
+    if self.tab == "Player" and link and self.lookupUser and x >= link.x and x < link.x + link.w and y >= link.y and y < link.y + link.h then
+        self:showAuditFor(self.lookupUser, "freeze")
+        return true
+    end
     if self.tab == "Currencies" and x < (self.g and self.g.cfgTableW or 0) then
         for _, r in ipairs(self.cfgRowRects or {}) do
             if y >= r.y and y < r.y + r.h then

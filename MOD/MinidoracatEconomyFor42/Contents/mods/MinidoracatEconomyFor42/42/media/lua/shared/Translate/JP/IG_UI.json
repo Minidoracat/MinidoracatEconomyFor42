@@ -192,7 +192,7 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_config": "設定変更",
   "IGUI_MinidoracatEconomy_Admin_Audit_Count": "%1／%2 件を表示",
   "IGUI_MinidoracatEconomy_Admin_Audit_Empty": "監査記録はまだありません",
-  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "ここの理由は先頭 40 文字のみ、全文は監査ファイルにあります",
+  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "今月と先月は理由の全文を表示します。それ以前の記録は先頭 40 文字のみで、全文は監査ファイルにあります",
   "IGUI_MinidoracatEconomy_Admin_Sys_State": "サーバー状態",
   "IGUI_MinidoracatEconomy_Admin_Sys_Seq": "イベント連番",
   "IGUI_MinidoracatEconomy_Admin_Sys_Epoch": "起動識別子",
@@ -330,5 +330,6 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "サーバーが保存前に停止したため取り消された管理操作（監査ファイルより、今月と先月）。これらは反映されていません。必要ならやり直してください",
   "IGUI_MinidoracatEconomy_Band_Frozen": "口座凍結中：入出金できません。管理者に連絡してください",
   "IGUI_MinidoracatEconomy_Toast_Frozen": "管理者があなたの口座を凍結しました",
-  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "あなたの口座の凍結が解除されました"
+  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "あなたの口座の凍結が解除されました",
+  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "ここをクリックして監査ページで理由の全文を見る"
 }

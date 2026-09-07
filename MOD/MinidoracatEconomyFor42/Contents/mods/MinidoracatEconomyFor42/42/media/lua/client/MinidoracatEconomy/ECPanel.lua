@@ -35,7 +35,6 @@ local P = {}
 C.Panel = P
 
 local LAYOUT_NAME = "MinidoracatEconomyPanel"
-local WIDTH, HEIGHT = 1120, 700
 local MIN_WIDTH, MIN_HEIGHT = 1000, 560
 local PAD, ROW, CHIP_H, COIN, COIN_SMALL, T = U.PAD, U.ROW, U.CHIP_H, U.COIN, U.COIN_SMALL, U.T
 local STATUS_H = 24
@@ -689,9 +688,19 @@ function Panel:RestoreLayout(name, layout)
     self:setVisible(false)
 end
 
+-- Default size follows the screen (about 3/4 of it, never below the minimum, never off-screen);
+-- a size the player dragged to is kept by ISLayoutManager and only clamped back into the screen.
+local function defaultSize()
+    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    local w = math.min(sw - 40, math.max(MIN_WIDTH, math.floor(sw * 0.74)))
+    local h = math.min(sh - 40, math.max(MIN_HEIGHT, math.floor(sh * 0.78)))
+    return math.max(320, w), math.max(240, h)
+end
+
 function Panel.create()
     local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
-    local o = ISCollapsableWindow:new(math.floor((sw - WIDTH) / 2), math.floor((sh - HEIGHT) / 2), WIDTH, HEIGHT)
+    local w, h = defaultSize()
+    local o = ISCollapsableWindow:new(math.floor((sw - w) / 2), math.floor((sh - h) / 2), w, h)
     setmetatable(o, Panel)
     o.title = getText(T .. "Toast_Title")
     o.resizable = true
@@ -755,5 +764,17 @@ local function onGameStart()
     end
 end
 Events.OnGameStart.Add(onGameStart)
+-- A resolution change (or window-mode switch) must not leave the panel off-screen or larger
+-- than the screen; the size the player chose is otherwise kept.
+Events.OnResolutionChange.Add(function()
+    local win = P.window
+    if not win then return end
+    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    win:setWidth(math.max(MIN_WIDTH, math.min(sw, win.width)))
+    win:setHeight(math.max(MIN_HEIGHT, math.min(sh, win.height)))
+    win:setX(math.max(0, math.min(win.x, sw - win.width)))
+    win:setY(math.max(0, math.min(win.y, sh - win.height)))
+    win:layout()
+end)
 
 return P

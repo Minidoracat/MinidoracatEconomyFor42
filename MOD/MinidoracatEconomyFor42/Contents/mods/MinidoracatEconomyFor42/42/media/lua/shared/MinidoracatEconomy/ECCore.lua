@@ -314,6 +314,20 @@ function EC.safeName(name)
     end))
 end
 
+-- Sandbox options of this mod, grouped the way the admin panel's settings page shows them.
+-- Values are server-owned (sandbox-options.txt / the server's SandboxVars file); the panel only
+-- displays them. `runtime` names the panel page where a runtime override exists.
+EC.SANDBOX_GROUPS = {
+    { id = "rewards", keys = { "CheckinAmount", "CheckinMinPlaytimeMinutes", "CheckinServerDailyCap", "RewardDayResetHour", "RewardTimezoneUTC", "MilestoneDays", "MilestoneAmounts" } },
+    { id = "admin", keys = { "AdminRoles", "ReadOnlyRoles", "AdminAdjustMaxPerTx", "AdminAdjustDailyPerAdmin", "AdminAdjustServerDaily" } },
+    { id = "currency", keys = { "BalanceMax", "CatRatePointsPerCoin", "CatPerOrderMin", "CatPerOrderMax", "CatPerAccountDaily", "CatServerDaily" } },
+    { id = "general", keys = { "RemoteReadOnly" } },
+}
+EC.SANDBOX_RUNTIME = {   -- key -> admin page holding the live override
+    BalanceMax = "Currencies", CatRatePointsPerCoin = "Currencies", CatPerOrderMin = "Currencies",
+    CatPerOrderMax = "Currencies", CatPerAccountDaily = "Currencies", CatServerDaily = "Currencies",
+}
+
 function EC.countKeys(t)
     local n = 0
     for _ in pairs(t) do n = n + 1 end

@@ -192,7 +192,7 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_config": "Change config",
   "IGUI_MinidoracatEconomy_Admin_Audit_Count": "Showing %1 of %2",
   "IGUI_MinidoracatEconomy_Admin_Audit_Empty": "No audit entries yet",
-  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "Reasons here keep the first 40 characters only; the full text is in the audit file",
+  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "This and last month show the full reason; older entries keep the first 40 characters, the audit files have the rest",
   "IGUI_MinidoracatEconomy_Admin_Sys_State": "Server state",
   "IGUI_MinidoracatEconomy_Admin_Sys_Seq": "Event sequence",
   "IGUI_MinidoracatEconomy_Admin_Sys_Epoch": "Boot epoch",
@@ -330,5 +330,6 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "Admin actions rolled back because the server stopped before saving (from the audit files, this and last month); they did not take effect, redo them if needed",
   "IGUI_MinidoracatEconomy_Band_Frozen": "Account frozen: nothing can be credited or spent, contact an admin",
   "IGUI_MinidoracatEconomy_Toast_Frozen": "An admin has frozen your account",
-  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "Your account has been unfrozen"
+  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "Your account has been unfrozen",
+  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "Click here for the full reason on the audit page"
 }

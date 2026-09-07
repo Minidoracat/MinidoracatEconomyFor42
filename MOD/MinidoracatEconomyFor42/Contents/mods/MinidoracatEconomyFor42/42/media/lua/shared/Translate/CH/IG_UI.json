@@ -192,7 +192,7 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_config": "變更設定",
   "IGUI_MinidoracatEconomy_Admin_Audit_Count": "顯示 %1／%2 筆",
   "IGUI_MinidoracatEconomy_Admin_Audit_Empty": "尚無稽核紀錄",
-  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "這裡的原因只保留前 40 字，完整內容在稽核檔",
+  "IGUI_MinidoracatEconomy_Admin_Audit_ReasonNote": "本月與上月的原因是完整內容；更早的紀錄只保留前 40 字，完整內容在稽核檔",
   "IGUI_MinidoracatEconomy_Admin_Sys_State": "伺服器狀態",
   "IGUI_MinidoracatEconomy_Admin_Sys_Seq": "事件序號",
   "IGUI_MinidoracatEconomy_Admin_Sys_Epoch": "啟動代號",
@@ -330,5 +330,6 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "伺服器未存檔就關閉時被回滾的管理操作（讀稽核檔，本月與上月）；這些操作沒有生效，需要的話請重做",
   "IGUI_MinidoracatEconomy_Band_Frozen": "帳號已凍結：無法入帳或扣款，請聯絡管理員",
   "IGUI_MinidoracatEconomy_Toast_Frozen": "你的帳號已被管理員凍結",
-  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "你的帳號已解除凍結"
+  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "你的帳號已解除凍結",
+  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "點這裡到稽核頁看完整原因"
 }

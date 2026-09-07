@@ -561,6 +561,18 @@ function A.sizeEstimate()
     return bytes
 end
 
+-- Current sandbox values (what the server actually runs with), for the settings page.
+local function sandboxValues()
+    local out = {}
+    for _, group in ipairs(EC.SANDBOX_GROUPS) do
+        for _, key in ipairs(group.keys) do
+            local v = SandboxVars and SandboxVars.MinidoracatEconomy and SandboxVars.MinidoracatEconomy[key]
+            if v ~= nil then out[key] = v end
+        end
+    end
+    return out
+end
+
 function A.system(write)
     local ms = EC.now()
     local accounts, frozen = 0, 0
@@ -585,6 +597,7 @@ function A.system(write)
         supply = supply(),
         issued = { today = sumRollups(1, ms), week = sumRollups(7, ms), month = sumRollups(30, ms) },
         perms = { read = true, write = write == true },
+        sandbox = sandboxValues(),
     }
 end
 
