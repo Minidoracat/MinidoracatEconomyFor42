@@ -694,7 +694,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - 白名單 codec 的 round-trip 矩陣擴充（流體容器、可修理物、有限 modData 的 MOD 物品）；
 - 交易站電台廣播（§17.3）：定時行情摘要、拍賣即將到期。
 
-**進度（2026-09-08）**：信箱容量已改沙盒 `MailboxPerAccount`＋刊登佔格（階段 D 上限規則修訂）；codec 矩陣已涵蓋流體、修理、modData、食物老化、無線電 DeviceData；**電台 ✓**：`ECRadio.lua`，`kind=trade` 終端每 `RadioIntervalMinutes`（0＝關）從終端座標 `SendTransmission` 一則 ≤200 字摘要（刊登數、賣家數、最新三筆），`RadioFrequency`（預設 101100）、`RadioRange`（0＝全服＝strength −1）、`RadioLanguage`（auto 或 CH／CN／EN／JP，指定時讀 mod 自己的翻譯檔當模板；物品名仍為伺服器語言）；server／client 各自 `addChannelName`；harness 情境三十一。「拍賣即將到期」留給階段 F。A14b（交易站本身當雙向 HAM 電台）未做。
+**進度（2026-09-08）**：信箱容量已改沙盒 `MailboxPerAccount`＋刊登佔格（階段 D 上限規則修訂）；codec 矩陣已涵蓋流體、修理、modData、食物老化、無線電 DeviceData；**電台 ✓**：`ECRadio.lua`，`kind=trade` 終端每 `RadioIntervalMinutes`（0＝關）從終端座標 `SendTransmission` 一則 ≤200 字摘要（刊登數、賣家數、最新三筆），`RadioFrequency`（預設 101100）、`RadioRange`（0＝全服＝strength −1）、`RadioLanguage`（auto 或 CH／CN／EN／JP，指定時讀 mod 自己的翻譯檔當模板；物品名仍為伺服器語言）；server／client 各自 `addChannelName`；harness 情境三十一。「拍賣即將到期」已隨階段 F 加入摘要（下一個廣播間隔內結標的場數）。A14b（交易站本身當雙向 HAM 電台）未做。
 
 ### 階段 F：拍賣
 
@@ -702,6 +702,8 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - bid reserve、outbid refund、賣家不可自出價、同 bidder 只追加差額、server restart 恢復、無人出價歸還、空服到期以 `OnTickEvenPaused` 結算一次；
 - 可設定時長；先不做 anti-sniping 延長。
 - **停機政策（2026-09-06 主持人定案：自動延長）**：server 每 60 秒把 `getTimestampMs()` 寫進 `{cachedir}/Lua/MinidoracatEconomy/heartbeat.json`（單行、open→writeln→close，A2 實測 0.13 ms；不能放 ModData——它只在世界存檔時落盤，會把停機高估最多一個存檔週期）；啟動時 `downtime = now − heartbeat`：≤ 5 分鐘（日常自動重啟）不動；5 分鐘–24 小時把 `downtime` 加到所有進行中拍賣的截止時間並寫 `auction.extended{downtime}` 事件（出價與保留款維持）；> 24 小時全部取消：託管快照退回賣家信箱（系統退件、必成功）、所有保留款釋回、事件 `auction.cancelled{reason=downtime}`。不區分預告／意外，不需要管理員操作；壁鐘為準，停機中到期但未超過 5 分鐘者重啟後直接結算。心跳檔缺失（首次啟動）視為 downtime 0。
+
+**進度（2026-09-08，離線 harness 502 條）**：**server ✓**（`ECAuction.lua`）：`auction.create{itemIds,startPrice,hours}`（同市場的三階段 list-out；`pendingOuts[id].kind="auction"`；刊登費以起標價計）、`auction.bid{auctionId,amount}`（≥ max(起標, 最高×(1+`AuctionMinIncrementPercent`))；賣家拒絕；同 bidder 只保留差額；被超過者**同一 tick** 釋回）、`auction.cancel`（僅零出價）、`admin.auctions{list|cancel}`（釋回最高出價＋退回賣家信箱＋稽核）、每分鐘 sweep：結算（得標者 reserved → 賣家 −稅 → `SYSTEM_BURN`，快照進得標者信箱並就地 claim）或流標退回；`restoreFromPending` 接在 `Mk.restoreFromPending` 之後處理回滾重建；停機政策依上段（`Au.applyDowntime(now, heartbeatTs)`：ignored／extended／cancelled，`Au.init` 首次 sweep 前套一次）。**保留款以帳本 posting `bucket="reserved"` 實作**（同錢包 −X available／+X reserved 一筆 tx；守恆不變；`wallet.reserved` 就是我目前所有出價的總額），不是系統託管帳戶。拍賣佔信箱格、算入 `Mk.hasListing`；沙盒 `AuctionMinHours`／`AuctionMaxHours`／`AuctionMaxPerPlayer`／`AuctionMinIncrementPercent`（group `auction`）。**client**：玩家「拍賣」分頁（瀏覽／我的拍賣／建立／出價／取消）與管理「拍賣」子分頁（進行中）。harness 情境三十二覆蓋 §13 的「新出價超越最高價」「賣家自出價／連續加價」「拍賣到期前重啟」「空服到期結算」與停機三段。
 
 ### 階段 G：系統收購（mint）
 
