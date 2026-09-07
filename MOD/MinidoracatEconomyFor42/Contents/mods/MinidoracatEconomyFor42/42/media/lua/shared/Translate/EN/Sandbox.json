@@ -51,5 +51,13 @@
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "Minimum listing price",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "Lowest asking price allowed (market currency).",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "Maximum listing price",
-  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "Highest asking price allowed (market currency)."
+  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "Highest asking price allowed (market currency).",
+  "Sandbox_MinidoracatEconomy_RadioIntervalMinutes": "Market radio interval (minutes)",
+  "Sandbox_MinidoracatEconomy_RadioIntervalMinutes_tooltip": "How often, in real minutes, trade terminals broadcast a market summary (listing count, sellers, newest listings); 0 turns the radio off. ATMs never broadcast.",
+  "Sandbox_MinidoracatEconomy_RadioFrequency": "Market radio frequency (kHz)",
+  "Sandbox_MinidoracatEconomy_RadioFrequency_tooltip": "Radios must be tuned here to receive it, e.g. 101100 = 101.1 MHz.",
+  "Sandbox_MinidoracatEconomy_RadioRange": "Market radio range (tiles)",
+  "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "Radios within this many tiles of a trade terminal receive the broadcast; 0 = the whole map.",
+  "Sandbox_MinidoracatEconomy_RadioLanguage": "Market radio language",
+  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = the server language; or one of CH / CN / EN / JP. Item names still follow the server language."
 }

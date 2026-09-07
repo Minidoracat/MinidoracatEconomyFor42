@@ -54,6 +54,9 @@ end
 if not MinidoracatEconomy or not MinidoracatEconomy.Market then
     require "MinidoracatEconomy/ECMarket"
 end
+if not MinidoracatEconomy or not MinidoracatEconomy.Radio then
+    require "MinidoracatEconomy/ECRadio"
+end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
 local L = EC and EC.Ledger

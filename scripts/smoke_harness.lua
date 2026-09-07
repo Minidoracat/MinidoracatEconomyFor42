@@ -154,6 +154,28 @@ ScriptManager = { instance = { FindItem = function(_, name)
         getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end }
 end } }
 Fluid = { Get = function(name) return { name = name } end }
+-- 假電台：記錄每次 SendTransmission 與頻道登錄（getZomboidRadio 在 dedicated 上非 nil，A14）
+radioSent, radioChannels = {}, {}
+function getZomboidRadio()
+    return {
+        SendTransmission = function(_, x, y, channel, msg, guid, codes, r, g, b, strength, isTV)
+            radioSent[#radioSent + 1] = { x = x, y = y, channel = channel, msg = msg, strength = strength, isTV = isTV }
+        end,
+        addChannelName = function(_, name, freq, category) radioChannels[#radioChannels + 1] = { name = name, freq = freq, category = category } end,
+    }
+end
+function getModFileReader(modId, path, create)
+    local f = io.open("MOD/" .. modId .. "/Contents/mods/" .. modId .. "/42/" .. path, "rb")
+    if not f then return nil end
+    local data = f:read("*a"); f:close()
+    local pos = 1
+    return { readLine = function()
+        if pos > #data then return nil end
+        local nl = string.find(data, "\n", pos, true) or (#data + 1)
+        local line = string.sub(data, pos, nl - 1); pos = nl + 1
+        return (string.gsub(line, "\r$", ""))
+    end, close = function() end }
+end
 worldHours = 1000                -- getGameTime():getWorldAgeHours() 的假值（全域：主函式已逼近 200 個 local）
 function getGameTime() return { getWorldAgeHours = function() return worldHours end } end
 Capability = { AddItem = "AddItem", SaveWorld = "SaveWorld" }
@@ -308,6 +330,7 @@ require("MinidoracatEconomy/ECMailbox")
 require("MinidoracatEconomy/ECShop")
 require("MinidoracatEconomy/ECCodec")
 require("MinidoracatEconomy/ECMarket")
+require("MinidoracatEconomy/ECRadio")
 require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
@@ -320,7 +343,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 448     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 462     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2367,6 +2390,85 @@ ann.inventory = fakeInventory(50)
 ann.modData = {}
 fire("OnNewGame", ann, nil)
 check(ann.modData[KEY] ~= nil and ann.modData[KEY].pendingOuts[ls.listingId] ~= nil, "the new character inherits the dead one's pendingOuts")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境三十一：市場電台（交易站定時廣播） =====
+io.write("scenario 31: market radio\n")
+;(function()
+local Mk, Rd = S.Market, S.Radio
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+radioSent, radioChannels = {}, {}
+nowMs = nowMs + 61000
+SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = 10
+SandboxVars.MinidoracatEconomy.RadioFrequency = 101100
+SandboxVars.MinidoracatEconomy.RadioRange = 500
+SandboxVars.MinidoracatEconomy.RadioLanguage = "auto"
+fire("OnServerStarted")
+check(#radioChannels == 1 and radioChannels[1].freq == 101100 and radioChannels[1].category == "Economy", "boot registers the channel name on the server radio")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local ann = fakePlayer("ann"); ann.x, ann.y = 101, 200; ann.inventory = fakeInventory(50)
+onlinePlayers = { boss, ann }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0", ["300,400,0"] = "MinidoracatEconomy_catgirl_1", ["500,600,1"] = "appliances_com_01_52" }
+check(cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" }).ok == true, "setup: ATM registered")
+check(cmd(boss, "terminal.register", { x = 300, y = 400, z = 0, kind = "trade" }).ok == true and cmd(boss, "terminal.register", { x = 500, y = 600, z = 1, kind = "trade" }).ok == true, "setup: two trade terminals (a catgirl tile and a vanilla console)")
+cmd(ann, "hello")
+local ack = lastSent("hello.ack").args
+check(ack.radio and ack.radio.frequency == 101100 and ack.radio.enabled == true, "hello.ack tells the client the frequency so it can name the channel")
+-- the first interval starts at boot: nothing goes out before 10 real minutes
+fire("OnTickEvenPaused")
+nowMs = nowMs + 5 * 60000
+fire("OnTickEvenPaused")
+check(#radioSent == 0, "nothing is broadcast before the first interval elapsed")
+nowMs = nowMs + 5 * 60000 + 1
+fire("OnTickEvenPaused")
+check(#radioSent == 2, "one transmission per trade terminal, none from the ATM: " .. tostring(#radioSent))
+check(radioSent[1].x == 300 and radioSent[1].y == 400 and radioSent[2].x == 500 and radioSent[2].channel == 101100 and radioSent[1].strength == 500 and radioSent[1].isTV == false,
+    "the trade terminal squares are the sources, on the sandbox frequency and range")
+check(radioSent[1].msg == "IGUI_MinidoracatEconomy_Radio_Empty", "an empty market says so (server-language template via getText)")
+-- listings appear in the summary: count, sellers, newest first with qty and price
+L.credit("ann", "survivor", 100, "SYSTEM_MINT", { requestId = "s-ann-r", reasonCode = "t" })
+local axe = instanceItem("Base.Axe"); ann.inventory:AddItem(axe)
+cmd(ann, "market.list", { itemId = axe.id, price = 120 })
+local p1, p2 = instanceItem("Base.Plank"), instanceItem("Base.Plank")
+ann.inventory:AddItem(p1); ann.inventory:AddItem(p2)
+cmd(ann, "market.list", { itemIds = { p1.id, p2.id }, price = 30 })
+SandboxVars.MinidoracatEconomy.RadioLanguage = "CH"
+radioSent = {}
+nowMs = nowMs + 10 * 60000 + 1
+fire("OnTickEvenPaused")
+check(#radioSent == 2 and string.find(radioSent[1].msg, "目前 2 筆刊登、1 位賣家", 1, true) ~= nil, "RadioLanguage=CH uses the mod's own CH templates: " .. tostring(radioSent[1] and radioSent[1].msg))
+check(string.find(radioSent[1].msg, "最新上架：Base.Plank ×2 30 幣、Base.Axe 120 幣", 1, true) ~= nil, "newest listings first, with quantity and price: " .. tostring(radioSent[1].msg))
+check(#radioSent[1].msg <= Rd.MESSAGE_MAX, "a broadcast never exceeds the message budget")
+local journaled = 0
+fire("OnTickEvenPaused")
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do if string.find(l, '"type":"radio.broadcast"', 1, true) then journaled = journaled + 1 end end end
+check(journaled == 2, "every broadcast round is journaled once")
+-- range 0 = everyone (engine: strength < 0 passes every player); interval 0 = off
+SandboxVars.MinidoracatEconomy.RadioRange = 0
+radioSent = {}
+nowMs = nowMs + 10 * 60000 + 1
+fire("OnTickEvenPaused")
+check(#radioSent == 2 and radioSent[1].strength == -1, "range 0 becomes strength -1 (everyone)")
+SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = 0
+radioSent = {}
+nowMs = nowMs + 30 * 60000
+fire("OnTickEvenPaused")
+check(#radioSent == 0 and Rd.enabled() == false, "interval 0 turns the radio off")
+SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = nil
+SandboxVars.MinidoracatEconomy.RadioFrequency = nil
+SandboxVars.MinidoracatEconomy.RadioRange = nil
+SandboxVars.MinidoracatEconomy.RadioLanguage = nil
 onlinePlayers = {}
 end)()
 

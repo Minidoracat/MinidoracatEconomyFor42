@@ -262,3 +262,41 @@ option MinidoracatEconomy.MarketPriceMax
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_MarketPriceMax,
 }
+
+option MinidoracatEconomy.RadioIntervalMinutes
+{
+    type = integer,
+    min = 0,
+    max = 120,
+    default = 10,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RadioIntervalMinutes,
+}
+
+option MinidoracatEconomy.RadioFrequency
+{
+    type = integer,
+    min = 88000,
+    max = 108000,
+    default = 101100,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RadioFrequency,
+}
+
+option MinidoracatEconomy.RadioRange
+{
+    type = integer,
+    min = 0,
+    max = 5000,
+    default = 500,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RadioRange,
+}
+
+option MinidoracatEconomy.RadioLanguage
+{
+    type = string,
+    default = auto,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RadioLanguage,
+}

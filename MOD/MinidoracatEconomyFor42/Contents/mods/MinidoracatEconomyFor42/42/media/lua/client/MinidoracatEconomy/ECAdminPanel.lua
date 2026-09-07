@@ -478,6 +478,9 @@ local function optionValueText(spec, value)
     local n = tonumber(value)
     if n == nil then return tostring(value) end
     if spec.zeroUnlimited and n <= 0 then return tr("Admin_Set_Unlimited") end
+    if spec.zeroOff and n <= 0 then return tr("Admin_Off") end
+    if spec.unit == "mhz" then return getText(T .. "Admin_Set_Mhz", tostring(math.floor(n / 1000)) .. "." .. tostring(math.floor((n % 1000) / 100))) end
+    if spec.unit == "tiles" then return getText(T .. "Admin_Set_Tiles", amountText(n)) end
     if spec.unit == "minutes" then return getText(T .. "Admin_Set_Minutes", amountText(n)) end
     if spec.unit == "hour" then return getText(T .. "Admin_Set_Hour", tostring(math.floor(n))) end
     if spec.unit == "percent" then return getText(T .. "Admin_Set_Percent", tostring(math.floor(n))) end

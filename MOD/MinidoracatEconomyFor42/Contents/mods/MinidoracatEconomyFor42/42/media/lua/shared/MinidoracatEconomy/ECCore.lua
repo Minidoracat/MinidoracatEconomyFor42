@@ -467,8 +467,12 @@ EC.OPTIONS = {
     { key = "MailboxPerAccount", group = "market", kind = "int", min = 5, max = 500, step = 5, default = 50 },
     { key = "MarketPriceMin", group = "market", kind = "int", min = 1, max = 1000000, step = 1, default = 1, unit = "coin" },
     { key = "MarketPriceMax", group = "market", kind = "int", min = 1, max = 1000000000, step = 1000, default = 1000000, unit = "coin" },
+    { key = "RadioIntervalMinutes", group = "radio", kind = "int", min = 0, max = 120, step = 5, default = 10, unit = "minutes", zeroOff = true },
+    { key = "RadioFrequency", group = "radio", kind = "int", min = 88000, max = 108000, step = 200, default = 101100, unit = "mhz" },
+    { key = "RadioRange", group = "radio", kind = "int", min = 0, max = 5000, step = 50, default = 500, unit = "tiles", zeroUnlimited = true },
+    { key = "RadioLanguage", group = "radio", kind = "text", default = "auto", unit = "lang" },
 }
-EC.OPTION_GROUPS = { "rewards", "admin", "currency", "market", "general" }
+EC.OPTION_GROUPS = { "rewards", "admin", "currency", "market", "radio", "general" }
 EC.OPTION_BY_KEY = {}
 for _, o in ipairs(EC.OPTIONS) do EC.OPTION_BY_KEY[o.key] = o end
 

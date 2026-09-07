@@ -51,5 +51,13 @@
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "刊登最低价",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "刊登定价下限（幸存币）。",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "刊登最高价",
-  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "刊登定价上限（幸存币）。"
+  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "刊登定价上限（幸存币）。",
+  "Sandbox_MinidoracatEconomy_RadioIntervalMinutes": "市场电台广播间隔（分钟）",
+  "Sandbox_MinidoracatEconomy_RadioIntervalMinutes_tooltip": "交易站每隔几个真实分钟广播一次市场摘要（刊登数、卖家数、最新上架）；0＝关闭电台。ATM 不广播。",
+  "Sandbox_MinidoracatEconomy_RadioFrequency": "市场电台频率（kHz）",
+  "Sandbox_MinidoracatEconomy_RadioFrequency_tooltip": "收音机要调到这个频率才听得到，例如 101100 = 101.1 MHz。",
+  "Sandbox_MinidoracatEconomy_RadioRange": "市场电台收讯范围（格）",
+  "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "距离交易站多少格内的收音机收得到；0＝全地图都收得到。",
+  "Sandbox_MinidoracatEconomy_RadioLanguage": "市场电台语言",
+  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto＝跟服务器语言；或指定 CH／CN／EN／JP。物品名称仍依服务器语言。"
 }

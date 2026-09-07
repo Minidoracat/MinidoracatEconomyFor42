@@ -51,5 +51,13 @@
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "出品の最低価格",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "出品価格の下限（マーケット通貨）。",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "出品の最高価格",
-  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "出品価格の上限（マーケット通貨）。"
+  "Sandbox_MinidoracatEconomy_MarketPriceMax_tooltip": "出品価格の上限（マーケット通貨）。",
+  "Sandbox_MinidoracatEconomy_RadioIntervalMinutes": "マーケットラジオの放送間隔（分）",
+  "Sandbox_MinidoracatEconomy_RadioIntervalMinutes_tooltip": "取引ステーションが市場の概要（出品数・出品者数・最新の出品）を放送する実時間の間隔（分）。0 でラジオ機能をオフ。ATM は放送しません。",
+  "Sandbox_MinidoracatEconomy_RadioFrequency": "マーケットラジオの周波数（kHz）",
+  "Sandbox_MinidoracatEconomy_RadioFrequency_tooltip": "この周波数に合わせたラジオだけが受信できます。例：101100 = 101.1 MHz。",
+  "Sandbox_MinidoracatEconomy_RadioRange": "マーケットラジオの受信範囲（マス）",
+  "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "取引ステーションから何マス以内のラジオが受信できるか。0 でマップ全体。",
+  "Sandbox_MinidoracatEconomy_RadioLanguage": "マーケットラジオの言語",
+  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = サーバーの言語。または CH／CN／EN／JP を指定。アイテム名はサーバーの言語のままです。"
 }

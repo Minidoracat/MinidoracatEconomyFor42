@@ -43,6 +43,14 @@ handlers["hello.ack"] = function(args)
     setUnclaimed(args)
     C.currencies = args.currencies or C.currencies
     if type(args.terminals) == "table" then C.terminals = args.terminals end
+    -- the radio channel name is a client-side registry (RWMGeneral.lua reads it): register the
+    -- market frequency here so a tuned radio shows the name instead of a bare number
+    if type(args.radio) == "table" and args.radio.enabled and tonumber(args.radio.frequency) then
+        pcall(function()
+            local radio = getZomboidRadio()
+            if radio then radio:addChannelName(getText("IGUI_MinidoracatEconomy_Radio_Channel"), args.radio.frequency, args.radio.category or "Economy") end
+        end)
+    end
     EC.log("session epoch=" .. tostring(args.epoch) .. " loadedSeq=" .. tostring(args.loadedSeq)
         .. " server=" .. tostring(args.version) .. " remoteReadOnly=" .. tostring(args.remoteReadOnly)
         .. " currencies=" .. tostring(args.currencies and #args.currencies or 0)
