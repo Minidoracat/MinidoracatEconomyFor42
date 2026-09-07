@@ -320,7 +320,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 445     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 448     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1804,12 +1804,12 @@ check(cmd(zed, "mail.claim", { mailId = plank.mailId }).error == "already_claime
 -- mailbox cap
 L.credit("zed", "survivor", 1000, "SYSTEM_MINT", { requestId = "seed-zed-2", reasonCode = "t" })
 zed.inventory.maxWeight = 0
-local keep = M.PER_ACCOUNT
-M.PER_ACCOUNT = 2
+SandboxVars.MinidoracatEconomy.MailboxPerAccount = 2
 cmd(zed, "shop.buy", { id = "rope", revision = rev })
 cmd(zed, "shop.buy", { id = "rope", revision = rev })
 check(cmd(zed, "shop.buy", { id = "rope", revision = rev }).error == "mailbox_full" and M.unclaimed("zed") == 2, "a full mailbox refuses new purchases before any debit")
-M.PER_ACCOUNT = keep
+check(M.capacity() == 2 and M.usage("zed").unclaimed == 2 and M.usage("zed").capacity == 2, "the sandbox option is the capacity and the usage reply carries it")
+SandboxVars.MinidoracatEconomy.MailboxPerAccount = nil
 -- reload: broken file keeps the previous catalog, a fixed file replaces it
 files["MinidoracatEconomy/catalog.json"] = { lines = { "{ \"items\": [ { \"id\": \"x\" " }, opens = 0 }
 local bad = cmd(boss, "admin.catalog", { action = "reload" })
@@ -2160,14 +2160,17 @@ check(cmd(bob, "market.cancel", { listingId = nailsId }).error == "not_owner", "
 local cancelled = cmd(ann, "market.cancel", { listingId = nailsId })
 check(cancelled.ok == true and cancelled.delivered == true and ann.inventory.count("Base.Nails") == 2 and not Mk.hasListing(nailsId) and L.getBalance("ann", "survivor").available == 285,
     "cancel returns the item through the mailbox; the fee is not refunded")
--- expiry returns to the mailbox even past the cap
+-- a listing occupies a mailbox slot: with the capacity at the current usage nothing new can be
+-- listed or bought, while a return (expiry here) just converts the slot and never fails
 local n3 = cmd(ann, "market.list", { itemId = n2.id, price = 5 })
-local keep = M.PER_ACCOUNT
-M.PER_ACCOUNT = 0
+check(n3.ok == true and M.used("ann") == Mk.ownerCount("ann") + M.unclaimed("ann") and Mk.ownerCount("ann") >= 1, "an active listing counts against the mailbox slots")
+SandboxVars.MinidoracatEconomy.MailboxPerAccount = M.used("ann")
+local n4 = instanceItem("Base.Nails"); ann.inventory:AddItem(n4)
+check(cmd(ann, "market.list", { itemId = n4.id, price = 5 }).error == "mailbox_full" and ann.inventory.count("Base.Nails") >= 1, "a full mailbox refuses a new listing and the item stays")
 nowMs = nowMs + 8 * 86400000
 fire("OnTickEvenPaused")
-check(not Mk.hasListing(n3.listingId) and M.unclaimed("ann") == 1, "an expired listing goes back to the seller's mailbox even when it is full")
-M.PER_ACCOUNT = keep
+check(not Mk.hasListing(n3.listingId) and M.unclaimed("ann") == 1 and M.used("ann") <= M.capacity(), "an expired listing goes back to the seller's mailbox even when it is full, without overshooting")
+SandboxVars.MinidoracatEconomy.MailboxPerAccount = nil
 local expired = 0
 fire("OnTickEvenPaused")
 for _, f in pairs(files) do for _, l in ipairs(f.lines) do if string.find(l, '"type":"market.expired"', 1, true) then expired = expired + 1 end end end

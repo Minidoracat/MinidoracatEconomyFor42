@@ -75,6 +75,9 @@ local function ownerCount(username)
     return n
 end
 
+-- Active listings of one seller: they occupy mailbox slots (ECMailbox.used).
+function Mk.ownerCount(username) return ownerCount(username) end
+
 local function removeListing(id)
     local l = md.market.listings[id]
     if not l then return nil end
@@ -307,6 +310,9 @@ function Mk.list(player, args)
     if L.isFrozen(username) then return { ok = false, error = "account_frozen" } end
     if ownerCount(username) >= EC.sandbox("MarketMaxListings", 5) then return { ok = false, error = "too_many_listings" } end
     if md.market.count >= Mk.MAX_LISTINGS then return { ok = false, error = "market_full" } end
+    -- a listing occupies a mailbox slot from the start: whatever brings it back (sale is money,
+    -- but cancel / expiry / delist are items) already has its place
+    if not M.hasFreeSlot(username) then return { ok = false, error = "mailbox_full" } end
     local inv = player:getInventory()
     if not inv then return { ok = false, error = "item_not_found" } end
     local items, signature = {}, nil
@@ -373,9 +379,9 @@ end
 
 -- ---------- returns (cancel / expiry / admin delist) ----------
 
--- Listing -> seller mailbox. `force` lets system returns exceed the mailbox cap (spec 12 stage D).
-local function returnListing(l, reasonKind, force, extra)
-    if not force and not M.hasFreeSlot(l.seller) then return false, "mailbox_full" end
+-- Listing -> seller mailbox. The listing already held the slot the entry takes, so this never
+-- fails (cancel, expiry and admin delist alike).
+local function returnListing(l, reasonKind, extra)
     removeListing(l.id)
     local qty = l.qty or 1
     local entry = M.add(l.seller, { kind = "return", item = l.item, qty = qty, txId = nil, price = l.price, snapshot = l.snapshot, listingId = l.id })
@@ -393,8 +399,7 @@ function Mk.cancel(player, args)
     local l = md.market.listings[args.listingId]
     if not l then return { ok = false, error = "unknown_listing" } end
     if l.seller ~= username then return { ok = false, error = "not_owner" } end
-    local ok, entryOrErr = returnListing(l, "cancelled", false)
-    if not ok then return { ok = false, error = entryOrErr } end
+    local _, entryOrErr = returnListing(l, "cancelled")
     local claim = M.claim(player, entryOrErr.id)
     return { ok = true, listingId = l.id, mailId = entryOrErr.id, delivered = claim.ok == true, deliveryError = (not claim.ok) and claim.error or nil }
 end
@@ -402,7 +407,7 @@ end
 function Mk.delist(admin, listingId, reason)
     local l = md.market.listings[listingId]
     if not l then return false, "unknown_listing" end
-    returnListing(l, "delisted", true, { admin = admin, reason = reason })
+    returnListing(l, "delisted", { admin = admin, reason = reason })
     X.audit({ action = "delist", admin = admin, target = l.seller, field = listingId, before = tostring(l.item), after = tostring(l.price), reason = reason })
     notify(l.seller, { kind = "delisted", listingId = l.id, item = l.item, qty = l.qty or 1, price = l.price, reason = reason })
     return true
@@ -466,7 +471,7 @@ function Mk.onTick()
         if (l.expiresAt or 0) <= ms then dead[#dead + 1] = l end
     end
     for _, l in ipairs(dead) do
-        returnListing(l, "expired", true)
+        returnListing(l, "expired")
         notify(l.seller, { kind = "expired", listingId = l.id, item = l.item, qty = l.qty or 1, price = l.price })
     end
 end
@@ -516,6 +521,7 @@ S.handlers["market.candidates"] = function(player, args)
         feePercent = EC.sandbox("MarketListingFeePercent", 2), taxPercent = EC.sandbox("MarketSalesTaxPercent", 5),
         priceMin = EC.sandbox("MarketPriceMin", 1), priceMax = EC.sandbox("MarketPriceMax", 1000000),
         mine = ownerCount(player:getUsername()), maxListings = EC.sandbox("MarketMaxListings", 5),
+        usage = M.usage(player:getUsername()),
     })
 end
 

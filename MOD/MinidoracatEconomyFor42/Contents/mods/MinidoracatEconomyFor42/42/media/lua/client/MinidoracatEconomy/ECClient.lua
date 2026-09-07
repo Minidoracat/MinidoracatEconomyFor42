@@ -238,6 +238,7 @@ handlers["mail.claim"] = function(args)
     if C.mail then
         C.mail.entries = args.entries or C.mail.entries
         C.mail.unclaimed = args.unclaimed or C.mail.unclaimed
+        C.mail.usage = args.usage or C.mail.usage
     end
     notifyMail("claim", args)
 end

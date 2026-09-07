@@ -46,6 +46,8 @@
   "Sandbox_MinidoracatEconomy_MarketListingDays_tooltip": "未売却の出品は日数経過後、売主の受信箱へ返却されます（手数料は返金されません）。",
   "Sandbox_MinidoracatEconomy_MarketMaxListings": "1人あたり同時出品数",
   "Sandbox_MinidoracatEconomy_MarketMaxListings_tooltip": "1人のプレイヤーが同時にマーケットに出せる出品数。",
+  "Sandbox_MinidoracatEconomy_MailboxPerAccount": "プレイヤーごとのメールボックス容量",
+  "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "1 人のプレイヤーが占有できるスロット数。未受取の項目と出品中のリストがそれぞれ 1 つ占有します。いっぱいになると購入や出品ができませんが、メールボックスへの返却は制限されません。",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "出品の最低価格",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "出品価格の下限（マーケット通貨）。",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "出品の最高価格",

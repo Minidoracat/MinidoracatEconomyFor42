@@ -1274,6 +1274,12 @@ function MarketDialog:prerender()
         -- title, counter and filter chip share the head line: the counter takes its width first
         self.countText = getText(T .. "Market_PickCount", tostring(self.candListable or 0),
             tostring(self.candTotal or 0))
+        local info = self.panel.marketInfo or {}
+        if info.mailCapacity then
+            -- a listing takes a mailbox slot: the counter says how many are left
+            self.countText = getText(T .. "Market_MailUsage", tostring(info.mailUsed or 0), tostring(info.mailCapacity))
+                .. "   " .. self.countText
+        end
         titleW = self.countR - PAD - textWidth(self.countText) - PAD
     end
     text(self, fitText(title, titleW, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
@@ -1338,7 +1344,10 @@ function MarketDialog:prerender()
         -- the hovered tile, else the refusal of the last unlistable tile the player clicked,
         -- else the invitation to pick one
         local status, token = getText(T .. "Market_PickSelect"), "textMuted"
-        if hover then
+        local panelInfo = self.panel.marketInfo or {}
+        if panelInfo.mailCapacity and (panelInfo.mailUsed or 0) >= panelInfo.mailCapacity then
+            status, token = getText(T .. "Market_Error_mailbox_full"), "errorText"
+        elseif hover then
             status = hover.detailText
             if not hover.ok then token = "warn" end
         elseif self.pickNote then
@@ -2004,6 +2013,14 @@ function Panel:updateMarketInfo()
         or tonumber(m and m.mine) or tonumber(cand and cand.mine) or 0
     info.maxListings = tonumber(mine and mine.maxListings) or tonumber(m and m.maxListings)
         or tonumber(cand and cand.maxListings) or 0
+    -- mailbox slots (candidates reply): a listing needs one, so the picker says when there is none
+    local usage = cand and cand.usage or nil
+    if type(usage) == "table" and tonumber(usage.capacity) then
+        info.mailUsed = (tonumber(usage.unclaimed) or 0) + (tonumber(usage.listings) or 0)
+        info.mailCapacity = tonumber(usage.capacity) or 0
+    else
+        info.mailUsed, info.mailCapacity = nil, nil   -- an older server: no gate on this side
+    end
     self.marketInfo = info
     local b = self.marketMineButton
     if b then
@@ -2232,6 +2249,8 @@ end
 function Panel:onCandidate(cand)
     local dlg = self.marketDialog
     if not dlg or dlg.mode ~= "pick" or not cand then return end
+    local info = self.marketInfo or {}
+    if info.mailCapacity and (info.mailUsed or 0) >= info.mailCapacity then return end   -- no slot for the listing
     if not cand.ok then
         dlg.pickNote = cand.detailText   -- the refusal belongs on the status line, not in a step
         return
@@ -3003,8 +3022,18 @@ function Panel:drawMail()
     local x, w = g.leftX, self.width - PAD * 2
     card(self, x, g.contentY, w, g.contentH, getText(T .. "Mail_Title"))
     local unclaimed = tonumber(mail and mail.unclaimed) or 0
-    textRight(self, getText(T .. "Mail_Count", tostring(unclaimed)), x + w - PAD,
-        g.contentY + math.floor((CARD_TITLE_H - fontH.small) / 2), unclaimed > 0 and "accent" or "textMuted")
+    local usage = mail and mail.usage or nil
+    local titleY = g.contentY + math.floor((CARD_TITLE_H - fontH.small) / 2)
+    local rightX = x + w - PAD
+    if usage and tonumber(usage.capacity) then
+        -- slots: unclaimed entries + active listings out of the sandbox capacity
+        local used = (tonumber(usage.unclaimed) or 0) + (tonumber(usage.listings) or 0)
+        local cap = tonumber(usage.capacity) or 0
+        local capText = getText(T .. "Mail_Capacity", tostring(used), tostring(cap))
+        textRight(self, capText, rightX, titleY, used >= cap and "negative" or "textMuted")
+        rightX = rightX - textWidth(capText) - PAD
+    end
+    textRight(self, getText(T .. "Mail_Count", tostring(unclaimed)), rightX, titleY, unclaimed > 0 and "accent" or "textMuted")
     local ty = g.contentY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
     if not mail then
         text(self, getText(T .. "Wallet_Loading"), x + PAD, ty, "textMuted")

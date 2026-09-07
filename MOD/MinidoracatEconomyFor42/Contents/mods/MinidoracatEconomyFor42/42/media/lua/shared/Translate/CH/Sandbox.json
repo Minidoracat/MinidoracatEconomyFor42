@@ -46,6 +46,8 @@
   "Sandbox_MinidoracatEconomy_MarketListingDays_tooltip": "超過天數未售出的刊登會自動退回賣家信箱（刊登費不退）。",
   "Sandbox_MinidoracatEconomy_MarketMaxListings": "每人同時刊登上限",
   "Sandbox_MinidoracatEconomy_MarketMaxListings_tooltip": "一名玩家同時可掛在市場上的刊登數。",
+  "Sandbox_MinidoracatEconomy_MailboxPerAccount": "每人信箱容量",
+  "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "一名玩家的信箱最多能佔用幾格：待領取的物品與掛在市場上的刊登各佔一格；滿了就不能購買或上架，退回信箱不受限。",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "刊登最低價",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "刊登定價下限（倖存幣）。",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "刊登最高價",

@@ -46,6 +46,8 @@
   "Sandbox_MinidoracatEconomy_MarketListingDays_tooltip": "Unsold listings are returned to the seller mailbox after this many days (the fee is not refunded).",
   "Sandbox_MinidoracatEconomy_MarketMaxListings": "Max listings per player",
   "Sandbox_MinidoracatEconomy_MarketMaxListings_tooltip": "How many listings one player may have on the market at the same time.",
+  "Sandbox_MinidoracatEconomy_MailboxPerAccount": "Mailbox slots per player",
+  "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "How many slots one player may occupy: each unclaimed mailbox entry and each active market listing takes one; when full the player cannot buy or list, returns to the mailbox are never blocked.",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "Minimum listing price",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "Lowest asking price allowed (market currency).",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "Maximum listing price",

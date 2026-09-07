@@ -233,6 +233,16 @@ option MinidoracatEconomy.MarketMaxListings
     translation = MinidoracatEconomy_MarketMaxListings,
 }
 
+option MinidoracatEconomy.MailboxPerAccount
+{
+    type = integer,
+    min = 5,
+    max = 500,
+    default = 50,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MailboxPerAccount,
+}
+
 option MinidoracatEconomy.MarketPriceMin
 {
     type = integer,

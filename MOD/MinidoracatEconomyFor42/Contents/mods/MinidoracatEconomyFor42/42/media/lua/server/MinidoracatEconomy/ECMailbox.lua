@@ -34,7 +34,7 @@ end
 EC.Mailbox = EC.Mailbox or {}
 local M = EC.Mailbox
 
-M.PER_ACCOUNT = 50           -- unclaimed entries per account (spec 12 stage D limits)
+-- per-account slots come from the sandbox (MailboxPerAccount, default 50): M.capacity()
 M.GLOBAL_MAX = 10000         -- unclaimed entries server-wide
 M.ITEMS_MAX = 100            -- items per entry
 M.CLAIMED_TTL_MS = 24 * 3600000
@@ -61,8 +61,26 @@ function M.unclaimed(username)
     return o and o.unclaimed or 0
 end
 
+-- Slots per account (sandbox MailboxPerAccount). A slot is taken by an unclaimed mailbox entry
+-- or by an active market listing (the listing turns into a mailbox entry when it comes back,
+-- so a return never needs a free slot and the count never overshoots).
+function M.capacity()
+    return EC.sandbox("MailboxPerAccount", 50)
+end
+
+function M.used(username)
+    local Mk = S.Market
+    return M.unclaimed(username) + ((Mk and Mk.ownerCount) and Mk.ownerCount(username) or 0)
+end
+
 function M.hasFreeSlot(username)
-    return M.unclaimed(username) < M.PER_ACCOUNT and md.mailbox.unclaimed < M.GLOBAL_MAX
+    return M.used(username) < M.capacity() and md.mailbox.unclaimed < M.GLOBAL_MAX
+end
+
+-- What the client shows next to the mailbox count.
+function M.usage(username)
+    local Mk = S.Market
+    return { unclaimed = M.unclaimed(username), listings = (Mk and Mk.ownerCount) and Mk.ownerCount(username) or 0, capacity = M.capacity() }
 end
 
 -- fields = { kind, item, qty, txId, price?, snapshot?, listingId? }. A snapshot entry rebuilds
@@ -452,7 +470,7 @@ end
 
 S.handlers["mail.list"] = function(player, args)
     local username = player:getUsername()
-    S.reply(player, "mail.list", { entries = M.list(username), unclaimed = M.unclaimed(username), atTerminal = T.near(player) })
+    S.reply(player, "mail.list", { entries = M.list(username), unclaimed = M.unclaimed(username), usage = M.usage(username), atTerminal = T.near(player) })
 end
 
 S.handlers["mail.claim"] = function(player, args)
@@ -466,6 +484,7 @@ S.handlers["mail.claim"] = function(player, args)
     local username = player:getUsername()
     res.entries = M.list(username)
     res.unclaimed = M.unclaimed(username)
+    res.usage = M.usage(username)
     S.reply(player, "mail.claim", res)
 end
 

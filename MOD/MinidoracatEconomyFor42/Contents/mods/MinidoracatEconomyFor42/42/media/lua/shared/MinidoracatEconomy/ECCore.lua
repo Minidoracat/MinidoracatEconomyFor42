@@ -464,6 +464,7 @@ EC.OPTIONS = {
     { key = "MarketSalesTaxPercent", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 5, unit = "percent" },
     { key = "MarketListingDays", group = "market", kind = "int", min = 1, max = 30, step = 1, default = 7, unit = "days" },
     { key = "MarketMaxListings", group = "market", kind = "int", min = 1, max = 50, step = 1, default = 5 },
+    { key = "MailboxPerAccount", group = "market", kind = "int", min = 5, max = 500, step = 5, default = 50 },
     { key = "MarketPriceMin", group = "market", kind = "int", min = 1, max = 1000000, step = 1, default = 1, unit = "coin" },
     { key = "MarketPriceMax", group = "market", kind = "int", min = 1, max = 1000000000, step = 1000, default = 1000000, unit = "coin" },
 }
