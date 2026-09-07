@@ -331,5 +331,19 @@
   "IGUI_MinidoracatEconomy_Band_Frozen": "帳號已凍結：無法入帳或扣款，請聯絡管理員",
   "IGUI_MinidoracatEconomy_Toast_Frozen": "你的帳號已被管理員凍結",
   "IGUI_MinidoracatEconomy_Toast_Unfrozen": "你的帳號已解除凍結",
-  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "點這裡到稽核頁看完整原因"
+  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "點這裡到稽核頁看完整原因",
+  "IGUI_MinidoracatEconomy_Admin_Tab_Settings": "設定",
+  "IGUI_MinidoracatEconomy_Admin_Set_Title": "沙盒設定（伺服器生效值）",
+  "IGUI_MinidoracatEconomy_Admin_Set_Note": "這些值來自伺服器的沙盒設定檔，改動需重啟伺服器；標示「可在貨幣設定頁調整」的項目有即時覆寫",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_rewards": "獎勵",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_admin": "管理限制",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_currency": "貨幣與存入",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_general": "一般",
+  "IGUI_MinidoracatEconomy_Admin_Set_Runtime": "可在「%1」頁調整",
+  "IGUI_MinidoracatEconomy_Admin_Set_Unlimited": "不限",
+  "IGUI_MinidoracatEconomy_Admin_Set_Missing": "伺服器未提供",
+  "IGUI_MinidoracatEconomy_Admin_Set_Minutes": "%1 分鐘",
+  "IGUI_MinidoracatEconomy_Admin_Set_Hour": "%1 時",
+  "IGUI_MinidoracatEconomy_Admin_Set_Timezone": "UTC%1",
+  "IGUI_MinidoracatEconomy_Admin_Set_ListSep": "、"
 }

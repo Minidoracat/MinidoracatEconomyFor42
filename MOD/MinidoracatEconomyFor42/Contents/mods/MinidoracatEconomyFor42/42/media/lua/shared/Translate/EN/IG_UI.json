@@ -331,5 +331,19 @@
   "IGUI_MinidoracatEconomy_Band_Frozen": "Account frozen: nothing can be credited or spent, contact an admin",
   "IGUI_MinidoracatEconomy_Toast_Frozen": "An admin has frozen your account",
   "IGUI_MinidoracatEconomy_Toast_Unfrozen": "Your account has been unfrozen",
-  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "Click here for the full reason on the audit page"
+  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "Click here for the full reason on the audit page",
+  "IGUI_MinidoracatEconomy_Admin_Tab_Settings": "Settings",
+  "IGUI_MinidoracatEconomy_Admin_Set_Title": "Sandbox settings (values the server runs with)",
+  "IGUI_MinidoracatEconomy_Admin_Set_Note": "These values come from the server's sandbox settings file; changing them needs a server restart. Options marked as adjustable on the Currencies page have a live override",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_rewards": "Rewards",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_admin": "Admin limits",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_currency": "Currency and deposits",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_general": "General",
+  "IGUI_MinidoracatEconomy_Admin_Set_Runtime": "Adjustable on the \"%1\" page",
+  "IGUI_MinidoracatEconomy_Admin_Set_Unlimited": "No limit",
+  "IGUI_MinidoracatEconomy_Admin_Set_Missing": "Not provided by the server",
+  "IGUI_MinidoracatEconomy_Admin_Set_Minutes": "%1 min",
+  "IGUI_MinidoracatEconomy_Admin_Set_Hour": "%1:00",
+  "IGUI_MinidoracatEconomy_Admin_Set_Timezone": "UTC%1",
+  "IGUI_MinidoracatEconomy_Admin_Set_ListSep": ", "
 }

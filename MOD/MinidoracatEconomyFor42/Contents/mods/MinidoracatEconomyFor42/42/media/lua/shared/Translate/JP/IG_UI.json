@@ -331,5 +331,19 @@
   "IGUI_MinidoracatEconomy_Band_Frozen": "口座凍結中：入出金できません。管理者に連絡してください",
   "IGUI_MinidoracatEconomy_Toast_Frozen": "管理者があなたの口座を凍結しました",
   "IGUI_MinidoracatEconomy_Toast_Unfrozen": "あなたの口座の凍結が解除されました",
-  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "ここをクリックして監査ページで理由の全文を見る"
+  "IGUI_MinidoracatEconomy_Admin_Player_FrozenLink": "ここをクリックして監査ページで理由の全文を見る",
+  "IGUI_MinidoracatEconomy_Admin_Tab_Settings": "設定",
+  "IGUI_MinidoracatEconomy_Admin_Set_Title": "サンドボックス設定（サーバーの実効値）",
+  "IGUI_MinidoracatEconomy_Admin_Set_Note": "これらの値はサーバーのサンドボックス設定ファイルのものです。変更にはサーバーの再起動が必要です。「通貨設定」ページで調整可能と記された項目には即時の上書きがあります",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_rewards": "報酬",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_admin": "管理制限",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_currency": "通貨と入金",
+  "IGUI_MinidoracatEconomy_Admin_Set_Group_general": "一般",
+  "IGUI_MinidoracatEconomy_Admin_Set_Runtime": "「%1」ページで調整可能",
+  "IGUI_MinidoracatEconomy_Admin_Set_Unlimited": "無制限",
+  "IGUI_MinidoracatEconomy_Admin_Set_Missing": "サーバーから取得できません",
+  "IGUI_MinidoracatEconomy_Admin_Set_Minutes": "%1 分",
+  "IGUI_MinidoracatEconomy_Admin_Set_Hour": "%1 時",
+  "IGUI_MinidoracatEconomy_Admin_Set_Timezone": "UTC%1",
+  "IGUI_MinidoracatEconomy_Admin_Set_ListSep": "、"
 }

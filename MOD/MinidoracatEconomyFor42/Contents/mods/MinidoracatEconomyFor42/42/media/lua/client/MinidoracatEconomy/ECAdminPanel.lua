@@ -7,8 +7,9 @@
 --   instance:resize(w, h) / :refresh() / :dispose() / :setVisible(v)
 --
 -- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
--- owns everything below it: six sub pages (Player / Dashboard / Currencies / Sources / Audit /
--- System) and the write dialogs (adjust / freeze / rename / enable / exchange / source caps). The
+-- owns everything below it: seven sub pages (Player / Dashboard / Currencies / Sources / Audit /
+-- System / Settings, the last one a read-only view of this mod's sandbox options) and the write
+-- dialogs (adjust / freeze / rename / enable / exchange / source caps). The
 -- player page also owns the account search dropdown: a debounced admin.players query whose
 -- candidates are drawn by a child panel floating under the search box.
 --
@@ -57,7 +58,7 @@ local color, fill, border, text, textWidth, fitText, textRight = U.color, U.fill
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
 local Button, TableCell = U.Button, U.TableCell
 
-local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System" }
+local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System", "Settings" }
 local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
@@ -419,6 +420,93 @@ local function configValueText(v)
     if t == "number" then return amountText(v) end
     if t == "string" and v ~= "" then return v end
     return "-"
+end
+
+-- ---------- settings page (read-only sandbox values) ----------
+
+-- Value shapes that are not a plain coin amount. Anything else numeric is an amount
+-- (amountText), booleans read as on/off, and an unparsable value falls back to tostring.
+local SETTING_FORMAT = {
+    CheckinServerDailyCap = "cap", CheckinMinPlaytimeMinutes = "minutes",
+    RewardDayResetHour = "hour", RewardTimezoneUTC = "timezone",
+    MilestoneDays = "list", MilestoneAmounts = "coinList",
+    AdminRoles = "list", ReadOnlyRoles = "list",
+}
+
+-- ";" separated sandbox lists read as a sentence ("1, 3, 7"); the separator is per language.
+local function listText(value, coins)
+    local out = nil
+    for part in string.gmatch(tostring(value), "[^;]+") do
+        local item = string.match(part, "^%s*(.-)%s*$")
+        if item ~= "" then
+            if coins then item = amountText(tonumber(item) or 0) end
+            out = out and (out .. tr("Admin_Set_ListSep") .. item) or item
+        end
+    end
+    return out or tostring(value)
+end
+
+-- UTC offset in hours: "+8" for 8.0, "+5:30" for 5.5, "-5" for -5
+local function offsetText(n)
+    local whole = math.floor(math.abs(n))
+    local minutes = math.floor((math.abs(n) - whole) * 60 + 0.5)
+    local body = (n < 0 and "-" or "+") .. tostring(whole)
+    if minutes > 0 then body = body .. ":" .. (minutes < 10 and "0" or "") .. tostring(minutes) end
+    return getText(T .. "Admin_Set_Timezone", body)
+end
+
+local function settingValueText(key, value)
+    if type(value) == "boolean" then return tr(value and "Admin_On" or "Admin_Off") end
+    local kind = SETTING_FORMAT[key]
+    if kind == "list" then return listText(value, false) end
+    if kind == "coinList" then return listText(value, true) end
+    local n = tonumber(value)
+    if n == nil then return tostring(value) end
+    if kind == "cap" then
+        if n <= 0 then return tr("Admin_Set_Unlimited") end
+    elseif kind == "minutes" then
+        return getText(T .. "Admin_Set_Minutes", amountText(n))
+    elseif kind == "hour" then
+        return getText(T .. "Admin_Set_Hour", tostring(math.floor(n)))
+    elseif kind == "timezone" then
+        return offsetText(n)
+    end
+    return amountText(n)
+end
+
+-- One row of the settings list: a group heading (item.group) or an option -- name plus the value
+-- right-aligned on the first line, the sandbox tooltip on the second. Text is fitted when the row
+-- is bound or the width changed, never per frame (the TableCell rule).
+local SettingCell = ISPanel:derive("MinidoracatEconomySettingCell")
+
+function SettingCell:render()
+    local e = self.entry
+    if not e then return end
+    local w, h = self.width, self.height
+    if self.fitEntry ~= e or self.fitWidth ~= w then
+        self.fitEntry, self.fitWidth = e, w
+        local inner = math.max(0, w - PAD * 2)
+        if e.group then
+            self.headText = fitText(e.group, inner, UIFont.Medium)
+        else
+            self.valueText = fitText(e.value, math.floor(inner * 0.45))
+            self.nameText = fitText(e.name, math.max(0, inner - textWidth(self.valueText) - PAD))
+            local runW = e.runtime and (textWidth(e.runtime) + 8) or 0
+            self.descText = fitText(e.desc, math.max(0, inner - runW))
+            self.runtimeX = PAD + textWidth(self.descText) + (e.runtime and 8 or 0)
+            self.runtimeText = e.runtime and fitText(e.runtime, math.max(0, w - PAD - self.runtimeX)) or nil
+        end
+    end
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    if e.group then
+        text(self, self.headText, PAD, math.max(0, h - fontH.medium - 4), "accent", UIFont.Medium)
+        return
+    end
+    local lh = lineH()
+    text(self, self.nameText, PAD, 3, "text")
+    textRight(self, self.valueText, w - PAD, 3, e.missing and "textFaint" or "accent")
+    text(self, self.descText, PAD, 3 + lh, "textFaint")
+    if self.runtimeText then text(self, self.runtimeText, self.runtimeX, 3 + lh, "warn") end
 end
 
 -- ---------- write dialog ----------
@@ -919,6 +1007,10 @@ function Admin:createChildren()
         self:addChild(b)
         self.copyButtons[#self.copyButtons + 1] = b
     end
+
+    -- settings page: one virtual list, two lines per row (name / value, then the tooltip)
+    self.settingsList = U.newTable(SettingCell, lineH() * 2 + 8)
+    self:addChild(self.settingsList)
 
     -- last child: the search dropdown paints over the page and takes the click before the row
     -- underneath it (the dialog is added later still, and hides the dropdown while it is open)
@@ -1737,6 +1829,32 @@ function Admin:rebuildSources()
     end
 end
 
+-- Sandbox values the way the settings page shows them: a heading row per group, then one row per
+-- option. Built when a system reply lands or the geometry changes, never per frame.
+function Admin:rebuildSettings()
+    local rows = {}
+    if self.system then
+        local values = type(self.system.sandbox) == "table" and self.system.sandbox or nil
+        for _, group in ipairs(EC.SANDBOX_GROUPS) do
+            rows[#rows + 1] = { group = getTextOrNull(T .. "Admin_Set_Group_" .. group.id) or group.id }
+            for _, key in ipairs(group.keys) do
+                local value = nil
+                if values then value = values[key] end
+                local page = EC.SANDBOX_RUNTIME[key]
+                rows[#rows + 1] = {
+                    name = getTextOrNull("Sandbox_MinidoracatEconomy_" .. key) or key,
+                    desc = getTextOrNull("Sandbox_MinidoracatEconomy_" .. key .. "_tooltip") or "",
+                    value = value ~= nil and settingValueText(key, value) or tr("Admin_Set_Missing"),
+                    missing = value == nil,
+                    runtime = page and getText(T .. "Admin_Set_Runtime", tr("Admin_Tab_" .. page)) or nil,
+                }
+            end
+        end
+    end
+    self.settingRows = rows
+    self.settingsList:setItems(rows)
+end
+
 -- ----- enable state (permission, in-flight command, data presence) -----
 
 -- Local role read (getAccessLevel + sandbox lists) AND, once a reply has told us, the level the
@@ -1841,6 +1959,7 @@ function Admin:layout()
     local audit = read and self.tab == "Audit"
     local system = read and self.tab == "System"
     local sources = read and self.tab == "Sources"
+    local settings = read and self.tab == "Settings"
     for _, b in ipairs(self.subTabButtons) do b:setVisible(read) end
     self.refreshButton:setVisible(read)
 
@@ -2020,7 +2139,19 @@ function Admin:layout()
     end
     g.sysPathY = top
 
+    -- settings page: title card, one note line, the option list filling the rest of the card
+    g.setNoteY = g.bodyY + CARD_TITLE_H + 4
+    local setListY = g.setNoteY + lh + 4
+    local setW = math.max(120, w - 2)
+    local setH = math.max(rowH(), g.bodyY + g.bodyH - setListY - 2)
+    self.settingsList:setVisible(settings)
+    self.settingsList:setX(1); self.settingsList:setY(setListY)
+    if self.settingsList.width ~= setW or self.settingsList.height ~= setH then
+        self.settingsList:resize(setW, setH)
+    end
+
     self:rebuildAudit()
+    self:rebuildSettings()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
     if self.dialog then self:layoutDialog() end
     self:layoutSuggest()
@@ -2473,6 +2604,16 @@ function Admin:drawSystem()
     end
 end
 
+function Admin:drawSettings()
+    local g = self.g
+    card(self, 0, g.bodyY, self.width, g.bodyH, tr("Admin_Set_Title"))
+    text(self, fitText(tr("Admin_Set_Note"), self.width - PAD * 2), PAD, g.setNoteY, "textFaint")
+    if #(self.settingRows or {}) == 0 then
+        text(self, isPending("admin.system") and tr("Admin_Loading") or tr("Admin_Dash_Empty"),
+            self.settingsList.x + PAD, self.settingsList.y + 4, "textFaint")
+    end
+end
+
 function Admin:prerender()
     if self.width ~= self.layoutW or self.height ~= self.layoutH then
         self:layout()
@@ -2543,7 +2684,7 @@ function Admin:prerender()
         return
     end
     -- the auto refresh has to be visible: the pages without their own stamp show it in the tab bar
-    local stampAt = ((self.tab == "Dashboard" or self.tab == "System") and self.systemAt)
+    local stampAt = ((self.tab == "Dashboard" or self.tab == "System" or self.tab == "Settings") and self.systemAt)
         or (self.tab == "Sources" and self.sourcesAt) or nil
     if stampAt then
         textRight(self, getText(T .. "Admin_Updated", U.clockText(stampAt, self.offsetMin)),
@@ -2559,6 +2700,8 @@ function Admin:prerender()
         self:drawSources()
     elseif self.tab == "Audit" then
         self:drawAudit()
+    elseif self.tab == "Settings" then
+        self:drawSettings()
     else
         self:drawSystem()
     end
@@ -2629,7 +2772,7 @@ function Admin:refresh()
     elseif self.tab == "Audit" then
         send("admin.audit", { limit = AUDIT_LIMIT })
         send("admin.auditFile", {})
-    elseif self.tab == "Dashboard" or self.tab == "System" then
+    elseif self.tab == "Dashboard" or self.tab == "System" or self.tab == "Settings" then
         send("admin.system", {})
     elseif self.tab == "Currencies" and self.icons == nil then
         send("admin.icons", { action = "status" })
