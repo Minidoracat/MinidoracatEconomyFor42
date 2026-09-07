@@ -29,15 +29,7 @@ W.HISTORY_MAX_JOBS = 8               -- concurrent readers across all players
 local md = nil
 local jobs = {}                      -- key (username:command) -> { paths, index, reader, ring, head, count, truncated, player, command, extra }
 
-local function playerByUsername(username)
-    local players = getOnlinePlayers()
-    if not players then return nil end
-    for i = 0, players:size() - 1 do
-        local p = players:get(i)
-        if p and p:getUsername() == username then return p end
-    end
-    return nil
-end
+local playerByUsername = S.onlinePlayer
 
 function W.balances(username)
     local out = {}

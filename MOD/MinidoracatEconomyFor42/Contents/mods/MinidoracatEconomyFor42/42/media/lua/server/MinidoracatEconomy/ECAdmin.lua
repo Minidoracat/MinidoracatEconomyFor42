@@ -130,15 +130,7 @@ end
 
 -- ---------- helpers ----------
 
-local function onlinePlayer(username)
-    local players = getOnlinePlayers()
-    if not players then return nil end
-    for i = 0, players:size() - 1 do
-        local p = players:get(i)
-        if p:getUsername() == username then return p end
-    end
-    return nil
-end
+local onlinePlayer = S.onlinePlayer
 
 local function accountExists(username)
     return md.wallets[username] ~= nil or onlinePlayer(username) ~= nil
@@ -709,13 +701,7 @@ S.handlers["admin.players"] = function(player, args)
         seen[name] = rec
         list[#list + 1] = rec
     end
-    local players = getOnlinePlayers()
-    if players then
-        for i = 0, players:size() - 1 do
-            local p = players:get(i)
-            if p then add(p:getUsername(), true) end
-        end
-    end
+    S.forEachOnline(function(p) add(p:getUsername(), true) end)
     if query ~= "" then
         for name in pairs(md.wallets) do
             if not L.isSystemAccount(name) then add(name, false) end

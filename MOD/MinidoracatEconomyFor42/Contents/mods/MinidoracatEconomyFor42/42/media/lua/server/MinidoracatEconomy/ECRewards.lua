@@ -186,12 +186,9 @@ function R.onTick()
     local ms = EC.now()
     if ms - lastTick < R.TICK_MS then return end
     lastTick = ms
-    local players = getOnlinePlayers()
-    if not players then return end
     local seen = {}
-    for i = 0, players:size() - 1 do
-        local p = players:get(i)
-        if p then
+    S.forEachOnline(function(p)
+        do
             local ok, err = pcall(function()
                 accruePlaytime(p, ms)
                 R.grantMilestones(p, ms)
@@ -199,7 +196,7 @@ function R.onTick()
             if not ok then EC.log("reward tick failed for " .. tostring(p:getUsername()) .. ": " .. tostring(err)) end
             seen[p:getUsername()] = true
         end
-    end
+    end)
     for username in pairs(lastPos) do
         if not seen[username] then lastPos[username] = nil end
     end
@@ -267,13 +264,8 @@ end
 -- leaving the reward page to its 30 s poll (ECPanel.prerender).
 function R.pushAll()
     if not md then return end
-    local players = getOnlinePlayers()
-    if not players then return end
     local ms = EC.now()
-    for i = 0, players:size() - 1 do
-        local p = players:get(i)
-        S.reply(p, "rewards.state", R.state(p:getUsername(), ms))
-    end
+    S.forEachOnline(function(p) S.reply(p, "rewards.state", R.state(p:getUsername(), ms)) end)
 end
 
 -- ---------- commands ----------

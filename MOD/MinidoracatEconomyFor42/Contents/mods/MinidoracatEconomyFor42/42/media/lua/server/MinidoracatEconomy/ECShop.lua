@@ -256,16 +256,13 @@ end
 -- Every online player gets a fresh snapshot: the list they are looking at must not go stale
 -- after an admin took something off the shelf or repriced it.
 function Shop.pushAll()
-    local players = getOnlinePlayers()
-    if not players then return end
     local ms = EC.now()
-    for i = 0, players:size() - 1 do
-        local p = players:get(i)
+    S.forEachOnline(function(p)
         local snap = Shop.snapshot(p:getUsername(), ms)
         snap.atTerminal = T.near(p)
         snap.unclaimed = M.unclaimed(p:getUsername())
         S.reply(p, "shop.list", snap)
-    end
+    end)
 end
 
 -- fields = { price?, dailyCap?, enabled? } ; the SKU row is changed in the file. Returns ok, err.

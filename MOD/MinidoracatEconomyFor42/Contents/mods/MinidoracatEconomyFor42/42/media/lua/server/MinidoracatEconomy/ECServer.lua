@@ -40,13 +40,31 @@ S.reply = reply
 
 -- Server-side player list (LuaManager.java:4437-4443); the client-side getConnectedPlayers is
 -- unavailable on a dedicated server (AGENTS.md API table).
-function S.broadcast(command, args)
+-- The one loop every push and lookup goes through: fn(player) for each online player in the
+-- engine's order (LuaManager.java:4437-4443); returning true stops early.
+function S.forEachOnline(fn)
     local players = getOnlinePlayers()
     if not players then return end
     for i = 0, players:size() - 1 do
         local p = players:get(i)
-        if p then reply(p, command, args) end
+        if p and fn(p) == true then return end
     end
+end
+
+function S.onlinePlayer(username)
+    local found = nil
+    S.forEachOnline(function(p)
+        if p:getUsername() == username then found = p return true end
+    end)
+    return found
+end
+
+-- Push pattern (spec 19.2): a module that changes player-visible state pushes the fresh snapshot
+-- itself - S.reply to one player, S.broadcast for a shared table, S.forEachOnline when every
+-- player needs a per-player shaped copy (rewards.state, shop.list). Clients register
+-- C.handlers[command] and re-render; there is no polling of mutable state.
+function S.broadcast(command, args)
+    S.forEachOnline(function(p) reply(p, command, args) end)
 end
 
 -- ---------- ModData root ----------
