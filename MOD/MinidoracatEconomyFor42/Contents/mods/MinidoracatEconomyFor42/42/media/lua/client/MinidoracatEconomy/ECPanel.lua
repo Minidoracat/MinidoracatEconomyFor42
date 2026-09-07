@@ -368,6 +368,7 @@ function ListingCell:render()
     end
     if e.statusText then text(self, fitText(e.statusText, cols.nameW), cols.name, half + 2, "textFaint") end
     local ty = math.floor((h - fontH.small) / 2)
+    textRight(self, tostring(e.qty), cols.qtyR, ty, e.qty > 1 and "accent" or "textFaint")
     text(self, fitText(e.seller, cols.sellerW), cols.sellerX, ty, "textMuted")
     textRight(self, e.priceText, cols.priceR, ty, "accent")
     local coinX = cols.priceR - textWidth(e.priceText) - COIN_SMALL - 4
@@ -451,6 +452,8 @@ local function historyRow(rec, offsetMin)
     if type(rec.reason) == "string" and rec.reason ~= "" then parts[#parts + 1] = rec.reason end
     return {
         kind = kind,
+        ts = tonumber(rec.ts) or 0,           -- the filter bar pages/sorts on the raw numbers
+        amount = amount,
         kindText = getTextOrNull(T .. "Market_Kind_" .. kind) or kind,
         kindToken = HISTORY_TOKENS[kind] or "text",
         nameText = lot and (name .. " " .. lot) or name,
@@ -482,15 +485,357 @@ function HistoryCell:render()
     text(self, fitText(e.detailText, w - cols.kind - PAD), cols.kind, top + line, "textFaint")
 end
 
--- Count bubble on the top-right corner of a tab button (the Mail tab); the float button paints
--- the same shape without the toolkit (U.init has not run before the first window opens).
-local BADGE_H = 18
+-- ---------- filter bar (market history + wallet statement) ----------
+-- The two client-paged lists (the market ring and the wallet statement) get the same toolbar:
+-- kind chips (multi-select; "all" clears the set), a from/to day pair, a time/amount sort pair
+-- (a second click on the active chip flips the direction) and a pager under the list. Every
+-- filter is local — the reply is at most a few hundred rows, so nothing here talks to the
+-- server. The owner supplies the kind labeller and the field the amount sort reads.
+local PER_PAGE = 25
+local DATE_W = 100
+local ARROW_W, ARROW_H = 7, 4
+
+-- Sort direction marker next to the active column/chip: a 7x4 stair of drawRect lines, so it
+-- needs no asset (Icons ships chevron_down but no chevron_up).
+local function drawArrow(el, x, y, up, token)
+    local c = color(token or "accent")
+    for i = 0, ARROW_H - 1 do
+        local w = up and (i * 2 + 1) or (ARROW_W - i * 2)
+        el:drawRect(x + math.floor((ARROW_W - w) / 2), y + i, w, 1, c.a * U.alpha, c.r, c.g, c.b)
+    end
+end
+
+local FilterBar = {}
+FilterBar.__index = FilterBar
+
+-- `label(kind)` names a kind chip, `amountField` is the row field the amount sort reads, and
+-- `onChange(panel)` rebuilds the owner's rows. Chips/entries are children of the window (the
+-- layout places them in window coordinates), so the bar only remembers them.
+function FilterBar.new(panel, label, amountField, onChange)
+    local bar = setmetatable({ panel = panel, label = label, amountField = amountField,
+        onChange = onChange, kinds = {}, kindCount = 0, kindButtons = {}, labels = {},
+        sortKey = "time", desc = true, page = 1, pages = 1, total = 0 }, FilterBar)
+    local entryH = math.max(26, fontH.small + 12)
+    for _, which in ipairs({ "from", "to" }) do
+        local e = newEntry(DATE_W, entryH, getText(T .. "Filter_DateHint"))
+        e.target = bar
+        e.onTextChangeFunction = FilterBar.onDate
+        panel:addChild(e)
+        bar[which .. "Entry"] = e
+    end
+    bar.sortButtons = {}
+    for _, key in ipairs({ "time", "amount" }) do
+        local title = getText(T .. "Filter_Sort_" .. key)
+        local b = Button.create(0, 0, textWidth(title) + 22 + ARROW_W + 4, CHIP_H, title, bar, FilterBar.onSort, "chip")
+        b.internal = key
+        b.active = key == bar.sortKey
+        panel:addChild(b)
+        bar.sortButtons[#bar.sortButtons + 1] = b
+    end
+    for _, spec in ipairs({ { "Prev", -1 }, { "Next", 1 } }) do
+        local title = getText(T .. "Market_" .. spec[1])
+        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, bar, FilterBar.onPage, "chip")
+        b.internal = spec[2]
+        panel:addChild(b)
+        bar[string.lower(spec[1]) .. "Button"] = b
+    end
+    return bar
+end
+
+function FilterBar:changed()
+    self.page = 1
+    self.onChange(self.panel)
+end
+
+function FilterBar:onDate() self:changed() end
+
+function FilterBar:onKind(button)
+    local kind = button.internal
+    if kind == "" then
+        self.kinds, self.kindCount = {}, 0
+    elseif self.kinds[kind] then
+        self.kinds[kind] = nil
+        self.kindCount = self.kindCount - 1
+    else
+        self.kinds[kind] = true
+        self.kindCount = self.kindCount + 1
+    end
+    for _, b in ipairs(self.kindButtons) do
+        b.active = b.internal == "" and self.kindCount == 0 or self.kinds[b.internal] == true
+    end
+    self:changed()
+end
+
+function FilterBar:onSort(button)
+    if self.sortKey == button.internal then
+        self.desc = not self.desc
+    else
+        self.sortKey = button.internal
+        self.desc = true          -- newest / largest first, both ways round
+    end
+    for _, b in ipairs(self.sortButtons) do b.active = b.internal == self.sortKey end
+    self:changed()
+end
+
+function FilterBar:onPage(button)
+    local page = self.page + button.internal
+    if page < 1 or page > self.pages then return end
+    self.page = page
+    self.onChange(self.panel)
+end
+
+-- The chips are the kinds the reply actually carries (plus "all"), the rule the shop/market
+-- category chips follow. Rebuilt only when that set changes; the caller re-runs layout.
+function FilterBar:syncKinds(rows)
+    local seen, order, sig = {}, { "" }, ""
+    for _, e in ipairs(rows) do
+        local kind = e.kind
+        if type(kind) == "string" and kind ~= "" and not seen[kind] then
+            seen[kind] = true
+            order[#order + 1] = kind
+            sig = sig .. kind .. ","
+        end
+    end
+    -- a kind that left the data must not stay selected (its chip is gone). The stale keys are
+    -- collected first: Kahlua is not promised to survive a delete mid-traversal.
+    local stale = {}
+    for kind in pairs(self.kinds) do
+        if not seen[kind] then stale[#stale + 1] = kind end
+    end
+    for _, kind in ipairs(stale) do
+        self.kinds[kind] = nil
+        self.kindCount = self.kindCount - 1
+    end
+    if sig == self.kindSig then return false end
+    self.kindSig = sig
+    for _, b in ipairs(self.kindButtons) do
+        b:setVisible(false)
+        self.panel:removeChild(b)
+    end
+    self.kindButtons = {}
+    for _, kind in ipairs(order) do
+        local title = kind == "" and getText(T .. "Filter_All") or self.label(kind)
+        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, FilterBar.onKind, "chip")
+        b.internal = kind
+        b.active = kind == "" and self.kindCount == 0 or self.kinds[kind] == true
+        self.panel:addChild(b)
+        self.kindButtons[#self.kindButtons + 1] = b
+    end
+    return true
+end
+
+-- EC.filterPage options for the current filter state. A malformed date is "no bound" (the
+-- player is still typing); "to" is the end of that day, so the day itself is included.
+function FilterBar:opts(timeField)
+    local offset = self.panel.offsetMin or 0
+    local from = EC.parseDay(entryText(self.fromEntry), offset)
+    local to = EC.parseDay(entryText(self.toEntry), offset)
+    return {
+        kinds = self.kindCount > 0 and self.kinds or nil,
+        fromMs = from, toMs = to and (to + 86400000) or nil,
+        timeField = timeField or "ts",
+        sortKey = self.sortKey == "amount" and self.amountField or (timeField or "ts"),
+        desc = self.desc, page = self.page, perPage = PER_PAGE,
+    }
+end
+
+function FilterBar:setPage(page, pages, total)
+    self.page, self.pages, self.total = page, pages, total
+end
+
+-- One wrapped row of widgets between x and right; returns the y under the last row. Wrapping
+-- (the shop's chip rule) is what keeps the bar inside the card at every font scale.
+function FilterBar:layout(x, y, right, visible)
+    local labels = {}
+    local cx, cy = x, y
+    local ty = math.floor((CHIP_H - fontH.small) / 2)
+    local function place(w)
+        if cx > x and cx + w > right then
+            cx = x
+            cy = cy + CHIP_H + 6
+        end
+        local at = cx
+        cx = cx + w + 6
+        return at
+    end
+    local function labelAt(key)
+        local str = getText(T .. key)
+        local x = place(textWidth(str))     -- place() may open a new row: read cy after it
+        labels[#labels + 1] = { text = str, x = x, y = cy + ty }
+    end
+    labelAt("Filter_Kind")
+    for _, b in ipairs(self.kindButtons) do
+        b:setVisible(visible)
+        b:setX(place(b.width)); b:setY(cy)
+    end
+    labelAt("Filter_From")
+    self.fromEntry:setVisible(visible)
+    self.fromEntry:setX(place(DATE_W)); self.fromEntry:setY(cy + math.floor((CHIP_H - self.fromEntry.height) / 2))
+    labelAt("Filter_To")
+    self.toEntry:setVisible(visible)
+    self.toEntry:setX(place(DATE_W)); self.toEntry:setY(cy + math.floor((CHIP_H - self.toEntry.height) / 2))
+    labelAt("Filter_Sort")
+    for _, b in ipairs(self.sortButtons) do
+        b:setVisible(visible)
+        b:setX(place(b.width)); b:setY(cy)
+    end
+    self.labels = labels
+    return cy + CHIP_H
+end
+
+-- Pager strip under the list: the page counter on the left, the two chips, the row count right.
+function FilterBar:layoutPager(x, y, right, visible)
+    local cx = x + textWidth(getText(T .. "Filter_Page", "99", "99")) + PAD
+    self.pagerY = y
+    self.pagerRight = right
+    for _, b in ipairs({ self.prevButton, self.nextButton }) do
+        b:setVisible(visible)
+        b:setX(cx); b:setY(y + math.floor((ROW - CHIP_H) / 2))
+        cx = cx + b.width + 6
+    end
+end
+
+function FilterBar:draw(el)
+    for _, l in ipairs(self.labels) do text(el, l.text, l.x, l.y, "textMuted") end
+    for _, b in ipairs(self.sortButtons) do
+        if b.active then
+            drawArrow(el, b.x + b.width - ARROW_W - 8, b.y + math.floor((CHIP_H - ARROW_H) / 2), not self.desc)
+        end
+    end
+end
+
+function FilterBar:drawPager(el, x)
+    local ty = self.pagerY + math.floor((ROW - fontH.small) / 2)
+    text(el, getText(T .. "Filter_Page", tostring(self.page), tostring(self.pages)), x, ty, "textMuted")
+    textRight(el, getText(T .. "Filter_Count", tostring(self.total)), self.pagerRight, ty, "textMuted")
+    self.prevButton:setEnable(self.page > 1)
+    self.nextButton:setEnable(self.page < self.pages)
+end
+
+-- Count bubble on the top-right corner of a tab button (the Mail tab): a red circle through the
+-- framework's dot texture, widened into a pill from two digits on. The float button paints the
+-- same shape without the toolkit (U.init has not run before the first window opens).
+local BADGE_FILL = { r = 0.85, g = 0.2, b = 0.2, a = 1 }
+local BADGE_RIM = { r = 1, g = 1, b = 1, a = 1 }
 local function drawBadge(el, rightX, y, n)
     local label = n > 99 and "99+" or tostring(n)
-    local w = math.max(BADGE_H, textWidth(label) + 8)
+    local size = math.max(18, fontH.small + 6)
+    local w = math.max(size, textWidth(label) + 8)
     local x = rightX - w
-    fill(el, x, y, w, BADGE_H, "negative", "pill")
-    textCentre(el, label, x + w / 2, y + math.floor((BADGE_H - fontH.small) / 2), "text")
+    if w <= size then
+        U.Skin.dot(el, x, y, size, BADGE_FILL, BADGE_RIM)
+    else
+        U.Skin.fill(el, x, y, w, size, BADGE_FILL, "pill")
+        U.Skin.border(el, x, y, w, size, BADGE_RIM, "pill")
+    end
+    el:drawTextCentre(label, x + w / 2, y + math.floor((size - fontH.small) / 2), 1, 1, 1, 1, UIFont.Small)
+end
+
+-- ---------- market table header (sortable) ----------
+-- The browse page is sorted by the server, so the header is a control, not a caption: one
+-- transparent panel over the header row, hit-tested against the same column numbers the cells
+-- paint with (Panel.marketHeaderHits, filled in Panel:layout).
+
+-- "price_desc" -> "price", true. The default time sort is newest first and its ascending twin
+-- is a server key of its own ("time_asc"), so no column ever resolves to an ascending "time".
+local function sortParts(sort)
+    local key = tostring(sort or "")
+    local base = string.match(key, "^(.*)_desc$")
+    if base then return base, true end
+    return key, false
+end
+
+local MarketHeader = ISPanel:derive("MinidoracatEconomyMarketHeader")
+
+function MarketHeader:render()
+    local panel = self.panel
+    local w, h = self.width, self.height
+    fill(self, 0, 0, w, h, "well", "rect")
+    local ty = math.floor((h - fontH.small) / 2)
+    local ay = ty + math.floor((fontH.small - ARROW_H) / 2)
+    local sortKey, desc = sortParts(panel.marketSort)
+    local live = panel.marketMode == "browse" and not panel.browseBusy
+    for _, c in ipairs(panel.marketHeaderHits or {}) do
+        local active = c.key == sortKey
+        local token = active and "accent" or (live and "textMuted" or "textFaint")
+        local room = c.w - (active and (ARROW_W + 4) or 0)
+        local label = fitText(c.title, room)
+        if c.right then
+            local rx = c.x + c.w
+            if active then
+                drawArrow(self, rx - ARROW_W, ay, not desc, token)
+                rx = rx - ARROW_W - 4
+            end
+            textRight(self, label, rx, ty, token)
+        else
+            text(self, label, c.x, ty, token)
+            if active then drawArrow(self, c.x + textWidth(label) + 4, ay, not desc, token) end
+        end
+    end
+end
+
+function MarketHeader:onMouseDown(x)
+    self.panel:onMarketHeader(x)
+    return true
+end
+
+-- ---------- title-row opacity slider ----------
+-- The window chrome's opacity (U.alpha, kept by EC.Options). Skin.slider is a stateless
+-- painter, so the drag lives here: the press remembers where it landed inside the track and
+-- onMouseMove walks that x with the engine's deltas (ISUIElement hands over dx/dy, not a point).
+local OPACITY_W = 120
+-- 5 % per chip, the step the ModOptions slider uses too; the bounds are ECOptions' own
+local OPACITY_STEP = 5
+local OPACITY_MIN = (EC.Options and EC.Options.OPACITY_MIN) or 30
+local OPACITY_MAX = (EC.Options and EC.Options.OPACITY_MAX) or 100
+local OPACITY_SPAN = OPACITY_MAX - OPACITY_MIN
+
+local function opacityPercent()
+    local O = EC.Options
+    local v = (O and O.panelOpacity) and O.panelOpacity() or 1
+    v = math.floor((tonumber(v) or 1) * 100 + 0.5)
+    if v < OPACITY_MIN then v = OPACITY_MIN elseif v > OPACITY_MAX then v = OPACITY_MAX end
+    return v
+end
+
+local function setOpacityPercent(v, dragging)
+    if v < OPACITY_MIN then v = OPACITY_MIN elseif v > OPACITY_MAX then v = OPACITY_MAX end
+    local O = EC.Options
+    if O and O.setPanelOpacity then O.setPanelOpacity(v, dragging == true) else U.setAlpha(v / 100) end
+end
+
+local OpacitySlider = ISPanel:derive("MinidoracatEconomyOpacitySlider")
+
+function OpacitySlider:valueAt(x)
+    local ratio = x / math.max(1, self.width - 1)
+    if ratio < 0 then ratio = 0 elseif ratio > 1 then ratio = 1 end
+    return OPACITY_MIN + math.floor(ratio * OPACITY_SPAN + 0.5)
+end
+
+function OpacitySlider:onMouseDown(x)
+    self.dragging = true
+    self.dragX = x
+    setOpacityPercent(self:valueAt(x), true)
+    return true
+end
+
+function OpacitySlider:onMouseMove(dx)
+    if not self.dragging then return end
+    self.dragX = (self.dragX or 0) + (tonumber(dx) or 0)
+    setOpacityPercent(self:valueAt(self.dragX), true)
+end
+OpacitySlider.onMouseMoveOutside = OpacitySlider.onMouseMove   -- the pointer leaves the track mid-drag
+
+function OpacitySlider:onMouseUp()
+    if self.dragging and EC.Options and EC.Options.flush then EC.Options.flush() end   -- one ini write per drag
+    self.dragging = false
+    return true
+end
+OpacitySlider.onMouseUpOutside = OpacitySlider.onMouseUp
+
+function OpacitySlider:render()
+    U.Skin.slider(self, 0, 0, self.width, self.height, (opacityPercent() - OPACITY_MIN) / OPACITY_SPAN,
+        { track = color("track"), fill = color("gold"), knob = color("text"), border = color("border") }, U.alpha)
 end
 
 -- ---------- buy dialog ----------
@@ -987,6 +1332,9 @@ function Panel:createChildren()
 
     self.list = U.newTable(Cell, ROW)
     self:addChild(self.list)
+    -- the statement is paged on the client (the reply is the whole month): kind chips, a day
+    -- range, a time/amount sort and the pager, all local
+    self.walletBar = FilterBar.new(self, kindText, "amount", Panel.rebuildList)
 
     -- shop page: the category chips are rebuilt per snapshot (Panel:rebuildCategories), the
     -- search box filters the table by item name or sku id
@@ -1018,7 +1366,7 @@ function Panel:createChildren()
         if mode == "mine" then self.marketMineButton = b end
     end
     self.marketSortButtons = {}
-    for _, sort in ipairs({ "time", "price", "price_desc" }) do
+    for _, sort in ipairs({ "time", "time_asc", "price", "price_desc" }) do
         local title = getText(T .. "Market_Sort_" .. sort)
         local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, Panel.onMarketSort, "chip")
         b.internal = sort
@@ -1036,6 +1384,15 @@ function Panel:createChildren()
     self:addChild(self.marketList)
     self.marketHistoryList = U.newTable(HistoryCell, historyRowHeight())
     self:addChild(self.marketHistoryList)
+    self.marketHeader = ISPanel:new(0, 0, 100, ROW)
+    setmetatable(self.marketHeader, MarketHeader)
+    self.marketHeader.background = false
+    self.marketHeader.panel = self
+    self.marketHeader:initialise()
+    self:addChild(self.marketHeader)
+    self.historyBar = FilterBar.new(self,
+        function(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end,
+        "amount", Panel.rebuildMarketHistory)
     for _, spec in ipairs({ { "Refresh", Panel.onMarketRefresh }, { "List", Panel.onMarketList },
         { "Prev", Panel.onMarketPage }, { "Next", Panel.onMarketPage } }) do
         local title = getText(T .. "Market_" .. spec[1])
@@ -1059,7 +1416,34 @@ function Panel:createChildren()
     self.resetSizeButton = Button.create(0, 0, textWidth(reset) + 20, self:titleBarHeight() - 8, reset, self, Panel.onResetSize, "chip")
     self:addChild(self.resetSizeButton)
 
+    -- title row: the chrome opacity (a stateless Skin.slider plus two step chips), left of the
+    -- reset chip and the vanilla pin/collapse buttons
+    self.opacitySlider = ISPanel:new(0, 0, OPACITY_W, self:titleBarHeight() - 8)
+    setmetatable(self.opacitySlider, OpacitySlider)
+    self.opacitySlider.background = false
+    self.opacitySlider:initialise()
+    self:addChild(self.opacitySlider)
+    -- the labels carry the step ("-5" / "+5"): the buy/list dialogs already own a bare
+    -- "-" / "+" pair, and two chips with the same title in one window is a trap
+    for _, spec in ipairs({ { "Minus", -OPACITY_STEP }, { "Plus", OPACITY_STEP } }) do
+        local title = (spec[2] < 0 and "-" or "+") .. tostring(math.abs(spec[2]))
+        local b = Button.create(0, 0, textWidth(title) + 14, self:titleBarHeight() - 8, title,
+            self, Panel.onOpacityStep, "chip")
+        b.internal = spec[2]
+        self:addChild(b)
+        self["opacity" .. spec[1] .. "Button"] = b
+    end
+
     self:setTab("Wallet")
+end
+
+-- The text boxes that only exist on one page: a hidden one must not keep the keyboard.
+function Panel:unfocusEntries()
+    for _, e in ipairs({ self.shopEntry, self.marketEntry,
+        self.walletBar.fromEntry, self.walletBar.toEntry,
+        self.historyBar.fromEntry, self.historyBar.toEntry }) do
+        pcall(function() e:unfocus() end)
+    end
 end
 
 -- ----- actions -----
@@ -1071,8 +1455,7 @@ function Panel:setTab(tab)
     if tab ~= self.tab then
         self:closeBuy()
         self:closeMarketDialog()
-        pcall(function() self.shopEntry:unfocus() end)   -- a hidden text box must not keep the keyboard
-        pcall(function() self.marketEntry:unfocus() end)
+        self:unfocusEntries()
     end
     self.tab = tab
     for _, b in ipairs(self.tabButtons) do b.active = b.internal == tab end
@@ -1080,8 +1463,7 @@ function Panel:setTab(tab)
     if self.shown then self:refresh() end
 end
 
--- Server round trips for the visible tab (commands are throttled 500 ms per player per command,
--- ECServer.lua; each request here is a distinct command).
+
 function Panel:refresh()
     if self.tab == "Wallet" then
         C.requestWallet()
@@ -1119,6 +1501,7 @@ end
 function Panel:onPeriod(button)
     self.period = button.internal
     for _, b in ipairs(self.periodButtons) do b.active = b.internal == self.period end
+    self.walletBar.page = 1        -- another month starts on its own first page
     self.history = nil
     self.historyError = nil
     self:loadHistory()
@@ -1184,8 +1567,9 @@ local function newestFirst(src, offsetMin)
     return out
 end
 
--- self.rows = statement rows for the selected period; self.recentRows = the server receipt ring
--- (rewards page "recent ledger"). Both are rebuilt only when data arrives, never per frame.
+-- self.rows = the visible statement page, self.allRows = the whole period (the filter bar
+-- filters/sorts/pages it locally), self.recentRows = the server receipt ring (rewards page
+-- "recent ledger"). All rebuilt only when data or a filter changes, never per frame.
 -- "Recent" is the newest RECENT_ROWS lines of the receipt files (they keep what a crash rolled
 -- back); the ModData ring only paints the first frame until the file reply lands.
 local RECENT_ROWS = 20
@@ -1196,14 +1580,19 @@ function Panel:rebuildList()
             local all = newestFirst(self.history.entries or {}, self.offsetMin)
             local rows = {}
             for i = 1, math.min(#all, RECENT_ROWS) do rows[i] = all[i] end
-            self.rows = rows
+            self.allRows = rows
         else
-            self.rows = self.recentRows
+            self.allRows = self.recentRows
         end
     else
-        self.rows = newestFirst(self.history and self.history.entries or {}, self.offsetMin)
+        self.allRows = newestFirst(self.history and self.history.entries or {}, self.offsetMin)
     end
-    self.list:setItems(self.rows)
+    local bar = self.walletBar
+    if bar:syncKinds(self.allRows) and self.g then self:layout() end
+    local rows, page, pages, total = EC.filterPage(self.allRows, bar:opts("ts"))
+    bar:setPage(page, pages, total)
+    self.rows = rows
+    self.list:setItems(rows)
 end
 
 -- Month in/out per currency from this month's receipt file (design: balance card "this month").
@@ -1522,7 +1911,12 @@ end
 -- row used to lose the second one for good. Every request goes through this gate: inside the
 -- window nothing is sent, the wish is remembered, and prerender sends the *current* chip state
 -- once the window is over (only the newest state can ever be wanted).
-local BROWSE_MIN_MS = 600
+--
+-- On top of that the page is `browseBusy` from the moment a request is wanted until the answer
+-- lands (or BROWSE_TIMEOUT_MS passes): the sort chips, the sortable header and the pager are
+-- disabled, so the player cannot queue a wish they can no longer see the state of.
+local BROWSE_MIN_MS = 650
+local BROWSE_TIMEOUT_MS = 5000
 
 function Panel:sendBrowse()
     self.browseWanted = nil
@@ -1535,6 +1929,8 @@ end
 function Panel:requestBrowse(page)
     self.marketPage = math.max(1, tonumber(page) or 1)
     self.marketQueryAt = nil
+    self.browseBusy = true
+    self.browseBusyAt = EC.now()
     if self.browseSentAt and EC.now() - self.browseSentAt < BROWSE_MIN_MS then
         self.browseWanted = true
         return
@@ -1611,7 +2007,9 @@ function Panel:rebuildCandidates()
     end
 end
 
--- The server keeps the ring oldest first (it appends); the page reads newest first.
+-- The server keeps the ring oldest first (it appends); the filter bar sorts, filters and pages
+-- it (newest first by default). The whole ring stays in marketHistoryAll: every chip and every
+-- date keystroke re-pages that list without another round trip.
 function Panel:rebuildMarketHistory()
     local snap = C.marketHistory
     local src = (snap and snap.entries) or {}
@@ -1619,6 +2017,12 @@ function Panel:rebuildMarketHistory()
     for i = #src, 1, -1 do
         rows[#rows + 1] = historyRow(src[i], self.offsetMin)
     end
+    self.marketHistoryAll = rows
+    local bar = self.historyBar
+    if bar:syncKinds(rows) and self.g then self:layout() end
+    local page, pages, total
+    rows, page, pages, total = EC.filterPage(rows, bar:opts("ts"))
+    bar:setPage(page, pages, total)
     self.marketHistoryRows = rows
     self.marketHistoryList:setItems(rows)
 end
@@ -1646,13 +2050,30 @@ function Panel:onMarketMode(button)
 end
 
 function Panel:onMarketSort(button)
-    if self.marketSort == button.internal then return end
+    if self.browseBusy or self.marketSort == button.internal then return end
     self.marketSort = button.internal
     for _, b in ipairs(self.marketSortButtons) do b.active = b.internal == self.marketSort end
     self:requestBrowse(1)
 end
 
+-- A click on the table header: the same column again flips the direction, a new one starts
+-- ascending. Anything that is not a column (the icon column left of the item name, the gaps
+-- between two columns) is the plain default sort, newest listing first.
+function Panel:onMarketHeader(x)
+    if self.marketMode ~= "browse" or self.browseBusy then return end
+    local key = "time"
+    for _, c in ipairs(self.marketHeaderHits or {}) do
+        if x >= c.x and x < c.x + c.w then key = c.key end
+    end
+    if key ~= "time" and self.marketSort == key then key = key .. "_desc" end
+    if key == self.marketSort then return end
+    self.marketSort = key
+    for _, b in ipairs(self.marketSortButtons) do b.active = b.internal == key end
+    self:requestBrowse(1)
+end
+
 function Panel:onMarketCat(button)
+    if self.browseBusy then return end
     self.marketCat = button.internal ~= "" and button.internal or nil
     for _, b in ipairs(self.marketCatButtons) do b.active = (self.marketCat or "") == b.internal end
     self:requestBrowse(1)
@@ -1673,9 +2094,14 @@ function Panel:onMarketRefresh()
 end
 
 function Panel:onMarketPage(button)
+    if self.browseBusy then return end
     local page = self.marketPage + button.internal
     if page < 1 or page > self.marketInfo.pages then return end
     self:requestBrowse(page)
+end
+
+function Panel:onOpacityStep(button)
+    setOpacityPercent(opacityPercent() + button.internal)
 end
 
 function Panel:onMarketRow(row)
@@ -1812,11 +2238,13 @@ function Panel:onMarket(kind, args)
     if kind == "history" then
         self.marketHistoryError = args.error and marketError(args) or nil
         self:rebuildMarketHistory()
+        self:layout()   -- the kind chips of the bar (and with them the table) may have moved
         return
     end
     if kind == "browse" or kind == "mine" or kind == "candidates" then
         if kind == "browse" then
             self.marketAt = EC.now()
+            self.browseBusy = nil
             -- an answer to a request the player has already moved past (the throttle window
             -- swallowed the newer one): keep the chips as they are and ask again
             local page = tonumber(args.page)
@@ -1920,6 +2348,21 @@ function Panel:layout()
     rb:setX(w - 1 - (th - 2) - 6 - rb.width)
     rb:setY(math.floor((th - rb.height) / 2))
 
+    -- opacity group, right to left: the percent readout, "+", the track, "-"; it shares the
+    -- title row with the reset chip and collapses with the window
+    local barVisible = not self.isCollapsed
+    local opacityY = math.floor((th - self.opacitySlider.height) / 2)
+    g.opacityR = (rb:getIsVisible() and rb.x or (w - 1 - (th - 2))) - 6
+    g.opacityTextY = math.floor((th - fontH.small) / 2)
+    local plus, minus = self.opacityPlusButton, self.opacityMinusButton
+    for _, el in ipairs({ plus, minus, self.opacitySlider }) do
+        el:setVisible(barVisible)
+        el:setY(el == self.opacitySlider and opacityY or math.floor((th - el.height) / 2))
+    end
+    plus:setX(g.opacityR - textWidth("100%") - 6 - plus.width)
+    self.opacitySlider:setX(plus.x - 4 - self.opacitySlider.width)
+    minus:setX(self.opacitySlider.x - 4 - minus.width)
+
     local isWallet = self.tab == "Wallet"
     self.adminAccess = C.AdminPanel.canRead()
     local x = PAD
@@ -1943,7 +2386,7 @@ function Panel:layout()
         self.adminPanel:setVisible(self.tab == "Admin" and self.adminAccess and self.shown == true and not self.isCollapsed)
     end
 
-    -- wallet: period chips + statement table inside the right card
+    -- wallet: period chips, the filter bar, then the statement table inside the right card
     local chipY = g.contentY + CARD_TITLE_H + 4
     x = g.rightX + PAD + textWidth(getText(T .. "Wallet_Period")) + PAD
     for _, b in ipairs(self.periodButtons) do
@@ -1951,11 +2394,13 @@ function Panel:layout()
         b:setX(x); b:setY(chipY)
         x = x + b.width + 6
     end
-    g.tableHeaderY = chipY + CHIP_H + 8
+    g.tableHeaderY = self.walletBar:layout(g.rightX + PAD, chipY + CHIP_H + 6,
+        g.rightX + g.rightW - PAD, isWallet) + 6
     local listY = g.tableHeaderY + ROW
     local listX = g.rightX + 1
     local listW = g.rightW - 2
-    local listH = math.max(ROW * 2, g.contentY + g.contentH - listY - ROW - 2)
+    -- two rows are kept under the table: the pager, then the note line
+    local listH = math.max(ROW * 2, g.contentY + g.contentH - listY - ROW * 2 - 2)
     self.list:setVisible(isWallet)
     self.list:setX(listX); self.list:setY(listY)
     local listResized = self.list.width ~= listW or self.list.height ~= listH
@@ -1973,6 +2418,8 @@ function Panel:layout()
     cols.descW = math.max(0, cols.amountR - colW("Wallet_Col_Amount", "+999,999 " .. C.currencyName(EC.CURRENCY_ORDER[1])) - cols.desc)
     if listResized then self.list:resize(listW, listH) end
     g.listBottom = listY + listH
+    self.walletBar:layoutPager(listX + PAD, g.listBottom + 2, listX + listW - PAD, isWallet)
+    g.walletNoteY = g.listBottom + 2 + ROW
 
     -- rewards: claim button inside the daily card, "more history" under the recent ledger
     g.dailyH = CARD_TITLE_H + ROW * 2 + 40 + ROW + PAD * 3
@@ -2095,7 +2542,7 @@ function Panel:layout()
     g.marketCardW = wideMode and (w - PAD * 2) or g.rightW
     g.marketHeaderY = g.marketCardY + CARD_TITLE_H + ROW
     local mktListY = g.marketHeaderY + ROW
-    local mktFooterH = wideMode and 0 or ROW
+    local mktFooterH = mineMode and 0 or ROW
     local mktListW = g.marketCardW - 2
     local mktListH = math.max(ROW * 2, g.marketCardY + g.marketCardH - mktListY - PAD - mktFooterH)
     self.marketList:setVisible(isMarket and not historyMode)
@@ -2110,17 +2557,46 @@ function Panel:layout()
     mktCols.expiresR = mktCols.actionX - PAD
     mktCols.priceR = math.max(mktCols.name + PAD, mktCols.expiresR
         - math.max(textWidth(getText(T .. "Market_Col_Expires")), textWidth("00-00 00:00")) - PAD)
-    mktCols.sellerW = math.max(textWidth(getText(T .. "Market_Col_Seller")), textWidth("mmmmmmmmmm"))
+    -- an 8-character sample: the lot column below takes its share out of this one, and a
+    -- longer account name is fitted by the cell anyway
+    mktCols.sellerW = math.max(textWidth(getText(T .. "Market_Col_Seller")), textWidth("mmmmmmmm"))
     mktCols.sellerX = math.max(mktCols.name, mktCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - mktCols.sellerW)
-    mktCols.nameW = math.max(0, mktCols.sellerX - PAD - mktCols.name)
+    -- the lot column is the narrow one between the name and the seller (a count, never a name)
+    local qtyW = math.max(textWidth(getText(T .. "Market_Col_Qty")), textWidth("999"))
+    mktCols.qtyR = math.max(mktCols.name + qtyW, mktCols.sellerX - PAD)
+    mktCols.nameW = math.max(0, mktCols.qtyR - qtyW - PAD - mktCols.name)
     if self.marketList.width ~= mktListW or self.marketList.height ~= mktListH then
         self.marketList:resize(mktListW, mktListH)
     end
 
-    -- history: the same card, two lines per row, no icon column (kind, item, amount, status)
+    -- the sortable header sits over the header row of the listing table and hit-tests against
+    -- these very column edges (paint and click can never disagree)
+    self.marketHeaderHits = {
+        { key = "name", title = getText(T .. "Market_Col_Item"), x = mktCols.name,
+          w = math.max(0, mktCols.qtyR - qtyW - mktCols.name) },
+        { key = "qty", title = getText(T .. "Market_Col_Qty"), x = mktCols.qtyR - qtyW,
+          w = qtyW, right = true },
+        { key = "seller", title = getText(T .. "Market_Col_Seller"), x = mktCols.sellerX,
+          w = mktCols.sellerW },
+        { key = "price", title = getText(T .. "Market_Col_Price"),
+          x = mktCols.sellerX + mktCols.sellerW, w = mktCols.priceR - mktCols.sellerX - mktCols.sellerW,
+          right = true },
+        { key = "expires", title = getText(T .. "Market_Col_Expires"), x = mktCols.priceR,
+          w = mktCols.expiresR - mktCols.priceR, right = true },
+    }
+    local header = self.marketHeader
+    header:setVisible(isMarket and not historyMode)
+    header:setX(self.marketList.x); header:setY(g.marketHeaderY)
+    header:setWidth(mktListW); header:setHeight(ROW)
+
+    -- history: the same card with the filter bar under the note line, two lines per row, no
+    -- icon column (kind, item, amount, status) and the bar's own pager under the table
     local hist = self.marketHistoryList
     hist:setVisible(isMarket and historyMode)
-    hist:setX(g.marketCardX + 1); hist:setY(mktListY)
+    local histY = self.historyBar:layout(g.marketCardX + PAD, g.marketHeaderY,
+        g.marketCardX + g.marketCardW - PAD, isMarket and historyMode) + 6
+    local histH = math.max(ROW * 2, g.marketCardY + g.marketCardH - histY - PAD - ROW)
+    hist:setX(g.marketCardX + 1); hist:setY(histY)
     local hCols = hist.cols
     local hInner = mktListW - 12
     local kindW = 0
@@ -2132,7 +2608,12 @@ function Panel:layout()
     hCols.status = math.max(hCols.name, hInner - textWidth(getText(T .. "Wallet_RolledBack")) - PAD)
     hCols.amountR = hCols.status - PAD
     hCols.nameW = math.max(0, hCols.amountR - textWidth("-999,999") - PAD - hCols.name)
-    if hist.width ~= mktListW or hist.height ~= mktListH then hist:resize(mktListW, mktListH) end
+    if hist.width ~= mktListW or hist.height ~= histH then hist:resize(mktListW, histH) end
+    g.historyFooterY = histY + histH + 2
+    self.historyBar:layoutPager(g.marketCardX + PAD, g.historyFooterY,
+        g.marketCardX + g.marketCardW - PAD, isMarket and historyMode)
+
+    -- browse pager: the server's own paging, under the listing table
     g.marketFooterY = mktListY + mktListH + 2
     local pageW = textWidth(getText(T .. "Market_Page", "99", "99"))
     x = g.marketCardX + PAD + pageW + PAD
@@ -2223,6 +2704,7 @@ function Panel:drawWallet()
     self:drawBalanceCard(g.leftX, g.contentY, g.leftW, g.contentH, true)
     card(self, g.rightX, g.contentY, g.rightW, g.contentH, getText(T .. "Wallet_Statement"))
     text(self, getText(T .. "Wallet_Period"), g.rightX + PAD, g.contentY + CARD_TITLE_H + 4 + math.floor((CHIP_H - fontH.small) / 2), "textMuted")
+    self.walletBar:draw(self)
     -- table header
     local cols = self.list.cols
     local hx = self.list.x
@@ -2235,24 +2717,28 @@ function Panel:drawWallet()
     textRight(self, getText(T .. "Wallet_Col_Amount"), hx + cols.amountR, ty, "textMuted")
     textRight(self, getText(T .. "Wallet_Col_Balance"), hx + cols.balanceR, ty, "textMuted")
     text(self, getText(T .. "Wallet_Col_Status"), hx + cols.status, ty, "textMuted")
-    -- footer note
+    -- pager, then the footer note
+    self.walletBar:drawPager(self, hx + PAD)
     local note
     local n = #self.list:getItems()
-    if self.period == "Recent" then
-        if n == 0 then note = getText(T .. "Wallet_Empty") end
+    local all = #(self.allRows or {})
+    if n == 0 and all > 0 then
+        note = getText(T .. "Filter_NoMatch")
+    elseif self.period == "Recent" then
+        if all == 0 then note = getText(T .. "Wallet_Empty") end
     elseif self.historyLoading then
         note = getText(T .. "Wallet_Loading")
     elseif self.historyError then
         note = getText(T .. "Rewards_Error_generic", tostring(self.historyError))
     elseif self.history then
-        if n == 0 then
+        if all == 0 then
             note = getText(T .. "Wallet_Empty")
         elseif self.history.truncated then
-            note = getText(T .. "Wallet_Truncated", tostring(n), tostring(self.history.total or n))
+            note = getText(T .. "Wallet_Truncated", tostring(all), tostring(self.history.total or all))
         end
     end
     if note then
-        text(self, note, hx + PAD, g.listBottom + math.floor((ROW - fontH.small) / 2), "textMuted")
+        text(self, note, hx + PAD, g.walletNoteY + math.floor((ROW - fontH.small) / 2), "textMuted")
     end
 end
 
@@ -2413,8 +2899,9 @@ function Panel:drawMail()
     end
 end
 
--- History page: one card, the note line, and the ring newest first. No column header (the kind
--- label already names each line) and no pager (the server sends the whole ring at once).
+-- History page: one card, the note line, the filter bar and the ring (newest first by default).
+-- No column header (the kind label already names each line); the ring is paged on the client,
+-- so the pager under the table is the bar's own.
 function Panel:drawMarketHistory()
     local g = self.g
     local list = self.marketHistoryList
@@ -2430,8 +2917,11 @@ function Panel:drawMarketHistory()
         return
     end
     text(self, fitText(getText(T .. "Market_History_Note"), noteW), g.marketCardX + PAD, ty, "textMuted")
+    self.historyBar:draw(self)
+    self.historyBar:drawPager(self, g.marketCardX + PAD)
     if #list:getItems() == 0 then
-        text(self, getText(T .. "Market_History_Empty"), list.x + PAD,
+        local all = #(self.marketHistoryAll or {})
+        text(self, getText(T .. (all > 0 and "Filter_NoMatch" or "Market_History_Empty")), list.x + PAD,
             list.y + math.floor((ROW - fontH.small) / 2), "textMuted")
     end
 end
@@ -2456,17 +2946,10 @@ function Panel:drawMarket()
     local note = mine and getText(T .. "Market_MineCount", tostring(info.mine), tostring(info.maxListings))
         or getText(T .. "Market_Note", tostring(info.taxPercent), tostring(info.feePercent))
     text(self, fitText(note, g.marketCardW - PAD * 2), g.marketCardX + PAD, ty, "textMuted")
-    local cols = self.marketList.cols
-    local hx, hy = self.marketList.x, g.marketHeaderY
-    fill(self, hx, hy, self.marketList.width, ROW, "well", "rect")
-    local hty = hy + math.floor((ROW - fontH.small) / 2)
-    text(self, getText(T .. "Market_Col_Item"), hx + cols.name, hty, "textMuted")
-    text(self, getText(T .. "Market_Col_Seller"), hx + cols.sellerX, hty, "textMuted")
-    textRight(self, getText(T .. "Market_Col_Price"), hx + cols.priceR, hty, "textMuted")
-    textRight(self, getText(T .. "Market_Col_Expires"), hx + cols.expiresR, hty, "textMuted")
+    -- the header row is a child (MarketHeader): it paints the column names and takes the clicks
     if #self.marketList:getItems() == 0 then
         text(self, getText(T .. (self.marketNoMatch and "Market_NoMatch" or "Market_Empty")),
-            hx + PAD, self.marketList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
+            self.marketList.x + PAD, self.marketList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
     end
     if mine then return end
     -- pager strip: the page counter, the two chips (children), the server's total on the right
@@ -2532,6 +3015,10 @@ function Panel:prerender()
     if self.browseWanted and EC.now() - (self.browseSentAt or 0) >= BROWSE_MIN_MS then
         self:sendBrowse()
     end
+    -- a browse whose answer never came: the sort chips, the header and the pager come back
+    if self.browseBusy and EC.now() - (self.browseBusyAt or 0) > BROWSE_TIMEOUT_MS then
+        self.browseBusy = nil
+    end
     local w = self:getWidth()
     local h = self:getHeight()
     local th = self:titleBarHeight()
@@ -2554,6 +3041,8 @@ function Panel:prerender()
     -- until an admin unfreezes it). Then the remote gate: no terminal registered at all, the
     -- player standing at one, or the plain "walk to a terminal".
     local g = self.g
+    -- the chrome opacity readout, next to its slider in the title row
+    textRight(self, tostring(opacityPercent()) .. "%", g.opacityR, g.opacityTextY, "textMuted")
     local band, bandToken
     if C.wallet and C.wallet.frozen then
         band, bandToken = "Band_Frozen", "errorText"
@@ -2579,8 +3068,11 @@ function Panel:prerender()
     self.marketList.actionDisabled = gateClosed or self.marketPending ~= nil
     self.marketListButton:setEnable(not gateClosed and self.marketPending == nil and self.marketDialog == nil
         and (info.maxListings <= 0 or info.mine < info.maxListings))
-    self.marketPrevButton:setEnable(self.marketPage > 1)
-    self.marketNextButton:setEnable(self.marketPage < info.pages)
+    local browseBusy = self.browseBusy == true
+    for _, b in ipairs(self.marketSortButtons) do b:setEnable(not browseBusy) end
+    for _, b in ipairs(self.marketCatButtons or {}) do b:setEnable(not browseBusy) end
+    self.marketPrevButton:setEnable(self.marketPage > 1 and not browseBusy)
+    self.marketNextButton:setEnable(self.marketPage < info.pages and not browseBusy)
     if self.tab == "Wallet" then
         self:drawWallet()
     elseif self.tab == "Rewards" then
@@ -2630,11 +3122,11 @@ function Panel:setVisible(visible)
     if not visible then
         self:closeBuy()
         self:closeMarketDialog()
-        pcall(function() self.shopEntry:unfocus() end)
-        pcall(function() self.marketEntry:unfocus() end)
+        self:unfocusEntries()
     end
     if visible then
         self.offsetMin = localOffsetMinutes()
+        U.setAlpha(opacityPercent() / 100)   -- ModOptions may have changed it since the last open
         self:bringToTop()
         self:layout()
         self:refresh()

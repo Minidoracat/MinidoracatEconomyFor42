@@ -48,18 +48,27 @@ local function apply()
     if C and C.UI and C.UI.setAlpha then C.UI.setAlpha(O.panelOpacity()) end
 end
 
--- The title-row slider: percent 30..100, applied at once and saved through the engine.
-function O.setPanelOpacity(percent)
+-- The title-row slider: percent 30..100, applied at once; saved through the engine unless
+-- deferSave (a drag in progress: ModOptions:save writes the ini, once per mouse-up is enough).
+local dirty = false
+function O.setPanelOpacity(percent, deferSave)
     local v = math.floor((tonumber(percent) or O.OPACITY_DEFAULT) + 0.5)
     if v < O.OPACITY_MIN then v = O.OPACITY_MIN elseif v > O.OPACITY_MAX then v = O.OPACITY_MAX end
     local opt = option("PanelOpacity")
     if opt then
         pcall(function() opt:setValue(v) end)
-        pcall(function() PZAPI.ModOptions:save() end)
+        dirty = true
+        if not deferSave then O.flush() end
     else
         O.fallbackOpacity = v
     end
     apply()
+end
+
+function O.flush()
+    if not dirty then return end
+    dirty = false
+    pcall(function() PZAPI.ModOptions:save() end)
 end
 
 if PZAPI and PZAPI.ModOptions then

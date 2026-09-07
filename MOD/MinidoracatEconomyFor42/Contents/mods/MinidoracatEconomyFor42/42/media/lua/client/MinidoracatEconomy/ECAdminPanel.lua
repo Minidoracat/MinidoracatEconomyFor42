@@ -69,10 +69,11 @@ local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Whitelis
 local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog", "admin.listings", "admin.whitelist", "admin.marketHistory" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
-local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
+local FILTER_KIND_MAX = 12   -- dynamic chips one filter row ever draws (the audit knows 11 actions)
+local FILTER_PER_PAGE = 25   -- rows one client-side page shows (audit lines, market history lines)
 local WL_FILTERS = { "all", "allow", "deny" }   -- state of the row against the file, not a query
 
-local COOLDOWN_MS = 500
+local COOLDOWN_MS = 650      -- server window is 500 ms; the margin covers clock jitter (a repeat inside the window is dropped silently -> 8 s timeout)
 local TIMEOUT_MS = 8000
 local POLL_MS = 30000
 local PERM_POLL_MS = 500
@@ -505,6 +506,20 @@ local function optionToggleColors()
     return toggleColors
 end
 
+-- Skin.toggle is a rev >= 3 painter: an older framework has no such key, and the painter itself
+-- answers false when it declines the geometry. Both fall back to a labelled pill, so a row keeps
+-- its switch either way. `off` = the whole list is disabled (a write is in flight, or the role is
+-- read only): the painter dims, the fallback greys its label.
+local function paintToggle(el, x, y, w, h, on, off, label, textY)
+    if U.Skin and U.Skin.toggle then
+        local pok, res = pcall(U.Skin.toggle, el, x, y, w, h, on, optionToggleColors(), off and 0.5 or 1)
+        if pok and res ~= false then return end
+    end
+    fill(el, x, y, w, h, on and "selected" or "well", "pill")
+    border(el, x, y, w, h, off and "border" or "accent", "pill")
+    if label then textCentre(el, label, x + w / 2, textY, off and "textFaint" or "text") end
+end
+
 -- One option row: name over description on the left, the control strip on the right. Every
 -- string, hit box and y is computed in Admin:optionRow (the row width is known there), so the
 -- cell only paints and the click test reads exactly the numbers the paint used.
@@ -532,19 +547,8 @@ function OptionCell:render()
     end
     if e.toggle then
         local th = math.max(20, fontH.small + 6)
-        local ty = math.floor((h - th) / 2)
-        -- Skin.toggle is a rev >= 3 painter: an older framework has no such key, and the painter
-        -- itself answers false when it declines the geometry. Both fall back to a labelled pill.
-        local painted = false
-        if U.Skin and U.Skin.toggle then
-            local pok, res = pcall(U.Skin.toggle, self, e.toggle.x, ty, e.toggle.w, th, e.toggleOn, optionToggleColors(), off and 0.5 or 1)
-            painted = pok and res ~= false
-        end
-        if not painted then
-            fill(self, e.toggle.x, ty, e.toggle.w, th, e.toggleOn and "selected" or "well", "pill")
-            border(self, e.toggle.x, ty, e.toggle.w, th, off and "border" or "accent", "pill")
-            textCentre(self, e.toggleLabel, e.toggle.x + e.toggle.w / 2, e.valueY, off and "textFaint" or "text")
-        end
+        paintToggle(self, e.toggle.x, math.floor((h - th) / 2), e.toggle.w, th, e.toggleOn, off,
+            e.toggleLabel, e.valueY)
     end
     for _, hit in ipairs(e.hits) do
         if hit.label then
@@ -653,19 +657,8 @@ function CatalogCell:render()
     local valueToken = off and "textFaint" or "accent"
     textCentre(self, e.priceText, e.valueX + e.valueW / 2, e.textY1, valueToken)
     textCentre(self, e.capText, e.valueX + e.valueW / 2, e.textY2, valueToken)
-    -- Skin.toggle is a rev >= 3 painter (see OptionCell): both its absence and its refusal fall
-    -- back to the labelled pill
     local t = e.toggle
-    local painted = false
-    if U.Skin and U.Skin.toggle then
-        local pok, res = pcall(U.Skin.toggle, self, t.x, t.y, t.w, t.h, e.toggleOn, optionToggleColors(), off and 0.5 or 1)
-        painted = pok and res ~= false
-    end
-    if not painted then
-        fill(self, t.x, t.y, t.w, t.h, e.toggleOn and "selected" or "well", "pill")
-        border(self, t.x, t.y, t.w, t.h, off and "border" or "accent", "pill")
-        textCentre(self, e.toggleLabel, t.x + t.w / 2, e.textY1, off and "textFaint" or "text")
-    end
+    paintToggle(self, t.x, t.y, t.w, t.h, e.toggleOn, off, e.toggleLabel, e.textY1)
     for _, hit in ipairs(e.hits) do
         if hit.label then
             border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
@@ -765,7 +758,8 @@ end
 
 -- One whitelist row: either a category (its localised name over the raw name and the item count)
 -- or a single item (icon, localised plus untranslated name, over "fullType / category"), with the
--- allow / deny chips on the right. Every string and hit box is computed once per rebuild
+-- state word and the switch on the right -- plus, on an item the file singles out, the chip that
+-- puts it back under its category. Every string and hit box is computed once per rebuild
 -- (Admin:whitelistGeometry / whitelistCategoryRow / whitelistItemRow), so the cell only paints
 -- and the click test reads the numbers the paint used.
 local WhitelistCell = ISPanel:derive("MinidoracatEconomyWhitelistCell")
@@ -784,11 +778,20 @@ function WhitelistCell:render()
     text(self, e.nameText, e.nameX, e.line1Y, "text")
     if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
     text(self, e.metaText, e.metaX, e.line2Y, "textFaint")
+    -- the switch shows the state that is actually in force; the word beside it says which, and an
+    -- item with no entry of its own adds the note that it is following its category
+    text(self, e.stateText, e.stateX, e.stateY,
+        off and "textFaint" or (e.toggleOn and "positive" or "textMuted"))
+    if e.inheritText then text(self, e.inheritText, e.inheritX, e.stateY, "textFaint") end
+    local t = e.toggle
+    paintToggle(self, t.x, t.y, t.w, t.h, e.toggleOn, off, nil, e.stateY)
     for _, hit in ipairs(e.hits) do
-        fill(self, hit.x, hit.y, hit.w, hit.h, hit.active and "selected" or "well", "pill")
-        border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
-        textCentre(self, hit.label, hit.x + hit.w / 2, hit.y + e.chipTextY,
-            off and "textFaint" or (hit.active and "text" or "textMuted"))
+        if hit.label then
+            fill(self, hit.x, hit.y, hit.w, hit.h, "well", "pill")
+            border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
+            textCentre(self, hit.label, hit.x + hit.w / 2, hit.y + e.chipTextY,
+                off and "textFaint" or "text")
+        end
     end
 end
 
@@ -1294,6 +1297,275 @@ function Suggest:onMouseUp(x, y) return true end
 
 local Admin = ISPanel:derive("MinidoracatEconomyAdminPanel")
 
+-- ---------- shared filter row (audit page, one player's market history) ----------
+--
+-- Both pages filter and page entirely on this side (one reply is a few hundred rows at most), so
+-- they carry the same widgets over the same state: "all" plus one chip per value the reply
+-- actually carried, a from / to civil day pair, one chip per sortable column (clicking the lit one
+-- flips its direction) and the two page chips. filterCreate builds them once, filterKinds relabels
+-- the dynamic chips when the data moves, filterLayoutKinds / filterLayoutRow put them on screen,
+-- filterOptions turns the state into EC.filterPage options and filterDraw paints the labels, the
+-- direction marker and the page line. Every one of them is local: nothing here leaves the client,
+-- so no chip needs to disable itself while it waits for anything.
+--
+-- cfg = { label = function(key) -> chip title, sorts = { key, ... }, fields = { key = field },
+--         extra = { { key, title } }?, kindLabel = string?, fromLabel, toLabel,
+--         onChange = function(panel) }
+-- An `extra` chip is a source switch, not one of the data's own values (the audit's "rolled"
+-- reads a different set of lines): it takes the kind slot but never becomes a kind filter.
+local ARROW_W, ARROW_H = 7, 4
+
+local function filterCreate(panel, cfg)
+    local f = { kind = "all", sortKey = cfg.sorts[1], desc = true, page = 1, pages = 1, total = 0,
+        label = cfg.label, fields = cfg.fields, kindLabel = cfg.kindLabel,
+        fromLabel = cfg.fromLabel, toLabel = cfg.toLabel, sortLabel = tr("Filter_Sort"),
+        onChange = cfg.onChange, kindButtons = {}, sortButtons = {}, extras = {} }
+    local chipH = math.max(20, fontH.small + 6)
+    local function chip(title, internal, handler, dynamic)
+        local b = Button.create(0, 0, textWidth(title) + 20, chipH, title, panel, handler, "chip")
+        b.internal = internal
+        b.filter = f
+        b.dynamic = dynamic
+        panel:addChild(b)
+        return b
+    end
+    local all = chip(tr("Filter_All"), "all", Admin.onFilterKind, false)
+    all.active = true
+    f.kindButtons[1] = all
+    for _ = 1, FILTER_KIND_MAX do
+        local b = chip("", nil, Admin.onFilterKind, true)
+        b.unused = true
+        f.kindButtons[#f.kindButtons + 1] = b
+    end
+    for _, e in ipairs(cfg.extra or {}) do
+        f.extras[e[1]] = true
+        f.kindButtons[#f.kindButtons + 1] = chip(e[2], e[1], Admin.onFilterKind, false)
+    end
+    for _, key in ipairs(cfg.sorts) do
+        local b = chip(tr("Filter_Sort_" .. key), key, Admin.onFilterSort, false)
+        b.active = key == f.sortKey
+        f.sortButtons[#f.sortButtons + 1] = b
+    end
+    f.prevButton = chip(tr("Market_Prev"), -1, Admin.onFilterPage, false)
+    f.nextButton = chip(tr("Market_Next"), 1, Admin.onFilterPage, false)
+    f.dateW = textWidth(tr("Filter_DateHint")) + 24
+    for _, key in ipairs({ "fromEntry", "toEntry" }) do
+        local e = newEntry(f.dateW, entryH(), { maxLen = 10, clear = true,
+            placeholder = tr("Filter_DateHint") })
+        e.target = panel
+        e.filter = f
+        e.onTextChangeFunction = Admin.onFilterDate
+        panel:addChild(e)
+        f[key] = e
+    end
+    -- the page line is budgeted for its widest form, so a page change never re-flows the row
+    f.pageSample = getText(T .. "Filter_Page", "99", "99") .. "  " .. getText(T .. "Filter_Count", "9999")
+    return f
+end
+
+-- The dynamic chips: "all" keeps the first slot, every value the data carried takes the next one
+-- and the rest are parked. Returns true when the set moved, so the caller re-lays the row out.
+local function filterKinds(f, values)
+    local sig = table.concat(values, "\1")
+    if sig == f.sig then return false end
+    f.sig = sig
+    local n = 0
+    for _, b in ipairs(f.kindButtons) do
+        if b.dynamic then
+            n = n + 1
+            local key = values[n]
+            b.internal = key
+            b.unused = key == nil
+            b.fullTitle = key and f.label(key) or ""
+            b.title = b.fullTitle
+        end
+    end
+    -- a filter whose chip is gone falls back to everything
+    local live = f.kind == "all"
+    for _, b in ipairs(f.kindButtons) do
+        if not b.unused and b.internal == f.kind then live = true end
+    end
+    if not live then
+        f.kind = "all"
+        f.page = 1
+    end
+    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == f.kind end
+    return true
+end
+
+-- One line of kind chips. The slot is budgeted, never natural: a long action name truncates
+-- itself instead of pushing the row out of the card. Returns the x just past the last chip.
+local function filterLayoutKinds(f, panel, visible, x, y, w, chipH)
+    local shown = {}
+    for _, b in ipairs(f.kindButtons) do
+        local on = visible and not b.unused
+        b:setVisible(on)
+        if on then shown[#shown + 1] = b end
+    end
+    f.kindLabelX = nil
+    f.kindLabelY = y + math.floor((chipH - fontH.small) / 2)
+    if not visible then return x end
+    local cx = x
+    if f.kindLabel then
+        f.kindLabelX = cx
+        cx = cx + textWidth(f.kindLabel) + 6
+    end
+    local slot = math.floor((x + w - cx) / math.max(1, #shown)) - 4
+    for _, b in ipairs(shown) do
+        b:setWidth(math.max(24, math.min(textWidth(b.fullTitle) + 20, slot)))
+        b:setHeight(chipH)
+        b:setX(cx); b:setY(y)
+        panel:setButtonTitle(b, b.fullTitle)
+        cx = cx + b.width + 4
+    end
+    return cx
+end
+
+-- The rest of the row: the two date boxes on the left, the sort chips (each with room for the
+-- direction marker) after them, the page line and the two page chips against the right edge.
+local function filterLayoutRow(f, panel, visible, x, y, w, eh, chipH)
+    local band = math.max(eh, chipH)
+    f.rowH = band
+    f.textY = y + math.floor((band - fontH.small) / 2)
+    f.fromEntry:setVisible(visible)
+    f.toEntry:setVisible(visible)
+    f.prevButton:setVisible(visible)
+    f.nextButton:setVisible(visible)
+    for _, b in ipairs(f.sortButtons) do b:setVisible(visible) end
+    if not visible then return end
+    local chipY = y + math.floor((band - chipH) / 2)
+    local entryY = y + math.floor((band - eh) / 2)
+    local right = x + w
+    local nextW = math.max(30, math.min(textWidth(f.nextButton.fullTitle) + 20, math.floor(w * 0.16)))
+    local prevW = math.max(30, math.min(textWidth(f.prevButton.fullTitle) + 20, math.floor(w * 0.16)))
+    f.nextButton:setWidth(nextW); f.nextButton:setHeight(chipH)
+    f.nextButton:setX(math.max(x, right - nextW)); f.nextButton:setY(chipY)
+    panel:setButtonTitle(f.nextButton, f.nextButton.fullTitle)
+    f.prevButton:setWidth(prevW); f.prevButton:setHeight(chipH)
+    f.prevButton:setX(math.max(x, f.nextButton.x - 4 - prevW)); f.prevButton:setY(chipY)
+    panel:setButtonTitle(f.prevButton, f.prevButton.fullTitle)
+    f.pageTextRight = math.max(x, f.prevButton.x - 8)
+    f.pageTextW = math.min(textWidth(f.pageSample), math.floor(w * 0.26))
+    local dateW = math.max(56, math.min(f.dateW, math.floor(w * 0.16)))
+    local cx = x
+    f.fromLabelX = cx
+    cx = cx + textWidth(f.fromLabel) + 4
+    f.fromEntry:setWidth(dateW); f.fromEntry:setHeight(eh)
+    f.fromEntry:setX(cx); f.fromEntry:setY(entryY)
+    cx = cx + dateW + 8
+    f.toLabelX = cx
+    cx = cx + textWidth(f.toLabel) + 4
+    f.toEntry:setWidth(dateW); f.toEntry:setHeight(eh)
+    f.toEntry:setX(cx); f.toEntry:setY(entryY)
+    cx = cx + dateW + 10
+    f.sortLabelX = cx
+    cx = cx + textWidth(f.sortLabel) + 6
+    local budget = math.max(24, f.pageTextRight - f.pageTextW - 6 - cx)
+    local slot = math.max(24, math.floor(budget / math.max(1, #f.sortButtons)) - 4 - ARROW_W)
+    for _, b in ipairs(f.sortButtons) do
+        b:setWidth(math.max(24, math.min(textWidth(b.fullTitle) + 20, slot)))
+        b:setHeight(chipH)
+        b:setX(cx); b:setY(chipY)
+        panel:setButtonTitle(b, b.fullTitle)
+        cx = cx + b.width + ARROW_W + 4
+    end
+end
+
+-- Sort direction marker: a 7 x 4 stepped triangle drawn just right of the lit sort chip (the icon
+-- set has no chevron_up, and an arrow glyph would not be ASCII). Down = newest / largest first.
+local function drawArrow(el, x, y, down, token)
+    local c = color(token)
+    for i = 0, ARROW_H - 1 do
+        local row = down and (ARROW_H - 1 - i) or i
+        local rw = 1 + row * 2
+        el:drawRect(x + math.floor((ARROW_W - rw) / 2), y + i, rw, 1, c.a, c.r, c.g, c.b)
+    end
+end
+
+local function filterDraw(f, panel)
+    if not f.fromEntry:getIsVisible() then return end
+    if f.kindLabelX then text(panel, f.kindLabel, f.kindLabelX, f.kindLabelY, "textFaint") end
+    text(panel, f.fromLabel, f.fromLabelX, f.textY, "textFaint")
+    text(panel, f.toLabel, f.toLabelX, f.textY, "textFaint")
+    text(panel, f.sortLabel, f.sortLabelX, f.textY, "textFaint")
+    for _, b in ipairs(f.sortButtons) do
+        if b.internal == f.sortKey then
+            drawArrow(panel, b.x + b.width + 2, b.y + math.floor((b.height - ARROW_H) / 2), f.desc,
+                b.enable and "accent" or "textFaint")
+        end
+    end
+    local str = getText(T .. "Filter_Page", tostring(f.page), tostring(f.pages))
+        .. "  " .. getText(T .. "Filter_Count", tostring(f.total))
+    textRight(panel, fitText(str, f.pageTextW), f.pageTextRight, f.textY, "textFaint")
+end
+
+-- The state as EC.filterPage options. A malformed date is simply not a bound (the box's
+-- placeholder says what it wants); "to" means the end of that day, so the exclusive bound is the
+-- next midnight.
+local function filterOptions(f, panel, kindField, timeField)
+    local kinds = nil
+    if f.kind ~= nil and f.kind ~= "all" and not f.extras[f.kind] then kinds = { [f.kind] = true } end
+    local to = EC.parseDay(entryText(f.toEntry), panel.offsetMin)
+    return { kinds = kinds, kindField = kindField, timeField = timeField,
+        fromMs = EC.parseDay(entryText(f.fromEntry), panel.offsetMin),
+        toMs = to and (to + 86400000) or nil,
+        sortKey = f.fields[f.sortKey], desc = f.desc, page = f.page, perPage = FILTER_PER_PAGE }
+end
+
+-- Permission / modal gate for the whole row. The page chips also follow the page count, so a
+-- one-page result never offers a next page.
+local function filterEnable(f, on)
+    for _, b in ipairs(f.kindButtons) do b:setEnable(on) end
+    for _, b in ipairs(f.sortButtons) do b:setEnable(on) end
+    setEntryEditable(f.fromEntry, on)
+    setEntryEditable(f.toEntry, on)
+    f.prevButton:setEnable(on and f.page > 1)
+    f.nextButton:setEnable(on and f.page < f.pages)
+end
+
+-- Every handler ends the same way: the page's own rebuild, then updateEnabled -- the rebuild is
+-- what learns the new page count, and the page chips (plus the audit's copy chips, whose line the
+-- rebuild just dropped) follow it.
+function Admin:onFilterKind(button)
+    local f = button.filter
+    if f.kind == button.internal then return end
+    f.kind = button.internal
+    f.page = 1
+    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == f.kind end
+    f.onChange(self)
+    self:updateEnabled()
+end
+
+-- Clicking the lit chip flips the direction; picking another column starts it at "biggest first".
+function Admin:onFilterSort(button)
+    local f = button.filter
+    if f.sortKey == button.internal then
+        f.desc = not f.desc
+    else
+        f.sortKey = button.internal
+        f.desc = true
+        for _, b in ipairs(f.sortButtons) do b.active = b.internal == f.sortKey end
+    end
+    f.page = 1
+    f.onChange(self)
+    self:updateEnabled()
+end
+
+function Admin:onFilterPage(button)
+    local f = button.filter
+    local page = math.max(1, math.min(f.pages, f.page + button.internal))
+    if page == f.page then return end
+    f.page = page
+    f.onChange(self)
+    self:updateEnabled()
+end
+
+function Admin:onFilterDate(entry)
+    entry.filter.page = 1
+    entry.filter.onChange(self)
+    self:updateEnabled()
+end
+
 -- Keeps the untruncated label (fullTitle) and paints the fitted one; layout budgets the width.
 function Admin:setButtonTitle(button, full, font)
     button.fullTitle = full
@@ -1351,20 +1623,19 @@ function Admin:createChildren()
     self.srcToggleButton = Button.create(0, 0, 120, btnH(), tr("Admin_Src_Disable"), self, Admin.onSourceToggleClick, "chip")
     self:addChild(self.srcToggleButton)
 
-    -- audit page
+    -- audit page: the search box and the action chips share the top row, the dates / sort / page
+    -- chips get their own line under it. Both are local filters over what the two reads carried.
     self.auditEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Admin_Audit_Hint") })
     self.auditEntry.target = self
     self.auditEntry.onTextChangeFunction = Admin.onAuditQueryChanged
     self:addChild(self.auditEntry)
-    self.auditFilterButtons = {}
-    for _, key in ipairs(AUDIT_FILTERS) do
-        local title = tr("Admin_Audit_" .. string.upper(string.sub(key, 1, 1)) .. string.sub(key, 2))
-        local b = Button.create(0, 0, textWidth(title) + 22, 22, title, self, Admin.onAuditFilter, "chip")
-        b.internal = key
-        b.active = key == self.auditFilter
-        self:addChild(b)
-        self.auditFilterButtons[#self.auditFilterButtons + 1] = b
-    end
+    self.auditF = filterCreate(self, {
+        label = auditActionText,
+        sorts = { "time" }, fields = { time = "ts" },
+        extra = { { "rolled", tr("Admin_Audit_Rolled") } },
+        fromLabel = tr("Admin_Audit_From"), toLabel = tr("Admin_Audit_To"),
+        onChange = function(panel) panel:onAuditFilterChanged() end,
+    })
     self.auditList = U.newTable(AuditCell, rowH())
     self.auditList.onSelect = function(_, item)
         self:onAuditRow(item)
@@ -1467,6 +1738,14 @@ function Admin:createChildren()
     self:addChild(self.lstHistoryButton)
     self.historyList = U.newTable(AdminHistoryCell, lineH() * 2 + 12)
     self:addChild(self.historyList)
+    -- the history filter row: type / date / sort / page, all of it local to this side
+    self.histF = filterCreate(self, {
+        label = function(kind) return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or tostring(kind) end,
+        kindLabel = tr("Filter_Kind"),
+        sorts = { "time", "amount" }, fields = { time = "ts", amount = "price" },
+        fromLabel = tr("Filter_From"), toLabel = tr("Filter_To"),
+        onChange = function(panel) panel:rebuildHistory() end,
+    })
 
     -- settings page: search box, the option list, the per-group reset button. The group nav is
     -- painted (name plus an override count per row) and its clicks are resolved in onMouseDown.
@@ -1656,12 +1935,13 @@ end
 function Admin:onAuditQueryChanged()
     local q = string.match(entryText(self.auditEntry), "^%s*(.-)%s*$")
     self.auditQuery = q ~= "" and string.lower(q) or nil
+    self.auditF.page = 1
     self:rebuildAudit()
 end
 
-function Admin:onAuditFilter(button)
-    self.auditFilter = button.internal
-    for _, b in ipairs(self.auditFilterButtons) do b.active = b.internal == self.auditFilter end
+-- Every chip, date box and page click on the audit row lands here. Only the "rolled" source needs
+-- anything the client has not got yet (the audit files); the rest is already on this side.
+function Admin:onAuditFilterChanged()
     if self.auditFile == nil then
         send("admin.auditFile", {})
         self:updateEnabled()
@@ -2259,10 +2539,9 @@ function Admin:onWhitelistFilter(button)
     self:rebuildWhitelist()
 end
 
--- A click inside the whitelist list: the row's own chips. A category row carries one (it reads
--- allow while the category is on the list, deny otherwise); an item row carries both, and
--- clicking the chip that is already lit clears the per-item entry so the item follows its
--- category again.
+-- A click inside the whitelist list: the row's own switch, or -- on an item the file singles out
+-- -- the chip that drops its entry so it follows its category again. The switch always sets the
+-- explicit opposite of the state that is in force right now, so what it reads is what it does.
 function Admin:onWhitelistRow(item, x, y)
     if item == nil or self.whitelistList.optionsDisabled then return end
     for _, hit in ipairs(item.hits) do
@@ -2270,9 +2549,11 @@ function Admin:onWhitelistRow(item, x, y)
             self.message = nil
             if item.kind == "category" then
                 self:sendWhitelist({ action = "set", category = item.cat, allowed = not item.allowed })
+            elseif hit.id == "reset" then
+                self:sendWhitelist({ action = "set", fullType = item.fullType, mode = "inherit" })
             else
                 self:sendWhitelist({ action = "set", fullType = item.fullType,
-                    mode = hit.active and "inherit" or hit.id })
+                    mode = item.toggleOn and "exclude" or "allow" })
             end
             return
         end
@@ -2892,12 +3173,11 @@ local function auditKey(e)
 end
 
 function Admin:rebuildAudit()
-    local rows = {}
-    local filter = self.auditFilter
+    local f = self.auditF
     -- Sources: the audit files (this and last month) carry full reasons and the rolled-back lines;
     -- the ModData ring (40-char reasons) only adds what the files do not have (older months).
     -- "rolled" shows the rolled-back file lines alone.
-    local fromFile = filter == "rolled"
+    local fromFile = f.kind == "rolled"
     local src, seen = {}, {}
     local file = self.auditFile or {}
     for i = #file, 1, -1 do
@@ -2911,19 +3191,34 @@ function Admin:rebuildAudit()
         for _, e in ipairs(self.audit or {}) do
             if type(e) == "table" and not seen[auditKey(e)] then src[#src + 1] = e end
         end
-        if #file > 0 then
-            EC.sortSafe(src, function(a, b) return (tonumber(a.ts) or 0) > (tonumber(b.ts) or 0) end)
+    end
+    -- The action chips are whatever the two reads carried, whichever source is on screen: the row
+    -- must not lose a chip just because the admin is looking at the rolled-back lines.
+    local actions, seenAction = {}, {}
+    for _, list in ipairs({ self.auditFile, self.audit }) do
+        for _, e in ipairs(list or {}) do
+            if type(e) == "table" then
+                local a = tostring(e.action or "?")
+                if not seenAction[a] then
+                    seenAction[a] = true
+                    actions[#actions + 1] = a
+                end
+            end
         end
     end
+    EC.sortSafe(actions, function(a, b) return auditActionText(a) < auditActionText(b) end)
+    if filterKinds(f, actions) then
+        fromFile = f.kind == "rolled"
+        self:layoutAuditFilters()
+    end
     local q = self.auditQuery
+    -- One entry per line that survives the source and the search box; the action, the day and the
+    -- page are EC.filterPage's job, so the row it picks carries the strings already built for it.
+    local matched = {}
     for _, e in ipairs(src) do
         if type(e) == "table" then
             local action = tostring(e.action or "?")
-            local keep
-            if fromFile then keep = e.rolledBack == true
-            elseif filter == "all" then keep = true
-            elseif filter == "freeze" then keep = action == "freeze" or action == "unfreeze"
-            else keep = action == filter end
+            local keep = not fromFile or e.rolledBack == true
             local target = e.target or e.field or "-"
             local targetText = auditTargetText(action, e.field, target)
             local delta = tonumber(e.delta)
@@ -2951,7 +3246,7 @@ function Admin:rebuildAudit()
                 keep = string.find(hay, q, 1, true) ~= nil
             end
             if keep then
-                rows[#rows + 1] = {
+                matched[#matched + 1] = { action = action, ts = tonumber(e.ts) or 0, row = {
                     cells = {
                         stamp, admin, actionText, targetText,
                         e.currency and currencyName(e.currency) or "-", change, reason, txId,
@@ -2961,14 +3256,18 @@ function Admin:rebuildAudit()
                     -- what the detail strip and the two copy chips read
                     rawTarget = tostring(target), targetText = targetText, actionText = actionText,
                     adminName = admin, stamp = stamp, changeFull = change, reasonFull = reason,
-                }
+                } }
             end
         end
     end
+    local picked, page, pages, total = EC.filterPage(matched, filterOptions(f, self, "action", "ts"))
+    f.page, f.pages, f.total = page, pages, total
+    local rows = {}
+    for _, m in ipairs(picked) do rows[#rows + 1] = m.row end
     self.auditRows = rows
     self.auditTotal = #src
     self.auditList:setItems(rows)
-    -- a filter switch or a fresh read invalidates the picked line
+    -- a filter switch, a page turn or a fresh read invalidates the picked line
     self.auditList:setSelectedIndex(nil)
     self.auditSelected = nil
     self:buildAuditDetail()
@@ -3280,41 +3579,74 @@ function Admin:historyRow(rec, lh, width)
     return item
 end
 
--- The history the server last sent, turned into rows. The reply is oldest first (the server
--- reads the files forward); the page reads newest first.
+-- The history the server last sent, turned into one local page. The reply is oldest first (the
+-- server reads the files forward); the default sort (time, newest first) turns it around.
 function Admin:rebuildHistory()
-    local rows = {}
+    local f = self.histF
     local snap = self.marketHistory
-    if snap and type(snap.entries) == "table" then
-        local width = math.max(120, self.historyList.width - 12)   -- 12 = the scrollbar gutter
-        local lh = lineH()
-        local src = snap.entries
-        for i = #src, 1, -1 do
-            if type(src[i]) == "table" then rows[#rows + 1] = self:historyRow(src[i], lh, width) end
+    local src = (snap and type(snap.entries) == "table") and snap.entries or {}
+    local kinds, seenKind = {}, {}
+    for _, rec in ipairs(src) do
+        if type(rec) == "table" then
+            local k = tostring(rec.kind or "?")
+            if not seenKind[k] then
+                seenKind[k] = true
+                kinds[#kinds + 1] = k
+            end
         end
+    end
+    EC.sortSafe(kinds, function(a, b) return f.label(a) < f.label(b) end)
+    if filterKinds(f, kinds) then self:layoutHistoryFilters() end
+    local picked, page, pages, total = EC.filterPage(src, filterOptions(f, self, "kind", "ts"))
+    f.page, f.pages, f.total = page, pages, total
+    local rows = {}
+    local width = math.max(120, self.historyList.width - 12)   -- 12 = the scrollbar gutter
+    local lh = lineH()
+    for _, rec in ipairs(picked) do
+        if type(rec) == "table" then rows[#rows + 1] = self:historyRow(rec, lh, width) end
     end
     self.historyRows = rows
     self.historyList:setItems(rows)
 end
 
--- Geometry of a whitelist row's chip strip: identical for every row, so it is computed once per
--- rebuild. The category chip is as wide as the longer of the two labels, so the text budget does
--- not move when it flips; the item chips sit side by side against the same right edge.
+-- Geometry of a whitelist row's control strip: identical for every row, so it is computed once
+-- per rebuild. Right to left: the "back to the category" chip (its column is reserved on every
+-- row, so the switches stay in one line whatever a row holds), the switch, then the state word
+-- and the "follows its category" note -- both columns as wide as their widest string, so nothing
+-- moves when a row flips.
+local WL_TOGGLE_W = 44
+
 function Admin:whitelistGeometry(width, chipH)
-    local allow, deny = tr("Admin_Wl_Allow"), tr("Admin_Wl_Deny")
+    local on, off = tr("Admin_Wl_On"), tr("Admin_Wl_Off")
     local geo = { chipH = chipH, chipTextY = math.floor((chipH - fontH.small) / 2),
-        allowLabel = allow, denyLabel = deny }
-    geo.allowW = textWidth(allow) + 16
-    geo.denyW = textWidth(deny) + 16
-    geo.catW = math.max(geo.allowW, geo.denyW)
-    geo.catX = math.max(40, width - PAD - geo.catW)
-    geo.denyX = math.max(40, width - PAD - geo.denyW)
-    geo.allowX = math.max(20, geo.denyX - 6 - geo.allowW)
-    geo.textLimit = math.max(0, math.min(geo.catX, geo.allowX) - PAD)
+        onLabel = on, offLabel = off, inheritLabel = tr("Admin_Wl_Inherit"),
+        resetLabel = tr("Admin_Wl_Reset"), toggleW = WL_TOGGLE_W, toggleH = math.max(22, chipH) }
+    geo.resetW = textWidth(geo.resetLabel) + 16
+    geo.stateW = math.max(textWidth(on), textWidth(off))
+    geo.inheritW = textWidth(geo.inheritLabel)
+    geo.resetX = math.max(52, width - PAD - geo.resetW)
+    geo.toggleX = math.max(40, geo.resetX - 6 - geo.toggleW)
+    geo.inheritX = math.max(24, geo.toggleX - 6 - geo.inheritW)
+    geo.stateX = math.max(12, geo.inheritX - 6 - geo.stateW)
+    geo.textLimit = math.max(0, geo.stateX - PAD)
     return geo
 end
 
-function Admin:whitelistCategoryRow(cat, label, count, allowed, geo, lh, chipY)
+-- The switch band of one row: the hit box covers the state word as well as the switch, so the
+-- whole group reads as one control.
+local function whitelistSwitch(item, on, geo, chipY, toggleY)
+    item.toggleOn = on
+    item.toggle = { x = geo.toggleX, y = toggleY, w = geo.toggleW, h = geo.toggleH }
+    item.stateX = geo.stateX
+    item.stateText = on and geo.onLabel or geo.offLabel
+    item.stateY = toggleY + math.floor((geo.toggleH - fontH.small) / 2)
+    local top = math.min(chipY, toggleY)
+    local bottom = math.max(chipY + geo.chipH, toggleY + geo.toggleH)
+    item.hits[#item.hits + 1] = { id = "toggle", x = geo.stateX, y = top,
+        w = geo.toggleX + geo.toggleW - geo.stateX, h = bottom - top }
+end
+
+function Admin:whitelistCategoryRow(cat, label, count, allowed, geo, lh, chipY, toggleY)
     local item = {
         kind = "category", cat = cat, allowed = allowed, hits = {},
         line1Y = 5, line2Y = 5 + lh, chipTextY = geo.chipTextY, metaX = PAD,
@@ -3327,12 +3659,14 @@ function Admin:whitelistCategoryRow(cat, label, count, allowed, geo, lh, chipY)
     local meta = count > 0 and getText(T .. "Admin_Wl_Items", tostring(count)) or tr("Admin_Wl_Unknown")
     if label ~= cat then meta = cat .. " / " .. meta end
     item.metaText = fitText(meta, math.max(0, geo.textLimit - PAD))
-    item.hits[1] = { id = "category", x = geo.catX, y = chipY, w = geo.catW, h = geo.chipH,
-        label = allowed and geo.allowLabel or geo.denyLabel, active = allowed }
+    whitelistSwitch(item, allowed, geo, chipY, toggleY)
     return item
 end
 
-function Admin:whitelistItemRow(entry, allow, deny, geo, lh, rowHeight, chipY)
+-- The switch shows what is in force: an excluded item reads off, an allowed one reads on and an
+-- item with no entry of its own follows its category (and says so). Only the singled-out ones
+-- carry the chip that drops the entry again.
+function Admin:whitelistItemRow(entry, allow, deny, catAllowed, geo, lh, rowHeight, chipY, toggleY)
     local size = math.min(math.max(12, rowHeight - 10), 28)
     local item = {
         kind = "item", fullType = entry.fullType, hits = {},
@@ -3351,12 +3685,14 @@ function Admin:whitelistItemRow(entry, allow, deny, geo, lh, rowHeight, chipY)
     end
     local meta = entry.fullType
     if entry.cat then meta = meta .. " / " .. itemCategoryName(entry.cat) end
-    if not allow and not deny then meta = meta .. " / " .. tr("Admin_Wl_ByCategory") end
     item.metaText = fitText(meta, textW)
-    item.hits[1] = { id = "allow", x = geo.allowX, y = chipY, w = geo.allowW, h = geo.chipH,
-        label = geo.allowLabel, active = allow }
-    item.hits[2] = { id = "exclude", x = geo.denyX, y = chipY, w = geo.denyW, h = geo.chipH,
-        label = geo.denyLabel, active = deny }
+    local explicit = allow == true or deny == true
+    whitelistSwitch(item, allow == true or (deny ~= true and catAllowed == true), geo, chipY, toggleY)
+    if not explicit then item.inheritText, item.inheritX = geo.inheritLabel, geo.inheritX end
+    if explicit then
+        item.hits[#item.hits + 1] = { id = "reset", x = geo.resetX, y = chipY, w = geo.resetW,
+            h = geo.chipH, label = geo.resetLabel }
+    end
     return item
 end
 
@@ -3374,6 +3710,7 @@ function Admin:rebuildWhitelist()
         local chipH = math.max(20, fontH.small + 6)
         local geo = self:whitelistGeometry(width, chipH)
         local chipY = math.max(3, math.floor((list.rowHeight - chipH) / 2))
+        local toggleY = math.max(3, math.floor((list.rowHeight - geo.toggleH) / 2))
         local lh = lineH()
         local query = self.wlQuery
         local allowed = wlSet(wl.categories)
@@ -3436,11 +3773,12 @@ function Admin:rebuildWhitelist()
         EC.sortSafe(itemRows, function(a, b) return a.name < b.name end)
 
         for _, c in ipairs(catRows) do
-            rows[#rows + 1] = self:whitelistCategoryRow(c.cat, c.label, c.count, allowed[c.cat] == true, geo, lh, chipY)
+            rows[#rows + 1] = self:whitelistCategoryRow(c.cat, c.label, c.count, allowed[c.cat] == true, geo, lh, chipY, toggleY)
         end
         for _, entry in ipairs(itemRows) do
             rows[#rows + 1] = self:whitelistItemRow(entry, allowTypes[entry.fullType] == true,
-                denyTypes[entry.fullType] == true, geo, lh, list.rowHeight, chipY)
+                denyTypes[entry.fullType] == true, allowed[entry.cat] == true, geo, lh,
+                list.rowHeight, chipY, toggleY)
         end
         cats, items = #catRows, #itemRows
     end
@@ -3496,7 +3834,7 @@ function Admin:updateEnabled()
     self:setButtonTitle(self.srcToggleButton, (src == nil or src.enabled ~= false) and tr("Admin_Src_Disable") or tr("Admin_Src_Enable"))
 
     setEntryEditable(self.auditEntry, read and not modal)
-    for _, b in ipairs(self.auditFilterButtons) do b:setEnable(read and not modal) end
+    filterEnable(self.auditF, read and not modal)
     local picked = read and not modal and self.auditSelected ~= nil
     self.auditCopyNameButton:setEnable(picked)
     self.auditCopyIdButton:setEnable(picked)
@@ -3524,6 +3862,7 @@ function Admin:updateEnabled()
     self.lstPrevButton:setEnable(lstRead and lstPage > 1)
     self.lstNextButton:setEnable(lstRead and lstPage < lstPages)
     self.lstHistoryButton:setEnable(read and not modal)
+    filterEnable(self.histF, read and not modal)
 
     -- whitelist page: one in-flight whitelist command at a time, the reload chip included; a
     -- read-only role browses the file without ever arming a switch
@@ -3547,6 +3886,30 @@ function Admin:updateEnabled()
 end
 
 -- ----- geometry -----
+
+-- Where the two filter rows sit. Both are called from layout() -- and again from their own
+-- rebuild when a reply changed the set of chips, because a chip has to be placed before it can
+-- be clicked. Neither reads anything layout() has not already put on self.g.
+function Admin:layoutAuditFilters()
+    local g = self.g
+    if g == nil then return end
+    local visible = self:readAllowed() and self.tab == "Audit"
+    local chipH = math.max(20, fontH.small + 6)
+    local x = self.auditEntry.width + PAD
+    g.auditCountX = filterLayoutKinds(self.auditF, self, visible, x, self.auditEntry.y
+        + math.floor((entryH() - chipH) / 2), math.max(60, self.width - x - PAD), chipH) + PAD
+    filterLayoutRow(self.auditF, self, visible, 0, g.auditFilterY, self.width, entryH(), chipH)
+end
+
+function Admin:layoutHistoryFilters()
+    local g = self.g
+    if g == nil then return end
+    local visible = self:readAllowed() and self.tab == "Listings" and self.lstMode == "history"
+    local chipH = math.max(20, fontH.small + 6)
+    local w = math.max(60, self.width - PAD * 2)
+    filterLayoutKinds(self.histF, self, visible, PAD, g.histKindY, w, chipH)
+    filterLayoutRow(self.histF, self, visible, PAD, g.histRowY, w, entryH(), chipH)
+end
 
 function Admin:layout()
     local w, h = self.width, self.height
@@ -3720,22 +4083,14 @@ function Admin:layout()
         srcX = srcX + b.width + 6
     end
 
-    -- audit page
+    -- audit page: search box plus the action chips on the first row, the dates / sort / page chips
+    -- on the second, then the table and the detail strip
     self.auditEntry:setVisible(audit)
     self.auditEntry:setX(0); self.auditEntry:setY(g.bodyY + CARD_TITLE_H + 2)
     self.auditEntry:setWidth(math.min(240, math.floor(w * 0.28))); self.auditEntry:setHeight(eh)
-    local fx = self.auditEntry.width + PAD
-    local filterSlot = math.floor((w - fx - PAD) / math.max(1, #self.auditFilterButtons)) - 4
-    for _, b in ipairs(self.auditFilterButtons) do
-        b:setVisible(audit)
-        b:setWidth(math.max(30, math.min(textWidth(b.fullTitle) + 22, filterSlot)))
-        b:setHeight(math.max(20, fontH.small + 6))
-        b:setX(fx); b:setY(self.auditEntry.y + math.floor((eh - b.height) / 2))
-        self:setButtonTitle(b, b.fullTitle)
-        fx = fx + b.width + 4
-    end
-    g.auditCountX = fx + PAD
-    g.auditHeaderY = self.auditEntry.y + eh + 6
+    g.auditFilterY = self.auditEntry.y + eh + 4
+    self:layoutAuditFilters()
+    g.auditHeaderY = g.auditFilterY + self.auditF.rowH + 6
     local auditListY = g.auditHeaderY + rh
     local auditW = math.max(200, w - 2)
     -- The detail strip is a band under the table, so picking a line never re-flows the rows
@@ -3743,6 +4098,8 @@ function Admin:layout()
     -- when the card is tall enough to keep three rows in the table as well.
     local avail = g.bodyY + g.bodyH - auditListY - lh - 8
     local detailH = math.min(lh * 4 + 6, math.max(lh * 3 + 6, avail - rh * 3))
+    -- a short card cuts the strip down instead of pushing it into the footer
+    if detailH > avail - rh then detailH = math.max(0, avail - rh) end
     g.auditDetailH = detailH
     g.auditDetailLines = math.floor((detailH - 6) / lh)
     local auditH = math.max(rh, avail - detailH)
@@ -3896,9 +4253,15 @@ function Admin:layout()
     if self.listingsList.width ~= lstW or self.listingsList.height ~= lstListH then
         self.listingsList:resize(lstW, lstListH)
     end
-    local histH = math.max(rh, g.lstY + g.lstH - PAD - lstListY)
+    -- history mode: the type chips and the date / sort / page row take the two lines the page
+    -- chips own in listings mode, and the list runs to the bottom of the card
+    g.histKindY = lstListY
+    g.histRowY = g.histKindY + pageH + 4
+    self:layoutHistoryFilters()
+    local histListY = g.histRowY + self.histF.rowH + 6
+    local histH = math.max(rh, g.lstY + g.lstH - PAD - histListY)
     self.historyList:setVisible(history)
-    self.historyList:setX(PAD); self.historyList:setY(lstListY)
+    self.historyList:setX(PAD); self.historyList:setY(histListY)
     if self.historyList.width ~= lstW or self.historyList.height ~= histH then
         self.historyList:resize(lstW, histH)
     end
@@ -4380,6 +4743,7 @@ end
 -- it (newest first) and no paging.
 function Admin:drawListingHistory()
     local g = self.g
+    filterDraw(self.histF, self)
     local rows = self.historyRows or {}
     local snap = self.marketHistory
     local countText = ""
@@ -4392,6 +4756,9 @@ function Admin:drawListingHistory()
     if #rows > 0 then return end
     local empty = nil
     if isPending("admin.marketHistory") then empty = tr("Admin_Loading")
+    elseif snap and self.histF.total == 0 and #(snap.entries or {}) > 0 then
+        -- the reply carried lines; the filter row is what emptied the page
+        empty = tr("Filter_NoMatch")
     elseif self.histUser then empty = tr("Admin_Lst_HistoryEmpty") end
     if empty then
         text(self, fitText(empty, math.max(0, self.historyList.width - PAD * 2)),
@@ -4438,14 +4805,18 @@ function Admin:drawAudit()
         stampW = textWidth(stamp) + PAD
         textRight(self, stamp, self.width - PAD, filterY, "textFaint")
     end
-    local rolled = self.auditFilter == "rolled"
+    local rolled = self.auditF.kind == "rolled"
+    filterDraw(self.auditF, self)
     local total = self.auditTotal or 0
     text(self, fitText(getText(T .. "Admin_Audit_Count", tostring(#(self.auditRows or {})), tostring(total)),
         self.width - g.auditCountX - stampW), g.auditCountX, filterY, "textMuted")
     drawColumnHeaders(self, self.auditList, AUDIT_COLS, self.auditList.x, g.auditHeaderY, rh)
     if #(self.auditRows or {}) == 0 then
-        text(self, (isPending("admin.audit") or isPending("admin.auditFile")) and tr("Admin_Loading") or tr("Admin_Audit_Empty"),
-            self.auditList.x + PAD, g.auditHeaderY + rh + 4, "textFaint")
+        local empty
+        if isPending("admin.audit") or isPending("admin.auditFile") then empty = tr("Admin_Loading")
+        elseif total > 0 then empty = tr("Filter_NoMatch")   -- the filter row emptied a live source
+        else empty = tr("Admin_Audit_Empty") end
+        text(self, empty, self.auditList.x + PAD, g.auditHeaderY + rh + 4, "textFaint")
     end
     local d = self.auditDetail
     local detailY = g.auditDetailY
@@ -4741,8 +5112,10 @@ function Admin:showAuditFor(username, filter)
     end
     setEntryText(self.auditEntry, username)
     self.auditQuery = string.lower(username)
-    self.auditFilter = filter or "all"
-    for _, b in ipairs(self.auditFilterButtons) do b.active = b.internal == self.auditFilter end
+    local f = self.auditF
+    f.kind = filter or "all"
+    f.page = 1
+    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == f.kind end
     self:rebuildAudit()
 end
 
@@ -4837,6 +5210,10 @@ function Admin:dispose()
     pcall(function() self.setEntry:unfocus() end)
     pcall(function() self.lstEntry:unfocus() end)
     pcall(function() self.wlEntry:unfocus() end)
+    pcall(function() self.auditF.fromEntry:unfocus() end)
+    pcall(function() self.auditF.toEntry:unfocus() end)
+    pcall(function() self.histF.fromEntry:unfocus() end)
+    pcall(function() self.histF.toEntry:unfocus() end)
     self.lookup = nil
     self.audit = nil
     self.system = nil
@@ -4875,7 +5252,6 @@ function P.create(owner)
     o.background = false
     o.owner = owner
     o.tab = "Player"
-    o.auditFilter = "all"
     o.wlFilter = "all"
     o.lstPage = 1
     o.lstMode = "listings"
