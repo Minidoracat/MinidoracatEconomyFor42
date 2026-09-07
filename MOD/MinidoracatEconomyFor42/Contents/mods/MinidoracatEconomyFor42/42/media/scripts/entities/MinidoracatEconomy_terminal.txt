@@ -1,9 +1,10 @@
 module Base
 {
     /* Economy terminal (stage C thin slice). Shape verified in stage A11 (proto_terminal.txt):
-       OnAddToMenu keeps the entry out of non-admin build menus; the tile is a vanilla bank
-       machine until the mod ships its own art. Registration happens after placement through
-       the right-click menu (terminal.register), never automatically. */
+       OnAddToMenu keeps the entry out of non-admin build menus. The four facings come from the
+       mod's own tile pack (scripts/build_tiles.py -> texturepacks/MinidoracatEconomy.pack and
+       MinidoracatEconomy_tiles.tiles), face order S/E/N/W like vanilla furniture. Registration
+       happens after placement through the right-click menu (terminal.register), never automatically. */
     entity MinidoracatEconomyTerminal
     {
         component UiConfig
@@ -15,11 +16,32 @@ module Base
         component SpriteConfig
         {
             isProp = true,
-            face SINGLE
+            face S
             {
                 layer
                 {
-                    row = location_business_bank_01_0,
+                    row = MinidoracatEconomy_terminal_0,
+                }
+            }
+            face E
+            {
+                layer
+                {
+                    row = MinidoracatEconomy_terminal_1,
+                }
+            }
+            face N
+            {
+                layer
+                {
+                    row = MinidoracatEconomy_terminal_2,
+                }
+            }
+            face W
+            {
+                layer
+                {
+                    row = MinidoracatEconomy_terminal_3,
                 }
             }
         }

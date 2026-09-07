@@ -44,11 +44,18 @@ EC.CURRENCIES = {
 }
 EC.CURRENCY_ORDER = { "survivor", "cat" }
 
--- Terminals (stage C thin slice, spec 12 stage C / 17.1): the admin-built entity's tile plus any
--- tile an admin may register as a terminal (vanilla bank ATMs qualify). Write commands need the
--- player within TERMINAL_RANGE tiles (Chebyshev, same level) of a registered terminal while the
--- sandbox option RemoteReadOnly is on.
-EC.TERMINAL_SPRITES = { ["location_business_bank_01_0"] = true }
+-- Terminals (stage C thin slice, spec 12 stage C / 17.1): the mod's own terminal tiles (four
+-- facings, MinidoracatEconomy_tiles.tiles) plus the vanilla "Terminal" consoles an admin may
+-- register in an existing building (appliances_com_01_52-55 CeroSec, security_01_0-3 Security;
+-- newtiledefinitions.tiles CustomName=Terminal). Write commands need the player within
+-- TERMINAL_RANGE tiles (Chebyshev, same level) of a registered terminal while the sandbox option
+-- RemoteReadOnly is on.
+EC.TERMINAL_SPRITES = {
+    MinidoracatEconomy_terminal_0 = true, MinidoracatEconomy_terminal_1 = true,
+    MinidoracatEconomy_terminal_2 = true, MinidoracatEconomy_terminal_3 = true,
+    appliances_com_01_52 = true, appliances_com_01_53 = true, appliances_com_01_54 = true, appliances_com_01_55 = true,
+    security_01_0 = true, security_01_1 = true, security_01_2 = true, security_01_3 = true,
+}
 EC.TERMINAL_RANGE = 2
 EC.TERMINAL_KINDS = { atm = true, trade = true }
 

@@ -672,6 +672,19 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - 單一 list view、搜尋、分類、排序、分頁、我的刊登；listing fee、sales tax、價格／配額 cap；兩名買家競爭同一商品、失敗 rollback、離線賣家收款；
 - 最小信箱（delivery claim、背包滿保留 READY，任一終端可領）在此階段先上，供交付失敗與退件使用。**上限規則（2026-09-06 主持人定案）**：信箱是帳號層資料、只存快照（§19.7 規則一），每帳號 50 筆未領、全服 10,000。購買／得標／系統商店購買需要一個空位（終端旁購買緊接 `claim-in`，空位立即釋放，所以只有「已 50 筆未領」才被拒，提示「信箱已滿，先領取」）；上架不佔信箱；取消刊登需要空位（退回走信箱），滿了拒絕取消、刊登續掛；系統退件（刊登到期、管理員下架、拍賣流標／取消）**一律成功、允許暫超上限**（受刊登配額 5＋5 約束，最多 +10）；待領項永不過期、跨角色死亡保留，領取即結清消失（信箱數只算未領）。
 
+**定案（2026-09-07，主持人；C 已提前做完終端薄片與最小信箱）**：
+
+- **上架入口＝經濟中心「市場 → 我的刊登 → 上架」的背包選物器**（列出背包內可上架物品：圖示／名稱／耐久或用量／不可上架的原因；選了填價送出）。背包右鍵不做（之後有需求再加捷徑）。所有市場寫入（上架、購買、取消、領取）都要在終端旁（沿用 `T.near`）。
+- **預設參數（沙盒，進 `EC.OPTIONS` group `market`，面板可改）**：刊登費 `MarketListingFeePercent`=2（上架時依定價計算、向上取整、最少 1，燒毀）、成交稅 `MarketSalesTaxPercent`=5（成交時從賣家所得扣、燒毀）、`MarketListingDays`=7（到期自動退回賣家信箱）、`MarketMaxListings`=5（每人同時掛單）、`MarketPriceMin`=1／`MarketPriceMax`=1,000,000。
+- **白名單初版**（`Lua/MinidoracatEconomy/whitelist.json`，缺檔寫預設、壞檔沿用上一份，管理頁可重載）：工具與武器（含 `HandWeapon` 自動拆配件退回）、材料、彈藥、醫療、罐頭與不腐敗食物、未讀書籍、液體容器（A7 已驗 `FluidContainer` round-trip）；排除容器類、會腐敗食物、衣物。每筆白名單列＝`{"match": "category:<DisplayCategory>" | "type:<fullType>", "fields": [...], "modData": [...]}`；快照欄位集合固定為 `type, condition, uses, age, repaired, fluid{type,amount}, modData{允許鍵}`；物品帶有不在允許清單的 modData 鍵 → 拒絕上架（`unlisted_moddata`，fail closed）。本 MOD 自己的戳記鍵 `MinidoracatEconomy` 在上架前先清除（進了託管就不再是那次領取的物品）。
+- **ModData 形狀**：`listings[id]={seller, item, snapshot, price, fee, at, expiresAt, category, name?, state=active}`（id `<epoch>:<seq>`）、`listingsByOwner[username]={ids}`；賣出／取消／到期即刪除 listing 並寫事件（歷史在事件檔與收據）；全服上限 2,000 筆（§20 預算內）。
+- **指令**：`market.browse{category?, query?, sort=time|price, page}`（server 端分頁 20 筆、不分大小寫比對譯名須由 client 做——server 只比 fullType／id，譯名比對在 client 端對本頁做二次過濾）；`market.mine`；`market.candidates`（背包可上架清單＋拒絕原因）；`market.list{itemId, price, requestId}`；`market.buy{listingId, price(確認用), requestId}`；`market.cancel{listingId, requestId}`。
+- **list-out 規則二**：玩家 modData `pendingOuts[opId]={itemId, snapshot, kind="listing", seq, epoch}` → 移除原物（`inv:Remove`＋`sendRemoveItemFromContainer`）→ 建 listing＋刊登費 posting（同 tick）；pending 只在登入收斂（規則三第 4–6 列）或 companion 心跳水位 ≥ seq 時清。規則五第②條（死亡 carryOver `pendingOuts`）在此落地。
+- **成交**：`market.buy` 同 tick：終端、餘額、listing 存在且價格相符（不靜默換價）→ 買家 −price、賣家 +(price−tax)、稅 → `SYSTEM_BURN`、listing 刪除、快照進買家信箱 `kind="market"` → 立即 claim-in；賣家離線照樣入帳（錢包是帳號級）；買家自己的刊登不能買。
+- **退件**：取消需買家信箱空位規則（賣家信箱有空位才可取消）；到期由 `OnTickEvenPaused` 每分鐘掃（`ponytail:` 全掃，2,000 筆內夠用）→ 退回賣家信箱，`kind="return"`、允許暫超上限。
+- **退出閘門（harness 重演）**：兩名買家搶同一 listing 只有一人成交且另一人零扣款；崩潰四象限（A9）以玩家存檔／世界存檔新舊組合重演規則三第 4–6 列；離線賣家收款；到期退回；刊登費／稅守恆（`L.conservation` 為 0）。
+- **不做**：拍賣（F）、電台（E）、玩家間直接轉帳、交易站與 ATM 的功能差異（兩者同介面）。
+
 ### 階段 E：完整信箱＋白名單擴充＋電台
 
 - 完整帳號信箱（slot 預留、quarantine；跨死亡保留＋永不過期已定案，見階段 D 上限規則與 §19.7 規則五）；

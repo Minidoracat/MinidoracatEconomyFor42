@@ -1551,7 +1551,7 @@ local function reg(who, x, y, z, extra)
 end
 check(reg(zed, 100, 200, 0).error == "forbidden", "a player cannot register a terminal")
 check(reg(boss, 100, 200, 0).error == "no_terminal_object", "an admin cannot register a bare square")
-worldSprites["100,200,0"] = "location_business_bank_01_0"
+worldSprites["100,200,0"] = "MinidoracatEconomy_terminal_0"
 local r = reg(boss, 100, 200, 0)
 check(r.ok == true and T.count() == 1 and lastSent("terminals").args.list[1].x == 100, "registering a square with a terminal tile broadcasts the list")
 check(reg(boss, 100, 200, 0).error == "already_registered", "the same square is refused twice")
@@ -1591,7 +1591,7 @@ modDataStore[EC.MODDATA_KEY] = nil
 files = {}
 sentCommands = {}
 sentItemPackets = {}
-worldSprites = { ["100,200,0"] = "location_business_bank_01_0" }
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
 nowMs = nowMs + 61000
 fire("OnServerStarted")
 local boss = fakePlayer("boss"); boss.role = "admin"
@@ -1721,7 +1721,7 @@ modDataStore[EC.MODDATA_KEY] = nil
 files = {}
 sentCommands = {}
 sentItemPackets = {}
-worldSprites = { ["100,200,0"] = "location_business_bank_01_0" }
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
 nowMs = nowMs + 61000
 fire("OnServerStarted")
 local boss = fakePlayer("boss"); boss.role = "admin"
