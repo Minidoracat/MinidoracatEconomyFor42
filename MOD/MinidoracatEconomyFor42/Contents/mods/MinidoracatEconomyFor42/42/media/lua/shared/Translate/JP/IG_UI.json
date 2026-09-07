@@ -39,6 +39,7 @@
   "IGUI_MinidoracatEconomy_Time_HM": "%1 時間 %2 分",
   "IGUI_MinidoracatEconomy_Time_Minutes": "%1 分",
   "IGUI_MinidoracatEconomy_Toast_Title": "経済センター",
+  "IGUI_MinidoracatEconomy_Toast_NeedTerminal": "経済センターはターミナルの近くでのみ開けます",
   "IGUI_MinidoracatEconomy_Window_ResetSize": "サイズを戻す",
   "IGUI_MinidoracatEconomy_Terminal_Name": "経済ターミナル",
   "IGUI_MinidoracatEconomy_Terminal_Use": "経済ターミナルを使う",

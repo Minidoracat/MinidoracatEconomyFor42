@@ -157,7 +157,6 @@ end
 -- Client-side mirror of the server gate (ECTerminal.near) for enabling buttons; the server
 -- re-checks every write. Chebyshev distance on the player's level, EC.TERMINAL_RANGE tiles.
 function C.nearTerminal()
-    if C.session and C.session.remoteReadOnly == false then return true end
     local player = getPlayer()
     if not player then return false end
     local px, py, pz = player:getX(), player:getY(), math.floor(player:getZ())

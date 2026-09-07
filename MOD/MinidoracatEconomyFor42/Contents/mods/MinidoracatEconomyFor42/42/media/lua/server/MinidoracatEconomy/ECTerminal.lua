@@ -1,10 +1,10 @@
 -- MinidoracatEconomyFor42 - terminals (server authority; spec 12 stage C, 17.1, stage A11/A12).
 --
--- A terminal is a registered map square: an admin builds the entity (or picks a vanilla bank
--- machine), right-clicks it and registers the coordinates; the server re-checks the role, the
+-- A terminal is a registered map square: an admin builds the entity (or picks a vanilla
+-- console), right-clicks it and registers the coordinates; the server re-checks the role, the
 -- AddItem capability and that the square really carries an allowed tile. Every write command
--- (shop.buy, mail.claim, later listings) asks T.near(player): within EC.TERMINAL_RANGE tiles
--- (Chebyshev, same level) of any terminal, or anywhere when RemoteReadOnly is off.
+-- (shop.buy, mail.claim, market.*) asks T.near(player): within EC.TERMINAL_RANGE tiles
+-- (Chebyshev, same level) of any registered terminal.
 --
 -- Engine references (snapshot 42.20.4-20260826):
 --   hasCapability                 LuaManager.java:2454-2455, GameServer.java:2806 (A11)
@@ -98,9 +98,10 @@ function T.nearest(player)
     return best
 end
 
--- The write gate every terminal-bound command uses.
+-- The write gate every terminal-bound command uses. Always a distance check: the sandbox option
+-- RemoteReadOnly only decides whether the window may be *opened* away from a terminal (read-only
+-- browsing), never whether a write needs one (spec 12 stage D position rule).
 function T.near(player)
-    if not EC.sandbox("RemoteReadOnly", true) then return true end
     local d = T.nearest(player)
     return d ~= nil and d <= EC.TERMINAL_RANGE
 end

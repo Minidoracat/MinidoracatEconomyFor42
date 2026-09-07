@@ -1565,7 +1565,7 @@ check(T.near(zed) == false, "one level up is not near")
 zed.z = 0
 SandboxVars.MinidoracatEconomy.RemoteReadOnly = false
 zed.x = 500
-check(T.near(zed) == true, "RemoteReadOnly=false lifts the terminal requirement")
+check(T.near(zed) == false, "RemoteReadOnly only governs opening the window: writes always need a terminal")
 SandboxVars.MinidoracatEconomy.RemoteReadOnly = true
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "hello", zed, {})

@@ -1460,10 +1460,16 @@ function P.instance()
     return P.window
 end
 
+-- Hotkey / floating button. With the sandbox option RemoteReadOnly off the window may only be
+-- opened next to a terminal (the terminal's own right-click entry goes through P.instance).
 function P.toggle()
     if not getPlayer() then return end
     local win = P.instance()
     if not win then return end
+    if not win:getIsVisible() and C.session and C.session.remoteReadOnly == false and not C.nearTerminal() then
+        C.toast(getText(T .. "Toast_NeedTerminal"))
+        return
+    end
     win:setVisible(not win:getIsVisible())
 end
 

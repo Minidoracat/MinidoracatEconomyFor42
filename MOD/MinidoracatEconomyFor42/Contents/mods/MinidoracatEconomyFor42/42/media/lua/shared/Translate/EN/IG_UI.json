@@ -39,6 +39,7 @@
   "IGUI_MinidoracatEconomy_Time_HM": "%1 h %2 min",
   "IGUI_MinidoracatEconomy_Time_Minutes": "%1 min",
   "IGUI_MinidoracatEconomy_Toast_Title": "Economy Center",
+  "IGUI_MinidoracatEconomy_Toast_NeedTerminal": "The Economy Center only opens next to a terminal",
   "IGUI_MinidoracatEconomy_Window_ResetSize": "Reset size",
   "IGUI_MinidoracatEconomy_Terminal_Name": "Economy Terminal",
   "IGUI_MinidoracatEconomy_Terminal_Use": "Use economy terminal",

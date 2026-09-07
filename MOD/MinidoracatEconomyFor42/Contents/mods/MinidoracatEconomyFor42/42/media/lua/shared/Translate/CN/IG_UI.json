@@ -39,6 +39,7 @@
   "IGUI_MinidoracatEconomy_Time_HM": "%1 小时 %2 分",
   "IGUI_MinidoracatEconomy_Time_Minutes": "%1 分钟",
   "IGUI_MinidoracatEconomy_Toast_Title": "经济中心",
+  "IGUI_MinidoracatEconomy_Toast_NeedTerminal": "经济中心只能在终端旁打开",
   "IGUI_MinidoracatEconomy_Window_ResetSize": "重设大小",
   "IGUI_MinidoracatEconomy_Terminal_Name": "经济终端",
   "IGUI_MinidoracatEconomy_Terminal_Use": "使用经济终端",
