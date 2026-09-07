@@ -51,12 +51,15 @@ end
 
 -- ---------- ModData root ----------
 
--- Every server start appends one line {epoch, loadedSeq} to this file (append-only, tiny). ModData
--- only remembers epochs that reached a world save: an epoch that crashed before its first save
--- leaves no trace in the save, yet its receipts and events are already on disk. On start every
--- epoch in this file that ModData does not know about is a crashed one, and everything it wrote
--- above the seq it loaded from was rolled back (the companion derives the same from the event
--- stream, spec 4.2). Kept in ECServer because it must run before ECExport initialises.
+-- Every server start appends one line {epoch, loadedSeq, flagged} to this file (append-only,
+-- tiny). ModData only remembers epochs that reached a world save: an epoch that crashed before its
+-- first save leaves no trace in the save, yet its receipts and events are already on disk. On
+-- start every epoch in this file that ModData does not know about is a crashed one, and
+-- everything it wrote above the seq it loaded from was rolled back (the companion derives the
+-- same from the event stream, spec 4.2). `flagged` lists the crashed epochs that start already
+-- reported: until a save lands, every restart rolls the same epochs back again, and the journal
+-- must not repeat the epoch.rolledback line each time (seen live: 10 kill-restarts = 45 lines).
+-- Kept in ECServer because it must run before ECExport initialises.
 S.EPOCHS_FILE = "MinidoracatEconomy/epochs.json"
 S.EPOCHS_KEEP = 60
 
@@ -71,7 +74,7 @@ local function readEpochLines()
             if line == nil then break end
             local rec = EC.jsonDecode(line)
             if type(rec) == "table" and type(rec.epoch) == "string" and type(rec.loadedSeq) == "number" then
-                out[#out + 1] = { epoch = rec.epoch, loadedSeq = rec.loadedSeq }
+                out[#out + 1] = { epoch = rec.epoch, loadedSeq = rec.loadedSeq, flagged = type(rec.flagged) == "table" and rec.flagged or nil }
             end
         end
     end)
@@ -88,7 +91,7 @@ local function writeEpochLines(lines, append)
     end
     pcall(function()
         for _, h in ipairs(lines) do
-            writer:writeln(EC.jsonEncode({ epoch = h.epoch, loadedSeq = h.loadedSeq }))
+            writer:writeln(EC.jsonEncode({ epoch = h.epoch, loadedSeq = h.loadedSeq, flagged = h.flagged }))
         end
     end)
     pcall(function() writer:close() end)
@@ -116,15 +119,23 @@ function S.initModData()
         if n and (oldestRemembered == nil or n < oldestRemembered) then oldestRemembered = n end
     end
     local fileLines = readEpochLines()
+    local reported = {}
+    for _, h in ipairs(fileLines) do
+        for _, e in ipairs(h.flagged or {}) do reported[e] = true end
+    end
     S.crashedEpochs = {}   -- newly discovered this start; ECExport writes one epoch.rolledback line each
+    local flagged = {}
     for _, h in ipairs(fileLines) do
         -- Unknown to ModData and newer than the oldest epoch it still remembers: it crashed before
         -- its first save. Older unknown lines are epochs the bounded history has simply forgotten.
         local n = tonumber(h.epoch)
         if not known[h.epoch] and (oldestRemembered == nil or (n and n > oldestRemembered)) then
             known[h.epoch] = true
-            history[#history + 1] = h
-            S.crashedEpochs[#S.crashedEpochs + 1] = h
+            history[#history + 1] = { epoch = h.epoch, loadedSeq = h.loadedSeq }
+            if not reported[h.epoch] then
+                S.crashedEpochs[#S.crashedEpochs + 1] = h
+                flagged[#flagged + 1] = h.epoch
+            end
         end
     end
     EC.sortSafe(history, function(a, b) return (tonumber(a.epoch) or 0) < (tonumber(b.epoch) or 0) end)
@@ -137,7 +148,7 @@ function S.initModData()
         startedAt = EC.now(),
         history = history,
     }
-    local mine = { epoch = md.meta.epoch, loadedSeq = prevSeq }
+    local mine = { epoch = md.meta.epoch, loadedSeq = prevSeq, flagged = #flagged > 0 and flagged or nil }
     if #fileLines >= S.EPOCHS_KEEP then
         local keep = {}
         for i = #fileLines - math.floor(S.EPOCHS_KEEP / 2) + 1, #fileLines do keep[#keep + 1] = fileLines[i] end

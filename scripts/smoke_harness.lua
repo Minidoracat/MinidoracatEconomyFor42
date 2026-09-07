@@ -166,7 +166,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 280     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 281     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1326,6 +1326,26 @@ for _, f in pairs(files) do
 end
 check(rbLine ~= nil and rbLine.crashedEpoch == e2 and rbLine.fromSeq == 3 and rbLine.epoch == meta.epoch,
     "start writes epoch.rolledback{crashedEpoch, fromSeq} under the current epoch")
+-- E4: another restart before any save (the live dev pattern) must not repeat E2's rolledback line
+-- although E2 is still rolled back and still unknown to the save
+modDataStore[EC.MODDATA_KEY] = deepCopy(saved)
+nowMs = nowMs + 1000
+fire("OnServerStarted")                       -- E4
+local rbPer = {}
+for _, f in pairs(files) do
+    for _, l in ipairs(f.lines) do
+        if string.find(l, '"type":"epoch.rolledback"', 1, true) then
+            local rec = EC.jsonDecode(l)
+            rbPer[rec.crashedEpoch] = (rbPer[rec.crashedEpoch] or 0) + 1
+        end
+    end
+end
+ef = files["MinidoracatEconomy/epochs.json"]
+local e3Line = ef and EC.jsonDecode(ef.lines[3]) or nil
+check(rbPer[e2] == 1 and rbPer[meta.epoch] == 1 and S.isRolledBack(e2, 3) == true and S.isRolledBack(meta.epoch, 3) == true
+    and e3Line ~= nil and e3Line.flagged ~= nil and e3Line.flagged[1] == e2 and #ef.lines == 4,
+    "a restart before a save flags E3 once and does not repeat E2's line (E3's record remembers it flagged E2); both stay rolled back")
+meta = S.modData().meta
 -- 崩潰班次裡的一筆管理操作（稽核檔還在、稽核環已回滾）
 local admin3 = fakePlayer("boss"); admin3.role = "admin"
 onlinePlayers = { admin3 }
