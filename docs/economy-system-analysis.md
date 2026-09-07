@@ -685,7 +685,8 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - **退出閘門（harness 重演）**：兩名買家搶同一 listing 只有一人成交且另一人零扣款；崩潰四象限（A9）以玩家存檔／世界存檔新舊組合重演規則三第 4–6 列；離線賣家收款；到期退回；刊登費／稅守恆（`L.conservation` 為 0）。
 - **不做**：拍賣（F）、電台（E）、玩家間直接轉帳、交易站與 ATM 的功能差異（兩者同介面）。
 
-**進度（2026-09-07）**：server（`ECCodec`、`ECMarket`、`ECMailbox` 規則三第 4–6 列與規則五第 2 條、`admin.listings`／`admin.whitelist`）＋ harness 情境二十八～三十（白名單與快照 round-trip、上架／瀏覽／購買競爭／取消／到期／費稅守恆、回滾四象限與死亡 carryOver；共 390 條）✓；client（市場分頁、上架選物器、管理頁刊登分頁）✓ 離線 stub；**實機雙客戶端驗證待做**（終端貼圖也一併驗）。
+**進度（2026-09-07）**：server（`ECCodec`、`ECMarket`、`ECMailbox` 規則三第 4–6 列與規則五第 2 條、`admin.listings`／`admin.whitelist`）＋ harness 情境二十八～三十（白名單與快照 round-trip、上架／瀏覽／購買競爭／取消／到期／費稅守恆、回滾四象限與死亡 carryOver；共 408 條）✓；client（市場分頁、上架選物器＝背包網格＋「只顯示可上架」、管理頁刊登分頁、**管理頁「白名單」分頁**）✓ 離線 stub；**實機雙客戶端驗證待做**（終端貼圖也一併驗）。
+**白名單實作形狀（2026-09-07 修訂，取代上面「每筆白名單列」的草案格式）**：`whitelist.json` = `{"categories":[DisplayCategory…],"types":[fullType…],"excludeTypes":[…],"modDataKeys":[…]}`，`excludeTypes` > `types` > `categories`；檔案是唯一真相（同 `catalog.json`）——管理頁「白名單」分頁一次改一個分類（開關）或一件物品（允許／禁止／回到依分類），`admin.whitelist{action=set}` 直接寫回檔案、重讀、稽核，檔案被手改則回 `whitelist_stale` 要求先重載；分頁的物品宇宙由 client `getScriptManager():getAllItems()` 建立、可關鍵字搜尋（譯名／原文／ID／分類名）。固定拒絕改以 `script:isItemType(ItemType.X)` 判定（`EC.LISTING_FIXED_TYPES`：Container／Clothing／Key／KeyRing／Moveable／Radio／Map／AlarmClock／AlarmClockClothing／Animal）——原本比對 `getCategory()` 主類別字串，但 `Moveable`／`Radio`／`MapItem` 沒有覆寫 `getCategory`（回 `"Item"`，`InventoryItem.java:681-683`），無線電在 `Electronics` 分類開啟時本可上架、重建會丟頻道與電池。
 
 ### 階段 E：完整信箱＋白名單擴充＋電台
 
