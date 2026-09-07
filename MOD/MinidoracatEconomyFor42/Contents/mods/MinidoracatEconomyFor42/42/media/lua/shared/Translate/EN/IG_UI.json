@@ -223,7 +223,7 @@
   "IGUI_MinidoracatEconomy_Admin_Adjust_Amount": "Amount",
   "IGUI_MinidoracatEconomy_Admin_Adjust_AmountHint": "negative deducts",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Reversal": "Reversal of transaction (optional)",
-  "IGUI_MinidoracatEconomy_Admin_Adjust_Reason": "Reason (required, up to %2 characters)",
+  "IGUI_MinidoracatEconomy_Admin_Adjust_Reason": "Reason (required)",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Balance": "Available %1 -> after %2 (wallet revision v%3)",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Daily": "%1 adjusted today +%2 / -%3 (daily cap %4)",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Server": "Server today +%1 / -%2 (cap %3)",
@@ -234,7 +234,7 @@
   "IGUI_MinidoracatEconomy_Admin_Adjust_Duplicate": "This request was already processed; nothing was posted twice",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Stale": "The balance revision changed; the account was re-read, please confirm again",
   "IGUI_MinidoracatEconomy_Admin_Adjust_BadAmount": "The amount must be a non-zero integer",
-  "IGUI_MinidoracatEconomy_Admin_Adjust_BadReason": "A reason is required (%1-%2 characters)",
+  "IGUI_MinidoracatEconomy_Admin_Adjust_BadReason": "A reason is required",
   "IGUI_MinidoracatEconomy_Admin_Freeze_Title": "Freeze account: %1",
   "IGUI_MinidoracatEconomy_Admin_Freeze_Confirm": "Confirm freeze",
   "IGUI_MinidoracatEconomy_Admin_Freeze_Warn": "A frozen account can no longer receive or spend anything",
@@ -327,5 +327,8 @@
   "IGUI_MinidoracatEconomy_Admin_Error_source_disabled": "This integration source is disabled",
   "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "This mod may not use that currency",
   "IGUI_MinidoracatEconomy_Admin_Audit_Rolled": "Rolled back",
-  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "Admin actions rolled back because the server stopped before saving (from the audit files, this and last month); they did not take effect, redo them if needed"
+  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "Admin actions rolled back because the server stopped before saving (from the audit files, this and last month); they did not take effect, redo them if needed",
+  "IGUI_MinidoracatEconomy_Band_Frozen": "Account frozen: nothing can be credited or spent, contact an admin",
+  "IGUI_MinidoracatEconomy_Toast_Frozen": "An admin has frozen your account",
+  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "Your account has been unfrozen"
 }

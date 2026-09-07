@@ -58,7 +58,7 @@ function W.state(username)
             rolledBack = S.isRolledBack(epoch, r.seq),
         }
     end
-    return { balances = W.balances(username), receipts = list, currencies = EC.CURRENCY_ORDER }
+    return { balances = W.balances(username), receipts = list, currencies = EC.CURRENCY_ORDER, frozen = L.isFrozen(username) }
 end
 
 -- ---------- tail-of-file jobs ----------
@@ -163,14 +163,36 @@ function W.tail(player, command, paths, extra)
     jobs[key] = job
 end
 
--- month: "YYYYMM"; the file may not exist (no activity that month) -> empty reply.
+-- Receipt file paths for a username: the given months in order (a missing file contributes nothing).
+function W.receiptPaths(username, months)
+    local paths = {}
+    for _, m in ipairs(months) do
+        paths[#paths + 1] = X.ROOT .. "/receipts/" .. EC.safeName(username) .. "/" .. m .. ".json"
+    end
+    return paths
+end
+
+-- Previous and current UTC month keys (the "recent" window spans a month boundary).
+function W.recentMonths(ms)
+    local prev = EC.monthKey(ms - 30 * 86400000)
+    local cur = EC.monthKey(ms)
+    if prev == cur then return { cur } end
+    return { prev, cur }
+end
+
+-- month: "YYYYMM" or "recent" (previous + current month, newest last); a month with no file
+-- gives an empty reply.
 function W.requestHistory(player, month)
-    if type(month) ~= "string" or not string.match(month, "^%d%d%d%d%d%d$") then
+    local months
+    if month == "recent" then
+        months = W.recentMonths(EC.now())
+    elseif type(month) == "string" and string.match(month, "^%d%d%d%d%d%d$") then
+        months = { month }
+    else
         S.reply(player, "wallet.history", { month = tostring(month), entries = {}, error = "invalid_args" })
         return
     end
-    local path = X.ROOT .. "/receipts/" .. EC.safeName(player:getUsername()) .. "/" .. month .. ".json"
-    W.tail(player, "wallet.history", { path }, { month = month })
+    W.tail(player, "wallet.history", W.receiptPaths(player:getUsername(), months), { month = month })
 end
 
 -- ---------- push on change ----------
@@ -182,9 +204,18 @@ local function onCommitted(ev)
             notified[p.account] = true
             local player = playerByUsername(p.account)
             if player then
-                S.reply(player, "wallet.changed", { balances = W.balances(p.account), txId = ev.txId, kind = ev.kind })
+                S.reply(player, "wallet.changed", { balances = W.balances(p.account), txId = ev.txId, kind = ev.kind, frozen = L.isFrozen(p.account) })
             end
         end
+    end
+end
+
+-- The frozen flag changed for `username`: the player (when online) learns it at once instead of
+-- at the next refused transaction.
+function W.pushState(username)
+    local player = playerByUsername(username)
+    if player then
+        S.reply(player, "wallet.changed", { balances = W.balances(username), frozen = L.isFrozen(username) })
     end
 end
 

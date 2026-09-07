@@ -111,7 +111,7 @@ end
 function Panel:refresh()
     if self.tab == "Wallet" then
         C.requestWallet()
-        if not self.history and self.period ~= "Recent" then self:loadHistory() end
+        if not self.history then self:loadHistory() end
     elseif self.tab == "Admin" then
         if self.adminPanel and C.AdminPanel.canRead() then self.adminPanel:refresh() end
     else
@@ -126,7 +126,7 @@ function Panel:onPeriod(button)
     for _, b in ipairs(self.periodButtons) do b.active = b.internal == self.period end
     self.history = nil
     self.historyError = nil
-    if self.period ~= "Recent" then self:loadHistory() end
+    self:loadHistory()
     self:rebuildList()
 end
 
@@ -143,6 +143,7 @@ end
 
 function Panel:periodMonth()
     local ms = EC.now()
+    if self.period == "Recent" then return "recent" end   -- server: previous + current month files
     if self.period == "LastMonth" then
         -- first day of this month minus one day, in UTC (receipt files are keyed by UTC month)
         local firstOfMonth = ms - ((tonumber(EC.dayKey(ms)) % 100) - 1) * 86400000
@@ -187,10 +188,20 @@ end
 
 -- self.rows = statement rows for the selected period; self.recentRows = the server receipt ring
 -- (rewards page "recent ledger"). Both are rebuilt only when data arrives, never per frame.
+-- "Recent" is the newest RECENT_ROWS lines of the receipt files (they keep what a crash rolled
+-- back); the ModData ring only paints the first frame until the file reply lands.
+local RECENT_ROWS = 20
 function Panel:rebuildList()
     self.recentRows = newestFirst(C.wallet and C.wallet.receipts or {}, self.offsetMin)
     if self.period == "Recent" then
-        self.rows = self.recentRows
+        if self.history then
+            local all = newestFirst(self.history.entries or {}, self.offsetMin)
+            local rows = {}
+            for i = 1, math.min(#all, RECENT_ROWS) do rows[i] = all[i] end
+            self.rows = rows
+        else
+            self.rows = self.recentRows
+        end
     else
         self.rows = newestFirst(self.history and self.history.entries or {}, self.offsetMin)
     end
@@ -199,10 +210,12 @@ end
 
 -- Month in/out per currency from this month's receipt file (design: balance card "this month").
 function Panel:updateMonthTotals(history)
-    if history.month ~= EC.monthKey(EC.now()) then return end
+    local month = EC.monthKey(EC.now())
+    if history.month ~= month and history.month ~= "recent" then return end
     local totals = {}
     for _, e in ipairs(history.entries or {}) do
-        if e.rolledBack ~= true then
+        -- the recent window spans two months: only this month's lines count
+        if e.rolledBack ~= true and EC.monthKey(tonumber(e.ts) or 0) == month then
             local t = totals[e.currency]
             if not t then t = { inn = 0, out = 0 }; totals[e.currency] = t end
             local d = tonumber(e.delta) or 0
@@ -216,7 +229,7 @@ function Panel:onWallet(kind, args)
     if kind == "state" then
         self:rebuildList()
     elseif kind == "changed" then
-        if self.period ~= "Recent" then self:loadHistory() end
+        self:loadHistory()
     elseif kind == "history" then
         if args.month ~= self:periodMonth() then return end
         self.historyLoading = false
@@ -513,7 +526,8 @@ function Panel:drawRewards()
     -- claim button sits at ly + ROW (positioned in layout); text below it
     self.claimButton:setTitle(getText(T .. "Rewards_ClaimButton", amountText(st.amount)))
     self.claimButton.coinId = st.currency
-    local canClaim = not st.claimed and played >= need and not self.claimPending
+    local frozen = C.wallet ~= nil and C.wallet.frozen == true
+    local canClaim = not st.claimed and played >= need and not self.claimPending and not frozen
     self.claimButton:setEnable(canClaim)
     ly = self.claimButton.y + self.claimButton.height + PAD
     local remain = math.max(0, (tonumber(st.nextResetMs) or 0) - EC.now())
@@ -611,7 +625,11 @@ function Panel:prerender()
 
     -- status line
     local g = self.g
-    if self:remoteReadOnly() then
+    if C.wallet and C.wallet.frozen then
+        -- a frozen account outranks the remote-read-only note: nothing moves until an admin unfreezes it
+        U.Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color("errorText"))
+        text(self, getText(T .. "Band_Frozen"), PAD * 2 + 14, g.statusY + math.floor((STATUS_H - fontH.small) / 2), "errorText")
+    elseif self:remoteReadOnly() then
         U.Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color("warn"))
         text(self, getText(T .. "Band_RemoteReadOnly"), PAD * 2 + 14, g.statusY + math.floor((STATUS_H - fontH.small) / 2), "warn")
     end

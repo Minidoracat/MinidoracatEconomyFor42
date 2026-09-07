@@ -92,16 +92,6 @@ option MinidoracatEconomy.AdminAdjustServerDaily
     translation = MinidoracatEconomy_AdminAdjustServerDaily,
 }
 
-option MinidoracatEconomy.AdminReasonMinChars
-{
-    type = integer,
-    min = 1,
-    max = 200,
-    default = 1,
-    page = MinidoracatEconomy,
-    translation = MinidoracatEconomy_AdminReasonMinChars,
-}
-
 /* Ledger fuse: a credit that would push a player's available balance above this is refused
    (balance_cap). Default for every currency; admins may override per currency in the panel. */
 option MinidoracatEconomy.BalanceMax

@@ -83,7 +83,7 @@ local recentAdjusts = {}          -- admin -> { ms, ... } (rate limit, in-memory
 -- above 255 (StringLib.java:760-768), so '#s' already counts characters. Standard Lua (the smoke
 -- harness) holds UTF-8 bytes, where a CJK character is three bytes. Counting the non-continuation
 -- bytes makes both runtimes agree that one CJK character is one character, so a Chinese reason of
--- 10 characters passes AdminReasonMinChars on the server and in the harness alike.
+-- 10 characters counts as 10 on the server and in the harness alike (REASON_MAX is in characters).
 local WIDE_STRINGS = pcall(string.char, 19981)
 local IDEO_SPACE = WIDE_STRINGS and string.char(12288) or "\227\128\128"   -- U+3000
 
@@ -168,7 +168,7 @@ local function reasonError(reason)
     bare = string.gsub(bare, "[ \t]", "")
     if bare == "" then return "reason_blank" end
     local chars = charCount(text)
-    if chars < EC.sandbox("AdminReasonMinChars", 1) then return "reason_too_short" end
+    if chars < 1 then return "reason_too_short" end
     if chars > A.REASON_MAX then return "reason_too_long" end
     return nil, text
 end
@@ -297,7 +297,6 @@ function A.lookup(admin, username, write)
         hoursSurvived = player and player:getHoursSurvived() or nil,
         adminToday = dailyView(R.dayKey(ms), admin),
         maxPerTx = EC.sandbox("AdminAdjustMaxPerTx", 5000),
-        reasonMinChars = EC.sandbox("AdminReasonMinChars", 1),
         -- Spec 19.2 wants season-to-date earned/spent from a `stats` table. That table does not
         -- exist in this build, and the 5-entry receipt ring is not a season total: say so instead
         -- of shipping a number the panel would present as a season figure.
@@ -428,6 +427,7 @@ function A.freeze(player, args)
     end
     X.emit("admin.freeze", { admin = admin, target = username, frozen = frozen, reason = reason })
     X.audit({ action = frozen and "freeze" or "unfreeze", admin = admin, target = username, reason = reason })
+    W.pushState(username)
     return { ok = true, frozen = frozen }
 end
 
@@ -663,7 +663,7 @@ S.handlers["admin.sources"] = function(player, args)
     local res = { ok = true, perms = { read = true, write = A.isAdmin(player) } }
     if set then
         local reason = args.reason
-        if type(reason) ~= "string" or charCount(reason) < EC.sandbox("AdminReasonMinChars", 1) or #reason > A.REASON_MAX * 3 then
+        if type(reason) ~= "string" or charCount((string.gsub(reason, "^%s*(.-)%s*$", "%1"))) < 1 or #reason > A.REASON_MAX * 3 then
             res = { ok = false, error = "reason_too_short" }
         else
             local ok, err = G.setSource(args.modId, { dailyMintCap = args.dailyMintCap, dailyBurnCap = args.dailyBurnCap, enabled = args.enabled },
@@ -720,6 +720,18 @@ S.handlers["admin.players"] = function(player, args)
     local total = #list
     while #list > A.PLAYERS_MAX do table.remove(list) end
     S.reply(player, "admin.players", { ok = true, query = query, players = list, total = total, truncated = truncated })
+end
+
+-- admin.receipts {username} (read gate): the target's receipt files for the previous and current
+-- month, rolledBack per line - the lookup's 5-entry ring never shows what a crash rolled back.
+S.handlers["admin.receipts"] = function(player, args)
+    if not gate(player, "admin.receipts", false) then return end
+    local target = type(args) == "table" and args.username or nil
+    if not validUsername(target) then
+        S.reply(player, "admin.receipts", { username = tostring(target), entries = {}, error = "invalid_args" })
+        return
+    end
+    W.tail(player, "admin.receipts", W.receiptPaths(target, W.recentMonths(EC.now())), { username = target })
 end
 
 -- admin.auditFile (read gate): the newest entries of the previous and current month's audit

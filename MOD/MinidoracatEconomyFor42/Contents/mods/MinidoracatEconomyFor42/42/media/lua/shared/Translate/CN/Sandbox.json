@@ -18,8 +18,6 @@
   "Sandbox_MinidoracatEconomy_AdminAdjustDailyPerAdmin_tooltip": "每位管理员每个奖励日加款与扣款各自的总额上限（不互抵）。",
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily": "管理员调帐每日上限（全服）",
   "Sandbox_MinidoracatEconomy_AdminAdjustServerDaily_tooltip": "所有管理员合计每个奖励日加款与扣款各自的总额上限。",
-  "Sandbox_MinidoracatEconomy_AdminReasonMinChars": "调帐原因最少字数",
-  "Sandbox_MinidoracatEconomy_AdminReasonMinChars_tooltip": "管理员调整余额等操作必填原因的最少字符数（默认 1＝只要有填）；原因会进稽核纪录与外部帐本，最多 1000 字。",
   "Sandbox_MinidoracatEconomy_AdminRoles": "可写入的管理角色",
   "Sandbox_MinidoracatEconomy_AdminRoles_tooltip": "可以调整余额、修改货币设置、登录终端的服务器角色名称，多个以分号分隔（例如 admin;gm）。服务器对每个管理指令都会重新核对角色名，客户端的显示不算授权。",
   "Sandbox_MinidoracatEconomy_ReadOnlyRoles": "唯读的管理角色",

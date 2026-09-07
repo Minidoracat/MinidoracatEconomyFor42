@@ -111,7 +111,13 @@ end
 -- Balances arrive with the push; the receipt ring is refreshed with one extra round trip
 -- (a player sees at most a few transactions per day, so the cost is irrelevant).
 handlers["wallet.changed"] = function(args)
-    if C.wallet then C.wallet.balances = args.balances or C.wallet.balances end
+    if C.wallet then
+        C.wallet.balances = args.balances or C.wallet.balances
+        if args.frozen ~= nil and args.frozen ~= C.wallet.frozen then
+            C.wallet.frozen = args.frozen
+            C.toast(getText(args.frozen and "IGUI_MinidoracatEconomy_Toast_Frozen" or "IGUI_MinidoracatEconomy_Toast_Unfrozen"))
+        end
+    end
     notifyWallet("changed", args)
     C.requestWallet()
 end

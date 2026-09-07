@@ -223,7 +223,7 @@
   "IGUI_MinidoracatEconomy_Admin_Adjust_Amount": "金額",
   "IGUI_MinidoracatEconomy_Admin_Adjust_AmountHint": "負數為扣款",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Reversal": "反向對應交易編號（選填）",
-  "IGUI_MinidoracatEconomy_Admin_Adjust_Reason": "原因（必填，最多 %2 字）",
+  "IGUI_MinidoracatEconomy_Admin_Adjust_Reason": "原因（必填）",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Balance": "目前可用 %1 → 調整後 %2（錢包版本 v%3）",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Daily": "%1 今日已調整 +%2 ／ -%3（每日上限 %4）",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Server": "全服今日 +%1 ／ -%2（上限 %3）",
@@ -234,7 +234,7 @@
   "IGUI_MinidoracatEconomy_Admin_Adjust_Duplicate": "同一請求已處理過，沒有重複入帳",
   "IGUI_MinidoracatEconomy_Admin_Adjust_Stale": "餘額版本已變動，已重新查詢，請再確認一次",
   "IGUI_MinidoracatEconomy_Admin_Adjust_BadAmount": "金額必須是非零整數",
-  "IGUI_MinidoracatEconomy_Admin_Adjust_BadReason": "原因必填（%1–%2 字）",
+  "IGUI_MinidoracatEconomy_Admin_Adjust_BadReason": "原因必填",
   "IGUI_MinidoracatEconomy_Admin_Freeze_Title": "凍結帳號：%1",
   "IGUI_MinidoracatEconomy_Admin_Freeze_Confirm": "確認凍結",
   "IGUI_MinidoracatEconomy_Admin_Freeze_Warn": "凍結後這個帳號不能再有任何入帳或扣款",
@@ -327,5 +327,8 @@
   "IGUI_MinidoracatEconomy_Admin_Error_source_disabled": "這個整合來源已停用",
   "IGUI_MinidoracatEconomy_Admin_Error_currency_not_allowed": "這個模組不能使用這個幣別",
   "IGUI_MinidoracatEconomy_Admin_Audit_Rolled": "已回滾",
-  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "伺服器未存檔就關閉時被回滾的管理操作（讀稽核檔，本月與上月）；這些操作沒有生效，需要的話請重做"
+  "IGUI_MinidoracatEconomy_Admin_Audit_RolledNote": "伺服器未存檔就關閉時被回滾的管理操作（讀稽核檔，本月與上月）；這些操作沒有生效，需要的話請重做",
+  "IGUI_MinidoracatEconomy_Band_Frozen": "帳號已凍結：無法入帳或扣款，請聯絡管理員",
+  "IGUI_MinidoracatEconomy_Toast_Frozen": "你的帳號已被管理員凍結",
+  "IGUI_MinidoracatEconomy_Toast_Unfrozen": "你的帳號已解除凍結"
 }

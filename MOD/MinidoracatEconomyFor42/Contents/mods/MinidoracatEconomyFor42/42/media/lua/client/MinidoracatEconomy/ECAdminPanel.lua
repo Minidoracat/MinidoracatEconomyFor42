@@ -58,7 +58,7 @@ local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.st
 local Button, TableCell = U.Button, U.TableCell
 
 local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
@@ -625,16 +625,24 @@ function Dialog:layoutInside(maxW, maxH)
     if self.message then rows[#rows + 1] = { kind = "message" } end
     rows[#rows + 1] = { kind = "buttons" }
 
-    -- first density level whose total fits the area the child can give us
-    local m, total
+    -- first density level whose core rows fit the area the child can give us. Info / warning /
+    -- message lines are droppable (see the layout loop), so they do not force a denser level;
+    -- the reason box keeps its full height as long as the fields and buttons fit.
+    local m, core, total
     for level = 0, 2 do
         m = dialogMetrics(level)
-        total = m.title + PAD * 2
-        for _, r in ipairs(rows) do total = total + planRowHeight(r, m) + m.gap end
-        if total <= maxH then break end
+        core, total = m.title + PAD * 2, m.title + PAD * 2
+        for _, r in ipairs(rows) do
+            local h = planRowHeight(r, m) + m.gap
+            total = total + h
+            if r.kind ~= "info" and r.kind ~= "warn" and r.kind ~= "message" then core = core + h end
+        end
+        if core <= maxH then break end
     end
-    local height = math.min(maxH, total)
-    local reasonH = m.reason + math.max(0, math.min(height - total, rowH() * 2))
+    -- spare room (up to three more lines) goes to the reason box
+    local extra = math.max(0, math.min(maxH - total, rowH() * 3))
+    local height = math.min(maxH, total) + extra
+    local reasonH = m.reason + extra
 
     self.rows = rows
     self.titleH = m.title
@@ -731,8 +739,7 @@ function Dialog:prerender()
                     text(self, fitText(r.a.hint, math.max(0, self.width - PAD - hintX)), hintX, ty, "textFaint")
                 end
             elseif r.kind == "reasonLabel" then
-                text(self, fitText(getText(T .. "Admin_Adjust_Reason", tostring(self.reasonMin), tostring(REASON_MAX)), self.width - PAD * 2),
-                    labelX, r.y, "textMuted")
+                text(self, fitText(tr("Admin_Adjust_Reason"), self.width - PAD * 2), labelX, r.y, "textMuted")
             elseif r.kind == "info" then
                 local info = self.info[r.index]
                 if info then
@@ -1076,8 +1083,7 @@ end
 function Admin:onAuditFilter(button)
     self.auditFilter = button.internal
     for _, b in ipairs(self.auditFilterButtons) do b.active = b.internal == self.auditFilter end
-    -- the rolled-back view comes from the audit files (the ModData ring forgot those lines)
-    if self.auditFilter == "rolled" and self.auditFile == nil then
+    if self.auditFile == nil then
         send("admin.auditFile", {})
         self:updateEnabled()
     end
@@ -1253,7 +1259,6 @@ function Admin:openDialog(mode, ctx)
     dlg.titleText = ctx.title
     dlg.confirmLabel = ctx.confirm
     dlg.warnText = ctx.warn
-    dlg.reasonMin = (self.lookup and tonumber(self.lookup.reasonMinChars)) or EC.sandbox("AdminReasonMinChars", 1)
     dlg.info = {}
     dlg.message = nil
     dlg:initialise()
@@ -1287,10 +1292,14 @@ end
 -- requestId and the wallet revision the dialog was showing.
 function Admin:submitDialog(dlg)
     local reason = string.match(entryText(dlg.boxes.reason), "^%s*(.-)%s*$")
-    local minChars = dlg.reasonMin
     local reasonChars = charCount(reason)
-    if reasonChars < minChars or reasonChars > REASON_MAX or string.find(reason, "%c") then
-        dlg.message = { text = getText(T .. "Admin_Adjust_BadReason", tostring(minChars), tostring(REASON_MAX)), error = true }
+    -- any non-empty reason is accepted; REASON_MAX only guards the one-line JSON files
+    if reasonChars < 1 or string.find(reason, "%c") then
+        dlg.message = { text = tr("Admin_Adjust_BadReason"), error = true }
+        self:layoutDialog()
+        return
+    elseif reasonChars > REASON_MAX then
+        dlg.message = { text = errorText("reason_too_long"), error = true }
         self:layoutDialog()
         return
     end
@@ -1443,7 +1452,10 @@ function Admin:onReply(kind, args)
             self.lookupError = nil
             self.lookup = args
             self.lookupAt = EC.now()
+            self.lookupFile = nil
             self:rebuildReceipts()
+            -- the ring paints first; the receipt files (with rolled-back lines) replace it
+            send("admin.receipts", { username = self.lookupUser })
             if self.dialog then self.dialog:updateInfo(); self:layoutDialog() end
         end
     elseif kind == "adjust" then
@@ -1524,6 +1536,10 @@ function Admin:onReply(kind, args)
         self.audit = args.entries or {}
         self.auditAt = EC.now()
         self:rebuildAudit()
+    elseif kind == "receipts" then
+        if args.error or args.username ~= self.lookupUser then return end
+        self.lookupFile = args.entries or {}
+        self:rebuildReceipts()
     elseif kind == "auditFile" then
         if args.error then
             if args.error ~= "busy" then self.message = { text = errorText(args.error), error = true } end
@@ -1599,10 +1615,13 @@ end
 
 function Admin:rebuildReceipts()
     local rows = {}
-    local src = (self.lookup and self.lookup.receipts) or {}
+    -- receipt file lines (delta / availableAfter) once they arrived, else the ring (amount / after)
+    local src = self.lookupFile or (self.lookup and self.lookup.receipts) or {}
     for i = #src, 1, -1 do
         local e = src[i]
-        local amount = tonumber(e.amount) or 0
+        local amount = tonumber(e.amount or e.delta) or 0
+        if e.after == nil then e.after = e.availableAfter end
+        if e.kind == nil then e.kind = e.type end
         rows[#rows + 1] = {
             txId = e.txId, currency = e.currency,
             cells = {
@@ -1622,14 +1641,22 @@ end
 function Admin:rebuildAudit()
     local rows = {}
     local filter = self.auditFilter
-    -- "rolled" reads the audit files newest-last; every other filter reads the ModData ring
+    -- The ring (newest-first) holds what survived; the audit files add what a crash rolled back.
+    -- Every filter sees both: rolled-back lines are merged in (muted) and "rolled" shows only them.
     local fromFile = filter == "rolled"
-    local src = fromFile and (self.auditFile or {}) or (self.audit or {})
+    local src = {}
+    if not fromFile then
+        for _, e in ipairs(self.audit or {}) do src[#src + 1] = e end
+    end
+    local file = self.auditFile or {}
+    for i = #file, 1, -1 do
+        if type(file[i]) == "table" and file[i].rolledBack == true then src[#src + 1] = file[i] end
+    end
+    if not fromFile and #file > 0 then
+        EC.sortSafe(src, function(a, b) return (tonumber(a.ts) or 0) > (tonumber(b.ts) or 0) end)
+    end
     local q = self.auditQuery
-    local n = #src
-    for step = 1, n do
-        -- the ring arrives newest-first; the files are in write order, so walk them backwards
-        local e = src[fromFile and (n - step + 1) or step]
+    for _, e in ipairs(src) do
         if type(e) == "table" then
             local action = tostring(e.action or "?")
             local keep
@@ -2343,7 +2370,9 @@ function Admin:drawAudit()
         textRight(self, stamp, self.width - PAD, filterY, "textFaint")
     end
     local rolled = self.auditFilter == "rolled"
-    local total = rolled and #(self.auditFile or {}) or #(self.audit or {})
+    local rolledLines = 0
+    for _, e in ipairs(self.auditFile or {}) do if type(e) == "table" and e.rolledBack == true then rolledLines = rolledLines + 1 end end
+    local total = rolled and rolledLines or (#(self.audit or {}) + rolledLines)
     text(self, fitText(getText(T .. "Admin_Audit_Count", tostring(#(self.auditRows or {})), tostring(total)),
         self.width - g.auditCountX - stampW), g.auditCountX, filterY, "textMuted")
     drawColumnHeaders(self, self.auditList, AUDIT_COLS, self.auditList.x, g.auditHeaderY, rh)
@@ -2557,7 +2586,7 @@ function Admin:refresh()
         if self.lookupUser then send("admin.lookup", { username = self.lookupUser }) end
     elseif self.tab == "Audit" then
         send("admin.audit", { limit = AUDIT_LIMIT })
-        if self.auditFilter == "rolled" then send("admin.auditFile", {}) end
+        send("admin.auditFile", {})
     elseif self.tab == "Dashboard" or self.tab == "System" then
         send("admin.system", {})
     elseif self.tab == "Currencies" and self.icons == nil then

@@ -166,7 +166,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 263     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 267     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -690,7 +690,6 @@ SandboxVars.MinidoracatEconomy.ReadOnlyRoles = "moderator"
 SandboxVars.MinidoracatEconomy.AdminAdjustMaxPerTx = 5000
 SandboxVars.MinidoracatEconomy.AdminAdjustDailyPerAdmin = 10000
 SandboxVars.MinidoracatEconomy.AdminAdjustServerDaily = 12000
-SandboxVars.MinidoracatEconomy.AdminReasonMinChars = 10
 fire("OnServerStarted")
 local boss = fakePlayer("boss"); boss.role = "admin"
 local mod = fakePlayer("mod"); mod.role = "moderator"
@@ -710,7 +709,7 @@ check(lastSent("admin.adjust").args.error == "forbidden", "moderator is read-onl
 -- 調帳規則：原因長度、自己、系統帳戶、單筆上限、負餘額、rev 不符
 -- expectedRev 現在是必填（server 不再用 tonumber 把 nil 當「不檢查」），所以每筆都要帶當下錢包版本
 local function adjust(who, args) nowMs = nowMs + 600; fire("OnClientCommand", EC.COMMAND_MODULE, "admin.adjust", who, args); return lastSent("admin.adjust").args end
-check(adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "short", requestId = "r1", expectedRev = 1 }).error == "reason_too_short", "reason below AdminReasonMinChars is refused")
+check(adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "", requestId = "r1", expectedRev = 1 }).error == "reason_blank", "an empty reason is refused (any non-empty reason is accepted)")
 check(adjust(boss, { username = "boss", currency = "survivor", delta = 10, reason = "paying myself is not allowed", requestId = "r2", expectedRev = 0 }).error == "self_target", "admins cannot adjust their own account")
 check(adjust(boss, { username = "SYSTEM_MINT", currency = "survivor", delta = 10, reason = "system accounts are off limits", requestId = "r3", expectedRev = 0 }).error == "invalid_args", "system accounts cannot be targeted")
 check(adjust(boss, { username = "nobody", currency = "survivor", delta = 10, reason = "unknown account should fail", requestId = "r4", expectedRev = 0 }).error == "unknown_account", "unknown accounts are refused")
@@ -823,13 +822,13 @@ local ideoBlanks = adjust(boss, { username = "joe", currency = "survivor", delta
 check(blanks.error == "reason_blank" and ideoBlanks.error == "reason_blank" and jbal() == bal0,
     "a reason made of spaces only (ASCII or ideographic) is refused")
 -- standard Lua 的字串是 UTF-8 位元組、Kahlua 是 UTF-16 字元（StringLib.java:760-768）：
--- 兩邊都必須把「中」算成一個字，所以 30 bytes 的十個字要過、12 bytes 的四個字要被拒
-local cjk10 = string.rep("\228\184\173", 10)
-local cjk4 = string.rep("\228\184\173", 4)
-local okCjk = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = cjk10, requestId = "t9", expectedRev = rev0 })
-local shortCjk = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = cjk4, requestId = "t10", expectedRev = rev0 + 1 })
-check(okCjk.ok == true and shortCjk.error == "reason_too_short" and jbal() == bal0 + 10,
-    "reason length counts characters: a 10-character Chinese reason passes, a 4-character one does not")
+-- 兩邊都必須把「中」算成一個字：1000 個中文字（3000 bytes）要過上限、1001 個要被拒
+local cjk1000 = string.rep("\228\184\173", A.REASON_MAX)
+local cjk1001 = string.rep("\228\184\173", A.REASON_MAX + 1)
+local okCjk = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = cjk1000, requestId = "t9", expectedRev = rev0 })
+local longCjk = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = cjk1001, requestId = "t10", expectedRev = rev0 + 1 })
+check(okCjk.ok == true and longCjk.error == "reason_too_long" and jbal() == bal0 + 10,
+    "reason length counts characters: 1000 Chinese characters pass the cap, 1001 do not")
 local ctrlReason = adjust(boss, { username = "joe", currency = "survivor", delta = 10, reason = "line\nbreak inside the reason", requestId = "t11", expectedRev = rev0 + 1 })
 check(ctrlReason.error == "reason_invalid" and jbal() == bal0 + 10, "control characters in a reason are refused")
 
@@ -1294,11 +1293,13 @@ fire("OnServerStarted")                       -- E1: fresh world
 local e1 = S.modData().meta.epoch
 L.credit("zed", "survivor", 10, "SYSTEM_MINT", { requestId = "z1", reasonCode = "t" })
 L.credit("zed", "survivor", 10, "SYSTEM_MINT", { requestId = "z2", reasonCode = "t" })
+fire("OnTickEvenPaused")                      -- receipt lines reach the files
 local saved = deepCopy(modDataStore[EC.MODDATA_KEY])   -- world save at seq 2
 nowMs = nowMs + 1000
 fire("OnServerStarted")                       -- E2 loads the save (seq 2)
 local e2 = S.modData().meta.epoch
 L.credit("zed", "survivor", 10, "SYSTEM_MINT", { requestId = "z3", reasonCode = "t" })   -- seq 3, never saved
+fire("OnTickEvenPaused")
 check(S.modData().meta.seq == 3 and e2 ~= e1, "E2 posted seq 3 without a save")
 modDataStore[EC.MODDATA_KEY] = deepCopy(saved)        -- SIGKILL: the next start loads the E1 save again
 nowMs = nowMs + 1000
@@ -1343,6 +1344,36 @@ for _, e in ipairs(af.args.entries) do
 end
 check(flagged == 1 and unflagged == 0, "an audit line stamped with the crashed epoch above its loadedSeq is marked rolledBack")
 onlinePlayers = {}
+
+-- 「最近」＝兩個月收據檔；管理頁收據檔；凍結即時推送給玩家
+local zedP = fakePlayer("zed")
+onlinePlayers = { admin3, zedP }
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", zedP, { month = "recent" })
+for _ = 1, 5 do fire("OnTickEvenPaused") end
+local hist = lastSent("wallet.history").args
+local rolledRows, liveRows = 0, 0
+for _, e in ipairs(hist.entries or {}) do if e.rolledBack then rolledRows = rolledRows + 1 else liveRows = liveRows + 1 end end
+check(hist.month == "recent" and rolledRows == 1 and liveRows == 2, "wallet.history recent reads the receipt files and flags the crashed line")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.receipts", admin3, { username = "zed" })
+for _ = 1, 5 do fire("OnTickEvenPaused") end
+local ar = lastSent("admin.receipts").args
+rolledRows = 0
+for _, e in ipairs(ar.entries or {}) do if e.rolledBack then rolledRows = rolledRows + 1 end end
+check(ar.username == "zed" and #ar.entries == 3 and rolledRows == 1, "admin.receipts serves the target's receipt files with rolledBack")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", admin3, { username = "zed", frozen = true, reason = "test", requestId = "fz-1" })
+local pushed = nil
+for i = #sentCommands, 1, -1 do
+    local c = sentCommands[i]
+    if c.command == "wallet.changed" and c.player == zedP then pushed = c.args break end
+end
+check(pushed ~= nil and pushed.frozen == true, "freezing pushes wallet.changed{frozen=true} to the online target")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", zedP, {})
+check(lastSent("wallet.state").args.frozen == true, "wallet.state carries the frozen flag")
+S.modData().frozen["zed"] = nil
 
 -- admin.players：候選清單（線上優先、子字串、不分大小寫、空查詢只列線上）
 local boss2 = fakePlayer("boss"); boss2.role = "admin"
