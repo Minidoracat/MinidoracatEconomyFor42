@@ -1,0 +1,40 @@
+module Base
+{
+    /* Economy terminal (stage C thin slice). Shape verified in stage A11 (proto_terminal.txt):
+       OnAddToMenu keeps the entry out of non-admin build menus; the tile is a vanilla bank
+       machine until the mod ships its own art. Registration happens after placement through
+       the right-click menu (terminal.register), never automatically. */
+    entity MinidoracatEconomyTerminal
+    {
+        component UiConfig
+        {
+            xuiSkin = default,
+            entityStyle = ES_MinidoracatEconomyTerminal,
+            uiEnabled = false,
+        }
+        component SpriteConfig
+        {
+            isProp = true,
+            face SINGLE
+            {
+                layer
+                {
+                    row = location_business_bank_01_0,
+                }
+            }
+        }
+        component CraftRecipe
+        {
+            OnAddToMenu = MinidoracatEconomy_AdminBuildOnly,
+            timedAction = BuildWoodenStructureMedium,
+            time = 10,
+            category = Furniture,
+            Tags = Furniture,
+            inputs
+            {
+                item 1 tags[base:hammer] mode:keep flags[Prop1;MayDegradeVeryLight],
+                item 1 [Base.Plank],
+            }
+        }
+    }
+}

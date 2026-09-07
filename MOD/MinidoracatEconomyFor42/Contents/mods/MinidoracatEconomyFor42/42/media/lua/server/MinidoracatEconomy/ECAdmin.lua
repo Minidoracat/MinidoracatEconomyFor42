@@ -51,6 +51,9 @@ end
 if not MinidoracatEconomy or not MinidoracatEconomy.Integration then
     require "MinidoracatEconomy/ECIntegration"
 end
+if not MinidoracatEconomy or not MinidoracatEconomy.Shop then
+    require "MinidoracatEconomy/ECShop"
+end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
 local L = EC and EC.Ledger
@@ -60,7 +63,10 @@ local R = EC and EC.Rewards
 local W = EC and EC.Wallet
 local I = EC and EC.Icons
 local G = EC and EC.Integration
-if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W or not I or not G then
+local T = EC and EC.Terminal
+local M = EC and EC.Mailbox
+local Shop = EC and EC.Shop
+if not S or not S.AUTHORITY or not L or not X or not Cfg or not R or not W or not I or not G or not T or not M or not Shop then
     return
 end
 
@@ -586,6 +592,9 @@ function A.system(write)
         issued = { today = sumRollups(1, ms), week = sumRollups(7, ms), month = sumRollups(30, ms) },
         perms = { read = true, write = write == true },
         sandbox = Cfg.options(),
+        terminals = T.count(),
+        catalog = Shop.fileStatus(),
+        mailboxUnclaimed = md.mailbox and md.mailbox.unclaimed or 0,
     }
 end
 
@@ -753,6 +762,36 @@ S.handlers["admin.option"] = function(player, args)
     res.options = Cfg.options()
     res.currencies = Cfg.snapshot()
     S.reply(player, "admin.option", res)
+end
+
+-- admin.catalog {action=list|set|reload, id?, price?, dailyCap?, enabled?, clear?, reason?, requestId}:
+-- list = merged catalog with this admin's own remaining caps (read gate); set = runtime override
+-- of one SKU (write gate, audited); reload = re-read catalog.json (write gate). Every reply
+-- carries the whole catalog snapshot so the page redraws from one source.
+S.handlers["admin.catalog"] = function(player, args)
+    local action = type(args) == "table" and args.action or "list"
+    local write = action == "set" or action == "reload"
+    if not gate(player, "admin.catalog", write) then return end
+    local res = { ok = true }
+    if action == "set" then
+        if type(args.id) ~= "string" then
+            res = { ok = false, error = "invalid_args" }
+        else
+            local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
+            local ok, err = Shop.setOverride(args.id, { price = args.price, dailyCap = args.dailyCap, enabled = args.enabled, clear = args.clear },
+                player:getUsername(), reason)
+            if not ok then res = { ok = false, error = err } end
+            res.id = args.id
+        end
+    elseif action == "reload" then
+        local ok, err = Shop.reload(player:getUsername())
+        if not ok then res = { ok = false, error = "catalog_invalid", detail = err } end
+    end
+    if type(args) == "table" then res.requestId = args.requestId end
+    local snap = Shop.snapshot(player:getUsername(), EC.now())
+    for k, v in pairs(snap) do res[k] = v end
+    res.perms = { read = true, write = A.isAdmin(player) }
+    S.reply(player, "admin.catalog", res)
 end
 
 -- admin.auditFile (read gate): the newest entries of the previous and current month's audit

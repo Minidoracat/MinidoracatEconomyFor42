@@ -649,6 +649,15 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - 只消耗交易幣、不 mint，先建立價格錨與貨幣回收口；
 - 系統收購（mint）**不在此階段**，留到階段 G。
 
+**定案（2026-09-07，主持人）**：
+
+- **終端薄片先進 C**（購買必須在終端旁，規則從第一天就正確）：管理員建造實體（entity 腳本沿用 A11 的 `proto_terminal.txt` 形狀、tile 先借原版 `location_business_bank_01_0`，美術待定）；右鍵「登錄為終端／移除登錄」（僅 admin，server 以 `hasCapability(AddItem)` 重驗，並確認該格有允許的 tile 物件）與「使用終端」（已登錄者，任何人，開經濟中心）；ModData `terminals[id]={x,y,z,kind,by,at}`、id `<epoch>:<seq>`；`RemoteReadOnly=true` 時所有寫入類指令（`shop.buy`、`mail.claim`）要求距任一終端 ≤ 2 格且同層（A12 的 Chebyshev 距離），否則 `not_at_terminal`；`false` 時不限。client 由 `hello.ack`／`terminals` 取得清單，狀態帶顯示「在終端旁」或「遠端唯讀」；伺服器沒有任何終端時面板提示管理員設置。
+- **catalog 以檔案為主、面板覆寫**：`{cachedir}/Lua/MinidoracatEconomy/catalog.json`（整份 JSON：`{"items":[{"id","item","qty","price","dailyCap","category","enabled"}]}`；缺檔時 server 寫出預設樣本；解析或驗證失敗沿用上一份並在面板顯示錯誤）；`id` `[A-Za-z0-9_-]{1,32}` 唯一、`item` 須 `ScriptManager.instance:FindItem` 可解析（`ScriptManager.java:1413-1419`）、`qty` 1–50、`price` ≥ 1（整數，`marketUnit` 幣）、`dailyCap` 0（不限）–1,000,000、最多 200 筆；runtime 覆寫 `config.catalog[id]={enabled,price,dailyCap}` 走 `admin.catalog{action=list|set|reload}`（寫閘門、稽核、`catalogRev` 遞增）。玩家看到的是合併結果；`shop.buy` 帶 `revision`，不合即 `catalog_changed`（不靜默換價）。
+- **購買**：`shop.buy{id, count(1–10), revision, requestId}` 全有或全無：依序驗 SKU 啟用、revision、終端距離、凍結、當日剩餘限購（`shopDaily[day][username][id]`，day 用獎勵日 `R.dayKey`）、信箱空位（每帳號 50 筆未領、全服 10,000）、單次物品數上限 100（`qty×count`）→ `L.debit(username, currency, price×count, "SYSTEM_BURN", {kind="shop_buy"})` → 配額計數＋信箱項 `{mailId, owner, kind="shop", item, qty, txId, price, state="ready"}`（同 tick、只動 ModData，規則一）→ 立即 `claim-in`（在線且背包 `hasRoomFor`，`ItemContainer.java:210-231`；物品以 `instanceItem` 全新建立，不需快照欄位；一次 `sendAddItemsToContainer`，`LuaManager.java:12316`）；放不下留在信箱。事件 `shop.purchase`、收據 kind `shop_buy`。
+- **最小信箱**：`mailbox[username]={entries[]}`，`mail.list`、`mail.claim{mailId}`（需在終端旁）；`claim-in` 三步同 tick：信箱項 `claiming` → 重建＋戳記 `item:getModData().MinidoracatEconomy={mailId,txId,epoch,seq}` → `claimed`；**玩家 modData 記領取見證 `claims[mailId]={epoch,seq}`（不在第三步清除）**，這是規則三「信箱 claimed、背包無戳記」能分辨「玩家存檔較舊（要重送）」與「物品已正常消耗／放進箱子（不重送）」的唯一依據——見證存在＝玩家存檔已晚於領取，缺戳記就是正常流通；見證不存在才重送。`claimed` 項保留 24 小時後清除（重送窗口只需涵蓋玩家存檔 180 s 週期）。
+- **規則三在 C 的落地**：登入（首個 command）收斂只掃本人信箱與背包：① `claimed`＋無見證＋無戳記 → 重送；② `ready/claiming`＋（見證或戳記）→ 標 `claimed`；③ 背包有戳記但信箱無此 mailId → **只在 `S.isRolledBack(stamp.epoch, stamp.seq)` 為真時收回**（錢已隨 (1) 回滾），否則視為已結清的舊物（如死亡後從屍體撿回）留著——用既有 epoch history 判定，不需要永久保留信箱項；④ 規則五第①條同時落地：`OnCharacterDeath` 把該 username 的 `claimed` 標 `settled`（永不重送）。`pendingOuts`／carryOver 要到 D 的 list-out 才需要。
+- **不做**：系統收購（G）、社群幣 catalog（Discord 階段）、購買數量自動縮到剩餘配額、每日限購以外的全服上限（供給只出不進，不需保險絲）。
+
 ### 階段 D：管理員終端（ATM／交易站）＋中央託管市場＋簡易信箱
 
 - **模型（2026-09-06 主持人定案）**：市場是**中央市場**。管理員在公共區域建造終端——「ATM」與「交易站」——所有終端開同一個經濟中心介面、連同一個伺服器市場；兩者唯一差別是交易站多電台功能（§17.3）。沒有玩家自建攤位、沒有安全屋依賴、沒有站主。

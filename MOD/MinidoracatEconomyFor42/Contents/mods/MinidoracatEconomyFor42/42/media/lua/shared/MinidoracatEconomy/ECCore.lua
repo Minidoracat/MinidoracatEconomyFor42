@@ -44,6 +44,23 @@ EC.CURRENCIES = {
 }
 EC.CURRENCY_ORDER = { "survivor", "cat" }
 
+-- Terminals (stage C thin slice, spec 12 stage C / 17.1): the admin-built entity's tile plus any
+-- tile an admin may register as a terminal (vanilla bank ATMs qualify). Write commands need the
+-- player within TERMINAL_RANGE tiles (Chebyshev, same level) of a registered terminal while the
+-- sandbox option RemoteReadOnly is on.
+EC.TERMINAL_SPRITES = { ["location_business_bank_01_0"] = true }
+EC.TERMINAL_RANGE = 2
+EC.TERMINAL_KINDS = { atm = true, trade = true }
+
+-- CraftRecipe OnAddToMenu callback of the terminal entity (CraftRecipe.java:379-380, called by
+-- ISRecipeScrollingListBox.lua:344-347 on the client): only admins see the build entry. Server
+-- side never lists build menus; getAccessLevel is client-only (LuaManager.java:4435-4436).
+function MinidoracatEconomy_AdminBuildOnly(param)
+    if isServer() then return false end
+    local ok, level = pcall(getAccessLevel)
+    return ok and level == "admin"
+end
+
 function EC.log(msg)
     print(EC.LOG_TAG .. " " .. tostring(msg))
 end

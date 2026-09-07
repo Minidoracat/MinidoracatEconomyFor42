@@ -218,6 +218,8 @@ handlers.hello = function(player, args)
         version = EC.VERSION,
         remoteReadOnly = EC.sandbox("RemoteReadOnly", true),
         currencies = S.Config and S.Config.snapshot() or nil,
+        terminals = S.Terminal and S.Terminal.list() or nil,
+        terminalRange = EC.TERMINAL_RANGE,
     })
 end
 

@@ -123,14 +123,58 @@ local function fire(name, ...)
     for _, fn in ipairs(events[name] or {}) do fn(...) end
 end
 
+-- 假物品／背包（階段 C：信箱 claim-in、收斂）。全域：主函式已逼近 200 個 local。
+knownItems = { ["Base.Bandage"] = 0.1, ["Base.Antibiotics"] = 0.1, ["Base.RippedSheets"] = 0.1, ["Base.CannedCorn"] = 0.5,
+    ["Base.Nails"] = 0.01, ["Base.Screws"] = 0.01, ["Base.Plank"] = 3, ["Base.Rope"] = 0.5, ["Base.Twine"] = 0.1,
+    ["Base.Lighter"] = 0.1, ["Base.Hammer"] = 1.5, ["Base.Saw"] = 1.5, ["Base.Axe"] = 3, ["Base.Heavy"] = 30 }
+ScriptManager = { instance = { FindItem = function(_, name) return knownItems[name] and { name = name } or nil end } }
+Capability = { AddItem = "AddItem", SaveWorld = "SaveWorld" }
+nextItemId = 1
+function instanceItem(fullType)
+    if not knownItems[fullType] then return nil end
+    local id = nextItemId
+    nextItemId = nextItemId + 1
+    local modData = {}
+    return { fullType = fullType, id = id, getFullType = function() return fullType end, getID = function() return id end,
+        getModData = function() return modData end, getUnequippedWeight = function() return knownItems[fullType] end,
+        getActualWeight = function() return knownItems[fullType] end }
+end
+ArrayList = { new = function() local items = {}; return { add = function(_, it) items[#items + 1] = it end, size = function() return #items end, get = function(_, i) return items[i + 1] end, items = items } end }
+sentItemPackets = {}
+function sendAddItemsToContainer(container, list) sentItemPackets[#sentItemPackets + 1] = { container = container, add = list.items } end
+function sendAddItemToContainer(container, item) sentItemPackets[#sentItemPackets + 1] = { container = container, add = { item } } end
+function sendRemoveItemFromContainer(container, item) sentItemPackets[#sentItemPackets + 1] = { container = container, remove = item } end
+function fakeInventory(maxWeight)
+    local inv = { items = {}, maxWeight = maxWeight or 20 }
+    inv.weight = function() local w = 0; for _, it in ipairs(inv.items) do w = w + it:getUnequippedWeight() end; return w end
+    inv.hasRoomFor = function(_, _, w) return inv.weight() + w <= inv.maxWeight end
+    inv.AddItem = function(_, it) inv.items[#inv.items + 1] = it; return it end
+    inv.Remove = function(_, it) for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i) end end end
+    inv.getItems = function() return javaList(inv.items) end
+    inv.count = function(fullType) local n = 0; for _, it in ipairs(inv.items) do if not fullType or it.fullType == fullType then n = n + 1 end end; return n end
+    return inv
+end
+worldSprites = {}                -- "x,y,z" -> sprite name（getCell():getGridSquare 的假物件）
+function getCell()
+    return { getGridSquare = function(_, x, y, z)
+        local name = worldSprites[x .. "," .. y .. "," .. z]
+        if not name then return nil end
+        return { getObjects = function() return javaList({ { getSprite = function() return { getName = function() return name end } end } }) end }
+    end }
+end
+
 local function fakePlayer(username)
-    local p = { username = username, x = 100, y = 200, hours = 0 }
+    local p = { username = username, x = 100, y = 200, z = 0, hours = 0, modData = {}, inventory = fakeInventory(20), caps = {} }
     p.getUsername = function() return username end
     p.getX = function() return p.x end
     p.getY = function() return p.y end
+    p.getZ = function() return p.z end
     p.getHoursSurvived = function() return p.hours end
+    p.getInventory = function() return p.inventory end
+    p.getModData = function() return p.modData end
+    p.transmitModData = function() p.transmitted = (p.transmitted or 0) + 1 end
     p.role = "user"
-    p.getRole = function() return { getName = function() return p.role end } end
+    p.getRole = function() return { getName = function() return p.role end, hasCapability = function(_, cap) return p.role == "admin" or p.caps[cap] == true end } end
     return p
 end
 
@@ -154,6 +198,9 @@ require("MinidoracatEconomy/ECRewards")
 require("MinidoracatEconomy/ECWallet")
 require("MinidoracatEconomy/ECIcons")
 require("MinidoracatEconomy/ECIntegration")
+require("MinidoracatEconomy/ECTerminal")
+require("MinidoracatEconomy/ECMailbox")
+require("MinidoracatEconomy/ECShop")
 require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
@@ -166,7 +213,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 281     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 337     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1479,6 +1526,273 @@ for _, e in ipairs(au) do if e.action == "config" and e.currency == "options" th
 check(optAudit >= 4, "every option change is audited (currency=options, field=key)")
 SandboxVars.MinidoracatEconomy.RemoteReadOnly = nil
 SandboxVars.MinidoracatEconomy.CheckinAmount = nil
+onlinePlayers = {}
+end)()
+
+-- ===== 情境二十五：終端登錄與距離閘門 =====
+io.write("scenario 25: terminals\n")
+;(function()
+local T = S.Terminal
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+worldSprites = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local zed = fakePlayer("zed")
+onlinePlayers = { boss, zed }
+local function reg(who, x, y, z, extra)
+    nowMs = nowMs + 600
+    local args = { x = x, y = y, z = z, kind = "atm", requestId = "t" .. nowMs }
+    for k, v in pairs(extra or {}) do args[k] = v end
+    fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.register", who, args)
+    return lastSent("terminal.register").args
+end
+check(reg(zed, 100, 200, 0).error == "forbidden", "a player cannot register a terminal")
+check(reg(boss, 100, 200, 0).error == "no_terminal_object", "an admin cannot register a bare square")
+worldSprites["100,200,0"] = "location_business_bank_01_0"
+local r = reg(boss, 100, 200, 0)
+check(r.ok == true and T.count() == 1 and lastSent("terminals").args.list[1].x == 100, "registering a square with a terminal tile broadcasts the list")
+check(reg(boss, 100, 200, 0).error == "already_registered", "the same square is refused twice")
+check(reg(boss, 100, 200, 0, { kind = "bank" }).error == "invalid_args", "unknown terminal kinds are refused")
+zed.x, zed.y, zed.z = 101.4, 201.2, 0
+check(T.near(zed) == true, "1.4 tiles away on the same level is near")
+zed.x = 103
+check(T.near(zed) == false, "3 tiles away is not near")
+zed.x, zed.z = 101, 1
+check(T.near(zed) == false, "one level up is not near")
+zed.z = 0
+SandboxVars.MinidoracatEconomy.RemoteReadOnly = false
+zed.x = 500
+check(T.near(zed) == true, "RemoteReadOnly=false lifts the terminal requirement")
+SandboxVars.MinidoracatEconomy.RemoteReadOnly = true
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", zed, {})
+local ack = lastSent("hello.ack").args
+check(ack.terminals ~= nil and #ack.terminals == 1 and ack.terminals[1].id == r.id and ack.terminalRange == 2, "hello.ack carries the terminal list and range")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.unregister", boss, { id = "nope" })
+check(lastSent("terminal.unregister").args.error == "unknown_terminal", "unregistering an unknown id is refused")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.unregister", zed, { id = r.id })
+check(lastSent("terminal.unregister").args.error == "forbidden" and T.count() == 1, "a player cannot unregister")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.unregister", boss, { id = r.id })
+check(lastSent("terminal.unregister").args.ok == true and T.count() == 0 and #lastSent("terminals").args.list == 0, "an admin unregisters and everyone gets the empty list")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境二十六：商店目錄、購買、信箱交付 =====
+io.write("scenario 26: system shop\n")
+;(function()
+local T, M, Shop = S.Terminal, S.Mailbox, S.Shop
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+sentItemPackets = {}
+worldSprites = { ["100,200,0"] = "location_business_bank_01_0" }
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local mod = fakePlayer("mod"); mod.role = "moderator"
+local zed = fakePlayer("zed")
+onlinePlayers = { boss, mod, zed }
+local catalogFile = files["MinidoracatEconomy/catalog.json"]
+check(catalogFile ~= nil and Shop.fileStatus().count == 13 and Shop.fileStatus().error == nil, "first start writes the default catalog.json and loads it")
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    return lastSent(name).args
+end
+local list = cmd(zed, "shop.list")
+check(#list.items == 13 and list.items[1].category <= list.items[2].category and list.currency == "survivor" and list.atTerminal == false
+    and type(list.revision) == "string" and list.items[1].remaining ~= nil, "shop.list returns the sorted catalog, the market currency and per-player remaining caps")
+local rev = list.revision
+L.credit("zed", "survivor", 100, "SYSTEM_MINT", { requestId = "seed-zed", reasonCode = "t" })
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.register", boss, { x = 100, y = 200, z = 0, kind = "atm", requestId = "t1" })
+zed.x, zed.y = 150, 200
+check(cmd(zed, "shop.buy", { id = "bandage", count = 2, revision = "0:stale" }).error == "catalog_changed", "a stale catalog revision is refused")
+check(cmd(zed, "shop.buy", { id = "bandage", count = 2, revision = rev }).error == "not_at_terminal"
+    and L.getBalance("zed", "survivor").available == 100, "buying away from a terminal is refused with zero debit")
+zed.x = 101
+local buy = cmd(zed, "shop.buy", { id = "bandage", count = 2, revision = rev, requestId = "b1" })
+check(buy.ok == true and buy.total == 24 and buy.delivered == true and buy.balance == 76 and buy.remaining == 3
+    and zed.inventory.count("Base.Bandage") == 2 and M.unclaimed("zed") == 0, "a purchase burns 24, delivers 2 bandages straight into the backpack and counts against the cap")
+local stamp = zed.inventory.items[1]:getModData()[EC.PLAYER_MODDATA_KEY]
+local witness = zed.modData[EC.PLAYER_MODDATA_KEY].claims[buy.mailId]
+check(stamp ~= nil and stamp.mailId == buy.mailId and stamp.txId == buy.txId and stamp.epoch == S.modData().meta.epoch
+    and witness ~= nil and witness.seq == stamp.seq and zed.transmitted == 1, "delivered items are stamped and the player modData holds the claim witness")
+local pk = sentItemPackets[#sentItemPackets]
+check(pk ~= nil and pk.container == zed.inventory and #pk.add == 2, "one sendAddItemsToContainer packet carries both items")
+local dup = cmd(zed, "shop.buy", { id = "bandage", count = 2, revision = rev, requestId = "b1" })
+check(dup.duplicate == true and dup.txId == buy.txId and L.getBalance("zed", "survivor").available == 76, "resending the same requestId returns the first result without a second debit")
+check(cmd(zed, "shop.buy", { id = "bandage", count = 4, revision = rev }).error == "daily_cap", "exceeding the per-account daily cap is refused")
+check(cmd(zed, "shop.buy", { id = "bandage", count = 3, revision = rev }).ok == true and Shop.boughtToday("zed", "bandage", nowMs) == 5, "buying up to the cap is fine")
+check(cmd(zed, "shop.buy", { id = "axe", revision = rev }).error == "insufficient_funds" and L.getBalance("zed", "survivor").available == 40, "insufficient funds refuse with zero debit")
+check(cmd(zed, "shop.buy", { id = "nails", count = 6, revision = rev }).error == "too_many_items", "more than 100 items per purchase is refused")
+local rc = L.receipts("zed")
+check(rc[#rc].kind == "shop_buy" and rc[#rc].amount == -36 and rc[#rc].counterparty == "SYSTEM_BURN", "the receipt ring shows the burn")
+-- admin overrides
+check(cmd(mod, "admin.catalog", { action = "set", id = "bandage", enabled = false }).error == "forbidden", "a moderator cannot change the catalog")
+local set = cmd(boss, "admin.catalog", { action = "set", id = "bandage", enabled = false, price = 99 })
+local bandage = nil
+for _, it in ipairs(set.items) do if it.id == "bandage" then bandage = it end end
+check(set.ok == true and bandage.enabled == false and bandage.price == 99 and bandage.override == true and bandage.filePrice == 12 and set.revision ~= rev,
+    "an admin override disables and reprices a SKU and bumps the revision")
+check(cmd(zed, "shop.buy", { id = "bandage", revision = set.revision }).error == "unknown_sku", "a disabled SKU cannot be bought")
+check(cmd(boss, "admin.catalog", { action = "set", id = "bandage", clear = "all" }).items ~= nil and Shop.sku("bandage").enabled == true and Shop.sku("bandage").price == 12
+    and S.modData().config.catalog.bandage == nil, "clear=all removes the override row")
+check(cmd(boss, "admin.catalog", { action = "set", id = "nope", enabled = false }).error == "unknown_sku", "unknown SKUs cannot be overridden")
+local au = X.auditEntries(10)
+local catalogAudit = 0
+for _, e in ipairs(au) do if e.action == "catalog" then catalogAudit = catalogAudit + 1 end end
+check(catalogAudit >= 3, "catalog overrides are audited per field")
+-- backpack full -> stays in the mailbox until claimed at a terminal
+zed.inventory.maxWeight = 0.5
+rev = cmd(zed, "shop.list").revision
+local plank = cmd(zed, "shop.buy", { id = "plank", revision = rev })
+check(plank.ok == true and plank.delivered == false and plank.deliveryError == "backpack_full" and M.unclaimed("zed") == 1
+    and L.getBalance("zed", "survivor").available == 10, "a purchase that does not fit is paid and parked in the mailbox")
+local ml = cmd(zed, "mail.list")
+check(#ml.entries == 1 and ml.entries[1].item == "Base.Plank" and ml.entries[1].qty == 5 and ml.unclaimed == 1, "mail.list shows the parked entry")
+zed.x = 150
+check(cmd(zed, "mail.claim", { mailId = plank.mailId }).error == "not_at_terminal", "claiming away from a terminal is refused")
+zed.x = 101
+check(cmd(zed, "mail.claim", { mailId = plank.mailId }).error == "backpack_full" and M.unclaimed("zed") == 1, "claiming with a full backpack keeps the entry ready")
+zed.inventory.maxWeight = 50
+local cl = cmd(zed, "mail.claim", { mailId = plank.mailId })
+check(cl.ok == true and zed.inventory.count("Base.Plank") == 5 and M.unclaimed("zed") == 0 and #cl.entries == 0, "claiming at a terminal delivers the planks")
+check(cmd(zed, "mail.claim", { mailId = plank.mailId }).error == "already_claimed", "an entry cannot be claimed twice")
+-- mailbox cap
+L.credit("zed", "survivor", 1000, "SYSTEM_MINT", { requestId = "seed-zed-2", reasonCode = "t" })
+zed.inventory.maxWeight = 0
+local keep = M.PER_ACCOUNT
+M.PER_ACCOUNT = 2
+cmd(zed, "shop.buy", { id = "rope", revision = rev })
+cmd(zed, "shop.buy", { id = "rope", revision = rev })
+check(cmd(zed, "shop.buy", { id = "rope", revision = rev }).error == "mailbox_full" and M.unclaimed("zed") == 2, "a full mailbox refuses new purchases before any debit")
+M.PER_ACCOUNT = keep
+-- reload: broken file keeps the previous catalog, a fixed file replaces it
+files["MinidoracatEconomy/catalog.json"] = { lines = { "{ \"items\": [ { \"id\": \"x\" " }, opens = 0 }
+local bad = cmd(boss, "admin.catalog", { action = "reload" })
+check(bad.ok == false and bad.error == "catalog_invalid" and bad.count == 13 and bad.file.error ~= nil, "a broken catalog.json is rejected and the previous catalog stays")
+files["MinidoracatEconomy/catalog.json"] = { lines = { '{"items":[{"id":"ghost","item":"Base.Nope","price":5}]}' }, opens = 0 }
+local ghost = cmd(boss, "admin.catalog", { action = "reload" })
+check(ghost.ok == false and string.find(ghost.detail, "ghost", 1, true) ~= nil and Shop.fileStatus().count == 13, "an unknown item type names the offending SKU and keeps the previous catalog")
+files["MinidoracatEconomy/catalog.json"] = { lines = { '{"items":[{"id":"only","item":"Base.Twine","qty":2,"price":7,"dailyCap":0,"category":"z"}]}' }, opens = 0 }
+local good = cmd(boss, "admin.catalog", { action = "reload" })
+check(good.ok == true and good.count == 1 and good.items[1].id == "only" and good.items[1].remaining == nil and good.revision ~= rev, "a valid file replaces the catalog and bumps the revision")
+check(cmd(mod, "admin.catalog", { action = "reload" }).error == "forbidden" and cmd(mod, "admin.catalog", { action = "list" }).ok == true, "reload needs the write gate, list only the read gate")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境二十七：登入收斂（規則三）與死亡封存（規則五） =====
+io.write("scenario 27: mailbox reconciliation\n")
+;(function()
+local function deepCopy(t)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do out[k] = deepCopy(v) end
+    return out
+end
+local M, Shop = S.Mailbox, S.Shop
+local KEY = EC.PLAYER_MODDATA_KEY
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+sentItemPackets = {}
+worldSprites = { ["100,200,0"] = "location_business_bank_01_0" }
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local zed = fakePlayer("zed")
+zed.x, zed.y = 101, 200
+onlinePlayers = { boss, zed }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function anomalies(resolution)
+    fire("OnTickEvenPaused")                  -- events are queued; the tick writes them out
+    local n = 0
+    for _, f in pairs(files) do
+        for _, l in ipairs(f.lines) do
+            if string.find(l, '"type":"ledger.anomaly"', 1, true) and string.find(l, '"resolution":"' .. resolution .. '"', 1, true) then n = n + 1 end
+        end
+    end
+    return n
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("zed", "survivor", 1000, "SYSTEM_MINT", { requestId = "seed", reasonCode = "t" })
+local rev = cmd(zed, "shop.list").revision
+local b1 = cmd(zed, "shop.buy", { id = "bandage", revision = rev })
+check(b1.delivered == true and zed.inventory.count("Base.Bandage") == 1, "setup: one bandage delivered")
+-- rule three (1): player save older than the claim = no witness and no item -> redeliver
+zed.inventory.items = {}
+zed.modData[KEY].claims = {}
+cmd(zed, "hello")
+check(zed.inventory.count("Base.Bandage") == 1 and zed.modData[KEY].claims[b1.mailId] ~= nil and anomalies("redelivered") == 1,
+    "claimed entry without witness or item is redelivered and re-witnessed")
+-- normal consumption: witness present, item gone -> nothing
+zed.inventory.items = {}
+cmd(zed, "hello")
+check(zed.inventory.count("Base.Bandage") == 0 and anomalies("redelivered") == 1, "a witnessed claim whose item was used is not redelivered")
+-- rule three (2): world save older than the player save = entry ready but the item is there
+local b2 = cmd(zed, "shop.buy", { id = "twine", revision = rev })
+local o = S.modData().mailbox.byOwner.zed
+o.entries[b2.mailId].state = "ready"; o.unclaimed = o.unclaimed + 1; S.modData().mailbox.unclaimed = S.modData().mailbox.unclaimed + 1
+cmd(zed, "hello")
+check(o.entries[b2.mailId].state == "claimed" and M.unclaimed("zed") == 0 and anomalies("mark-claimed") == 1, "a ready entry whose item is already in the backpack is marked claimed")
+-- rule three (3): the claim rolled back with the world (money is back) -> stamped item is taken back
+fire("OnTickEvenPaused")
+local saved = deepCopy(modDataStore[EC.MODDATA_KEY])
+local balanceBefore = L.getBalance("zed", "survivor").available
+local b3 = cmd(zed, "shop.buy", { id = "lighter", revision = rev })
+check(b3.delivered == true and zed.inventory.count("Base.Lighter") == 1, "setup: lighter delivered after the save point")
+modDataStore[EC.MODDATA_KEY] = deepCopy(saved)
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+onlinePlayers = { boss, zed }
+sentItemPackets = {}
+cmd(zed, "hello")
+check(zed.inventory.count("Base.Lighter") == 0 and L.getBalance("zed", "survivor").available == balanceBefore
+    and sentItemPackets[#sentItemPackets] ~= nil and sentItemPackets[#sentItemPackets].remove ~= nil
+    and zed.modData[KEY].claims[b3.mailId] == nil and anomalies("removed-rolled-back") == 1,
+    "an item whose claim rolled back with the world is removed (the money came back) and its witness dropped")
+-- a durable claim whose entry was pruned after the TTL is left alone
+rev = cmd(zed, "shop.list").revision
+local b4 = cmd(zed, "shop.buy", { id = "twine", revision = rev })
+nowMs = nowMs + M.CLAIMED_TTL_MS + M.PRUNE_EVERY_MS + 1000
+fire("OnTickEvenPaused")
+check(S.modData().mailbox.byOwner.zed == nil or S.modData().mailbox.byOwner.zed.entries[b4.mailId] == nil, "claimed entries are pruned after the TTL")
+cmd(zed, "hello")
+check(zed.inventory.count("Base.Twine") >= 1 and anomalies("removed-rolled-back") == 1, "a durable stamped item without an entry is kept")
+-- rule five (1): death settles claimed entries; the new character gets nothing again
+local b5 = cmd(zed, "shop.buy", { id = "bandage", revision = rev })
+check(b5.delivered == true, "setup: bandage delivered before death")
+fire("OnCharacterDeath", zed)
+check(S.modData().mailbox.byOwner.zed.entries[b5.mailId].state == "settled", "death marks claimed entries settled")
+zed.inventory = fakeInventory(20)
+zed.modData = {}
+cmd(zed, "hello")
+check(zed.inventory.count("Base.Bandage") == 0 and anomalies("redelivered") == 1, "a settled entry is never redelivered to the new character")
+-- a ready entry survives death and can still be claimed by the new character
+zed.inventory.maxWeight = 0
+local b6 = cmd(zed, "shop.buy", { id = "plank", revision = rev })
+check(b6.delivered == false and M.unclaimed("zed") == 1, "setup: parked entry")
+fire("OnCharacterDeath", zed)
+zed.inventory = fakeInventory(50)
+zed.modData = {}
+cmd(zed, "hello")
+check(M.unclaimed("zed") == 1 and cmd(zed, "mail.claim", { mailId = b6.mailId }).ok == true and zed.inventory.count("Base.Plank") == 5, "ready entries stay claimable after death")
 onlinePlayers = {}
 end)()
 

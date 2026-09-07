@@ -1,0 +1,14 @@
+module Base
+{
+    /* Build-menu name and icon of the terminal entity. DisplayName goes through Translator.getText
+       (XuiSkin.java:393-394), so the IGUI_ key below resolves from Translate/<LANG>/IG_UI.json. */
+    xuiSkin default
+    {
+        entity ES_MinidoracatEconomyTerminal
+        {
+            LuaWindowClass = ISEntityWindow,
+            DisplayName = IGUI_MinidoracatEconomy_Terminal_Name,
+            Icon = Build_CookingPit,
+        }
+    }
+}
