@@ -160,12 +160,18 @@ end
 -- market.* answers stack their own code space on top of the shop one: a listing error
 -- (Market_Error_*), a whitelist refusal the picker also paints per row (Market_Reason_*),
 -- then the shared codes (not_at_terminal, account_frozen, insufficient_funds, timeout...).
--- Takes the whole reply, not just the code: price_range carries the bounds.
+-- Takes the whole reply, not just the code: price_range/bid_too_low/hours_range carry bounds.
 local function marketError(args)
     local code = tostring((args and args.error) or "unknown")
     if code == "price_range" then
         return getText(T .. "Market_Error_price_range",
             amountText(args.min), amountText(args.max))
+    end
+    if code == "bid_too_low" then
+        return getText(T .. "Market_Error_bid_too_low", amountText(args.min))
+    end
+    if code == "hours_range" then
+        return getText(T .. "Market_Error_hours_range", tostring(args.min), tostring(args.max))
     end
     return getTextOrNull(T .. "Market_Error_" .. code) or getTextOrNull(T .. "Market_Reason_" .. code)
         or getTextOrNull(T .. "Shop_Error_" .. code) or getText(T .. "Rewards_Error_generic", code)
@@ -232,6 +238,65 @@ local function listingRow(it, currency, username, offsetMin, mine)
         own = own, mine = mine, actionMuted = own and not mine,
         actionLabel = mine and getText(T .. "Market_Cancel")
             or (own and getText(T .. "Market_Own") or getText(T .. "Market_Buy")),
+    }
+end
+
+-- One auction row, painted by the very same ListingCell as a market listing. An auction runs
+-- for hours, so the "ends" column is always a countdown; the current bid replaces the price
+-- (an auction without a bid quotes its opening price instead) and the bid count is a column of
+-- its own. That extra column costs the seller column: the seller shares the second line with
+-- the condition/uses/fluid text, the way the buy dialog already names it.
+-- `context` picks the action column: "browse" | "selling" | "bidding".
+local function auctionRow(it, currency, context)
+    local start = tonumber(it.startPrice) or 0
+    local bid = tonumber(it.bid)
+    local bids = math.max(0, math.floor(tonumber(it.bids) or 0))
+    local name = itemName(it.item)
+    local alt = it.name
+    if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
+    local seller = tostring(it.seller or "")
+    local left = (tonumber(it.expiresAt) or 0) - EC.now()
+    local ended = left <= 0
+    local qty = math.max(1, math.floor(tonumber(it.qty) or 1))
+    local lot = lotText(qty)
+    local mine, leading = it.mine == true, it.leading == true
+    local status = listingStatus(it)
+    local sub = status
+    if context ~= "selling" then
+        sub = getText(T .. "Market_BuyFrom", seller)
+        if status then sub = sub .. " - " .. status end
+    end
+    -- the action column: a chip the player may press, or the state of this auction for them
+    local canBid, muted, label, token, off = false, true, nil, "textFaint", false
+    if context == "selling" then
+        muted, label, off = false, getText(T .. "Auction_CancelTitle"), bids > 0
+    elseif context == "bidding" then
+        canBid = not ended
+        label = leading and getText(T .. "Auction_Leading") or getText(T .. "Auction_Outbid")
+        token = leading and "positive" or "warn"
+    elseif mine then
+        label = getText(T .. "Auction_Own")
+    elseif ended then
+        label, token = getText(T .. "Auction_Ended"), "warn"
+    elseif leading then
+        label, token = getText(T .. "Auction_Leading"), "positive"
+    else
+        canBid, muted, label = true, false, getText(T .. "Auction_Bid")
+    end
+    return {
+        id = it.id, item = it.item, seller = seller, qty = qty, currency = currency,
+        price = bid or start, startPrice = start, bid = bid, bids = bids,
+        minNext = math.max(1, math.floor(tonumber(it.minNext) or start)),
+        mine = mine, leading = leading, ended = ended, canBid = canBid,
+        name = name, nameText = lot and (name .. " " .. lot) or name,
+        altName = alt, texture = itemTexture(it.item), statusText = sub,
+        priceText = bid and amountText(bid) or getText(T .. "Auction_StartsAt", amountText(start)),
+        bidsText = bids > 0 and tostring(bids) or getText(T .. "Auction_NoBids"),
+        bidsToken = bids > 0 and "accent" or "textFaint",
+        expiresText = ended and getText(T .. "Auction_Ended")
+            or getText(T .. "Auction_Ends_In", durationText(left)),
+        expiresToken = ended and "warn" or "textFaint",
+        actionMuted = muted, actionLabel = label, actionToken = token, actionOff = off,
     }
 end
 
@@ -348,6 +413,9 @@ end
 -- left of the listing window, and the buy/cancel chip. `list.actionDisabled` closes every chip
 -- at once (frozen, no terminal in reach, a write in flight); an own listing on the browse page
 -- paints Market_Own as plain grey text — there is no chip to press at all.
+-- The auction tables share the cell: their `cols` drops the qty/seller columns (both live in
+-- the name block) and adds the bid-count one, so every column here is painted only when the
+-- owning table asked for it.
 local ListingCell = ISPanel:derive("MinidoracatEconomyListingCell")
 
 function ListingCell:render()
@@ -368,19 +436,24 @@ function ListingCell:render()
     end
     if e.statusText then text(self, fitText(e.statusText, cols.nameW), cols.name, half + 2, "textFaint") end
     local ty = math.floor((h - fontH.small) / 2)
-    textRight(self, tostring(e.qty), cols.qtyR, ty, e.qty > 1 and "accent" or "textFaint")
-    text(self, fitText(e.seller, cols.sellerW), cols.sellerX, ty, "textMuted")
+    local rightOfName = cols.name + cols.nameW
+    if cols.qtyR then textRight(self, tostring(e.qty), cols.qtyR, ty, e.qty > 1 and "accent" or "textFaint") end
+    if cols.sellerX then
+        text(self, fitText(e.seller, cols.sellerW), cols.sellerX, ty, "textMuted")
+        rightOfName = cols.sellerX + cols.sellerW
+    end
     textRight(self, e.priceText, cols.priceR, ty, "accent")
     local coinX = cols.priceR - textWidth(e.priceText) - COIN_SMALL - 4
-    if coinX > cols.sellerX + cols.sellerW then
+    if coinX > rightOfName then
         drawCoin(self, e.currency, coinX, math.floor((h - COIN_SMALL) / 2), COIN_SMALL)
     end
-    textRight(self, e.expiresText, cols.expiresR, ty, "textFaint")
+    if cols.bidsR then textRight(self, e.bidsText, cols.bidsR, ty, e.bidsToken or "textFaint") end
+    textRight(self, e.expiresText, cols.expiresR, ty, e.expiresToken or "textFaint")
     if e.actionMuted then
-        textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, "textFaint")
+        textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, e.actionToken or "textFaint")
         return
     end
-    local off = self.list.actionDisabled == true
+    local off = self.list.actionDisabled == true or e.actionOff == true
     border(self, cols.actionX, math.floor((h - CHIP_H) / 2), cols.actionW, CHIP_H, off and "border" or "accent", "pill")
     textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, off and "textFaint" or "text")
 end
@@ -431,18 +504,23 @@ end
 local function historyLine() return fontH.small + 8 end
 local function historyRowHeight() return historyLine() * 2 + 8 end
 
-local HISTORY_KINDS = { "listed", "sold", "bought", "cancelled", "expired", "delisted", "restored" }
-local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "warn", expired = "warn" }
+local HISTORY_KINDS = { "listed", "sold", "bought", "cancelled", "expired", "delisted", "restored",
+    "auction_created", "auction_bid", "auction_outbid", "auction_sold", "auction_won",
+    "auction_unsold", "auction_cancelled", "auction_restored" }
+local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "warn", expired = "warn",
+    auction_sold = "positive", auction_won = "positive", auction_outbid = "warn",
+    auction_unsold = "warn", auction_cancelled = "warn", auction_created = "textFaint" }
 
 -- One history line. The amount is what the record moved for this player: a sale nets the tax
--- off, a purchase is money out, everything else is the listing price as it stood.
+-- off, money leaving the account (a purchase, a bid the auction now holds, the price the
+-- winner paid) is negative, and everything else is the price as it stood.
 local function historyRow(rec, offsetMin)
     local kind = tostring(rec.kind or "")
     local qty = math.max(1, math.floor(tonumber(rec.qty) or 1))
     local price = tonumber(rec.price) or 0
     local amount = price
-    if kind == "sold" then amount = price - (tonumber(rec.tax) or 0)
-    elseif kind == "bought" then amount = -price end
+    if kind == "sold" or kind == "auction_sold" then amount = price - (tonumber(rec.tax) or 0)
+    elseif kind == "bought" or kind == "auction_bid" or kind == "auction_won" then amount = -price end
     local name = itemName(rec.item)
     local lot = lotText(qty)
     local parts = { stampText(tonumber(rec.ts) or 0, offsetMin) }
@@ -731,10 +809,12 @@ local function drawBadge(el, rightX, y, n)
     el:drawTextCentre(label, x + w / 2, y + math.floor((size - fontH.small) / 2), 1, 1, 1, 1, UIFont.Small)
 end
 
--- ---------- market table header (sortable) ----------
--- The browse page is sorted by the server, so the header is a control, not a caption: one
--- transparent panel over the header row, hit-tested against the same column numbers the cells
--- paint with (Panel.marketHeaderHits, filled in Panel:layout).
+-- ---------- sortable table header ----------
+-- A server-sorted page needs the header to be a control, not a caption: one transparent panel
+-- over the header row, hit-tested against the same column numbers the cells paint with. The
+-- market table and the auction table each own one instance; the panel fields it reads (the hit
+-- list, the current sort, whether clicks are live) come from the instance, so one class serves
+-- both without either page knowing about the other.
 
 -- "price_desc" -> "price", true. The default time sort is newest first and its ascending twin
 -- is a server key of its own ("time_asc"), so no column ever resolves to an ascending "time".
@@ -753,9 +833,9 @@ function MarketHeader:render()
     fill(self, 0, 0, w, h, "well", "rect")
     local ty = math.floor((h - fontH.small) / 2)
     local ay = ty + math.floor((fontH.small - ARROW_H) / 2)
-    local sortKey, desc = sortParts(panel.marketSort)
-    local live = panel.marketMode == "browse" and not panel.browseBusy
-    for _, c in ipairs(panel.marketHeaderHits or {}) do
+    local sortKey, desc = sortParts(panel[self.sortField])
+    local live = self.isLive(panel)
+    for _, c in ipairs(panel[self.hitsField] or {}) do
         local active = c.key == sortKey
         local token = active and "accent" or (live and "textMuted" or "textFaint")
         local room = c.w - (active and (ARROW_W + 4) or 0)
@@ -775,8 +855,18 @@ function MarketHeader:render()
 end
 
 function MarketHeader:onMouseDown(x)
-    self.panel:onMarketHeader(x)
+    self.onHit(self.panel, x)
     return true
+end
+
+local function newHeader(panel, sortField, hitsField, isLive, onHit)
+    local h = ISPanel:new(0, 0, 100, ROW)
+    setmetatable(h, MarketHeader)
+    h.background = false
+    h.panel = panel
+    h.sortField, h.hitsField, h.isLive, h.onHit = sortField, hitsField, isLive, onHit
+    h:initialise()
+    return h
 end
 
 -- ---------- preference sliders ----------
@@ -1031,17 +1121,41 @@ function BuyDialog:onMouseDown() return true end
 function BuyDialog:onMouseUp() return true end
 function BuyDialog:onMouseMove() return true end
 
--- ---------- market dialog ----------
+-- ---------- market / auction dialog ----------
 -- Same shape as BuyDialog (a child panel centred over the content, swallowing the page's
--- clicks), with four modes on one panel: the purchase, the cancel confirmation, the backpack
--- picker and the pricing step the picker hands over to (the picker switches its own content
--- instead of stacking a second dialog on top of itself).
+-- clicks), with every step of both trade pages on one panel: the purchase, the cancel
+-- confirmation, the backpack picker and the pricing step the picker hands over to (the picker
+-- switches its own content instead of stacking a second dialog on top of itself), plus the
+-- auction bid, the auction create step the same picker hands over to, and its cancel.
 local MarketDialog = ISPanel:derive("MinidoracatEconomyMarketDialog")
+
+-- The durations offered when the sandbox range allows them; a range that holds none of them
+-- (a server that only permits 10..30 h, say, still keeps 12 and 24) falls back to its bounds.
+local HOUR_PRESETS = { 6, 12, 24, 48, 72 }
+local HOUR_DEFAULT = 24
+
+local function hourChoices(minH, maxH)
+    local out = {}
+    for _, hrs in ipairs(HOUR_PRESETS) do
+        if hrs >= minH and hrs <= maxH then out[#out + 1] = hrs end
+    end
+    if #out == 0 then
+        out[1] = minH
+        if maxH > minH then out[2] = maxH end
+    end
+    return out
+end
+
+-- the auction steps confirm through Panel:submitAuction, the market ones through submitMarket
+local AUCTION_MODES = { bid = true, auction = true, acancel = true }
 
 local function confirmLabel(mode)
     if mode == "buy" then return getText(T .. "Market_Buy") end
     if mode == "cancel" then return getText(T .. "Market_Cancel") end
     if mode == "price" then return getText(T .. "Market_List") end
+    if mode == "bid" then return getText(T .. "Auction_Bid") end
+    if mode == "auction" then return getText(T .. "Auction_Create") end
+    if mode == "acancel" then return getText(T .. "Auction_CancelTitle") end
     return nil     -- the picker confirms by picking a row
 end
 
@@ -1068,6 +1182,15 @@ function MarketDialog:createChildren()
     self.onlyListable = true             -- the backpack is mostly unlistable: start on the useful half
     self.onlyButton.active = true
     self:addChild(self.onlyButton)
+    -- auction duration chips: one per preset, retitled when the create step opens (the sandbox
+    -- range decides which of them exist, so they are built once and hidden until then)
+    self.hourButtons = {}
+    for i = 1, #HOUR_PRESETS do
+        local b = Button.create(0, 0, 60, math.max(CHIP_H, fontH.small + 10), "", self, MarketDialog.onHours, "chip")
+        b:setVisible(false)
+        self:addChild(b)
+        self.hourButtons[i] = b
+    end
     local tw, th = tileSize()
     self.pickList = U.newTable(CandidateCell, th)
     self.pickList.cols.tileW, self.pickList.cols.tileH = tw, th
@@ -1086,7 +1209,35 @@ function MarketDialog:createChildren()
 end
 
 function MarketDialog:onCancel() self.panel:closeMarketDialog() end
-function MarketDialog:onConfirm() self.panel:submitMarket(self) end
+function MarketDialog:onConfirm()
+    if AUCTION_MODES[self.mode] then self.panel:submitAuction(self) else self.panel:submitMarket(self) end
+end
+
+function MarketDialog:onHours(button)
+    self.hours = button.internal
+    for _, b in ipairs(self.hourButtons) do b.active = b.internal == self.hours end
+    self.message = nil
+end
+
+-- The create step opens: build the chip set the sandbox range allows and preselect the one
+-- closest to a day (the duration a player picks by default on every auction house there is).
+function MarketDialog:setHourRange(minH, maxH)
+    local choices = hourChoices(minH, maxH)
+    local best = choices[1]
+    for _, hrs in ipairs(choices) do
+        if math.abs(hrs - HOUR_DEFAULT) < math.abs(best - HOUR_DEFAULT) then best = hrs end
+    end
+    self.hours = best
+    for i, b in ipairs(self.hourButtons) do
+        b.internal = choices[i]
+        if b.internal then
+            local title = getText(T .. "Auction_Hours", tostring(b.internal))
+            b:setTitle(title)
+            b:setWidth(textWidth(title) + 22)
+            b.active = b.internal == best
+        end
+    end
+end
 function MarketDialog:onPriceChanged() self.message = nil end
 
 function MarketDialog:onOnlyListable()
@@ -1160,8 +1311,17 @@ end
 
 function MarketDialog:available()
     local currency = (self.row and self.row.currency) or (C.market and C.market.currency)
+        or (C.auction and C.auction.currency)
     local bal = C.wallet and C.wallet.balances and C.wallet.balances[currency]
     return bal and tonumber(bal.available) or 0
+end
+
+-- Raising an own leading bid only reserves the difference: the server holds the first amount
+-- already (ECAuction.bid takes `delta` off the available balance, not the whole new bid).
+function MarketDialog:bidReserve(amount)
+    local row = self.row
+    local held = (row and row.leading and tonumber(row.bid)) or 0
+    return math.max(0, amount - held)
 end
 
 function MarketDialog:layoutInside(maxW, maxH)
@@ -1171,14 +1331,21 @@ function MarketDialog:layoutInside(maxW, maxH)
     if mode == "pick" then
         -- the grid is the page: 90% of the content area, never under a readable minimum
         w = math.min(maxW, math.max(640, math.floor(maxW * 0.9)))
+    elseif mode == "cancel" or mode == "acancel" then
+        w = math.max(340, math.min(maxW, 480))
+    elseif mode == "auction" then
+        -- the duration chips share a line with their label: wide enough for all five presets
+        w = math.max(340, math.min(maxW, 560))
     else
-        w = math.max(340, math.min(maxW, mode == "cancel" and 480 or 440))
+        w = math.max(340, math.min(maxW, 440))
     end
     local y = PAD
     self.titleY = y
-    self.priceEntry:setVisible(mode == "price")
-    local multi = mode == "price" and self:lotCount() > 1
+    self.priceEntry:setVisible(mode == "price" or mode == "auction" or mode == "bid")
+    local multi = (mode == "price" or mode == "auction") and self:lotCount() > 1
     self.qtyEntry:setVisible(multi)
+    local hourChips = mode == "auction"
+    for _, b in ipairs(self.hourButtons) do b:setVisible(hourChips and b.internal ~= nil) end
     self.pickList:setVisible(mode == "pick")
     self.onlyButton:setVisible(mode == "pick")
     if mode == "pick" then
@@ -1199,6 +1366,48 @@ function MarketDialog:layoutInside(maxW, maxH)
         self.afterY = y; y = y + line + 6
     elseif mode == "cancel" then
         self.bodyY = y; y = y + line + 6
+    elseif mode == "acancel" then
+        self.bodyY = y; y = y + line
+        self.hintY = y; y = y + line + 6
+    elseif mode == "bid" then
+        self.itemY = y; y = y + math.max(ITEM_ICON, line * 2) + PAD
+        self.minNextY = y; y = y + line
+        self.priceY = y; y = y + math.max(self.priceEntry.height, line) + 4
+        self.reserveY = y; y = y + line
+        self.afterY = y; y = y + line + 6
+        self.priceEntry:setX(w - PAD - self.priceEntry.width)
+        self.priceEntry:setY(self.priceY)
+    elseif mode == "auction" then
+        self.itemY = y; y = y + math.max(ITEM_ICON, line) + PAD
+        self.qtyY, self.qtyHintY = nil, nil
+        if multi then
+            self.qtyY = y; y = y + math.max(self.qtyEntry.height, line) + 4
+            self.qtyHintY = y; y = y + line + 6
+            self.qtyEntry:setX(w - PAD - self.qtyEntry.width)
+            self.qtyEntry:setY(self.qtyY)
+        end
+        self.priceY = y; y = y + math.max(self.priceEntry.height, line) + 4
+        self.hintY = y; y = y + line + 6
+        self.priceEntry:setX(w - PAD - self.priceEntry.width)
+        self.priceEntry:setY(self.priceY)
+        -- the duration chips sit next to their own label (the hint for the range shares the
+        -- price hint line above): the create step is the tallest of the six, and the content
+        -- area of a 1000x560 window at the largest UI font is all it has
+        self.hoursY = y
+        local chipH = self.hourButtons[1].height
+        local cx, cy = PAD + textWidth(getText(T .. "Auction_Duration")) + PAD, y
+        for _, b in ipairs(self.hourButtons) do
+            if b.internal then
+                if cx + b.width > w - PAD then
+                    cx = PAD
+                    cy = cy + chipH + 4
+                end
+                b:setX(cx); b:setY(cy)
+                cx = cx + b.width + 6
+            end
+        end
+        y = cy + math.max(chipH, line) + 6
+        self.feeY = y; y = y + line + 6
     elseif mode == "price" then
         self.itemY = y; y = y + math.max(ITEM_ICON, line) + PAD
         self.qtyY, self.qtyHintY = nil, nil
@@ -1268,7 +1477,10 @@ function MarketDialog:prerender()
     border(self, 0, 0, w, h, "accent")
     local title = getText(T .. "Market_ListTitle")
     if mode == "buy" then title = getText(T .. "Market_BuyTitle", self.row.nameText)
-    elseif mode == "cancel" then title = getText(T .. "Market_Cancel") end
+    elseif mode == "cancel" then title = getText(T .. "Market_Cancel")
+    elseif mode == "bid" then title = getText(T .. "Auction_BidTitle", self.row.nameText)
+    elseif mode == "auction" then title = getText(T .. "Auction_CreateTitle")
+    elseif mode == "acancel" then title = getText(T .. "Auction_CancelTitle") end
     local titleW = w - PAD * 2
     if mode == "pick" then
         -- title, counter and filter chip share the head line: the counter takes its width first
@@ -1304,6 +1516,63 @@ function MarketDialog:prerender()
     elseif mode == "cancel" then
         text(self, fitText(getText(T .. "Market_CancelConfirm", self.row.name), w - PAD * 2), PAD, self.bodyY, "text")
         self.confirmButton:setEnable(not busy and panel:tradeAllowed())
+    elseif mode == "acancel" then
+        text(self, fitText(self.row.nameText, w - PAD * 2), PAD, self.bodyY, "text")
+        text(self, fitText(getText(T .. "Auction_CancelHint"), w - PAD * 2), PAD, self.hintY, "textFaint")
+        self.confirmButton:setEnable(not busy and panel:tradeAllowed())
+    elseif mode == "bid" then
+        local row = self.row
+        drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
+        local tx = PAD + ITEM_ICON + PAD
+        text(self, fitText(row.nameText, w - tx - PAD), tx, self.itemY, "text")
+        if row.statusText then
+            text(self, fitText(row.statusText, w - tx - PAD), tx, self.itemY + fontH.small + 4, "textFaint")
+        end
+        text(self, fitText(getText(T .. "Auction_MinNext", amountText(row.minNext)), w - PAD * 2),
+            PAD, self.minNextY, "textMuted")
+        text(self, getText(T .. "Auction_YourBid"), PAD,
+            self.priceY + math.floor((self.priceEntry.height - fontH.small) / 2), "textMuted")
+        local amount = self:priceValue() or 0
+        local reserve = self:bidReserve(amount)
+        local reserveText = amountText(reserve)
+        text(self, getText(T .. "Auction_WillReserve"), PAD, self.reserveY, "textMuted")
+        textRight(self, reserveText, w - PAD, self.reserveY, "accent")
+        drawCoin(self, row.currency, w - PAD - textWidth(reserveText) - COIN_SMALL - 4,
+            self.reserveY + math.floor((fontH.small - COIN_SMALL) / 2), COIN_SMALL)
+        local after = self:available() - reserve
+        text(self, getText(T .. "Shop_AfterBalance"), PAD, self.afterY, "textMuted")
+        textRight(self, amountText(after), w - PAD, self.afterY, after < 0 and "warn" or "text")
+        self.confirmButton:setEnable(amount >= row.minNext and after >= 0 and not busy
+            and not row.ended and panel:tradeAllowed())
+    elseif mode == "auction" then
+        local cand = self.cand
+        drawIcon(self, cand.texture, PAD, self.itemY, ITEM_ICON)
+        local tx = PAD + ITEM_ICON + PAD
+        local count = self:lotCount()
+        local candName = count > 1 and (cand.name .. " " .. cand.qtyText) or cand.name
+        text(self, fitText(candName, w - tx - PAD), tx, self.itemY + math.floor((ITEM_ICON - fontH.small) / 2), "text")
+        if self.qtyY then
+            text(self, getText(T .. "Market_Qty"), PAD,
+                self.qtyY + math.floor((self.qtyEntry.height - fontH.small) / 2), "textMuted")
+            text(self, fitText(getText(T .. "Market_QtyHint", tostring(count), tostring(count)), w - PAD * 2),
+                PAD, self.qtyHintY, "textFaint")
+        end
+        text(self, getText(T .. "Auction_StartPrice"), PAD,
+            self.priceY + math.floor((self.priceEntry.height - fontH.small) / 2), "textMuted")
+        -- the two ranges share the hint line: the price bounds left, the duration bounds right
+        local hours = panel.auctionInfo or {}
+        local hoursHint = getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0),
+            tostring(hours.maxHours or 0))
+        textRight(self, hoursHint, w - PAD, self.hintY, "textFaint")
+        text(self, fitText(getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax)),
+            w - PAD * 2 - textWidth(hoursHint) - PAD), PAD, self.hintY, "textFaint")
+        text(self, getText(T .. "Auction_Duration"), PAD,
+            self.hoursY + math.floor((self.hourButtons[1].height - fontH.small) / 2), "textMuted")
+        local price = self:priceValue() or 0
+        text(self, getText(T .. "Market_Fee"), PAD, self.feeY, "textMuted")
+        textRight(self, amountText(listingFee(price, info.feePercent)), w - PAD, self.feeY, "warn")
+        self.confirmButton:setEnable(price > 0 and self:qtyValue() ~= nil and self.hours ~= nil
+            and not busy and panel:tradeAllowed())
     elseif mode == "price" then
         local cand = self.cand
         drawIcon(self, cand.texture, PAD, self.itemY, ITEM_ICON)
@@ -1403,7 +1672,7 @@ end
 function Panel:createChildren()
     ISCollapsableWindow.createChildren(self)
     self.tabButtons = {}
-    for _, tab in ipairs({ "Wallet", "Rewards", "Shop", "Market", "Mail", "Admin" }) do
+    for _, tab in ipairs({ "Wallet", "Rewards", "Shop", "Market", "Auction", "Mail", "Admin" }) do
         local b = Button.create(0, 0, TAB_W, TAB_H, getText(T .. "Tab_" .. tab), self, Panel.onTab, "tab")
         b.internal = tab
         self:addChild(b)
@@ -1474,11 +1743,9 @@ function Panel:createChildren()
     self:addChild(self.marketList)
     self.marketHistoryList = U.newTable(HistoryCell, historyRowHeight())
     self:addChild(self.marketHistoryList)
-    self.marketHeader = ISPanel:new(0, 0, 100, ROW)
-    setmetatable(self.marketHeader, MarketHeader)
-    self.marketHeader.background = false
-    self.marketHeader.panel = self
-    self.marketHeader:initialise()
+    self.marketHeader = newHeader(self, "marketSort", "marketHeaderHits",
+        function(panel) return panel.marketMode == "browse" and not panel.browseBusy end,
+        Panel.onMarketHeader)
     self:addChild(self.marketHeader)
     self.historyBar = FilterBar.new(self,
         function(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end,
@@ -1493,6 +1760,51 @@ function Panel:createChildren()
     self.marketPrevButton.internal = -1
     self.marketNextButton.internal = 1
     self:updateMarketInfo()
+
+    -- auction page: the same mode bar, one full-width card, and the browse/mine tables built
+    -- from the very same ListingCell (their columns drop the seller and add the bid count)
+    self.auctionModeButtons = {}
+    for _, mode in ipairs({ "browse", "mine" }) do
+        local title = getText(T .. (mode == "browse" and "Auction_Browse" or "Auction_Mine"), "0", "0")
+        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, Panel.onAuctionMode, "chip")
+        b.internal = mode
+        b.active = mode == self.auctionMode
+        self:addChild(b)
+        self.auctionModeButtons[#self.auctionModeButtons + 1] = b
+        if mode == "mine" then self.auctionMineButton = b end
+    end
+    self.auctionEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Market_Search"))
+    self.auctionEntry.target = self
+    self.auctionEntry.onTextChangeFunction = Panel.onAuctionSearch
+    self:addChild(self.auctionEntry)
+    self.auctionList = U.newTable(ListingCell, itemRowHeight())
+    self.auctionList.onSelect = function(_, item) self:onAuctionRow(item, "browse") end
+    self:addChild(self.auctionList)
+    self.auctionSellList = U.newTable(ListingCell, itemRowHeight())
+    self.auctionSellList.onSelect = function(_, item) self:onAuctionRow(item, "selling") end
+    self:addChild(self.auctionSellList)
+    self.auctionBidList = U.newTable(ListingCell, itemRowHeight())
+    self.auctionBidList.onSelect = function(_, item) self:onAuctionRow(item, "bidding") end
+    self:addChild(self.auctionBidList)
+    -- the three tables are always the same width, so they read one column set (Panel:layout
+    -- fills the browse table's own; the identity is what keeps them in step)
+    self.auctionSellList.cols = self.auctionList.cols
+    self.auctionBidList.cols = self.auctionList.cols
+    self.auctionHeader = newHeader(self, "auctionSort", "auctionHeaderHits",
+        function(panel) return panel.auctionMode == "browse" and not panel.auctionBusy end,
+        Panel.onAuctionHeader)
+    self:addChild(self.auctionHeader)
+    for _, spec in ipairs({ { "Refresh", "Market_Refresh", Panel.onAuctionRefresh },
+        { "Create", "Auction_Create", Panel.onAuctionCreate },
+        { "Prev", "Market_Prev", Panel.onAuctionPage }, { "Next", "Market_Next", Panel.onAuctionPage } }) do
+        local title = getText(T .. spec[2])
+        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, spec[3], "chip")
+        self:addChild(b)
+        self["auction" .. spec[1] .. "Button"] = b
+    end
+    self.auctionPrevButton.internal = -1
+    self.auctionNextButton.internal = 1
+    self:updateAuctionInfo()
 
     self.claimButton = Button.create(0, 0, 200, 40, "", self, Panel.onClaim, "primary")
     self.claimButton.font = UIFont.Medium
@@ -1556,7 +1868,7 @@ end
 
 -- The text boxes that only exist on one page: a hidden one must not keep the keyboard.
 function Panel:unfocusEntries()
-    for _, e in ipairs({ self.shopEntry, self.marketEntry,
+    for _, e in ipairs({ self.shopEntry, self.marketEntry, self.auctionEntry,
         self.walletBar.fromEntry, self.walletBar.toEntry,
         self.historyBar.fromEntry, self.historyBar.toEntry }) do
         pcall(function() e:unfocus() end)
@@ -1608,6 +1920,10 @@ function Panel:refresh()
         elseif not C.market or EC.now() - (self.marketAt or 0) > SHOP_POLL_MS then
             self:requestBrowse(1)
         end
+        if not C.wallet then C.requestWallet() end
+    elseif self.tab == "Auction" then
+        -- an auction is a countdown: the page is always asked for again, both modes are short
+        self:requestAuctionMode()
         if not C.wallet then C.requestWallet() end
     elseif self.tab == "Mail" then
         C.requestMail()
@@ -2255,7 +2571,12 @@ function Panel:onCandidate(cand)
         dlg.pickNote = cand.detailText   -- the refusal belongs on the status line, not in a step
         return
     end
-    dlg.mode = "price"
+    -- the picker is shared: which page opened it decides the step it hands over to
+    dlg.mode = dlg.forAuction and "auction" or "price"
+    if dlg.forAuction then
+        local info = self.auctionInfo
+        dlg:setHourRange(info.minHours, info.maxHours)
+    end
     dlg.cand = cand
     dlg.message = nil
     dlg.pickNote = nil
@@ -2264,7 +2585,9 @@ function Panel:onCandidate(cand)
     self:layoutMarketDialog()
 end
 
-function Panel:openMarketDialog(mode, row)
+-- `forAuction` marks the picker (and the step it hands over to) as the auction page's own; the
+-- auction steps ("bid", "auction", "acancel") set it too, so the dialog never has to guess.
+function Panel:openMarketDialog(mode, row, forAuction)
     self:closeMarketDialog()
     local dlg = ISPanel:new(0, 0, 360, 200)
     setmetatable(dlg, MarketDialog)
@@ -2272,6 +2595,7 @@ function Panel:openMarketDialog(mode, row)
     dlg.panel = self
     dlg.mode = mode
     dlg.row = row
+    dlg.forAuction = forAuction == true or AUCTION_MODES[mode] == true
     dlg.message = nil
     dlg:initialise()
     self:addChild(dlg)      -- the buttons exist from here on (instantiate -> createChildren)
@@ -2351,11 +2675,17 @@ function Panel:submitMarket(dlg)
 end
 
 function Panel:onMarket(kind, args)
+    -- the auction pages ride this listener: their kinds carry the "auction." prefix
+    local auctionKind = string.match(kind, "^auction%.(.+)$")
+    if auctionKind then return self:onAuction(auctionKind, args) end
     if kind == "notice" then
-        -- the server told an online seller their listing left the market: the page it is on is
-        -- now one row out of date (ECClient already raised the toast)
+        -- the server told an online seller their listing left the market (or moved an auction
+        -- under its bidders): the page it is on is now out of date, and ECClient already
+        -- raised the toast
         self:updateMailTab(args.unclaimed)
-        if self.tab == "Market" and self.shown and not self.isCollapsed then self:requestMarketMode() end
+        if not self.shown or self.isCollapsed then return end
+        if self.tab == "Market" then self:requestMarketMode()
+        elseif self.tab == "Auction" then self:requestAuctionMode() end
         return
     end
     if kind == "whitelist" then
@@ -2437,7 +2767,269 @@ function Panel:onTerminals()
         C.requestMail()
     elseif self.tab == "Market" then
         self:onMarketRefresh()
+    elseif self.tab == "Auction" then
+        self:onAuctionRefresh()
     end
+end
+
+-- ----- auction -----
+-- The auction page mirrors the market one: a throttled browse (the server drops a second
+-- command inside its 500 ms window), a busy flag that closes the header and the pager until
+-- the answer lands, and one write in flight at a time (the market's `marketPending`, shared:
+-- one window can only ever hold one dialog).
+
+function Panel:updateAuctionInfo()
+    local a, mine = C.auction, C.myAuctions
+    local info = self.auctionInfo or {}
+    info.taxPercent = tonumber(a and a.taxPercent) or 0
+    info.feePercent = tonumber(a and a.feePercent) or 0
+    info.minHours = math.max(1, tonumber(a and a.minHours) or 1)
+    info.maxHours = math.max(info.minHours, tonumber(a and a.maxHours) or info.minHours)
+    info.pages = math.max(1, tonumber(a and a.pages) or 1)
+    info.total = tonumber(a and a.total) or 0
+    info.maxAuctions = tonumber(mine and mine.maxAuctions) or tonumber(a and a.maxAuctions) or 0
+    info.mine = (mine and mine.selling and #mine.selling) or tonumber(a and a.mine) or 0
+    self.auctionInfo = info
+    local b = self.auctionMineButton
+    if b then
+        local title = getText(T .. "Auction_Mine", tostring(info.mine), tostring(info.maxAuctions))
+        if b.title ~= title then
+            b:setTitle(title)
+            b:setWidth(textWidth(title) + 22)
+        end
+    end
+end
+
+function Panel:sendAuctionBrowse()
+    self.auctionWanted = nil
+    self.auctionSentAt = EC.now()
+    C.requestAuctions({ query = self.auctionQuery, sort = self.auctionSort, page = self.auctionPage })
+end
+
+function Panel:requestAuctionBrowse(page)
+    self.auctionPage = math.max(1, tonumber(page) or 1)
+    self.auctionQueryAt = nil
+    self.auctionBusy = true
+    self.auctionBusyAt = EC.now()
+    if self.auctionSentAt and EC.now() - self.auctionSentAt < BROWSE_MIN_MS then
+        self.auctionWanted = true
+        return
+    end
+    self:sendAuctionBrowse()
+end
+
+function Panel:requestAuctionMode()
+    if self.auctionMode == "mine" then
+        C.requestMyAuctions()
+    else
+        self:requestAuctionBrowse(self.auctionPage)
+    end
+end
+
+-- The server matched the untranslated name; the localised one is the client's own job, the
+-- way the market page filters its page a second time.
+local function auctionMatch(row, query)
+    if query == nil then return true end
+    return string.find(string.lower(row.name), query, 1, true) ~= nil
+        or (row.altName ~= nil and string.find(string.lower(row.altName), query, 1, true) ~= nil)
+        or string.find(string.lower(tostring(row.item)), query, 1, true) ~= nil
+        or string.find(string.lower(row.seller), query, 1, true) ~= nil
+end
+
+function Panel:rebuildAuctions()
+    local currency = (C.auction and C.auction.currency) or EC.CURRENCY_ORDER[1]
+    local src = (C.auction and C.auction.items) or {}
+    local query = self.auctionQuery
+    local rows = {}
+    for _, it in ipairs(src) do
+        local row = auctionRow(it, currency, "browse")
+        if auctionMatch(row, query) then rows[#rows + 1] = row end
+    end
+    self.auctionNoMatch = #rows == 0 and #src > 0
+    self.auctionRows = rows
+    self.auctionList:setItems(rows)
+    local selling, bidding = {}, {}
+    for _, it in ipairs(C.myAuctions and C.myAuctions.selling or {}) do
+        selling[#selling + 1] = auctionRow(it, currency, "selling")
+    end
+    for _, it in ipairs(C.myAuctions and C.myAuctions.bidding or {}) do
+        bidding[#bidding + 1] = auctionRow(it, currency, "bidding")
+    end
+    self.auctionSellRows, self.auctionBidRows = selling, bidding
+    self.auctionSellList:setItems(selling)
+    self.auctionBidList:setItems(bidding)
+end
+
+function Panel:onAuctionMode(button)
+    if self.auctionMode == button.internal then return end
+    self.auctionMode = button.internal
+    for _, b in ipairs(self.auctionModeButtons) do b.active = b.internal == self.auctionMode end
+    self:closeMarketDialog()
+    self:rebuildAuctions()
+    self:layout()
+    self:requestAuctionMode()
+end
+
+-- A click on the auction table header: the same column again flips the direction, a new one
+-- starts ascending. Anything that is not a column falls back to the page default (the auctions
+-- closest to their end first) — that is `ending`, not the market's `time`.
+function Panel:onAuctionHeader(x)
+    if self.auctionMode ~= "browse" or self.auctionBusy then return end
+    local key = "ending"
+    for _, c in ipairs(self.auctionHeaderHits or {}) do
+        if x >= c.x and x < c.x + c.w then key = c.key end
+    end
+    if self.auctionSort == key then key = key .. "_desc" end
+    if key == self.auctionSort then return end
+    self.auctionSort = key
+    self:requestAuctionBrowse(1)
+end
+
+function Panel:onAuctionSearch()
+    local query = string.lower(string.match(entryText(self.auctionEntry), "^%s*(.-)%s*$"))
+    self.auctionQuery = query ~= "" and query or nil
+    self.auctionQueryAt = EC.now() + 600
+    self:rebuildAuctions()
+end
+
+function Panel:onAuctionRefresh()
+    self:requestAuctionMode()
+end
+
+function Panel:onAuctionPage(button)
+    if self.auctionBusy then return end
+    local page = self.auctionPage + button.internal
+    if page < 1 or page > self.auctionInfo.pages then return end
+    self:requestAuctionBrowse(page)
+end
+
+-- A row was clicked. Browsing and the "bidding on" list open the bid step; an own auction may
+-- be pulled back only while nobody has bid on it (the server refuses `has_bids` anyway).
+function Panel:onAuctionRow(row, context)
+    if not row or self.marketDialog or self.marketPending or not self:tradeAllowed() then return end
+    if context == "selling" then
+        if row.bids == 0 then self:openMarketDialog("acancel", row) end
+        return
+    end
+    if row.canBid then
+        local dlg = self:openMarketDialog("bid", row)
+        setEntryText(dlg.priceEntry, tostring(row.minNext))
+    end
+end
+
+function Panel:onAuctionCreate()
+    if self.marketDialog or self.marketPending or not self:tradeAllowed() then return end
+    local info = self.auctionInfo
+    if info.maxAuctions > 0 and info.mine >= info.maxAuctions then return end
+    self:openMarketDialog("pick", nil, true)
+end
+
+function Panel:submitAuction(dlg)
+    if self.marketPending then return end
+    if not self:tradeAllowed() then
+        dlg.message = marketError({ error = "not_at_terminal" })
+        return
+    end
+    local mode = dlg.mode
+    local pending = { requestId = C.newRequestId(), at = EC.now(), kind = mode }
+    if mode == "bid" then
+        local amount = dlg:priceValue()
+        if amount == nil or amount < dlg.row.minNext then
+            dlg.message = marketError({ error = "bid_too_low", min = dlg.row.minNext })
+            return
+        end
+        dlg.message = nil
+        pending.name, pending.amount = dlg.row.name, amount
+        self.marketPending = pending
+        C.bidAuction(dlg.row.id, amount, pending.requestId)
+        return
+    end
+    if mode == "acancel" then
+        dlg.message = nil
+        pending.name = dlg.row.name
+        self.marketPending = pending
+        C.cancelAuction(dlg.row.id, pending.requestId)
+        return
+    end
+    -- the create step: the price bounds are the picker's own (market.candidates quotes them)
+    local info, aInfo = self.marketInfo, self.auctionInfo
+    local price = dlg:priceValue()
+    if price == nil or price < info.priceMin or (info.priceMax > 0 and price > info.priceMax) then
+        dlg.message = getText(T .. "Market_Error_price_range", amountText(info.priceMin), amountText(info.priceMax))
+        return
+    end
+    local hours = dlg.hours
+    if hours == nil or hours < aInfo.minHours or hours > aInfo.maxHours then
+        dlg.message = marketError({ error = "hours_range", min = aInfo.minHours, max = aInfo.maxHours })
+        return
+    end
+    local count = dlg:lotCount()
+    local qty = dlg:qtyValue()
+    if qty == nil then
+        dlg.message = getText(T .. "Market_QtyHint", tostring(count), tostring(count))
+        return
+    end
+    local itemIds = {}
+    for i = 1, qty do itemIds[i] = dlg.cand.itemIds[i] end
+    dlg.message = nil
+    pending.name, pending.qty, pending.price = dlg.cand.name, qty, price
+    self.marketPending = pending
+    C.createAuction(itemIds, price, hours, pending.requestId)
+end
+
+function Panel:onAuction(kind, args)
+    if kind == "browse" or kind == "mine" then
+        if kind == "browse" then
+            self.auctionBusy = nil
+            -- an answer to a request the player has already moved past (the throttle window
+            -- swallowed the newer one): keep the state as it is and ask again
+            local page = tonumber(args.page)
+            if (args.sort ~= nil and args.sort ~= self.auctionSort)
+                or (page ~= nil and page ~= self.auctionPage) then
+                self.auctionWanted = true
+            else
+                self.auctionPage = math.max(1, page or self.auctionPage)
+            end
+        end
+        self:updateAuctionInfo()
+        self:rebuildAuctions()
+        self:layout()   -- the mine counter's own width may have moved
+        return
+    end
+    -- a write answer: only the one this page is waiting for
+    self:updateMailTab(args.unclaimed)
+    local pending = self.marketPending
+    if pending and args.requestId ~= nil and args.requestId ~= pending.requestId then return end
+    self.marketPending = nil
+    self:updateAuctionInfo()
+    self:rebuildAuctions()
+    if args.ok then
+        local name = (pending and pending.name) or ""
+        self:closeMarketDialog()
+        if kind == "bid" then
+            C.toast(getText(T .. "Auction_Placed", amountText(args.amount), name))
+            self:requestAuctionMode()
+        elseif kind == "create" then
+            C.toast(getText(T .. "Auction_Created", name,
+                amountText(pending and pending.price), amountText(args.fee)))
+            self:setAuctionMode("mine")
+        else
+            C.toast(getText(T .. "Auction_Cancelled"))
+            if args.delivered == false then C.toast(getText(T .. "Shop_Parked")) end
+        end
+        self:layout()
+        return
+    end
+    self:marketMessage(marketError(args))
+end
+
+-- The create step lands the player on their own auctions: the row they just made is there.
+function Panel:setAuctionMode(mode)
+    if self.auctionMode ~= mode then
+        self.auctionMode = mode
+        for _, b in ipairs(self.auctionModeButtons) do b.active = b.internal == mode end
+    end
+    self:requestAuctionMode()
 end
 
 -- ----- geometry -----
@@ -2501,14 +3093,19 @@ function Panel:layout()
 
     local isWallet = self.tab == "Wallet"
     self.adminAccess = C.AdminPanel.canRead()
+    -- seven tabs at the full TAB_W would run past the tab strip on the narrowest window the
+    -- player may resize to, so the width is the strip's own share when it has to be
+    local tabCount = self.adminAccess and #self.tabButtons or (#self.tabButtons - 1)
+    local tabW = math.min(TAB_W, math.floor((w - PAD * 2) / math.max(1, tabCount)))
     local x = PAD
     for _, b in ipairs(self.tabButtons) do
         local visible = b.internal ~= "Admin" or self.adminAccess
         b:setVisible(visible)
         if visible then
+            b:setWidth(tabW)
             b:setX(x)
             b:setY(g.tabsY)
-            x = x + b.width
+            x = x + tabW
         end
     end
     if self.tab == "Admin" and self.adminAccess and not self.adminPanel then
@@ -2758,6 +3355,92 @@ function Panel:layout()
         b:setX(x); b:setY(g.marketFooterY + math.floor((ROW - CHIP_H) / 2))
         x = x + b.width + 6
     end
+    -- auction: the same mode bar over one card that always spans the window. Browsing is a
+    -- sortable table with the server's pager under it; "my auctions" splits the card into the
+    -- two lists (what the player sells, what they bid on). All three tables read one column
+    -- set (they are the same width), so the numbers below are computed once.
+    local isAuction = self.tab == "Auction"
+    local aucMine = self.auctionMode == "mine"
+    local aucBarH = math.max(CHIP_H, self.auctionEntry.height)
+    g.auctionBarY = g.contentY
+    g.auctionCardY = g.contentY + aucBarH + PAD
+    g.auctionCardH = math.max(CARD_TITLE_H + ROW * 3, g.contentH - aucBarH - PAD)
+    g.auctionCardX, g.auctionCardW = g.leftX, w - PAD * 2
+    x = PAD
+    for _, b in ipairs(self.auctionModeButtons) do
+        b:setVisible(isAuction)
+        b:setX(x); b:setY(g.auctionBarY + math.floor((aucBarH - CHIP_H) / 2))
+        x = x + b.width + 6
+    end
+    for _, b in ipairs({ self.auctionRefreshButton, self.auctionCreateButton }) do
+        b:setVisible(isAuction)
+        b:setY(g.auctionBarY + math.floor((aucBarH - CHIP_H) / 2))
+    end
+    self.auctionRefreshButton:setX(w - PAD - self.auctionRefreshButton.width)
+    self.auctionCreateButton:setX(self.auctionRefreshButton.x - 6 - self.auctionCreateButton.width)
+    self.auctionEntry:setVisible(isAuction and not aucMine)
+    self.auctionEntry:setWidth(math.max(120, math.min(240, self.auctionCreateButton.x - 12 - x)))
+    self.auctionEntry:setX(self.auctionCreateButton.x - 12 - self.auctionEntry.width)
+    self.auctionEntry:setY(g.auctionBarY + math.floor((aucBarH - self.auctionEntry.height) / 2))
+
+    local aucListW = g.auctionCardW - 2
+    local aCols = self.auctionList.cols
+    aCols.icon = PAD
+    aCols.name = PAD + ITEM_ICON + PAD
+    aCols.qtyR, aCols.sellerX, aCols.sellerW = nil, nil, nil   -- both live in the name block
+    aCols.actionW = math.max(textWidth(getText(T .. "Auction_Bid")), textWidth(getText(T .. "Auction_Own")),
+        textWidth(getText(T .. "Auction_Leading")), textWidth(getText(T .. "Auction_Outbid")),
+        textWidth(getText(T .. "Auction_Ended")), textWidth(getText(T .. "Auction_CancelTitle"))) + 22
+    aCols.actionX = math.max(aCols.name, aucListW - 12 - aCols.actionW - PAD)
+    aCols.expiresR = aCols.actionX - PAD
+    aCols.bidsR = math.max(aCols.name + PAD, aCols.expiresR - PAD
+        - math.max(textWidth(getText(T .. "Auction_Col_Ends")),
+            textWidth(getText(T .. "Auction_Ends_In", getText(T .. "Time_HM", "99", "59")))))
+    aCols.priceR = math.max(aCols.name + PAD, aCols.bidsR - PAD
+        - math.max(textWidth(getText(T .. "Auction_Col_Bids")), textWidth(getText(T .. "Auction_NoBids"))))
+    aCols.nameW = math.max(0, aCols.priceR - COIN_SMALL - 4
+        - textWidth(getText(T .. "Auction_StartsAt", "999,999")) - PAD - aCols.name)
+    self.auctionHeaderHits = {
+        { key = "name", title = getText(T .. "Market_Col_Item"), x = aCols.name, w = aCols.nameW },
+        { key = "price", title = getText(T .. "Auction_Col_Bid"), x = aCols.name + aCols.nameW,
+          w = aCols.priceR - aCols.name - aCols.nameW, right = true },
+        { key = "bids", title = getText(T .. "Auction_Col_Bids"), x = aCols.priceR,
+          w = aCols.bidsR - aCols.priceR, right = true },
+        { key = "ending", title = getText(T .. "Auction_Col_Ends"), x = aCols.bidsR,
+          w = aCols.expiresR - aCols.bidsR, right = true },
+    }
+
+    g.auctionHeaderY = g.auctionCardY + CARD_TITLE_H + ROW
+    g.auctionListY = g.auctionHeaderY + ROW
+    g.auctionFooterY = g.auctionCardY + g.auctionCardH - ROW
+    self.auctionHeader:setVisible(isAuction and not aucMine)
+    self.auctionHeader:setX(g.auctionCardX + 1); self.auctionHeader:setY(g.auctionHeaderY)
+    self.auctionHeader:setWidth(aucListW); self.auctionHeader:setHeight(ROW)
+    self.auctionList:setVisible(isAuction and not aucMine)
+    self.auctionList:setX(g.auctionCardX + 1); self.auctionList:setY(g.auctionListY)
+    if self.auctionList.width ~= aucListW or self.auctionList.height ~= math.max(ROW * 2, g.auctionFooterY - g.auctionListY - 2) then
+        self.auctionList:resize(aucListW, math.max(ROW * 2, g.auctionFooterY - g.auctionListY - 2))
+    end
+    -- "my auctions": the selling half over the bidding half, one section label each
+    g.aucSellLabelY = g.auctionCardY + CARD_TITLE_H + ROW
+    g.aucSellY = g.aucSellLabelY + ROW
+    g.aucSellH = math.max(ROW, math.floor((g.auctionCardY + g.auctionCardH - PAD - g.aucSellY - ROW) / 2))
+    g.aucBidLabelY = g.aucSellY + g.aucSellH
+    g.aucBidY = g.aucBidLabelY + ROW
+    g.aucBidH = math.max(ROW, g.auctionCardY + g.auctionCardH - PAD - g.aucBidY)
+    for _, spec in ipairs({ { self.auctionSellList, g.aucSellY, g.aucSellH },
+        { self.auctionBidList, g.aucBidY, g.aucBidH } }) do
+        spec[1]:setVisible(isAuction and aucMine)
+        spec[1]:setX(g.auctionCardX + 1); spec[1]:setY(spec[2])
+        if spec[1].width ~= aucListW or spec[1].height ~= spec[3] then spec[1]:resize(aucListW, spec[3]) end
+    end
+    x = g.auctionCardX + PAD + textWidth(getText(T .. "Market_Page", "99", "99")) + PAD
+    for _, b in ipairs({ self.auctionPrevButton, self.auctionNextButton }) do
+        b:setVisible(isAuction and not aucMine)
+        b:setX(x); b:setY(g.auctionFooterY + math.floor((ROW - CHIP_H) / 2))
+        x = x + b.width + 6
+    end
+
     self:layoutMarketDialog()
     self:layoutBuy()
     self.layoutW, self.layoutH = w, h
@@ -3106,6 +3789,44 @@ function Panel:drawMarket()
         g.marketCardX + g.marketCardW - PAD, fy, "textMuted")
 end
 
+-- Auction page: one card, the note line (the tax and the listing fee the server quoted), then
+-- either the sortable browse table with its pager or the two "my auctions" sections.
+function Panel:drawAuction()
+    local g = self.g
+    local info = self.auctionInfo
+    local mine = self.auctionMode == "mine"
+    card(self, g.auctionCardX, g.auctionCardY, g.auctionCardW, g.auctionCardH, getText(T .. "Auction_Title"))
+    local ty = g.auctionCardY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
+    if (mine and not C.myAuctions) or (not mine and not C.auction) then
+        text(self, getText(T .. "Wallet_Loading"), g.auctionCardX + PAD, ty, "textMuted")
+        return
+    end
+    text(self, fitText(getText(T .. "Auction_Note", tostring(info.taxPercent), tostring(info.feePercent)),
+        g.auctionCardW - PAD * 2), g.auctionCardX + PAD, ty, "textMuted")
+    if mine then
+        local labelX = g.auctionCardX + PAD
+        text(self, getText(T .. "Auction_Mine", tostring(info.mine), tostring(info.maxAuctions)),
+            labelX, g.aucSellLabelY + math.floor((ROW - fontH.small) / 2), "text")
+        text(self, getText(T .. "Auction_Bidding"), labelX,
+            g.aucBidLabelY + math.floor((ROW - fontH.small) / 2), "text")
+        if #self.auctionSellList:getItems() == 0 and #self.auctionBidList:getItems() == 0 then
+            text(self, getText(T .. "Auction_MineEmpty"), labelX,
+                g.aucSellY + math.floor((ROW - fontH.small) / 2), "textMuted")
+        end
+        return
+    end
+    -- the header row is a child (MarketHeader): it paints the column names and takes the clicks
+    if #self.auctionList:getItems() == 0 then
+        text(self, getText(T .. (self.auctionNoMatch and "Market_NoMatch" or "Auction_Empty")),
+            self.auctionList.x + PAD, self.auctionList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
+    end
+    local fy = g.auctionFooterY + math.floor((ROW - fontH.small) / 2)
+    text(self, getText(T .. "Market_Page", tostring(self.auctionPage), tostring(info.pages)),
+        g.auctionCardX + PAD, fy, "textMuted")
+    textRight(self, getText(T .. "Market_Total", tostring(info.total)),
+        g.auctionCardX + g.auctionCardW - PAD, fy, "textMuted")
+end
+
 function Panel:drawFooter()
     local g = self.g
     local st = C.rewards
@@ -3165,6 +3886,16 @@ function Panel:prerender()
     if self.browseBusy and EC.now() - (self.browseBusyAt or 0) > BROWSE_TIMEOUT_MS then
         self.browseBusy = nil
     end
+    -- the auction page runs the same three gates on its own state
+    if self.auctionQueryAt and EC.now() >= self.auctionQueryAt and self.tab == "Auction" then
+        self:requestAuctionBrowse(1)
+    end
+    if self.auctionWanted and EC.now() - (self.auctionSentAt or 0) >= BROWSE_MIN_MS then
+        self:sendAuctionBrowse()
+    end
+    if self.auctionBusy and EC.now() - (self.auctionBusyAt or 0) > BROWSE_TIMEOUT_MS then
+        self.auctionBusy = nil
+    end
     local w = self:getWidth()
     local h = self:getHeight()
     local th = self:titleBarHeight()
@@ -3219,6 +3950,15 @@ function Panel:prerender()
     for _, b in ipairs(self.marketCatButtons or {}) do b:setEnable(not browseBusy) end
     self.marketPrevButton:setEnable(self.marketPage > 1 and not browseBusy)
     self.marketNextButton:setEnable(self.marketPage < info.pages and not browseBusy)
+    local aucInfo = self.auctionInfo
+    local aucBusy = self.auctionBusy == true
+    for _, l in ipairs({ self.auctionList, self.auctionSellList, self.auctionBidList }) do
+        l.actionDisabled = gateClosed or self.marketPending ~= nil
+    end
+    self.auctionCreateButton:setEnable(not gateClosed and self.marketPending == nil and self.marketDialog == nil
+        and (aucInfo.maxAuctions <= 0 or aucInfo.mine < aucInfo.maxAuctions))
+    self.auctionPrevButton:setEnable(self.auctionPage > 1 and not aucBusy)
+    self.auctionNextButton:setEnable(self.auctionPage < aucInfo.pages and not aucBusy)
     if self.tab == "Wallet" then
         self:drawWallet()
     elseif self.tab == "Rewards" then
@@ -3227,6 +3967,8 @@ function Panel:prerender()
         self:drawShop()
     elseif self.tab == "Market" then
         self:drawMarket()
+    elseif self.tab == "Auction" then
+        self:drawAuction()
     elseif self.tab == "Mail" then
         self:drawMail()
     end
@@ -3314,6 +4056,9 @@ function Panel.create()
     o.marketMode = "browse"     -- read by createChildren (initialise -> addToUIManager, below)
     o.marketSort = "time"
     o.marketPage = 1
+    o.auctionMode = "browse"
+    o.auctionSort = "ending"    -- the auctions closest to their end are the ones that matter
+    o.auctionPage = 1
     o:initialise()
     o:addToUIManager()
     for _, b in ipairs(o.periodButtons) do b.active = b.internal == o.period end

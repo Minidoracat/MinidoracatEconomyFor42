@@ -330,9 +330,13 @@ handlers["market.history"] = function(args)
     notifyMarket("history", args)
 end
 
--- The server pushes this to an online seller when their listing left the market:
--- { kind = "sold"|"delisted"|"expired", listingId, item, qty, price, tax?, currency?, buyer?,
+-- The server pushes this to an online seller when their listing left the market, and to both
+-- sides of an auction (stage F): { kind = "sold"|"delisted"|"expired"|"auction_bid"|
+-- "auction_outbid"|"auction_sold"|"auction_won"|"auction_unsold"|"auction_cancelled"|
+-- "auction_refund", listingId?, auctionId?, item, qty, price, tax?, currency?, buyer?, bidder?,
 -- reason?, unclaimed }. The toast has to fire without any page being open, so it lives here.
+-- %3 of the message: a sale nets the tax off, a cancellation names its reason, every auction
+-- money line is the amount that moved; auction_unsold uses two parameters only.
 handlers["market.notice"] = function(args)
     setUnclaimed(args)
     local kind = tostring(args.kind or "")
@@ -342,10 +346,13 @@ handlers["market.notice"] = function(args)
         local name = C.itemLabel(args.item)
         local qty = tostring(math.max(1, math.floor(tonumber(args.qty) or 1)))
         local third = ""
-        if kind == "sold" then
+        if kind == "sold" or kind == "auction_sold" then
             third = money((tonumber(args.price) or 0) - (tonumber(args.tax) or 0))
-        elseif kind == "delisted" then
+        elseif kind == "delisted" or kind == "auction_cancelled" then
             third = (type(args.reason) == "string" and args.reason ~= "") and args.reason or "-"
+        elseif kind == "auction_bid" or kind == "auction_outbid" or kind == "auction_won"
+            or kind == "auction_refund" then
+            third = money(tonumber(args.price) or 0)
         end
         C.toast(getText("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, name, qty, third))
     end
@@ -368,6 +375,73 @@ function C.listItem(itemIds, price, requestId) send("market.list", { itemIds = i
 function C.buyListing(listingId, price, requestId) send("market.buy", { listingId = listingId, price = price, requestId = requestId }) end
 function C.cancelListing(listingId, requestId) send("market.cancel", { listingId = listingId, requestId = requestId }) end
 function C.requestMarketHistory() send("market.history") end
+
+-- ---------- auction (stage F) ----------
+-- The auction pages ride the market listener (C.onMarket): the kinds are prefixed "auction.",
+-- so one subscription keeps every server-driven refresh (and market.notice) in one place.
+
+-- Browse page: { page, pages, total, items = { {id, seller, item, name, category, qty,
+-- startPrice, bid?, bidder?, bids, at, expiresAt, minNext, mine, leading, condition?, uses?,
+-- fluid?, fluidAmount?}, ... }, sort, query, currency, minHours, maxHours, incrementPercent,
+-- feePercent, taxPercent, maxAuctions, mine, atTerminal }.
+C.auction = nil
+-- Own auctions: { selling = { view... }, bidding = { view... }, atTerminal, maxAuctions }.
+C.myAuctions = nil
+
+-- create/cancel answer with the fresh { selling, bidding } pair; the page-level fields
+-- (atTerminal, maxAuctions) only come with auction.mine, so they are kept.
+local function setMyAuctions(mine)
+    if type(mine) ~= "table" then return end
+    C.myAuctions = C.myAuctions or {}
+    C.myAuctions.selling = mine.selling or {}
+    C.myAuctions.bidding = mine.bidding or {}
+end
+
+handlers["auction.browse"] = function(args)
+    C.auction = args
+    notifyMarket("auction.browse", args)
+end
+
+handlers["auction.mine"] = function(args)
+    C.myAuctions = args
+    notifyMarket("auction.mine", args)
+end
+
+-- auction.create reply: { ok, error?, requestId, auctionId?, qty?, fee?, expiresAt?, mine }
+handlers["auction.create"] = function(args)
+    setUnclaimed(args)
+    setMyAuctions(args.mine)
+    if args.ok then C.requestWallet() end
+    notifyMarket("auction.create", args)
+end
+
+-- auction.bid reply: { ok, error?, requestId, auctionId, amount, minNext, reserved, balance }.
+-- A bid moves money into `reserved`, so the wallet card is refreshed the way a purchase is.
+handlers["auction.bid"] = function(args)
+    setUnclaimed(args)
+    if args.ok then C.requestWallet() end
+    notifyMarket("auction.bid", args)
+end
+
+-- auction.cancel reply: { ok, error?, requestId, auctionId, mailId, delivered, deliveryError?,
+-- mine, unclaimed }
+handlers["auction.cancel"] = function(args)
+    setUnclaimed(args)
+    setMyAuctions(args.mine)
+    notifyMarket("auction.cancel", args)
+end
+
+function C.requestAuctions(opts)
+    opts = opts or {}
+    send("auction.browse", { page = opts.page, sort = opts.sort, query = opts.query })
+end
+function C.requestMyAuctions() send("auction.mine") end
+-- `itemIds` is the whole lot the player picked; `startPrice` is the opening bid for it.
+function C.createAuction(itemIds, startPrice, hours, requestId)
+    send("auction.create", { itemIds = itemIds, startPrice = startPrice, hours = hours, requestId = requestId })
+end
+function C.bidAuction(auctionId, amount, requestId) send("auction.bid", { auctionId = auctionId, amount = amount, requestId = requestId }) end
+function C.cancelAuction(auctionId, requestId) send("auction.cancel", { auctionId = auctionId, requestId = requestId }) end
 
 -- Localised item name (engine call, cached): the notice toast needs it before any UI exists.
 local itemLabels = {}
