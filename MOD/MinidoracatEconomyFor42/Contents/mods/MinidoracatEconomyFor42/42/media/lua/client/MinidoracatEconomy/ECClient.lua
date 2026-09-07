@@ -227,6 +227,76 @@ end
 function C.requestMail() send("mail.list") end
 function C.claimMail(mailId, requestId) send("mail.claim", { mailId = mailId, requestId = requestId }) end
 
+-- ---------- market (stage D) ----------
+
+-- Browse page: { page, pages, total, items = { {id, seller, item, name, category, price, at,
+-- expiresAt, condition, uses, fluid, fluidAmount}, ... }, categories, currency, sort, category,
+-- query, mine, maxListings, feePercent, taxPercent, priceMin, priceMax, listingDays, atTerminal }.
+C.market = nil
+-- Own listings: { items = { view... }, maxListings, atTerminal }.
+C.myListings = nil
+-- Backpack candidates: { items = { {itemId, item, ok, reason?, modDataKey?, condition, uses,
+-- category}, ... }, atTerminal, feePercent, priceMin, priceMax, mine, maxListings }.
+C.candidates = nil
+C.marketListeners = {}
+function C.onMarket(fn) C.marketListeners[#C.marketListeners + 1] = fn end
+local function notifyMarket(kind, args)
+    for _, fn in ipairs(C.marketListeners) do
+        local ok, err = pcall(fn, kind, args)
+        if not ok then EC.log("market listener failed: " .. tostring(err)) end
+    end
+end
+
+handlers["market.browse"] = function(args)
+    C.market = args
+    notifyMarket("browse", args)
+end
+
+handlers["market.mine"] = function(args)
+    C.myListings = args
+    notifyMarket("mine", args)
+end
+
+handlers["market.candidates"] = function(args)
+    C.candidates = args
+    notifyMarket("candidates", args)
+end
+
+-- market.list reply: { ok, error?, requestId, listingId?, fee?, expiresAt?, mine (own listings), min?, max?, modDataKey? }
+handlers["market.list"] = function(args)
+    if type(args.mine) == "table" then
+        C.myListings = C.myListings or {}
+        C.myListings.items = args.mine
+    end
+    if args.ok then C.requestWallet() end
+    notifyMarket("list", args)
+end
+
+-- market.buy reply: { ok, error?, requestId, txId?, listingId, item, price, tax, delivered, deliveryError?, balance, unclaimed }
+handlers["market.buy"] = function(args)
+    if args.ok then C.requestWallet() end
+    notifyMarket("buy", args)
+end
+
+-- market.cancel reply: { ok, error?, requestId, listingId, mailId?, delivered?, mine, unclaimed }
+handlers["market.cancel"] = function(args)
+    if type(args.mine) == "table" then
+        C.myListings = C.myListings or {}
+        C.myListings.items = args.mine
+    end
+    notifyMarket("cancel", args)
+end
+
+function C.requestMarket(opts)
+    opts = opts or {}
+    send("market.browse", { category = opts.category, query = opts.query, sort = opts.sort, page = opts.page })
+end
+function C.requestMyListings() send("market.mine") end
+function C.requestCandidates() send("market.candidates") end
+function C.listItem(itemId, price, requestId) send("market.list", { itemId = itemId, price = price, requestId = requestId }) end
+function C.buyListing(listingId, price, requestId) send("market.buy", { listingId = listingId, price = price, requestId = requestId }) end
+function C.cancelListing(listingId, requestId) send("market.cancel", { listingId = listingId, requestId = requestId }) end
+
 -- One id per request; the server echoes it so a reply can be matched to its dialog.
 local requestCounter = 0
 function C.newRequestId()
@@ -268,6 +338,9 @@ local function onGameStart()
     C.rewards = nil
     C.shop = nil
     C.mail = nil
+    C.market = nil
+    C.myListings = nil
+    C.candidates = nil
     C.terminals = {}
     Events.OnTick.Add(firstTick)
 end
