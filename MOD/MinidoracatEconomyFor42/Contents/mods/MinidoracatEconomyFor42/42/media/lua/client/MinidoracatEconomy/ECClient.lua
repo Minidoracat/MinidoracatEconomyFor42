@@ -29,9 +29,11 @@ C.handlers = handlers
 handlers["hello.ack"] = function(args)
     C.session = args
     C.currencies = args.currencies or C.currencies
+    if type(args.terminals) == "table" then C.terminals = args.terminals end
     EC.log("session epoch=" .. tostring(args.epoch) .. " loadedSeq=" .. tostring(args.loadedSeq)
         .. " server=" .. tostring(args.version) .. " remoteReadOnly=" .. tostring(args.remoteReadOnly)
-        .. " currencies=" .. tostring(args.currencies and #args.currencies or 0))
+        .. " currencies=" .. tostring(args.currencies and #args.currencies or 0)
+        .. " terminals=" .. tostring(args.terminals and #args.terminals or 0))
 end
 
 -- Runtime currency changes (name override, enabled, rates) pushed by the server.
@@ -132,6 +134,107 @@ end
 function C.requestWallet() send("wallet.state") end
 function C.requestHistory(month) send("wallet.history", { month = month }) end
 
+-- ---------- terminals / shop / mailbox (stage C) ----------
+
+-- Terminal list from hello.ack and the `terminals` broadcast: { {id, x, y, z, kind}, ... }.
+C.terminals = {}
+C.terminalListeners = {}
+function C.onTerminals(fn) C.terminalListeners[#C.terminalListeners + 1] = fn end
+
+handlers["terminals"] = function(args)
+    if type(args.list) == "table" then C.terminals = args.list end
+    if args.remoteReadOnly ~= nil and C.session then C.session.remoteReadOnly = args.remoteReadOnly end
+    for _, fn in ipairs(C.terminalListeners) do pcall(fn, C.terminals) end
+end
+
+function C.terminalAt(x, y, z)
+    for _, t in ipairs(C.terminals or {}) do
+        if t.x == x and t.y == y and t.z == z then return t end
+    end
+    return nil
+end
+
+-- Client-side mirror of the server gate (ECTerminal.near) for enabling buttons; the server
+-- re-checks every write. Chebyshev distance on the player's level, EC.TERMINAL_RANGE tiles.
+function C.nearTerminal()
+    if C.session and C.session.remoteReadOnly == false then return true end
+    local player = getPlayer()
+    if not player then return false end
+    local px, py, pz = player:getX(), player:getY(), math.floor(player:getZ())
+    for _, t in ipairs(C.terminals or {}) do
+        if t.z == pz and math.max(math.abs(px - t.x), math.abs(py - t.y)) <= EC.TERMINAL_RANGE then return true end
+    end
+    return false
+end
+
+function C.requestTerminals() send("terminals") end
+function C.registerTerminal(x, y, z, kind, requestId) send("terminal.register", { x = x, y = y, z = z, kind = kind or "atm", requestId = requestId }) end
+function C.unregisterTerminal(id, requestId) send("terminal.unregister", { id = id, requestId = requestId }) end
+
+-- Shop snapshot (shop.list / shop.buy replies carry the same fields): { revision, currency,
+-- items = { {id, item, qty, price, dailyCap, category, enabled, remaining?, override?}, ... },
+-- count, file, dayEndsMs, countMax, atTerminal, unclaimed }.
+C.shop = nil
+C.shopListeners = {}
+function C.onShop(fn) C.shopListeners[#C.shopListeners + 1] = fn end
+local function notifyShop(kind, args)
+    for _, fn in ipairs(C.shopListeners) do
+        local ok, err = pcall(fn, kind, args)
+        if not ok then EC.log("shop listener failed: " .. tostring(err)) end
+    end
+end
+
+handlers["shop.list"] = function(args)
+    C.shop = args
+    notifyShop("list", args)
+end
+
+-- Reply of one purchase: { ok, error?, requestId, txId?, item, qty, total, currency, delivered,
+-- deliveryError?, balance, revision, remaining?, unclaimed }.
+handlers["shop.buy"] = function(args)
+    if args.ok then C.requestWallet() end
+    notifyShop("buy", args)
+    C.requestShop()
+end
+
+function C.requestShop() send("shop.list") end
+function C.buy(id, count, revision, requestId) send("shop.buy", { id = id, count = count, revision = revision, requestId = requestId }) end
+
+-- Mailbox: { entries = { {id, kind, item, qty, price, txId, at}, ... }, unclaimed, atTerminal }.
+C.mail = nil
+C.mailListeners = {}
+function C.onMail(fn) C.mailListeners[#C.mailListeners + 1] = fn end
+local function notifyMail(kind, args)
+    for _, fn in ipairs(C.mailListeners) do
+        local ok, err = pcall(fn, kind, args)
+        if not ok then EC.log("mail listener failed: " .. tostring(err)) end
+    end
+end
+
+handlers["mail.list"] = function(args)
+    C.mail = args
+    notifyMail("list", args)
+end
+
+-- Reply of one claim: { ok, error?, requestId, mailId, item, qty, entries, unclaimed }.
+handlers["mail.claim"] = function(args)
+    if C.mail then
+        C.mail.entries = args.entries or C.mail.entries
+        C.mail.unclaimed = args.unclaimed or C.mail.unclaimed
+    end
+    notifyMail("claim", args)
+end
+
+function C.requestMail() send("mail.list") end
+function C.claimMail(mailId, requestId) send("mail.claim", { mailId = mailId, requestId = requestId }) end
+
+-- One id per request; the server echoes it so a reply can be matched to its dialog.
+local requestCounter = 0
+function C.newRequestId()
+    requestCounter = requestCounter + 1
+    return tostring(EC.now()) .. "-" .. requestCounter
+end
+
 -- Toast through the UI framework when present (family rule: capability probe, never a hard call).
 function C.toast(message)
     local ui = MinidoracatUI and MinidoracatUI.v1
@@ -164,6 +267,9 @@ local function onGameStart()
     C.session = nil
     C.wallet = nil
     C.rewards = nil
+    C.shop = nil
+    C.mail = nil
+    C.terminals = {}
     Events.OnTick.Add(firstTick)
 end
 
