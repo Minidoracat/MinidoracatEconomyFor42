@@ -4,10 +4,14 @@
 -- The market never stores an InventoryItem (Lua has no ByteBuffer for save/load): a listing keeps a
 -- bounded snapshot and the buyer gets a rebuilt item. Only item classes whose rebuild is faithful
 -- may be listed, and the host decides which in {cachedir}/Lua/MinidoracatEconomy/whitelist.json
--- (display categories, extra fullTypes, excluded fullTypes, allowed modData keys). Fixed rules on
--- top of the file: no containers / clothing / keys / radios / moveables, no perishable food, no
--- read books, nothing equipped, favourite or broken, and no modData key outside the allowed list
--- (fail closed - a mod that keeps state on the item would lose it in the rebuild).
+-- (display categories, extra fullTypes, excluded fullTypes, allowed modData keys). The file is the
+-- single source of truth, like the shop's catalog.json: the admin page edits it through
+-- Codec.update (one category or one item per write, written straight back, refused with
+-- whitelist_stale when the file on disk changed since the last load), and a hand edit takes
+-- effect after reload. Fixed rules on top of the file: none of EC.LISTING_FIXED_TYPES (containers,
+-- clothing, keys, radios, maps, moveables, animals), no perishable food, no read books, nothing
+-- equipped, favourite or broken, and no modData key outside the allowed list (fail closed - a mod
+-- that keeps state on the item would lose it in the rebuild).
 --
 -- Engine references (snapshot 42.20.4-20260826, all exercised in A7):
 --   instanceItem                    LuaManager.java:5610-5620
@@ -40,7 +44,7 @@ Codec.MODDATA_KEYS_MAX = 8
 Codec.MODDATA_VALUE_MAX = 64
 Codec.FILE_LINES_MAX = 5000
 Codec.NEVER_ROTS = 1000000000
-Codec.EXCLUDED_MAIN = { Container = true, Clothing = true, Key = true, Moveable = true, Radio = true, AlarmClock = true, Map = true }
+Codec.FIELDS = { "categories", "types", "excludeTypes", "modDataKeys" }
 Codec.DEFAULT = {
     categories = {
         "Tool", "ToolWeapon", "Weapon", "WeaponCrafted", "MaterialWeapon", "Material", "Ammo",
@@ -53,7 +57,8 @@ Codec.DEFAULT = {
     modDataKeys = {},
 }
 
-local wl = { categories = {}, types = {}, excludeTypes = {}, modDataKeys = {}, loadedAt = 0, error = nil, counts = {} }
+-- Sets answer Codec.check; the lists keep the file's order so a write-back stays diff-friendly.
+local wl = { categories = {}, types = {}, excludeTypes = {}, modDataKeys = {}, lists = {}, loadedAt = 0, error = nil, counts = {}, hash = "0" }
 
 -- ---------- file ----------
 
@@ -73,38 +78,46 @@ local function readFile()
     return table.concat(lines, "\n")
 end
 
-local function writeDefault()
+-- Canonical serialisation: one array per line so a host can still hand-edit the file.
+local function writeDoc(lists)
     local writer = nil
     local ok = pcall(function() writer = getFileWriter(Codec.FILE, true, false) end)
     if not ok or not writer then return false end
     local wrote = pcall(function()
         writer:writeln("{")
-        writer:writeln('  "categories": ' .. EC.jsonEncode(Codec.DEFAULT.categories) .. ",")
-        writer:writeln('  "types": [],')
-        writer:writeln('  "excludeTypes": [],')
-        writer:writeln('  "modDataKeys": []')
+        for i, field in ipairs(Codec.FIELDS) do
+            local list = lists[field] or {}
+            writer:writeln('  "' .. field .. '": ' .. (#list > 0 and EC.jsonEncode(list) or "[]") .. (i < #Codec.FIELDS and "," or ""))
+        end
         writer:writeln("}")
     end)
     pcall(function() writer:close() end)
     return wrote
 end
 
+local function hashOf(text)
+    return EC.hashHex(EC.hashUpdate(EC.hashInit(), text))
+end
+
+-- Array of short strings -> set + de-duplicated ordered list; nil, message when malformed.
 local function stringSet(list, field)
-    if list == nil then return {}, 0 end
+    if list == nil then return {}, {} end
     if type(list) ~= "table" then return nil, field .. " must be an array" end
-    local set, n = {}, 0
+    local set, ordered = {}, {}
     for i, v in ipairs(list) do
         if type(v) ~= "string" or v == "" or #v > 128 or string.find(v, "%c") then return nil, field .. "[" .. i .. "] must be a short string" end
-        set[v] = true
-        n = n + 1
+        if not set[v] then
+            set[v] = true
+            ordered[#ordered + 1] = v
+        end
     end
-    return set, n
+    return set, ordered
 end
 
 function Codec.load()
     local text = readFile()
     if text == nil then
-        if not writeDefault() then
+        if not writeDoc(Codec.DEFAULT) then
             wl.error = "whitelist file unavailable"
             return false, wl.error
         end
@@ -116,25 +129,105 @@ function Codec.load()
         EC.log("whitelist.json rejected: " .. tostring(wl.error))
         return false, wl.error
     end
-    local parsed, counts = {}, {}
-    for _, field in ipairs({ "categories", "types", "excludeTypes", "modDataKeys" }) do
-        local set, n = stringSet(doc[field], field)
+    local parsed, lists, counts = {}, {}, {}
+    for _, field in ipairs(Codec.FIELDS) do
+        local set, ordered = stringSet(doc[field], field)
         if set == nil then
-            wl.error = n
-            EC.log("whitelist.json rejected: " .. tostring(n))
-            return false, n
+            wl.error = ordered
+            EC.log("whitelist.json rejected: " .. tostring(ordered))
+            return false, ordered
         end
-        parsed[field], counts[field] = set, n
+        parsed[field], lists[field], counts[field] = set, ordered, #ordered
     end
     wl.categories, wl.types, wl.excludeTypes, wl.modDataKeys = parsed.categories, parsed.types, parsed.excludeTypes, parsed.modDataKeys
+    wl.lists = lists
     wl.counts = counts
     wl.loadedAt = EC.now()
     wl.error = nil
+    wl.hash = hashOf(text)
     return true
 end
 
-function Codec.status()
-    return { loadedAt = wl.loadedAt, error = wl.error, counts = wl.counts, path = Codec.FILE }
+-- withLists adds the four arrays (the admin page edits from them); admin.system only wants counts.
+function Codec.status(withLists)
+    local s = { loadedAt = wl.loadedAt, error = wl.error, counts = wl.counts, path = Codec.FILE }
+    if withLists then
+        for _, field in ipairs(Codec.FIELDS) do
+            local copy = {}
+            for i, v in ipairs(wl.lists[field] or {}) do copy[i] = v end
+            s[field] = copy
+        end
+    end
+    return s
+end
+
+local function itemExists(fullType)
+    if type(fullType) ~= "string" or fullType == "" or #fullType > 128 then return false end
+    local ok, found = pcall(function() return ScriptManager.instance:FindItem(fullType) ~= nil end)
+    return ok and found == true
+end
+
+local function without(list, value)
+    local out = {}
+    for _, v in ipairs(list) do
+        if v ~= value then out[#out + 1] = v end
+    end
+    return out
+end
+
+-- One edit from the admin page, written straight back into the file:
+--   { category = "Tool", allowed = true|false }               toggle a display category
+--   { fullType = "Base.Axe", mode = "allow"|"exclude"|"inherit" }  per-item override (exclude wins
+--                                                             over allow in Codec.check; inherit
+--                                                             clears both)
+-- Returns ok, err. Refused with whitelist_stale when the file on disk no longer matches what was
+-- loaded (a hand edit the page would otherwise overwrite): reload first.
+function Codec.update(args, actor)
+    if type(args) ~= "table" then return false, "invalid_args" end
+    local target, field, before, after
+    local lists = { categories = wl.lists.categories, types = wl.lists.types, excludeTypes = wl.lists.excludeTypes, modDataKeys = wl.lists.modDataKeys }
+    if args.category ~= nil then
+        local cat = args.category
+        if type(cat) ~= "string" or cat == "" or #cat > 64 or string.find(cat, "[%c%s]") or type(args.allowed) ~= "boolean" then return false, "invalid_args" end
+        target, field = cat, "category"
+        before = wl.categories[cat] == true
+        after = args.allowed
+        if before == after then return true end
+        lists.categories = without(lists.categories, cat)
+        if after then lists.categories[#lists.categories + 1] = cat end
+    elseif args.fullType ~= nil then
+        local ft, mode = args.fullType, args.mode
+        if mode ~= "allow" and mode ~= "exclude" and mode ~= "inherit" then return false, "invalid_args" end
+        if not itemExists(ft) then return false, "unknown_item" end
+        target, field = ft, "type"
+        before = wl.excludeTypes[ft] and "exclude" or (wl.types[ft] and "allow" or "inherit")
+        after = mode
+        if before == after then return true end
+        lists.types = without(lists.types, ft)
+        lists.excludeTypes = without(lists.excludeTypes, ft)
+        if mode == "allow" then lists.types[#lists.types + 1] = ft
+        elseif mode == "exclude" then lists.excludeTypes[#lists.excludeTypes + 1] = ft end
+    else
+        return false, "invalid_args"
+    end
+    local onDisk = readFile()
+    if onDisk == nil or hashOf(onDisk) ~= wl.hash then return false, "whitelist_stale" end
+    if not writeDoc(lists) then return false, "file_write_failed" end
+    local ok, err = Codec.load()   -- re-read what was written: hash, counts and a sanity parse
+    if not ok then
+        EC.log("whitelist.json unreadable after the panel wrote it: " .. tostring(err))
+        return false, "file_write_failed"
+    end
+    X.emit("admin.whitelist", { target = target, field = field, before = before, after = after, actor = actor })
+    X.audit({ action = "whitelist", target = target, field = field, before = tostring(before), after = tostring(after), admin = actor })
+    return true
+end
+
+function Codec.reload(actor)
+    local ok, err = Codec.load()
+    X.emit("admin.whitelist", { field = "reload", after = ok and wl.counts.categories or nil, error = err, actor = actor })
+    X.audit({ action = "whitelist", target = "file", field = "reload", after = ok and "ok" or ("error: " .. tostring(err)), admin = actor })
+    return ok, err
 end
 
 -- ---------- item introspection (every call guarded: the harness fakes only what a test needs) ----------
@@ -163,15 +256,15 @@ function Codec.check(item)
     local fullType = call(item, "getFullType")
     if type(fullType) ~= "string" then return false, "invalid_item" end
     if wl.excludeTypes[fullType] then return false, "not_whitelisted" end
+    local script = call(item, "getScriptItem")
+    if EC.isFixedType(script) then return false, "not_whitelisted" end
     local main = call(item, "getCategory")
-    if type(main) == "string" and Codec.EXCLUDED_MAIN[main] then return false, "not_whitelisted" end
     local display = call(item, "getDisplayCategory")
     if not wl.types[fullType] and not (type(display) == "string" and wl.categories[display]) then return false, "not_whitelisted" end
     if call(item, "isEquipped") == true then return false, "equipped" end
     if call(item, "isFavorite") == true then return false, "favorite" end
     if call(item, "isBroken") == true then return false, "broken" end
     if main == "Food" then
-        local script = call(item, "getScriptItem")
         local rots = script and call(script, "getDaysTotallyRotten")
         if type(rots) == "number" and rots < Codec.NEVER_ROTS then return false, "perishable" end
         if call(item, "isRotten") == true then return false, "perishable" end

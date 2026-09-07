@@ -802,18 +802,24 @@ S.handlers["admin.listings"] = function(player, args)
     S.reply(player, "admin.listings", res)
 end
 
--- admin.whitelist {action=status|reload} : the listing whitelist file (reload = write gate).
+-- admin.whitelist {action=status|set|reload, category?, allowed?, fullType?, mode?, requestId}: the
+-- listing whitelist file. status = counts + the four lists (read gate); set = one edit written
+-- back into whitelist.json (write gate, audited; see Codec.update); reload = re-read the file
+-- (write gate). Every reply carries the whole document so the page redraws from one source.
 S.handlers["admin.whitelist"] = function(player, args)
-    local reload = type(args) == "table" and args.action == "reload"
-    if not gate(player, "admin.whitelist", reload) then return end
+    local action = type(args) == "table" and args.action or "status"
+    local write = action == "set" or action == "reload"
+    if not gate(player, "admin.whitelist", write) then return end
     local res = { ok = true }
-    if reload then
-        local ok, err = Codec.load()
-        X.audit({ action = "whitelist", target = "file", field = "reload", after = ok and "ok" or ("error: " .. tostring(err)), admin = player:getUsername() })
+    if action == "set" then
+        local ok, err = Codec.update(args, player:getUsername())
+        if not ok then res = { ok = false, error = err } end
+    elseif action == "reload" then
+        local ok, err = Codec.reload(player:getUsername())
         if not ok then res = { ok = false, error = "whitelist_invalid", detail = err } end
     end
     if type(args) == "table" then res.requestId = args.requestId end
-    res.whitelist = Codec.status()
+    res.whitelist = Codec.status(true)
     res.perms = { read = true, write = A.isAdmin(player) }
     S.reply(player, "admin.whitelist", res)
 end

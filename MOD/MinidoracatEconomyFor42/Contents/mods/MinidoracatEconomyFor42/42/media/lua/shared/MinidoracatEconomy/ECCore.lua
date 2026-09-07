@@ -62,6 +62,25 @@ EC.TERMINAL_SPRITES = {
 EC.TERMINAL_RANGE = 2
 EC.TERMINAL_KINDS = { atm = true, trade = true }
 
+-- Item classes the market can never list, whatever whitelist.json says: their Java-side state
+-- (contents, keys, tuned frequency, map markers, worn/attached objects, the animal) is not in the
+-- bounded snapshot, so a rebuilt copy would silently lose it. Script items carry their class as an
+-- ItemType (Item.java:1375-1385 getItemType/isItemType; the registry names are the static fields
+-- of ItemType.java:7-22, exposed to Lua by LuaManager.java:2311). Shared: the server refuses in
+-- Codec.check, the admin page hides these classes from the category list.
+EC.LISTING_FIXED_TYPES = { "CONTAINER", "CLOTHING", "KEY", "KEY_RING", "MOVEABLE", "RADIO", "MAP", "ALARM_CLOCK", "ALARM_CLOCK_CLOTHING", "ANIMAL" }
+function EC.isFixedType(script)
+    if script == nil or ItemType == nil then return false end
+    for _, name in ipairs(EC.LISTING_FIXED_TYPES) do
+        local t = ItemType[name]
+        if t ~= nil then
+            local ok, hit = pcall(script.isItemType, script, t)
+            if ok and hit == true then return true end
+        end
+    end
+    return false
+end
+
 -- CraftRecipe OnAddToMenu callback of the terminal entity (CraftRecipe.java:379-380, called by
 -- ISRecipeScrollingListBox.lua:344-347 on the client): only admins see the build entry. Server
 -- side never lists build menus; getAccessLevel is client-only (LuaManager.java:4435-4436).

@@ -124,7 +124,8 @@ local function fire(name, ...)
 end
 
 -- 假物品／背包（階段 C／D：信箱 claim-in、收斂、白名單 codec）。全域：主函式已逼近 200 個 local。
--- knownItems[fullType] = { w=重量, cat=DisplayCategory, main=主類別, rots=daysTotallyRotten, fluid=bool, weapon=bool }
+-- knownItems[fullType] = { w=重量, cat=DisplayCategory, main=主類別, rots=daysTotallyRotten, fluid=bool, weapon=bool,
+--                          itemType=ItemType 名（省略時由 main 推） }
 knownItems = {
     ["Base.Bandage"] = { w = 0.1, cat = "FirstAid", main = "Normal" }, ["Base.Antibiotics"] = { w = 0.1, cat = "FirstAid", main = "Normal" },
     ["Base.RippedSheets"] = { w = 0.1, cat = "FirstAid", main = "Normal" }, ["Base.CannedCorn"] = { w = 0.5, cat = "Food", main = "Food" },
@@ -136,12 +137,20 @@ knownItems = {
     ["Base.Apple"] = { w = 0.2, cat = "Food", main = "Food", rots = 8 }, ["Base.Bag_ALICEpack"] = { w = 1, cat = "Bag", main = "Container" },
     ["Base.PetrolCan"] = { w = 1.5, cat = "VehicleMaintenance", main = "Normal", fluid = true },
     ["Base.x2Scope"] = { w = 0.3, cat = "WeaponPart", main = "Normal" }, ["Base.BookCarpentry1"] = { w = 0.8, cat = "SkillBook", main = "Literature" },
+    ["Base.RadioRed"] = { w = 1, cat = "Electronics", main = "Item", itemType = "RADIO" },
 }
+-- ItemType 是暴露給 Lua 的 Java 類別（靜態欄位 CONTAINER…；LuaManager.java:2311）：這裡用哨兵表代替
+ItemType = {}
+for _, n in ipairs({ "NORMAL", "FOOD", "WEAPON", "LITERATURE", "DRAINABLE", "CONTAINER", "CLOTHING", "KEY", "KEY_RING", "MOVEABLE", "RADIO", "MAP", "ALARM_CLOCK", "ALARM_CLOCK_CLOTHING", "ANIMAL", "WEAPON_PART" }) do
+    ItemType[n] = { name = n }
+end
+local MAIN_TO_TYPE = { Normal = "NORMAL", Food = "FOOD", Weapon = "WEAPON", Literature = "LITERATURE", Drainable = "DRAINABLE", Container = "CONTAINER", Item = "NORMAL" }
 ScriptManager = { instance = { FindItem = function(_, name)
     local k = knownItems[name]
     if not k then return nil end
+    local itemType = ItemType[k.itemType or MAIN_TO_TYPE[k.main] or "NORMAL"]
     return { name = name, getDisplayName = function() return name end, getDisplayCategory = function() return k.cat end,
-        getDaysTotallyRotten = function() return k.rots or 1000000000 end }
+        getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end }
 end } }
 Fluid = { Get = function(name) return { name = name } end }
 Capability = { AddItem = "AddItem", SaveWorld = "SaveWorld" }
@@ -273,7 +282,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 393     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 408     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1934,6 +1943,45 @@ check(Codec.detachParts(weapon, inv) == 1 and #weapon.parts == 0 and inv.count("
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories": 5}' }, opens = 0 }
 local okL, errL = Codec.load()
 check(okL == false and Codec.status().error ~= nil and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected and the previous whitelist stays")
+-- 固定類別走 ItemType（Radio 的 getCategory 是 "Item"，主類別字串擋不住）：分類允許也不能上架
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Electronics","Tool"],"types":[],"excludeTypes":[],"modDataKeys":[]}' }, opens = 0 }
+check(Codec.load() == true and Codec.check(instanceItem("Base.RadioRed")) == false and Codec.check(instanceItem("Base.Saw")) == true,
+    "a radio is refused by item class even when its display category is whitelisted")
+-- 面板寫回：一次一個分類或一件物品，寫進檔案、重讀、稽核；手改過的檔案先擋 stale
+local boss = fakePlayer("boss"); boss.role = "admin"
+local mod = fakePlayer("mod"); mod.role = "moderator"
+local function wcmd(who, args)
+    nowMs = nowMs + 700
+    args.requestId = "w" .. nowMs
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.whitelist", who, args)
+    return lastSent("admin.whitelist").args
+end
+local st = wcmd(mod, { action = "status" })
+check(st.ok == true and #st.whitelist.categories == 2 and st.whitelist.categories[1] == "Electronics" and st.perms.write == false, "status carries the four lists and the read-only role sees them")
+check(wcmd(mod, { action = "set", category = "Tool", allowed = false }).error == "forbidden", "a moderator cannot edit the whitelist")
+local off = wcmd(boss, { action = "set", category = "Tool", allowed = false })
+local wlText = table.concat(files["MinidoracatEconomy/whitelist.json"].lines, "\n")
+check(off.ok == true and #off.whitelist.categories == 1 and string.find(wlText, '"categories": ["Electronics"]', 1, true) ~= nil
+    and Codec.check(instanceItem("Base.Saw")) == false, "turning a category off rewrites the file and takes effect at once")
+check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).whitelist.categories[2] == "Tool" and Codec.check(instanceItem("Base.Saw")) == true, "turning it back on appends it")
+check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).ok == true and #files["MinidoracatEconomy/whitelist.json"].lines == 6, "a no-op edit does not rewrite the file")
+local ex = wcmd(boss, { action = "set", fullType = "Base.Saw", mode = "exclude" })
+check(ex.ok == true and ex.whitelist.excludeTypes[1] == "Base.Saw" and Codec.check(instanceItem("Base.Saw")) == false, "an item exclusion beats its allowed category")
+local al = wcmd(boss, { action = "set", fullType = "Base.Saw", mode = "allow" })
+check(al.ok == true and #al.whitelist.excludeTypes == 0 and al.whitelist.types[1] == "Base.Saw", "switching to allow moves the item between the two lists")
+check(wcmd(boss, { action = "set", fullType = "Base.Nails", mode = "allow" }).ok == true and Codec.check(instanceItem("Base.Nails")) == true, "an explicit allow lists an item whose category is off")
+local inh = wcmd(boss, { action = "set", fullType = "Base.Nails", mode = "inherit" })
+check(inh.ok == true and #inh.whitelist.types == 1 and Codec.check(instanceItem("Base.Nails")) == false, "inherit clears the override")
+check(wcmd(boss, { action = "set", fullType = "Base.Nope", mode = "allow" }).error == "unknown_item", "unknown item types are refused")
+check(wcmd(boss, { action = "set", category = "bad cat", allowed = true }).error == "invalid_args" and wcmd(boss, { action = "set", fullType = "Base.Saw", mode = "maybe" }).error == "invalid_args", "malformed edits are refused")
+files["MinidoracatEconomy/whitelist.json"].lines[1] = files["MinidoracatEconomy/whitelist.json"].lines[1] .. " "
+check(wcmd(boss, { action = "set", category = "Electronics", allowed = false }).error == "whitelist_stale" and Codec.check(instanceItem("Base.RadioRed")) == false and Codec.status().counts.categories == 2,
+    "a file changed outside the panel is refused as stale until reloaded")
+check(wcmd(boss, { action = "reload" }).ok == true and wcmd(boss, { action = "set", category = "Electronics", allowed = false }).ok == true and Codec.status().counts.categories == 1, "after a reload the edit goes through")
+local wlAudit = 0
+for _, e in ipairs(X.auditEntries(30)) do if e.action == "whitelist" then wlAudit = wlAudit + 1 end end
+check(wlAudit == 8, "every applied edit and the reload are audited once (no-ops and refusals are not)")
+onlinePlayers = {}
 end)()
 
 -- ===== 情境二十九：市場全流程（上架、瀏覽、購買、取消、到期、費稅守恆） =====
