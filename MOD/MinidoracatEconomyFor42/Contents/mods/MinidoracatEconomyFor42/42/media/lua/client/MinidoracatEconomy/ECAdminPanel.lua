@@ -7,12 +7,14 @@
 --   instance:resize(w, h) / :refresh() / :dispose() / :setVisible(v)
 --
 -- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
--- owns everything below it: eight sub pages (Player / Dashboard / Currencies / Sources / Shop /
--- Audit / System / Settings, the last one an editor for this mod's sandbox options -- group nav
--- on the left, one control per option on the right, backed by admin.option runtime overrides;
--- Shop is the same shape for the system shop's catalog.json, backed by admin.catalog) and the
+-- owns everything below it: nine sub pages (Player / Dashboard / Currencies / Sources / Shop /
+-- Listings / Audit / System / Settings, the last one an editor for this mod's sandbox options --
+-- group nav on the left, one control per option on the right, backed by admin.option runtime
+-- overrides; Shop is the same shape for the system shop's catalog.json, backed by admin.catalog;
+-- Listings is the market's own page -- the upload whitelist's state over a paged, searchable view
+-- of every active listing, backed by admin.listings / admin.whitelist) and the
 -- write dialogs (adjust / freeze / rename / enable / exchange / source caps / option /
--- catalog price / catalog cap). The
+-- catalog price / catalog cap / delist). The
 -- player page also owns the account search dropdown: a debounced admin.players query whose
 -- candidates are drawn by a child panel floating under the search box.
 --
@@ -61,8 +63,8 @@ local color, fill, border, text, textWidth, fitText, textRight, textCentre = U.c
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
 local Button, TableCell = U.Button, U.TableCell
 
-local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Audit", "System", "Settings" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog" }
+local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Listings", "Audit", "System", "Settings" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog", "admin.listings", "admin.whitelist" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
@@ -665,6 +667,34 @@ function CatalogCell:render()
     end
 end
 
+-- ---------- market listings page ----------
+
+-- One listing row: the item's icon plus its translated name (and the script's own name) over
+-- "seller / category / expiry" on the left, the price and the forced-delist chip on the right.
+-- Every string and hit box is computed once per rebuild (Admin:listingGeometry /
+-- Admin:listingRow), so the cell only paints and the click test reads the numbers the paint used.
+local ListingCell = ISPanel:derive("MinidoracatEconomyListingCell")
+
+function ListingCell:render()
+    local e = self.entry
+    if not e then return end
+    local w, h = self.width, self.height
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    local off = self.list.optionsDisabled == true
+    if e.icon then
+        -- a texture the engine handed out can still be refused by the renderer: ask once
+        local ok = pcall(self.drawTextureScaled, self, e.icon, PAD, e.iconY, e.iconSize, e.iconSize, 1, 1, 1, 1)
+        if not ok then e.icon = nil end
+    end
+    text(self, e.nameText, e.nameX, e.line1Y, "text")
+    if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
+    text(self, e.metaText, e.nameX, e.line2Y, "textFaint")
+    textRight(self, e.priceText, e.priceRight, e.line1Y, "accent")
+    local hit = e.delist
+    border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
+    textCentre(self, e.delistLabel, hit.x + hit.w / 2, hit.y + e.chipTextY, off and "textFaint" or "text")
+end
+
 -- ---------- write dialog ----------
 
 local Dialog = ISPanel:derive("MinidoracatEconomyAdminDialog")
@@ -1195,6 +1225,33 @@ function Admin:createChildren()
         self:onCatalogRow(item, self.catalogClickX or 0, self.catalogClickY or 0)
     end
     self:addChild(self.catalogList)
+
+    -- listings page: the whitelist card's reload chip, then the search box, the listing list and
+    -- the two page chips. A row carries one control, so the click needs the row-local x and y.
+    local wlReload = tr("Admin_Wl_Reload")
+    self.wlReloadButton = Button.create(0, 0, textWidth(wlReload) + 24, 22, wlReload, self, Admin.onWhitelistReloadClick, "chip")
+    self:addChild(self.wlReloadButton)
+    self.lstEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Market_Search") })
+    self.lstEntry.target = self
+    self.lstEntry.onTextChangeFunction = Admin.onListingSearch
+    self:addChild(self.lstEntry)
+    self.lstPrevButton = Button.create(0, 0, 80, 22, tr("Market_Prev"), self, Admin.onListingPage, "chip")
+    self.lstPrevButton.internal = -1
+    self:addChild(self.lstPrevButton)
+    self.lstNextButton = Button.create(0, 0, 80, 22, tr("Market_Next"), self, Admin.onListingPage, "chip")
+    self.lstNextButton.internal = 1
+    self:addChild(self.lstNextButton)
+    self.listingsList = U.newTable(ListingCell, lineH() * 2 + 12)
+    local lstDown = self.listingsList.onMouseDown
+    self.listingsList.onMouseDown = function(list, x, y)
+        self.lstClickX = x
+        self.lstClickY = (y + list.scrollOffset) % (list.rowHeight + (list.padding or 0))
+        return lstDown(list, x, y)
+    end
+    self.listingsList.onSelect = function(_, item)
+        self:onListingRow(item, self.lstClickX or 0, self.lstClickY or 0)
+    end
+    self:addChild(self.listingsList)
 
     -- settings page: search box, the option list, the per-group reset button. The group nav is
     -- painted (name plus an override count per row) and its clicks are resolved in onMouseDown.
@@ -1766,6 +1823,90 @@ function Admin:sendCatalog(args, dlg)
     return true
 end
 
+-- ----- market listings actions -----
+
+function Admin:onWhitelistReloadClick()
+    self.message = nil
+    self:sendWhitelist({ action = "reload" })
+end
+
+-- The page and the search text are state, not a request: the read goes out from here when the
+-- command is free and is retried from prerender when the cooldown (or an older answer) held it,
+-- so a keystroke is never silently dropped.
+function Admin:requestListings()
+    local args = { action = "list", page = self.lstPage or 1, query = self.lstQuery }
+    if not send("admin.listings", args) then return false end
+    self.lstSentQuery = self.lstQuery
+    self.lstSentPage = args.page
+    self:updateEnabled()
+    return true
+end
+
+function Admin:onListingSearch()
+    local raw = string.match(entryText(self.lstEntry), "^%s*(.-)%s*$")
+    self.lstQuery = raw ~= "" and string.lower(raw) or nil
+    self.lstPage = 1
+    self:requestListings()
+end
+
+function Admin:onListingPage(button)
+    local pages = 1
+    if self.listings then pages = math.max(1, math.floor(tonumber(self.listings.pages) or 1)) end
+    local page = math.max(1, math.min(pages, (self.lstPage or 1) + button.internal))
+    if page == (self.lstPage or 1) then return end
+    self.lstPage = page
+    self.message = nil
+    self:requestListings()
+end
+
+-- A click inside the listing list: the row's own delist chip.
+function Admin:onListingRow(item, x, y)
+    if item == nil or self.listingsList.optionsDisabled then return end
+    local hit = item.delist
+    if x >= hit.x and x < hit.x + hit.w and y >= hit.y and y < hit.y + hit.h then
+        self:openDialog("delist", {
+            title = getText(T .. "Admin_Lst_DelistTitle", item.plainName, item.seller),
+            confirm = tr("Admin_Lst_Delist"), listingId = item.id,
+        })
+    end
+end
+
+-- One write per click; every reply carries the current page back, so nothing is guessed here.
+function Admin:sendListings(args, dlg)
+    if not self:writeAllowed() then
+        local msg = { text = errorText("forbidden"), error = true }
+        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        return false
+    end
+    args.requestId = newRequestId()
+    args.page = self.lstPage or 1
+    args.query = self.lstQuery
+    if not send("admin.listings", args) then
+        local msg = { text = tr("Admin_Throttled"), error = true }
+        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        return false
+    end
+    self.pendingListings = { requestId = args.requestId, action = args.action, listingId = args.listingId }
+    if not dlg then self.message = nil end
+    self:updateEnabled()
+    return true
+end
+
+function Admin:sendWhitelist(args)
+    if not self:writeAllowed() then
+        self.message = { text = errorText("forbidden"), error = true }
+        return false
+    end
+    args.requestId = newRequestId()
+    if not send("admin.whitelist", args) then
+        self.message = { text = tr("Admin_Throttled"), error = true }
+        return false
+    end
+    self.pendingWhitelist = { requestId = args.requestId, action = args.action }
+    self:updateEnabled()
+    return true
+end
+
 -- ----- dialog lifecycle -----
 
 function Admin:openDialog(mode, ctx)
@@ -1789,6 +1930,7 @@ function Admin:openDialog(mode, ctx)
     dlg.optionKey = ctx.optionKey
     dlg.optionGroup = ctx.optionGroup
     dlg.catalogId = ctx.catalogId
+    dlg.listingId = ctx.listingId
     dlg.hintText = ctx.hint
     dlg.info = {}
     dlg.message = nil
@@ -1922,6 +2064,13 @@ function Admin:submitDialog(dlg)
             return
         end
         self.pendingSource = { requestId = payload.requestId, modId = dlg.modId }
+    elseif dlg.mode == "delist" then
+        if dlg.listingId == nil then
+            dlg.message = { text = errorText("invalid_args"), error = true }
+            self:layoutDialog()
+            return
+        end
+        if not self:sendListings({ action = "delist", listingId = dlg.listingId, reason = reason }, dlg) then return end
     else
         local field, value
         if dlg.mode == "name" then
@@ -2164,6 +2313,44 @@ function Admin:onReply(kind, args)
                 self:closeDialog()
             end
         end
+    elseif kind == "listings" then
+        -- every reply carries the page back, a refusal included, so the page always shows what
+        -- the server actually holds
+        if type(args.items) == "table" then
+            self.listings = args
+            self.listingsAt = EC.now()
+            self.lstPage = math.max(1, math.floor(tonumber(args.page) or 1))
+            self.lstSentPage = self.lstPage   -- the server clamps the page; adopt it, never re-ask
+            self:rebuildListings()
+        end
+        local req = self.pendingListings
+        local mine = req == nil or args.requestId == nil or req.requestId == args.requestId
+        if mine then
+            self.pendingListings = nil
+            if not args.ok then
+                local msg = { text = errorText(args.error), error = true }
+                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+            elseif req and req.action == "delist" then
+                self.message = { text = tr("Admin_Lst_Delisted") }
+                self:closeDialog()
+            end
+        end
+    elseif kind == "whitelist" then
+        if type(args.whitelist) == "table" then self.whitelist = args.whitelist end
+        local req = self.pendingWhitelist
+        local mine = req == nil or args.requestId == nil or req.requestId == args.requestId
+        if mine then
+            self.pendingWhitelist = nil
+            if not args.ok then
+                -- whitelist_invalid carries the file's own parse error: the code alone would not
+                -- tell the host which line to go and fix
+                local body = errorText(args.error)
+                if type(args.detail) == "string" and args.detail ~= "" then body = body .. ": " .. args.detail end
+                self.message = { text = body, error = true }
+            elseif req and req.action == "reload" then
+                self.message = { text = tr("Admin_Wl_Reloaded") }
+            end
+        end
     elseif kind == "icons" then
         if args.ok == false then
             self.message = { text = errorText(args.error), error = true }
@@ -2267,7 +2454,9 @@ function Admin:onTimeout(command)
         self.resetQueue = nil
     end
     if command == "admin.catalog" then self.pendingCatalog = nil end
-    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" or command == "admin.catalog" then
+    if command == "admin.listings" then self.pendingListings = nil end
+    if command == "admin.whitelist" then self.pendingWhitelist = nil end
+    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" or command == "admin.catalog" or command == "admin.listings" then
         if self.dialog then
             self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
             self:layoutDialog()
@@ -2596,6 +2785,67 @@ function Admin:rebuildCatalog()
     self.catalogList:setItems(rows)
 end
 
+-- Geometry of a listing row's right-hand strip: identical for every row, so it is computed once
+-- per rebuild and the rows only carry their own strings. The strip is as wide as its content (a
+-- price that fits "1,000,000" plus the delist chip) instead of a fixed number, so a large UI
+-- font cannot push the digits out of the row.
+function Admin:listingGeometry(width, chipH)
+    local label = tr("Admin_Lst_Delist")
+    local geo = { chipH = chipH, chipTextY = math.floor((chipH - fontH.small) / 2), delistLabel = label }
+    geo.delistW = textWidth(label) + 16
+    geo.priceW = math.max(60, textWidth("1,000,000") + 8)
+    geo.delistX = math.max(40, width - PAD - geo.delistW)
+    geo.priceRight = geo.delistX - 8
+    geo.textLimit = math.max(0, geo.priceRight - geo.priceW - PAD)
+    return geo
+end
+
+-- One listing row: icon plus the localised item name (and its untranslated name) over
+-- "seller / category / expiry", the price and the delist chip on the right.
+function Admin:listingRow(l, geo, lh, rowHeight, chipY)
+    local name = itemName(l.item)
+    local size = math.min(math.max(12, rowHeight - 10), 28)
+    local item = {
+        id = l.id, seller = tostring(l.seller or "-"), plainName = name,
+        line1Y = 5, line2Y = 5 + lh, chipTextY = geo.chipTextY,
+        icon = itemTexture(l.item), iconSize = size, iconY = math.floor((rowHeight - size) / 2),
+        priceRight = geo.priceRight, priceText = fitText(amountText(l.price), geo.priceW),
+        delistLabel = geo.delistLabel,
+        delist = { x = geo.delistX, y = chipY, w = geo.delistW, h = geo.chipH },
+    }
+    item.nameX = PAD + size + 6
+    local textW = math.max(0, geo.textLimit - item.nameX)
+    item.nameText = fitText(name, textW)
+    local alt = itemBaseName(l.item)
+    if alt then
+        item.altX = item.nameX + textWidth(item.nameText) + 8
+        local altW = geo.textLimit - item.altX
+        if altW > 20 then item.altText = fitText(alt, altW) end
+    end
+    item.metaText = fitText(item.seller .. " / " .. categoryText(l.category) .. " / "
+        .. tr("Market_Col_Expires") .. " " .. stampText(l.expiresAt, self.offsetMin), textW)
+    return item
+end
+
+-- The page the server last sent, turned into rows. Built when a reply lands and when the
+-- geometry changes; never per frame.
+function Admin:rebuildListings()
+    local rows = {}
+    local snap = self.listings
+    if snap and type(snap.items) == "table" then
+        local list = self.listingsList
+        local width = math.max(120, list.width - 12)   -- 12 = the scrollbar gutter
+        local chipH = math.max(20, fontH.small + 6)
+        local geo = self:listingGeometry(width, chipH)
+        local chipY = math.max(3, math.floor((list.rowHeight - chipH) / 2))
+        for _, l in ipairs(snap.items) do
+            rows[#rows + 1] = self:listingRow(l, geo, lineH(), list.rowHeight, chipY)
+        end
+    end
+    self.listingRows = rows
+    self.listingsList:setItems(rows)
+end
+
 -- ----- enable state (permission, in-flight command, data presence) -----
 
 -- Local role read (getAccessLevel + sandbox lists) AND, once a reply has told us, the level the
@@ -2654,6 +2904,21 @@ function Admin:updateEnabled()
     self.catalogList.optionsDisabled = not catWrite
     self.shopReloadButton:setEnable(catWrite)
 
+    -- listings page: one in-flight listings command at a time; the page chips follow the
+    -- snapshot, and a read-only role browses without ever arming a delist
+    local lstWrite = write and not modal and not isPending("admin.listings")
+    self.listingsList.optionsDisabled = not lstWrite
+    self.wlReloadButton:setEnable(write and not modal and not isPending("admin.whitelist"))
+    setEntryEditable(self.lstEntry, read and not modal)
+    local lstPage, lstPages = 1, 1
+    if self.listings then
+        lstPage = math.max(1, math.floor(tonumber(self.listings.page) or 1))
+        lstPages = math.max(1, math.floor(tonumber(self.listings.pages) or 1))
+    end
+    local lstRead = read and not modal and not isPending("admin.listings")
+    self.lstPrevButton:setEnable(lstRead and lstPage > 1)
+    self.lstNextButton:setEnable(lstRead and lstPage < lstPages)
+
     -- settings page: one in-flight option write at a time; a read-only role sees every control
     -- greyed out instead of a page that pretends to be editable
     local optWrite = write and not modal and not isPending("admin.option")
@@ -2662,7 +2927,7 @@ function Admin:updateEnabled()
     local _, overrides = self:optionGroupCount(self.setGroup)
     self.setResetButton:setEnable(optWrite and overrides > 0)
     if self.dialog then
-        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources") or isPending("admin.option") or isPending("admin.catalog"))
+        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources") or isPending("admin.option") or isPending("admin.catalog") or isPending("admin.listings"))
         self.dialog.confirmButton:setEnable(ok)
     end
 end
@@ -2715,6 +2980,7 @@ function Admin:layout()
     local sources = read and self.tab == "Sources"
     local settings = read and self.tab == "Settings"
     local shop = read and self.tab == "Shop"
+    local listings = read and self.tab == "Listings"
     for _, b in ipairs(self.subTabButtons) do b:setVisible(read) end
     self.refreshButton:setVisible(read)
 
@@ -2916,6 +3182,50 @@ function Admin:layout()
         self.catalogList:resize(shopW, shopH)
     end
 
+    -- listings page: the whitelist card (status left, reload chip right) over the listings card,
+    -- which carries the search row, the list and the page chips along its bottom.
+    local wlH = CARD_TITLE_H + math.max(reloadH, lh) + PAD
+    g.lstWlY = g.bodyY
+    g.lstWlH = wlH
+    local wlW = math.min(textWidth(self.wlReloadButton.fullTitle) + 24, math.floor(w * 0.4))
+    self.wlReloadButton:setVisible(listings)
+    self.wlReloadButton:setWidth(wlW)
+    self.wlReloadButton:setHeight(reloadH)
+    self.wlReloadButton:setX(math.max(PAD, w - PAD - wlW))
+    self.wlReloadButton:setY(g.bodyY + CARD_TITLE_H + 2)
+    self:setButtonTitle(self.wlReloadButton, self.wlReloadButton.fullTitle)
+    g.lstWlTextY = self.wlReloadButton.y + math.floor((reloadH - fontH.small) / 2)
+
+    g.lstY = g.bodyY + wlH + PAD
+    g.lstH = math.max(CARD_TITLE_H + eh + rh, g.bodyY + g.bodyH - g.lstY)
+    local lstTop = g.lstY + CARD_TITLE_H + 4
+    self.lstEntry:setVisible(listings)
+    self.lstEntry:setX(PAD); self.lstEntry:setY(lstTop)
+    self.lstEntry:setWidth(math.max(120, math.min(240, math.floor(w * 0.28)))); self.lstEntry:setHeight(eh)
+    g.lstNoteX = PAD + self.lstEntry.width + PAD
+    g.lstHeadY = lstTop + math.floor((eh - fontH.small) / 2)
+    local pageH = math.max(20, fontH.small + 6)
+    local lstListY = lstTop + eh + 6
+    g.lstPageY = math.max(lstListY + rh + 6, g.lstY + g.lstH - PAD - pageH)
+    g.lstPageTextY = g.lstPageY + math.floor((pageH - fontH.small) / 2)
+    local prevW = math.min(textWidth(self.lstPrevButton.fullTitle) + 24, math.floor(w * 0.2))
+    local nextW = math.min(textWidth(self.lstNextButton.fullTitle) + 24, math.floor(w * 0.2))
+    self.lstNextButton:setVisible(listings)
+    self.lstNextButton:setWidth(nextW); self.lstNextButton:setHeight(pageH)
+    self.lstNextButton:setX(math.max(PAD, w - PAD - nextW)); self.lstNextButton:setY(g.lstPageY)
+    self:setButtonTitle(self.lstNextButton, self.lstNextButton.fullTitle)
+    self.lstPrevButton:setVisible(listings)
+    self.lstPrevButton:setWidth(prevW); self.lstPrevButton:setHeight(pageH)
+    self.lstPrevButton:setX(math.max(PAD, self.lstNextButton.x - 6 - prevW)); self.lstPrevButton:setY(g.lstPageY)
+    self:setButtonTitle(self.lstPrevButton, self.lstPrevButton.fullTitle)
+    local lstW = math.max(160, w - PAD * 2)
+    local lstListH = math.max(rh, g.lstPageY - 6 - lstListY)
+    self.listingsList:setVisible(listings)
+    self.listingsList:setX(PAD); self.listingsList:setY(lstListY)
+    if self.listingsList.width ~= lstW or self.listingsList.height ~= lstListH then
+        self.listingsList:resize(lstW, lstListH)
+    end
+
     -- settings page: search row on top, the group nav down the left, the option list plus the
     -- "reset this group" button on the right. The reset row is reserved whether the button is
     -- shown or not, so typing in the search box never re-flows the list.
@@ -2952,6 +3262,7 @@ function Admin:layout()
     self:rebuildAudit()
     self:rebuildSettings()
     self:rebuildCatalog()
+    self:rebuildListings()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
     if self.dialog then self:layoutDialog() end
     self:layoutSuggest()
@@ -3347,6 +3658,50 @@ function Admin:drawShop()
     end
 end
 
+function Admin:drawListings()
+    local g = self.g
+    -- whitelist card: a parse error wins over the counts, because it says the server is still
+    -- running with the previous file
+    card(self, 0, g.lstWlY, self.width, g.lstWlH, tr("Admin_Wl_Title"))
+    local wl = self.whitelist
+    local status, token
+    if wl and type(wl.error) == "string" and wl.error ~= "" then
+        status, token = getText(T .. "Admin_Wl_Error", wl.error), "errorText"
+    elseif wl then
+        local c = type(wl.counts) == "table" and wl.counts or {}
+        status = getText(T .. "Admin_Wl_Status", tostring(c.categories or 0), tostring(c.types or 0),
+            tostring(c.excludeTypes or 0), tostring(c.modDataKeys or 0), stampText(wl.loadedAt, self.offsetMin))
+        token = "textMuted"
+    else
+        status, token = isPending("admin.whitelist") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), "textFaint"
+    end
+    text(self, fitText(status, math.max(0, self.wlReloadButton.x - PAD * 2)), PAD, g.lstWlTextY, token)
+
+    card(self, 0, g.lstY, self.width, g.lstH, tr("Admin_Lst_Title"))
+    local snap = self.listings
+    local rows = self.listingRows or {}
+    local countText = getText(T .. "Admin_Lst_Count", tostring((snap and snap.total) or 0))
+    textRight(self, countText, self.width - PAD, g.lstHeadY, "textFaint")
+    text(self, fitText(tr("Admin_Lst_Note"), math.max(0, self.width - PAD * 2 - g.lstNoteX - textWidth(countText))),
+        g.lstNoteX, g.lstHeadY, "textFaint")
+    if #rows == 0 then
+        local empty
+        if snap == nil then
+            empty = isPending("admin.listings") and tr("Admin_Loading") or tr("Admin_Dash_Empty")
+        else
+            empty = tr("Admin_Lst_Empty")
+        end
+        text(self, empty, self.listingsList.x + PAD, self.listingsList.y + 4, "textFaint")
+    end
+    local page, pages = 1, 1
+    if snap then
+        page = math.max(1, math.floor(tonumber(snap.page) or 1))
+        pages = math.max(1, math.floor(tonumber(snap.pages) or 1))
+    end
+    text(self, fitText(getText(T .. "Market_Page", tostring(page), tostring(pages)),
+        math.max(0, self.lstPrevButton.x - PAD * 2)), PAD, g.lstPageTextY, "textFaint")
+end
+
 function Admin:drawAudit()
     local g = self.g
     local rh = rowH()
@@ -3397,6 +3752,16 @@ function Admin:drawSystem()
             self:lineRow(tr("Admin_Sys_Catalog"), fitText(cat.error, math.floor(self.lw * 0.6)), "errorText")
         else
             self:lineRow(tr("Admin_Sys_Catalog"), getText(T .. "Admin_Shop_Count", tostring((type(cat) == "table" and cat.count) or 0)))
+        end
+        local mk = sys.market
+        self:lineRow(tr("Admin_Sys_Listings"), amountText((type(mk) == "table" and mk.listings) or 0)
+            .. " / " .. tostring((type(mk) == "table" and mk.max) or "?"))
+        local wl = sys.whitelist
+        if type(wl) == "table" and type(wl.error) == "string" and wl.error ~= "" then
+            self:lineRow(tr("Admin_Sys_Whitelist"), fitText(wl.error, math.floor(self.lw * 0.6)), "errorText")
+        else
+            local counts = type(wl) == "table" and type(wl.counts) == "table" and wl.counts or {}
+            self:lineRow(tr("Admin_Sys_Whitelist"), tostring(counts.categories or 0))
         end
         self:lineRow(tr("Admin_Sys_Size"), sizeText(sys.sizeEstimate))
         local parts = sys.sizeParts
@@ -3511,7 +3876,7 @@ function Admin:prerender()
         if write ~= self.hadWrite or read ~= self.hadRead then
             if not write then self:closeDialog() end
             if not read then self:closeSuggest() end
-            if not read then self.catalog = nil end
+            if not read then self.catalog = nil; self.listings = nil; self.whitelist = nil end
             self:layout()   -- hides/shows the page children for the new permission level
         end
     end
@@ -3555,6 +3920,13 @@ function Admin:prerender()
         end
     end
 
+    -- a page or a search text the admin changed while the cooldown (or an older answer) was
+    -- still holding the command
+    if self.tab == "Listings" and self.hadRead
+        and (self.lstSentQuery ~= self.lstQuery or self.lstSentPage ~= (self.lstPage or 1)) then
+        self:requestListings()
+    end
+
     -- visible auto refresh of the open page (read permission only)
     if self.hadRead and (not self.polledAt or now - self.polledAt > POLL_MS) then
         self.polledAt = now
@@ -3572,7 +3944,8 @@ function Admin:prerender()
     end
     -- the auto refresh has to be visible: the pages without their own stamp show it in the tab bar
     local stampAt = ((self.tab == "Dashboard" or self.tab == "System" or self.tab == "Settings") and self.systemAt)
-        or (self.tab == "Sources" and self.sourcesAt) or (self.tab == "Shop" and self.catalogAt) or nil
+        or (self.tab == "Sources" and self.sourcesAt) or (self.tab == "Shop" and self.catalogAt)
+        or (self.tab == "Listings" and self.listingsAt) or nil
     if stampAt then
         textRight(self, getText(T .. "Admin_Updated", U.clockText(stampAt, self.offsetMin)),
             self.refreshButton.x - PAD, math.floor((g.subH - fontH.small) / 2), "textFaint")
@@ -3587,6 +3960,8 @@ function Admin:prerender()
         self:drawSources()
     elseif self.tab == "Shop" then
         self:drawShop()
+    elseif self.tab == "Listings" then
+        self:drawListings()
     elseif self.tab == "Audit" then
         self:drawAudit()
     elseif self.tab == "Settings" then
@@ -3675,6 +4050,9 @@ function Admin:refresh()
         send("admin.sources", { action = "list" })
     elseif self.tab == "Shop" then
         send("admin.catalog", { action = "list" })
+    elseif self.tab == "Listings" then
+        self:requestListings()
+        send("admin.whitelist", { action = "status" })
     end
     self:updateEnabled()
 end
@@ -3691,6 +4069,7 @@ function Admin:setVisible(visible)
         pcall(function() self.userEntry:unfocus() end)
         pcall(function() self.auditEntry:unfocus() end)
         pcall(function() self.setEntry:unfocus() end)
+        pcall(function() self.lstEntry:unfocus() end)
     end
 end
 
@@ -3700,6 +4079,7 @@ function Admin:dispose()
     pcall(function() self.userEntry:unfocus() end)
     pcall(function() self.auditEntry:unfocus() end)
     pcall(function() self.setEntry:unfocus() end)
+    pcall(function() self.lstEntry:unfocus() end)
     self.lookup = nil
     self.audit = nil
     self.system = nil
@@ -3713,6 +4093,10 @@ function Admin:dispose()
     self.resetQueue = nil
     self.catalog = nil
     self.pendingCatalog = nil
+    self.listings = nil
+    self.pendingListings = nil
+    self.whitelist = nil
+    self.pendingWhitelist = nil
     if P.instance == self then P.instance = nil end
 end
 
@@ -3728,6 +4112,7 @@ function P.create(owner)
     o.owner = owner
     o.tab = "Player"
     o.auditFilter = "all"
+    o.lstPage = 1
     o.auditQuery = nil
     o.cfgSelected = EC.CURRENCY_ORDER[1]
     o.cfgRowRects = {}

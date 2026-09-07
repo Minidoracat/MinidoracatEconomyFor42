@@ -437,7 +437,8 @@ end
 S.handlers["market.candidates"] = function(player, args)
     S.reply(player, "market.candidates", {
         items = Mk.candidates(player), atTerminal = T.near(player),
-        feePercent = EC.sandbox("MarketListingFeePercent", 2), priceMin = EC.sandbox("MarketPriceMin", 1), priceMax = EC.sandbox("MarketPriceMax", 1000000),
+        feePercent = EC.sandbox("MarketListingFeePercent", 2), taxPercent = EC.sandbox("MarketSalesTaxPercent", 5),
+        priceMin = EC.sandbox("MarketPriceMin", 1), priceMax = EC.sandbox("MarketPriceMax", 1000000),
         mine = ownerCount(player:getUsername()), maxListings = EC.sandbox("MarketMaxListings", 5),
     })
 end
