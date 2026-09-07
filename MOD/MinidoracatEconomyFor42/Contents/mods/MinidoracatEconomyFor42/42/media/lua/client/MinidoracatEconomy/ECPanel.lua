@@ -1,4 +1,5 @@
--- MinidoracatEconomyFor42 — Economy Center window (client). Stage B6: Wallet + Rewards tabs.
+-- MinidoracatEconomyFor42 — Economy Center window (client). Stage C: Wallet / Rewards / Shop /
+-- Mailbox tabs (Admin stays in ECAdminPanel).
 --
 -- Layout follows docs/design-proposals/images/05b-wallet-rewards.png and 20-wallet-statement.png:
 -- skinned title bar, status line, balance strip, tab bar, two-column cards. Everything is painted
@@ -21,6 +22,8 @@
 require "ISUI/ISCollapsableWindow"
 require "ISUI/ISButton"
 require "ISUI/ISLayoutManager"
+require "ISUI/ISPanel"
+require "ISUI/ISTextEntryBox"
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
@@ -49,6 +52,262 @@ local color, fill, border, text, textWidth, fitText, textRight, textCentre, stri
 local clockText, stampText, durationText, amountText, signedText, hasBit, kindText, card = U.clockText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card
 local localOffsetMinutes = U.localOffsetMinutes
 local Button, Cell = U.Button, U.StatementCell
+
+
+-- ---------- shop / mailbox pieces ----------
+
+local TIMEOUT_MS = 8000            -- one write in flight per page, same window as the admin dialog
+local SHOP_POLL_MS = 30000         -- a catalog snapshot older than this is asked for again
+local ITEM_ICON = 32
+
+-- Two text lines plus the item icon; the font scale decides, not a constant (fontH is filled by
+-- U.init, so this is a function and not a load-time number).
+local function itemRowHeight()
+    return math.max(math.floor(ROW * 1.6), fontH.small * 2 + 16)
+end
+
+local function newEntry(width, height, placeholder)
+    local e = ISTextEntryBox:new("", 0, 0, width, height)
+    e:initialise()
+    e:instantiate()
+    local bg, br = color("well"), color("border")
+    e.backgroundColor = { r = bg.r, g = bg.g, b = bg.b, a = 0.9 }
+    e.borderColor = { r = br.r, g = br.g, b = br.b, a = 1 }
+    if e.setMaxTextLength then e:setMaxTextLength(32) end
+    if e.setClearButton then e:setClearButton(true) end
+    if placeholder and e.setPlaceholderText then e:setPlaceholderText(placeholder) end
+    return e
+end
+
+local function entryText(e)
+    local ok, value = pcall(function() return e:getInternalText() end)
+    if ok and type(value) == "string" then return value end
+    return ""
+end
+
+-- Item display: the engine name (getItemNameFromFullType, LuaManager.java:8579-8583) and the item
+-- script's inventory texture (ScriptManager.instance:FindItem -> getNormalTexture; a script may
+-- ship none). Both are cached per fullType: a catalog reply must not walk the script list again,
+-- and neither call belongs in a per-frame paint.
+local itemNames, itemTextures = {}, {}
+
+local function itemName(fullType)
+    local name = itemNames[fullType]
+    if name == nil then
+        local ok, value = pcall(getItemNameFromFullType, fullType)
+        name = (ok and type(value) == "string" and value ~= "") and value or tostring(fullType)
+        itemNames[fullType] = name
+    end
+    return name
+end
+
+local function itemTexture(fullType)
+    local tex = itemTextures[fullType]
+    if tex == nil then
+        tex = false
+        local ok, script = pcall(function() return ScriptManager.instance:FindItem(fullType) end)
+        if ok and script then
+            local okTex, value = pcall(function() return script:getNormalTexture() end)
+            if okTex and value then tex = value end
+        end
+        itemTextures[fullType] = tex
+    end
+    return tex or nil
+end
+
+local function drawIcon(el, tex, x, y, size)
+    if tex then el:drawTextureScaled(tex, x, y, size, size, 1, 1, 1, 1) end
+end
+
+-- shop.buy and mail.claim share one error key space (Shop_Error_<code>, timeout included)
+local function shopError(code)
+    if code == nil then code = "unknown" end
+    return getTextOrNull(T .. "Shop_Error_" .. tostring(code)) or getText(T .. "Rewards_Error_generic", tostring(code))
+end
+
+-- One catalog row: every string the cell paints is built here (they change with the snapshot,
+-- never per frame), `remaining` keeps the raw number the buy dialog clamps its count with.
+local function shopRow(it, currency)
+    local cap = tonumber(it.dailyCap) or 0
+    local remaining = tonumber(it.remaining)
+    local remainText, remainToken, soldOut = getText(T .. "Shop_Unlimited"), "textMuted", false
+    if cap > 0 then
+        local left = remaining or cap
+        soldOut = left <= 0
+        remainText = soldOut and getText(T .. "Shop_SoldOut") or (tostring(left) .. " / " .. tostring(cap))
+        remainToken = soldOut and "warn" or "text"
+    end
+    local qty = tonumber(it.qty) or 1
+    return {
+        id = it.id, item = it.item, qty = qty, price = tonumber(it.price) or 0,
+        dailyCap = cap, remaining = remaining, soldOut = soldOut, currency = currency,
+        name = itemName(it.item), texture = itemTexture(it.item),
+        qtyText = getText(T .. "Shop_QtyPer", tostring(qty)),
+        priceText = amountText(it.price), remainText = remainText, remainToken = remainToken,
+        buyLabel = getText(T .. "Shop_Buy"),
+    }
+end
+
+-- Shop row: icon + name over "N per lot", the unit price, today's remaining share, the buy chip.
+-- Column edges come from Panel:layout (list.cols) and `list.buyDisabled` greys every chip while
+-- the write gate is closed (frozen account, or no terminal within reach).
+local ShopCell = ISPanel:derive("MinidoracatEconomyShopCell")
+
+function ShopCell:render()
+    local e = self.entry
+    if not e then return end
+    local cols = self.list.cols
+    local w, h = self.width, self.height
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
+    drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
+    local half = math.floor(h / 2)
+    text(self, fitText(e.name, cols.nameW), cols.name, half - fontH.small - 2, "text")
+    text(self, e.qtyText, cols.name, half + 2, "textFaint")
+    local ty = math.floor((h - fontH.small) / 2)
+    textRight(self, e.priceText, cols.priceR, ty, "accent")
+    local coinX = cols.priceR - textWidth(e.priceText) - COIN_SMALL - 4
+    if coinX > cols.name + cols.nameW then
+        drawCoin(self, e.currency, coinX, math.floor((h - COIN_SMALL) / 2), COIN_SMALL)
+    end
+    textRight(self, e.remainText, cols.remainR, ty, e.remainToken)
+    local off = self.list.buyDisabled == true or e.soldOut
+    border(self, cols.buyX, math.floor((h - CHIP_H) / 2), cols.buyW, CHIP_H, off and "border" or "accent", "pill")
+    textCentre(self, e.buyLabel, cols.buyX + cols.buyW / 2, ty, off and "textFaint" or "text")
+end
+
+-- Mailbox row: icon + name x count over its source, the timestamp, the claim chip.
+local MailCell = ISPanel:derive("MinidoracatEconomyMailCell")
+
+function MailCell:render()
+    local e = self.entry
+    if not e then return end
+    local cols = self.list.cols
+    local w, h = self.width, self.height
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
+    drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
+    local half = math.floor(h / 2)
+    text(self, fitText(e.nameText, cols.nameW), cols.name, half - fontH.small - 2, "text")
+    text(self, e.fromText, cols.name, half + 2, "textFaint")
+    local ty = math.floor((h - fontH.small) / 2)
+    textRight(self, e.timeText, cols.timeR, ty, "textFaint")
+    local off = self.list.claimDisabled == true
+    border(self, cols.claimX, math.floor((h - CHIP_H) / 2), cols.claimW, CHIP_H, off and "border" or "accent", "pill")
+    textCentre(self, e.claimLabel, cols.claimX + cols.claimW / 2, ty, off and "textFaint" or "text")
+end
+
+-- ---------- buy dialog ----------
+-- Same shape as the admin write dialog (ECAdminPanel Dialog): a panel added to the window,
+-- centred over the content area, swallowing the clicks of the page underneath. It never scrolls,
+-- so the rows are simply stacked from the font height.
+local BuyDialog = ISPanel:derive("MinidoracatEconomyBuyDialog")
+
+function BuyDialog:createChildren()
+    local step = math.max(CHIP_H, fontH.medium + 8)
+    self.minusButton = Button.create(0, 0, step + 6, step, "-", self, BuyDialog.onStep, "chip")
+    self.minusButton.internal = -1
+    self:addChild(self.minusButton)
+    self.plusButton = Button.create(0, 0, step + 6, step, "+", self, BuyDialog.onStep, "chip")
+    self.plusButton.internal = 1
+    self:addChild(self.plusButton)
+    local buy = getText(T .. "Shop_Buy")
+    local bh = math.max(28, fontH.medium + 10)
+    self.confirmButton = Button.create(0, 0, math.max(120, textWidth(buy, UIFont.Medium) + 40), bh, buy, self, BuyDialog.onConfirm, "primary")
+    self.confirmButton.font = UIFont.Medium
+    self:addChild(self.confirmButton)
+    local cancel = getText(T .. "Admin_Cancel")
+    self.cancelButton = Button.create(0, 0, textWidth(cancel) + 30, bh, cancel, self, BuyDialog.onCancel, "chip")
+    self:addChild(self.cancelButton)
+end
+
+-- Lots per purchase: the server cap, and never more than today's remaining share.
+function BuyDialog:maxCount()
+    local max = math.max(1, tonumber(C.shop and C.shop.countMax) or 1)
+    local row = self.row
+    if row.dailyCap > 0 and row.remaining then max = math.min(max, math.max(1, row.remaining)) end
+    return max
+end
+
+function BuyDialog:total() return self.count * self.row.price end
+
+function BuyDialog:available()
+    local bal = C.wallet and C.wallet.balances and C.wallet.balances[self.row.currency]
+    return bal and tonumber(bal.available) or 0
+end
+
+function BuyDialog:onStep(button)
+    self.count = math.max(1, math.min(self:maxCount(), self.count + button.internal))
+    self.message = nil
+end
+
+function BuyDialog:onCancel() self.panel:closeBuy() end
+function BuyDialog:onConfirm() self.panel:submitBuy(self) end
+
+function BuyDialog:layoutInside(maxW)
+    local line = fontH.small + 8
+    local step = self.minusButton.height
+    local w = math.max(340, math.min(maxW, 440))
+    local y = PAD
+    self.titleY = y; y = y + fontH.medium + PAD
+    self.itemY = y; y = y + math.max(ITEM_ICON, line * 2) + PAD
+    self.countY = y; y = y + math.max(step, line) + 6
+    self.totalY = y; y = y + line
+    self.afterY = y; y = y + line + 6
+    -- the error line is always reserved: an answer from the server must not make the dialog
+    -- (and with it the confirm button under the cursor) jump
+    self.messageY = y; y = y + line + 6
+    self.buttonY = y
+    self:setWidth(w)
+    self:setHeight(y + self.confirmButton.height + PAD)
+    self.numW = math.max(34, textWidth("99", UIFont.Medium) + 16)
+    self.plusButton:setX(w - PAD - self.plusButton.width)
+    self.plusButton:setY(self.countY)
+    self.numX = self.plusButton.x - self.numW
+    self.minusButton:setX(self.numX - self.minusButton.width)
+    self.minusButton:setY(self.countY)
+    self.confirmButton:setX(w - PAD - self.confirmButton.width)
+    self.confirmButton:setY(self.buttonY)
+    self.cancelButton:setX(self.confirmButton.x - 8 - self.cancelButton.width)
+    self.cancelButton:setY(self.buttonY)
+end
+
+function BuyDialog:prerender()
+    local row = self.row
+    local w, h = self.width, self.height
+    fill(self, 0, 0, w, h, "surface")
+    border(self, 0, 0, w, h, "accent")
+    text(self, fitText(getText(T .. "Shop_BuyTitle", row.name), w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
+    drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
+    local tx = PAD + ITEM_ICON + PAD
+    text(self, fitText(row.name, w - tx - PAD), tx, self.itemY, "text")
+    text(self, row.qtyText, tx, self.itemY + fontH.small + 4, "textFaint")
+    local max = self:maxCount()
+    if self.count > max then self.count = max end
+    local stepH = self.minusButton.height
+    text(self, getText(T .. "Shop_Count"), PAD, self.countY + math.floor((stepH - fontH.small) / 2), "textMuted")
+    textCentre(self, tostring(self.count), self.numX + self.numW / 2, self.countY + math.floor((stepH - fontH.medium) / 2), "text", UIFont.Medium)
+    local total = self:total()
+    local after = self:available() - total
+    local totalText = amountText(total)
+    text(self, getText(T .. "Shop_Total"), PAD, self.totalY, "textMuted")
+    textRight(self, totalText, w - PAD, self.totalY, "accent")
+    drawCoin(self, row.currency, w - PAD - textWidth(totalText) - COIN_SMALL - 4, self.totalY + math.floor((fontH.small - COIN_SMALL) / 2), COIN_SMALL)
+    text(self, getText(T .. "Shop_AfterBalance"), PAD, self.afterY, "textMuted")
+    textRight(self, amountText(after), w - PAD, self.afterY, after < 0 and "warn" or "text")
+    if self.message then text(self, fitText(self.message, w - PAD * 2), PAD, self.messageY, "errorText") end
+    local pending = self.panel.buyPending ~= nil
+    self.minusButton:setEnable(self.count > 1 and not pending)
+    self.plusButton:setEnable(self.count < max and not pending)
+    self.confirmButton:setEnable(after >= 0 and not pending and self.panel:tradeAllowed())
+end
+
+function BuyDialog:render() end
+
+-- the page underneath must not be operable while the dialog is open
+function BuyDialog:onMouseDown() return true end
+function BuyDialog:onMouseUp() return true end
+function BuyDialog:onMouseMove() return true end
 
 -- ---------- window ----------
 
@@ -84,11 +343,12 @@ end
 function Panel:createChildren()
     ISCollapsableWindow.createChildren(self)
     self.tabButtons = {}
-    for _, tab in ipairs({ "Wallet", "Rewards", "Admin" }) do
+    for _, tab in ipairs({ "Wallet", "Rewards", "Shop", "Mail", "Admin" }) do
         local b = Button.create(0, 0, TAB_W, TAB_H, getText(T .. "Tab_" .. tab), self, Panel.onTab, "tab")
         b.internal = tab
         self:addChild(b)
         self.tabButtons[#self.tabButtons + 1] = b
+        if tab == "Mail" then self.mailTabButton = b end
     end
 
     self.periodButtons = {}
@@ -102,6 +362,22 @@ function Panel:createChildren()
 
     self.list = U.newTable(Cell, ROW)
     self:addChild(self.list)
+
+    -- shop page: the category chips are rebuilt per snapshot (Panel:rebuildCategories), the
+    -- search box filters the table by item name or sku id
+    self.catButtons = {}
+    self.shopEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Shop_Search"))
+    self.shopEntry.target = self
+    self.shopEntry.onTextChangeFunction = Panel.onShopSearch
+    self:addChild(self.shopEntry)
+    self.shopList = U.newTable(ShopCell, itemRowHeight())
+    self.shopList.onSelect = function(_, item) self:onShopRow(item) end
+    self:addChild(self.shopList)
+
+    -- mailbox page
+    self.mailList = U.newTable(MailCell, itemRowHeight())
+    self.mailList.onSelect = function(_, item) self:onMailRow(item) end
+    self:addChild(self.mailList)
 
     self.claimButton = Button.create(0, 0, 200, 40, "", self, Panel.onClaim, "primary")
     self.claimButton.font = UIFont.Medium
@@ -124,6 +400,10 @@ function Panel:onTab(button) self:setTab(button.internal) end
 
 function Panel:setTab(tab)
     if tab == "Admin" and not C.AdminPanel.canRead() then tab = "Wallet" end
+    if tab ~= self.tab then
+        self:closeBuy()
+        pcall(function() self.shopEntry:unfocus() end)   -- a hidden text box must not keep the keyboard
+    end
     self.tab = tab
     for _, b in ipairs(self.tabButtons) do b.active = b.internal == tab end
     self:layout()
@@ -136,12 +416,22 @@ function Panel:refresh()
     if self.tab == "Wallet" then
         C.requestWallet()
         if not self.history then self:loadHistory() end
-    elseif self.tab == "Admin" then
-        if self.adminPanel and C.AdminPanel.canRead() then self.adminPanel:refresh() end
-    else
+    elseif self.tab == "Rewards" then
         self.rewardsPolledMs = EC.now()
         C.requestRewards()
         if not C.wallet then C.requestWallet() end
+    elseif self.tab == "Shop" then
+        -- the catalog only changes when an admin edits it (and every purchase reply is followed
+        -- by a fresh list from ECClient), so a recent snapshot is reused as it is
+        if not C.shop or EC.now() - (self.shopAt or 0) > SHOP_POLL_MS then
+            self.shopAt = EC.now()
+            C.requestShop()
+        end
+        if not C.wallet then C.requestWallet() end
+    elseif self.tab == "Mail" then
+        C.requestMail()
+    elseif self.tab == "Admin" then
+        if self.adminPanel and C.AdminPanel.canRead() then self.adminPanel:refresh() end
     end
 end
 
@@ -280,6 +570,243 @@ function Panel:onRewards(kind, args)
     end
 end
 
+-- ----- shop / mailbox -----
+
+-- The mailbox tab carries the pending count: a purchase that did not fit in the backpack is
+-- otherwise invisible until the player opens the page. Every reply that knows the number
+-- (shop.list, shop.buy, mail.list, mail.claim) passes it here.
+function Panel:updateMailTab(unclaimed)
+    local n = tonumber(unclaimed)
+    if n then self.unclaimedCount = n end
+    local b = self.mailTabButton
+    if not b then return end
+    local title = getText(T .. "Tab_Mail")
+    if (self.unclaimedCount or 0) > 0 then title = title .. " (" .. tostring(self.unclaimedCount) .. ")" end
+    if b.title ~= title then b:setTitle(title) end
+end
+
+-- Category chips are the categories the snapshot actually uses (plus "all"), so a server that
+-- ships two categories does not show five empty filters. The buttons are rebuilt only when that
+-- set changes (a snapshot lands every 30 s at most, a catalog edit is rarer still).
+function Panel:rebuildCategories()
+    local seen, cats, sig = {}, { "" }, ""
+    for _, it in ipairs(C.shop and C.shop.items or {}) do
+        local cat = it.category
+        if it.enabled ~= false and type(cat) == "string" and cat ~= "" and not seen[cat] then
+            seen[cat] = true
+            cats[#cats + 1] = cat
+            sig = sig .. cat .. ","
+        end
+    end
+    if self.shopCat and not seen[self.shopCat] then self.shopCat = nil end
+    if sig == self.catSig then return end
+    self.catSig = sig
+    for _, b in ipairs(self.catButtons or {}) do
+        b:setVisible(false)
+        self:removeChild(b)
+    end
+    self.catButtons = {}
+    for _, cat in ipairs(cats) do
+        local title = cat == "" and getText(T .. "Shop_All") or (getTextOrNull(T .. "Shop_Cat_" .. cat) or cat)
+        local b = Button.create(0, 0, math.min(LEFT_W - PAD * 2, textWidth(title) + 22), CHIP_H, title, self, Panel.onShopCat, "chip")
+        b.internal = cat
+        b.active = (self.shopCat or "") == cat
+        self:addChild(b)
+        self.catButtons[#self.catButtons + 1] = b
+    end
+end
+
+-- Rows for the selected category and search text. A disabled sku is not a row at all: a player
+-- must not see what an admin took off the shelf.
+function Panel:rebuildShop()
+    local shop = C.shop
+    local query = self.shopQuery
+    local rows = {}
+    for _, it in ipairs(shop and shop.items or {}) do
+        if it.enabled ~= false and (self.shopCat == nil or it.category == self.shopCat) then
+            local row = shopRow(it, shop.currency)
+            if query == nil or string.find(string.lower(row.name), query, 1, true)
+                or string.find(string.lower(tostring(row.id)), query, 1, true) then
+                rows[#rows + 1] = row
+            end
+        end
+    end
+    self.shopRows = rows
+    self.shopList:setItems(rows)
+end
+
+function Panel:rebuildMail()
+    local rows = {}
+    for _, e in ipairs(C.mail and C.mail.entries or {}) do
+        local qty = tonumber(e.qty) or 1
+        local name = itemName(e.item)
+        rows[#rows + 1] = {
+            id = e.id, item = e.item, qty = qty, name = name, texture = itemTexture(e.item),
+            nameText = name .. " x" .. tostring(qty),
+            fromText = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or tostring(e.kind),
+            timeText = stampText(tonumber(e.at) or 0, self.offsetMin),
+            claimLabel = getText(T .. "Mail_Claim"),
+        }
+    end
+    self.mailRows = rows
+    self.mailList:setItems(rows)
+end
+
+function Panel:onShopCat(button)
+    self.shopCat = button.internal ~= "" and button.internal or nil
+    for _, b in ipairs(self.catButtons) do b.active = (self.shopCat or "") == b.internal end
+    self:rebuildShop()
+end
+
+function Panel:onShopSearch()
+    local query = string.lower(string.match(entryText(self.shopEntry), "^%s*(.-)%s*$"))
+    self.shopQuery = query ~= "" and query or nil
+    self:rebuildShop()
+end
+
+-- The gate the server re-checks on every write (ECTerminal.near plus the freeze flag). The
+-- terminal list is short (a server registers a handful), so the distance test per frame is
+-- cheap — and with nothing registered there is nothing to measure against at all.
+function Panel:tradeAllowed()
+    if C.wallet and C.wallet.frozen then return false end
+    if self:remoteReadOnly() and #(C.terminals or {}) == 0 then return false end
+    return C.nearTerminal()
+end
+
+function Panel:canBuy(row)
+    if self.buyDialog or self.buyPending then return false end
+    if row and row.soldOut then return false end
+    return self:tradeAllowed()
+end
+
+function Panel:onShopRow(row)
+    if row and self:canBuy(row) then self:openBuy(row) end
+end
+
+function Panel:openBuy(row)
+    self:closeBuy()
+    local dlg = ISPanel:new(0, 0, 360, 200)
+    setmetatable(dlg, BuyDialog)
+    dlg.background = false
+    dlg.panel = self
+    dlg.row = row
+    dlg.count = 1
+    dlg.message = nil
+    dlg:initialise()
+    self:addChild(dlg)      -- the buttons exist from here on (instantiate -> createChildren)
+    self.buyDialog = dlg
+    self:layoutBuy()
+end
+
+function Panel:layoutBuy()
+    local dlg = self.buyDialog
+    if not dlg then return end
+    dlg:layoutInside(math.max(320, self.width - PAD * 4))
+    dlg:setX(math.max(0, math.floor((self.width - dlg.width) / 2)))
+    dlg:setY(math.max(self.g and self.g.contentY or PAD, math.floor((self.height - dlg.height) / 2)))
+end
+
+function Panel:closeBuy()
+    local dlg = self.buyDialog
+    if not dlg then return end
+    self.buyDialog = nil
+    dlg:setVisible(false)
+    self:removeChild(dlg)
+end
+
+-- An error belongs in the dialog that caused it; without one (a timeout after the player closed
+-- it) the toast is the only place left.
+function Panel:buyMessage(str)
+    if self.buyDialog then
+        self.buyDialog.message = str
+    else
+        C.toast(str)
+    end
+end
+
+function Panel:submitBuy(dlg)
+    local shop = C.shop
+    if not shop or self.buyPending then return end
+    if not self:tradeAllowed() then
+        self:buyMessage(shopError("not_at_terminal"))
+        return
+    end
+    dlg.message = nil
+    self.buyPending = { requestId = C.newRequestId(), at = EC.now(), name = dlg.row.name }
+    C.buy(dlg.row.id, dlg.count, shop.revision, self.buyPending.requestId)
+end
+
+function Panel:onMailRow(row)
+    if not row or self.mailPending or not self:tradeAllowed() then return end
+    self.mailPending = { requestId = C.newRequestId(), at = EC.now(), name = row.name }
+    C.claimMail(row.id, self.mailPending.requestId)
+end
+
+function Panel:onShop(kind, args)
+    self:updateMailTab(args.unclaimed)
+    if kind == "list" then
+        self:rebuildCategories()
+        self:rebuildShop()
+        self:layout()   -- the chip row (and with it the search box below it) may have moved
+        -- keep an open dialog on the fresh price/remaining, or drop it if the sku is gone
+        local dlg = self.buyDialog
+        if dlg then
+            local fresh = nil
+            for _, it in ipairs(args.items or {}) do
+                if it.id == dlg.row.id and it.enabled ~= false then fresh = shopRow(it, args.currency) end
+            end
+            if fresh then
+                dlg.row = fresh
+                self:layoutBuy()
+            else
+                self:closeBuy()
+                C.toast(shopError("unknown_sku"))
+            end
+        end
+        return
+    end
+    -- shop.buy: only the reply this page is waiting for (the server echoes the requestId)
+    local pending = self.buyPending
+    if pending and args.requestId ~= nil and args.requestId ~= pending.requestId then return end
+    self.buyPending = nil
+    if args.ok then
+        local name = (args.item and itemName(args.item)) or (pending and pending.name) or ""
+        self:closeBuy()
+        C.toast(getText(T .. "Shop_Bought", name, tostring(tonumber(args.qty) or 0)))
+        if args.delivered == false then C.toast(getText(T .. "Shop_Parked")) end
+        return
+    end
+    if args.error == "catalog_changed" then C.requestShop() end
+    self:buyMessage(shopError(args.error))
+end
+
+function Panel:onMail(kind, args)
+    self:updateMailTab(args.unclaimed)
+    self:rebuildMail()
+    if kind == "list" then return end
+    local pending = self.mailPending
+    if pending and args.requestId ~= nil and args.requestId ~= pending.requestId then return end
+    self.mailPending = nil
+    if args.ok then
+        local name = (args.item and itemName(args.item)) or (pending and pending.name) or ""
+        C.toast(getText(T .. "Mail_Claimed", name, tostring(tonumber(args.qty) or 0)))
+    else
+        C.toast(shopError(args.error))
+    end
+end
+
+-- A terminal was registered or removed: the shop/mail snapshots carry the server's own
+-- atTerminal flag, so the visible page asks again instead of trusting a stale gate.
+function Panel:onTerminals()
+    if not self.shown or self.isCollapsed then return end
+    if self.tab == "Shop" then
+        self.shopAt = EC.now()
+        C.requestShop()
+    elseif self.tab == "Mail" then
+        C.requestMail()
+    end
+end
+
 -- ----- geometry -----
 
 function Panel:remoteReadOnly()
@@ -380,6 +907,63 @@ function Panel:layout()
     self.moreButton:setX(g.leftX + PAD)
     self.moreButton:setY(g.contentY + g.contentH - CHIP_H - PAD)
     self.moreButton:setWidth(g.leftW - PAD * 2)
+
+    -- shop: the category chips wrap inside the left card with the search box under them, the
+    -- item table fills the right card below its note and header line
+    local isShop = self.tab == "Shop"
+    local chipX, chipRow = g.leftX + PAD, g.contentY + PAD
+    local chipRight = g.leftX + g.leftW - PAD
+    for _, b in ipairs(self.catButtons or {}) do
+        b:setVisible(isShop)
+        if chipX > g.leftX + PAD and chipX + b.width > chipRight then
+            chipX = g.leftX + PAD
+            chipRow = chipRow + CHIP_H + 6
+        end
+        b:setX(chipX); b:setY(chipRow)
+        chipX = chipX + b.width + 6
+    end
+    g.shopSearchY = chipRow + CHIP_H + PAD + fontH.small + 4
+    self.shopEntry:setVisible(isShop)
+    self.shopEntry:setX(g.leftX + PAD)
+    self.shopEntry:setY(g.shopSearchY)
+    self.shopEntry:setWidth(g.leftW - PAD * 2)
+    g.shopHeaderY = g.contentY + CARD_TITLE_H + ROW
+    local shopListY = g.shopHeaderY + ROW
+    local shopListH = math.max(ROW * 2, g.contentY + g.contentH - shopListY - PAD)
+    self.shopList:setVisible(isShop)
+    self.shopList:setX(listX); self.shopList:setY(shopListY)
+    local shopCols = self.shopList.cols
+    shopCols.icon = PAD
+    shopCols.name = PAD + ITEM_ICON + PAD
+    shopCols.buyW = textWidth(getText(T .. "Shop_Buy")) + 22
+    shopCols.buyX = math.max(shopCols.name, inner - shopCols.buyW - PAD)
+    shopCols.remainR = shopCols.buyX - PAD
+    shopCols.priceR = math.max(shopCols.name + PAD, shopCols.remainR
+        - math.max(textWidth(getText(T .. "Shop_Col_Remaining")), textWidth(getText(T .. "Shop_SoldOut"))) - PAD)
+    shopCols.nameW = math.max(0, shopCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - shopCols.name)
+    if self.shopList.width ~= listW or self.shopList.height ~= shopListH then
+        self.shopList:resize(listW, shopListH)
+    end
+
+    -- mailbox: one card across the whole content area, no column header (name, source, time)
+    local isMail = self.tab == "Mail"
+    local mailListY = g.contentY + CARD_TITLE_H + ROW
+    local mailListW = w - PAD * 2 - 2
+    local mailListH = math.max(ROW * 2, g.contentY + g.contentH - mailListY - PAD)
+    self.mailList:setVisible(isMail)
+    self.mailList:setX(g.leftX + 1); self.mailList:setY(mailListY)
+    local mailCols = self.mailList.cols
+    local mailInner = mailListW - 12
+    mailCols.icon = PAD
+    mailCols.name = PAD + ITEM_ICON + PAD
+    mailCols.claimW = textWidth(getText(T .. "Mail_Claim")) + 22
+    mailCols.claimX = math.max(mailCols.name, mailInner - mailCols.claimW - PAD)
+    mailCols.timeR = mailCols.claimX - PAD
+    mailCols.nameW = math.max(0, mailCols.timeR - textWidth("00-00 00:00") - PAD - mailCols.name)
+    if self.mailList.width ~= mailListW or self.mailList.height ~= mailListH then
+        self.mailList:resize(mailListW, mailListH)
+    end
+    self:layoutBuy()
     self.layoutW, self.layoutH = w, h
     self.layoutCollapsed = self.isCollapsed
 end
@@ -604,6 +1188,52 @@ function Panel:drawRewards()
     end
 end
 
+function Panel:drawShop()
+    local g = self.g
+    local shop = C.shop
+    -- left card: category chips over the search box (the chips are children, positioned in layout)
+    card(self, g.leftX, g.contentY, g.leftW, g.contentH)
+    text(self, getText(T .. "Shop_Search"), g.leftX + PAD, g.shopSearchY - fontH.small - 4, "textMuted")
+
+    card(self, g.rightX, g.contentY, g.rightW, g.contentH, getText(T .. "Shop_Title"))
+    local ty = g.contentY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
+    if not shop then
+        text(self, getText(T .. "Wallet_Loading"), g.rightX + PAD, ty, "textMuted")
+        return
+    end
+    text(self, fitText(getText(T .. "Shop_Note", C.currencyName(shop.currency)), g.rightW - PAD * 2),
+        g.rightX + PAD, ty, "textMuted")
+    local cols = self.shopList.cols
+    local hx, hy = self.shopList.x, g.shopHeaderY
+    fill(self, hx, hy, self.shopList.width, ROW, "well", "rect")
+    local hty = hy + math.floor((ROW - fontH.small) / 2)
+    text(self, getText(T .. "Shop_Col_Item"), hx + cols.name, hty, "textMuted")
+    textRight(self, getText(T .. "Shop_Col_Price"), hx + cols.priceR, hty, "textMuted")
+    textRight(self, getText(T .. "Shop_Col_Remaining"), hx + cols.remainR, hty, "textMuted")
+    if #self.shopList:getItems() == 0 then
+        text(self, getText(T .. "Shop_Empty"), hx + PAD, self.shopList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
+    end
+end
+
+function Panel:drawMail()
+    local g = self.g
+    local mail = C.mail
+    local x, w = g.leftX, self.width - PAD * 2
+    card(self, x, g.contentY, w, g.contentH, getText(T .. "Mail_Title"))
+    local unclaimed = tonumber(mail and mail.unclaimed) or 0
+    textRight(self, getText(T .. "Mail_Count", tostring(unclaimed)), x + w - PAD,
+        g.contentY + math.floor((CARD_TITLE_H - fontH.small) / 2), unclaimed > 0 and "accent" or "textMuted")
+    local ty = g.contentY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
+    if not mail then
+        text(self, getText(T .. "Wallet_Loading"), x + PAD, ty, "textMuted")
+        return
+    end
+    text(self, fitText(getText(T .. "Mail_Note"), w - PAD * 2), x + PAD, ty, "textMuted")
+    if #self.mailList:getItems() == 0 then
+        text(self, getText(T .. "Mail_Empty"), x + PAD, self.mailList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
+    end
+end
+
 function Panel:drawFooter()
     local g = self.g
     local st = C.rewards
@@ -636,6 +1266,16 @@ function Panel:prerender()
             C.requestRewards()
         end
     end
+    -- One write in flight per page: a server that never answers must not leave the buy dialog
+    -- disabled forever (the admin pages use the same window).
+    if self.buyPending and EC.now() - self.buyPending.at > TIMEOUT_MS then
+        self.buyPending = nil
+        self:buyMessage(shopError("timeout"))
+    end
+    if self.mailPending and EC.now() - self.mailPending.at > TIMEOUT_MS then
+        self.mailPending = nil
+        C.toast(shopError("timeout"))
+    end
     local w = self:getWidth()
     local h = self:getHeight()
     local th = self:titleBarHeight()
@@ -654,22 +1294,39 @@ function Panel:prerender()
     end
     if self.isCollapsed then return end
 
-    -- status line
+    -- Status line, most restrictive first: a frozen account outranks everything (nothing moves
+    -- until an admin unfreezes it). Then the remote gate: no terminal registered at all, the
+    -- player standing at one, or the plain "walk to a terminal".
     local g = self.g
+    local band, bandToken
     if C.wallet and C.wallet.frozen then
-        -- a frozen account outranks the remote-read-only note: nothing moves until an admin unfreezes it
-        U.Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color("errorText"))
-        text(self, getText(T .. "Band_Frozen"), PAD * 2 + 14, g.statusY + math.floor((STATUS_H - fontH.small) / 2), "errorText")
+        band, bandToken = "Band_Frozen", "errorText"
     elseif self:remoteReadOnly() then
-        U.Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color("warn"))
-        text(self, getText(T .. "Band_RemoteReadOnly"), PAD * 2 + 14, g.statusY + math.floor((STATUS_H - fontH.small) / 2), "warn")
+        if #(C.terminals or {}) == 0 then
+            band, bandToken = "Band_NoTerminals", "warn"
+        elseif C.nearTerminal() then
+            band, bandToken = "Band_AtTerminal", "positive"
+        else
+            band, bandToken = "Band_RemoteReadOnly", "warn"
+        end
+    end
+    if band then
+        U.Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color(bandToken))
+        text(self, getText(T .. band), PAD * 2 + 14, g.statusY + math.floor((STATUS_H - fontH.small) / 2), bandToken)
     end
     self:drawStrip()
     fill(self, PAD, g.tabsY, w - PAD * 2, TAB_H, "well", "rect")
+    local gateClosed = not self:tradeAllowed()
+    self.shopList.buyDisabled = gateClosed or self.buyPending ~= nil
+    self.mailList.claimDisabled = gateClosed or self.mailPending ~= nil
     if self.tab == "Wallet" then
         self:drawWallet()
     elseif self.tab == "Rewards" then
         self:drawRewards()
+    elseif self.tab == "Shop" then
+        self:drawShop()
+    elseif self.tab == "Mail" then
+        self:drawMail()
     end
     self:drawFooter()
 end
@@ -699,6 +1356,10 @@ function Panel:setVisible(visible)
     ISCollapsableWindow.setVisible(self, visible)
     self.shown = visible == true
     if self.adminPanel and not visible then self.adminPanel:setVisible(false) end
+    if not visible then
+        self:closeBuy()
+        pcall(function() self.shopEntry:unfocus() end)
+    end
     if visible then
         self.offsetMin = localOffsetMinutes()
         self:bringToTop()
@@ -756,6 +1417,9 @@ function P.instance()
         P.listening = true
         C.onWallet(function(kind, args) if P.window then P.window:onWallet(kind, args) end end)
         C.onRewards(function(kind, args) if P.window then P.window:onRewards(kind, args) end end)
+        C.onShop(function(kind, args) if P.window then P.window:onShop(kind, args) end end)
+        C.onMail(function(kind, args) if P.window then P.window:onMail(kind, args) end end)
+        C.onTerminals(function() if P.window then P.window:onTerminals() end end)
     end
     return P.window
 end

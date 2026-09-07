@@ -7,10 +7,12 @@
 --   instance:resize(w, h) / :refresh() / :dispose() / :setVisible(v)
 --
 -- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
--- owns everything below it: seven sub pages (Player / Dashboard / Currencies / Sources / Audit /
--- System / Settings, the last one an editor for this mod's sandbox options -- group nav on the
--- left, one control per option on the right, backed by admin.option runtime overrides) and the
--- write dialogs (adjust / freeze / rename / enable / exchange / source caps / option). The
+-- owns everything below it: eight sub pages (Player / Dashboard / Currencies / Sources / Shop /
+-- Audit / System / Settings, the last one an editor for this mod's sandbox options -- group nav
+-- on the left, one control per option on the right, backed by admin.option runtime overrides;
+-- Shop is the same shape for the system shop's catalog.json, backed by admin.catalog) and the
+-- write dialogs (adjust / freeze / rename / enable / exchange / source caps / option /
+-- catalog price / catalog cap). The
 -- player page also owns the account search dropdown: a debounced admin.players query whose
 -- candidates are drawn by a child panel floating under the search box.
 --
@@ -59,8 +61,8 @@ local color, fill, border, text, textWidth, fitText, textRight, textCentre = U.c
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
 local Button, TableCell = U.Button, U.TableCell
 
-local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System", "Settings" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option" }
+local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Audit", "System", "Settings" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
@@ -542,6 +544,114 @@ function OptionCell:render()
     end
 end
 
+-- ---------- shop catalog page ----------
+
+-- Control strip on the right of every catalog row: the option row's shape, doubled -- the
+-- "listed" toggle plus the price steppers on the first line, the daily cap steppers plus the
+-- "back to the file value" chip on the second. Every string and hit box is computed once per
+-- rebuild (Admin:catalogGeometry / Admin:catalogRow), so the cell only paints and the click test
+-- reads exactly the numbers the paint used.
+local CATALOG_CTRL_W = 300
+local CATALOG_STEP_W = 26
+local CATALOG_TOGGLE_W = 44
+local PRICE_MAX = 1000000000   -- ECShop's own price ceiling
+local CAP_MAX = 1000000
+
+-- A stepper moves by what the admin would type next: single coins under 100, tens under 1000,
+-- hundreds above. Anything else is what the edit chip is for.
+local function priceStep(value)
+    if value < 100 then return 1 end
+    if value < 1000 then return 10 end
+    return 100
+end
+
+-- Item display name through the engine's own lookup (LuaManager.java:8579-8583), so the admin
+-- reads the same translated name a player sees; an unknown fullType falls back to itself.
+local function itemName(fullType)
+    if type(getItemNameFromFullType) == "function" then
+        local ok, name = pcall(getItemNameFromFullType, fullType)
+        if ok and type(name) == "string" and name ~= "" then return name end
+    end
+    return tostring(fullType or "-")
+end
+
+-- Item icon: the script item's normal texture, cached per fullType (false = asked and missing).
+-- A geometry change rebuilds every row, and ScriptManager lookups are not free.
+local itemTextures = {}
+local function itemTexture(fullType)
+    if type(fullType) ~= "string" then return nil end
+    local cached = itemTextures[fullType]
+    if cached ~= nil then return cached or nil end
+    local tex = nil
+    pcall(function()
+        local script = ScriptManager and ScriptManager.instance and ScriptManager.instance:FindItem(fullType)
+        if script then tex = script:getNormalTexture() end
+    end)
+    itemTextures[fullType] = tex or false
+    return tex
+end
+
+local function categoryText(category)
+    return getTextOrNull(T .. "Shop_Cat_" .. tostring(category)) or tostring(category or "-")
+end
+
+local function capValueText(cap)
+    local n = math.floor(tonumber(cap) or 0)
+    if n <= 0 then return tr("Admin_Set_Unlimited") end
+    return amountText(n)
+end
+
+-- What the file says about an overridden SKU ("12 / 5 / on"): the summary the overridden note
+-- quotes, so the admin can see what "back to the file value" would restore.
+local function fileSummary(sku)
+    return amountText(tonumber(sku.filePrice) or 0) .. " / " .. capValueText(sku.fileDailyCap)
+        .. " / " .. tr(sku.fileEnabled ~= false and "Admin_On" or "Admin_Off")
+end
+
+local CatalogCell = ISPanel:derive("MinidoracatEconomyCatalogCell")
+
+function CatalogCell:render()
+    local e = self.entry
+    if not e then return end
+    local w, h = self.width, self.height
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    local off = self.list.optionsDisabled == true
+    if e.icon then
+        -- a texture the engine handed out can still be refused by the renderer: ask once
+        local ok = pcall(self.drawTextureScaled, self, e.icon, PAD, e.iconY, e.iconSize, e.iconSize, 1, 1, 1, 1)
+        if not ok then e.icon = nil end
+    end
+    text(self, e.nameText, e.nameX, e.line1Y, e.toggleOn and "text" or "textFaint")
+    if e.overText then text(self, e.overText, PAD, e.line2Y, "warn") end
+    text(self, e.metaText, e.metaX, e.line2Y, "textFaint")
+    local labelToken = off and "textFaint" or "textMuted"
+    text(self, e.enabledLabel, e.labelLeftX, e.textY1, labelToken)
+    text(self, e.priceLabel, e.labelX, e.textY1, labelToken)
+    text(self, e.capLabel, e.labelX, e.textY2, labelToken)
+    local valueToken = off and "textFaint" or "accent"
+    textCentre(self, e.priceText, e.valueX + e.valueW / 2, e.textY1, valueToken)
+    textCentre(self, e.capText, e.valueX + e.valueW / 2, e.textY2, valueToken)
+    -- Skin.toggle is a rev >= 3 painter (see OptionCell): both its absence and its refusal fall
+    -- back to the labelled pill
+    local t = e.toggle
+    local painted = false
+    if U.Skin and U.Skin.toggle then
+        local pok, res = pcall(U.Skin.toggle, self, t.x, t.y, t.w, t.h, e.toggleOn, optionToggleColors(), off and 0.5 or 1)
+        painted = pok and res ~= false
+    end
+    if not painted then
+        fill(self, t.x, t.y, t.w, t.h, e.toggleOn and "selected" or "well", "pill")
+        border(self, t.x, t.y, t.w, t.h, off and "border" or "accent", "pill")
+        textCentre(self, e.toggleLabel, t.x + t.w / 2, e.textY1, off and "textFaint" or "text")
+    end
+    for _, hit in ipairs(e.hits) do
+        if hit.label then
+            border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
+            textCentre(self, hit.label, hit.x + hit.w / 2, hit.y + e.chipTextY, off and "textFaint" or "text")
+        end
+    end
+end
+
 -- ---------- write dialog ----------
 
 local Dialog = ISPanel:derive("MinidoracatEconomyAdminDialog")
@@ -554,6 +664,13 @@ local function dialogFields(mode)
         return { { key = "value", label = tr("Admin_Set_Edit"), width = 220, maxLen = OPTION_TEXT_MAX } }
     end
     if mode == "optionReset" then return {} end   -- confirmation only: the warning line is the body
+    -- one catalog number (price / daily cap); no reason box, exactly like the option editor
+    if mode == "catalogPrice" then
+        return { { key = "value", label = tr("Admin_Shop_Price"), width = 160, maxLen = 12 } }
+    end
+    if mode == "catalogCap" then
+        return { { key = "value", label = tr("Admin_Shop_Cap"), width = 160, maxLen = 10 } }
+    end
     if mode == "adjust" then
         return {
             { key = "amount", label = tr("Admin_Adjust_Amount"), width = 180, maxLen = 14, hint = tr("Admin_Adjust_AmountHint") },
@@ -679,7 +796,7 @@ function Dialog:updateInfo()
         else
             info[#info + 1] = { text = tr("Admin_Cur_NoOverride"), token = "textFaint" }
         end
-    elseif self.mode == "option" and self.hintText then
+    elseif self.hintText and (self.mode == "option" or self.mode == "catalogPrice" or self.mode == "catalogCap") then
         info[#info + 1] = { text = self.hintText, token = "textFaint" }
     end
     self.info = info
@@ -1048,6 +1165,23 @@ function Admin:createChildren()
         self:addChild(b)
         self.copyButtons[#self.copyButtons + 1] = b
     end
+
+    -- shop page: the reload chip rides the file status row, the catalog list sits below it. A
+    -- row carries two control lines, so the click needs the row-local y as well as the x.
+    local reload = tr("Admin_Shop_Reload")
+    self.shopReloadButton = Button.create(0, 0, textWidth(reload) + 24, 22, reload, self, Admin.onShopReloadClick, "chip")
+    self:addChild(self.shopReloadButton)
+    self.catalogList = U.newTable(CatalogCell, lineH() * 2 + 12)
+    local catalogDown = self.catalogList.onMouseDown
+    self.catalogList.onMouseDown = function(list, x, y)
+        self.catalogClickX = x
+        self.catalogClickY = (y + list.scrollOffset) % (list.rowHeight + (list.padding or 0))
+        return catalogDown(list, x, y)
+    end
+    self.catalogList.onSelect = function(_, item)
+        self:onCatalogRow(item, self.catalogClickX or 0, self.catalogClickY or 0)
+    end
+    self:addChild(self.catalogList)
 
     -- settings page: search box, the option list, the per-group reset button. The group nav is
     -- painted (name plus an override count per row) and its clicks are resolved in onMouseDown.
@@ -1547,6 +1681,80 @@ function Admin:onResetGroupClick()
     })
 end
 
+-- ----- shop catalog actions -----
+
+function Admin:onShopReloadClick()
+    self.message = nil
+    self:sendCatalog({ action = "reload" }, nil)
+end
+
+-- A click inside the catalog list: the row's own hit boxes. Rows carry two control lines, so the
+-- test needs the row-local y as well as the x (both captured in createChildren).
+function Admin:onCatalogRow(item, x, y)
+    if item == nil or self.catalogList.optionsDisabled then return end
+    for _, hit in ipairs(item.hits) do
+        if x >= hit.x and x < hit.x + hit.w and y >= hit.y and y < hit.y + hit.h then
+            self:onCatalogAction(item, hit.id)
+            return
+        end
+    end
+end
+
+function Admin:onCatalogAction(item, id)
+    local sku = item.sku
+    local price = math.floor(tonumber(sku.price) or 0)
+    local cap = math.floor(tonumber(sku.dailyCap) or 0)
+    if id == "toggle" then
+        self:sendCatalog({ action = "set", id = sku.id, enabled = sku.enabled == false }, nil)
+    elseif id == "clear" then
+        self:sendCatalog({ action = "set", id = sku.id, clear = "all" }, nil)
+    elseif id == "priceMinus" or id == "pricePlus" then
+        local step = priceStep(price)
+        local target = price + (id == "pricePlus" and step or -step)
+        if target < 1 then target = 1 end
+        if target > PRICE_MAX then target = PRICE_MAX end
+        if target ~= price then self:sendCatalog({ action = "set", id = sku.id, price = target }, nil) end
+    elseif id == "capMinus" or id == "capPlus" then
+        local target = cap + (id == "capPlus" and 1 or -1)
+        if target < 0 then target = 0 end
+        if target > CAP_MAX then target = CAP_MAX end
+        if target ~= cap then self:sendCatalog({ action = "set", id = sku.id, dailyCap = target }, nil) end
+    elseif id == "priceEdit" then
+        self:openDialog("catalogPrice", {
+            title = getText(T .. "Admin_Shop_EditPrice", item.plainName),
+            confirm = tr("Admin_Set_Edit"), catalogId = sku.id,
+            hint = getText(T .. "Admin_Set_NumberHint", "1", tostring(PRICE_MAX)),
+            value = tostring(price),
+        })
+    elseif id == "capEdit" then
+        self:openDialog("catalogCap", {
+            title = getText(T .. "Admin_Shop_EditCap", item.plainName),
+            confirm = tr("Admin_Set_Edit"), catalogId = sku.id,
+            hint = getText(T .. "Admin_Set_NumberHint", "0", tostring(CAP_MAX)),
+            value = tostring(cap),
+        })
+    end
+end
+
+-- One write per click; every reply carries the whole catalog back, so nothing is guessed here.
+function Admin:sendCatalog(args, dlg)
+    if not self:writeAllowed() then
+        local msg = { text = errorText("forbidden"), error = true }
+        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        return false
+    end
+    args.requestId = newRequestId()
+    if not send("admin.catalog", args) then
+        local msg = { text = tr("Admin_Throttled"), error = true }
+        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        return false
+    end
+    self.pendingCatalog = { requestId = args.requestId, id = args.id, action = args.action }
+    if not dlg then self.message = nil end
+    self:updateEnabled()
+    return true
+end
+
 -- ----- dialog lifecycle -----
 
 function Admin:openDialog(mode, ctx)
@@ -1569,6 +1777,7 @@ function Admin:openDialog(mode, ctx)
     dlg.warnText = ctx.warn
     dlg.optionKey = ctx.optionKey
     dlg.optionGroup = ctx.optionGroup
+    dlg.catalogId = ctx.catalogId
     dlg.hintText = ctx.hint
     dlg.info = {}
     dlg.message = nil
@@ -1606,6 +1815,7 @@ end
 -- are answered before the reason gate every other write has to pass.
 function Admin:submitDialog(dlg)
     if dlg.mode == "option" then return self:submitOption(dlg) end
+    if dlg.mode == "catalogPrice" or dlg.mode == "catalogCap" then return self:submitCatalogValue(dlg) end
     if dlg.mode == "optionReset" then
         local keys = self:overriddenKeys(dlg.optionGroup)
         self:closeDialog()
@@ -1801,6 +2011,22 @@ function Admin:submitOption(dlg)
     self:sendOption(dlg.optionKey, value, dlg)
 end
 
+-- The catalog dialog carries one integer and no reason box; the range the server enforces is
+-- checked here too, and the hint line doubles as the refusal message because it says what is
+-- accepted. The server re-validates regardless.
+function Admin:submitCatalogValue(dlg)
+    local price = dlg.mode == "catalogPrice"
+    local n = parseInt(entryText(dlg.boxes.value))
+    if n == nil or n < (price and 1 or 0) or n > (price and PRICE_MAX or CAP_MAX) then
+        dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
+        self:layoutDialog()
+        return
+    end
+    local args = { action = "set", id = dlg.catalogId }
+    if price then args.price = n else args.dailyCap = n end
+    self:sendCatalog(args, dlg)
+end
+
 -- ----- replies -----
 
 function Admin:onReply(kind, args)
@@ -1900,6 +2126,33 @@ function Admin:onReply(kind, args)
         end
         self:rebuildSettings()
         if mine and args.ok then self:nextOptionReset() end
+    elseif kind == "catalog" then
+        -- every reply carries the whole catalog, a refusal included, so the page always shows
+        -- what the server actually sells
+        if type(args.items) == "table" then
+            self.catalog = args
+            self.catalogAt = EC.now()
+            self:rebuildCatalog()
+        end
+        local req = self.pendingCatalog
+        local mine = req == nil or args.requestId == nil or req.requestId == args.requestId
+        if mine then
+            self.pendingCatalog = nil
+            if not args.ok then
+                -- catalog_invalid carries the file's own parse error: the code alone would not
+                -- tell the host which line to go and fix
+                local body = errorText(args.error)
+                if type(args.detail) == "string" and args.detail ~= "" then body = body .. ": " .. args.detail end
+                local msg = { text = body, error = true }
+                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+            elseif req and req.action == "reload" then
+                local file = args.file
+                self.message = { text = getText(T .. "Admin_Shop_Reloaded", tostring((file and file.count) or args.count or 0)) }
+            elseif req then
+                self.message = { text = tr("Admin_Shop_Saved") }
+                self:closeDialog()
+            end
+        end
     elseif kind == "icons" then
         if args.ok == false then
             self.message = { text = errorText(args.error), error = true }
@@ -2002,7 +2255,8 @@ function Admin:onTimeout(command)
         self.pendingOption = nil
         self.resetQueue = nil
     end
-    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" then
+    if command == "admin.catalog" then self.pendingCatalog = nil end
+    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" or command == "admin.catalog" then
         if self.dialog then
             self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
             self:layoutDialog()
@@ -2240,6 +2494,96 @@ function Admin:rebuildSettings()
     self.settingsList:setItems(rows)
 end
 
+-- Geometry of a catalog row's control strip: identical for every row, so it is computed once per
+-- rebuild and the rows only carry their own strings.
+function Admin:catalogGeometry(width, chipH)
+    local labelW = math.max(textWidth(tr("Admin_Shop_Enabled")), textWidth(tr("Admin_Shop_Price")), textWidth(tr("Admin_Shop_Cap")))
+    local clearLabel, editLabel = tr("Admin_Shop_Clear"), tr("Admin_Set_Edit")
+    local geo = {
+        chipH = chipH, chipTextY = math.floor((chipH - fontH.small) / 2), labelW = labelW,
+        clearLabel = clearLabel, clearW = textWidth(clearLabel) + 16,
+        editLabel = editLabel, editW = textWidth(editLabel) + 16,
+    }
+    geo.leftW = math.max(labelW + 4 + CATALOG_TOGGLE_W, geo.clearW)
+    geo.ctrlX = math.max(70, width - PAD - CATALOG_CTRL_W)
+    geo.toggleX = geo.ctrlX + labelW + 4
+    geo.labelX = geo.ctrlX + geo.leftW + 8
+    geo.editX = width - PAD - geo.editW
+    geo.plusX = geo.editX - 4 - CATALOG_STEP_W
+    geo.minusX = geo.labelX + labelW + 6
+    geo.valueX = geo.minusX + CATALOG_STEP_W + 4
+    geo.valueW = math.max(10, geo.plusX - 4 - geo.valueX)
+    return geo
+end
+
+-- One catalog row: icon plus item name over "id / category / per-unit count" on the left, the
+-- listed toggle and the price steppers on the right's first line, the daily cap steppers on its
+-- second. An overridden SKU prefixes its second line with what the file says and gains the
+-- "back to the file value" chip.
+function Admin:catalogRow(sku, geo, lh, rowHeight, y1, y2)
+    local name = itemName(sku.item)
+    local size = math.min(math.max(12, rowHeight - 10), 28)
+    local item = {
+        id = sku.id, sku = sku, plainName = name, hits = {},
+        line1Y = 5, line2Y = 5 + lh, chipTextY = geo.chipTextY,
+        textY1 = y1 + geo.chipTextY, textY2 = y2 + geo.chipTextY,
+        icon = itemTexture(sku.item), iconSize = size, iconY = math.floor((rowHeight - size) / 2),
+        toggleOn = sku.enabled ~= false,
+        toggle = { x = geo.toggleX, y = y1, w = CATALOG_TOGGLE_W, h = geo.chipH },
+        valueX = geo.valueX, valueW = geo.valueW,
+        labelLeftX = geo.ctrlX, labelX = geo.labelX,
+        enabledLabel = fitText(tr("Admin_Shop_Enabled"), geo.labelW),
+        priceLabel = fitText(tr("Admin_Shop_Price"), geo.labelW),
+        capLabel = fitText(tr("Admin_Shop_Cap"), geo.labelW),
+        priceText = fitText(amountText(sku.price), geo.valueW),
+        capText = fitText(capValueText(sku.dailyCap), geo.valueW),
+    }
+    item.toggleLabel = tr(item.toggleOn and "Admin_On" or "Admin_Off")
+    item.hits[#item.hits + 1] = { id = "toggle", x = geo.toggleX, y = y1, w = CATALOG_TOGGLE_W, h = geo.chipH }
+    item.hits[#item.hits + 1] = { id = "priceMinus", x = geo.minusX, y = y1, w = CATALOG_STEP_W, h = geo.chipH, label = "-" }
+    item.hits[#item.hits + 1] = { id = "pricePlus", x = geo.plusX, y = y1, w = CATALOG_STEP_W, h = geo.chipH, label = "+" }
+    item.hits[#item.hits + 1] = { id = "priceEdit", x = geo.editX, y = y1, w = geo.editW, h = geo.chipH, label = geo.editLabel }
+    item.hits[#item.hits + 1] = { id = "capMinus", x = geo.minusX, y = y2, w = CATALOG_STEP_W, h = geo.chipH, label = "-" }
+    item.hits[#item.hits + 1] = { id = "capPlus", x = geo.plusX, y = y2, w = CATALOG_STEP_W, h = geo.chipH, label = "+" }
+    item.hits[#item.hits + 1] = { id = "capEdit", x = geo.editX, y = y2, w = geo.editW, h = geo.chipH, label = geo.editLabel }
+    if sku.override == true then
+        item.hits[#item.hits + 1] = { id = "clear", x = geo.ctrlX, y = y2, w = geo.clearW, h = geo.chipH, label = geo.clearLabel }
+    end
+
+    local leftW = math.max(0, geo.ctrlX - PAD * 2)
+    item.nameX = PAD + size + 6
+    item.nameText = fitText(name, math.max(0, geo.ctrlX - PAD - item.nameX))
+    item.metaX = PAD
+    if sku.override == true then
+        item.overText = fitText(getText(T .. "Admin_Shop_Overridden", fileSummary(sku)), math.floor(leftW * 0.55))
+        item.metaX = PAD + textWidth(item.overText) + 6
+    end
+    local meta = tostring(sku.id) .. " / " .. categoryText(sku.category) .. " / "
+        .. getText(T .. "Shop_QtyPer", tostring(math.floor(tonumber(sku.qty) or 1)))
+    item.metaText = fitText(meta, math.max(0, geo.ctrlX - PAD - item.metaX))
+    return item
+end
+
+-- The catalog the server last sent, turned into rows (disabled SKUs included: the admin page is
+-- where they are put back on the shelf). Built when a reply lands and when the geometry changes.
+function Admin:rebuildCatalog()
+    local rows = {}
+    local snap = self.catalog
+    if snap and type(snap.items) == "table" then
+        local list = self.catalogList
+        local width = math.max(120, list.width - 12)   -- 12 = the scrollbar gutter
+        local chipH = math.max(20, fontH.small + 6)
+        local y1 = 3
+        local y2 = math.max(y1 + chipH + 1, list.rowHeight - chipH - 3)
+        local geo = self:catalogGeometry(width, chipH)
+        for _, sku in ipairs(snap.items) do
+            rows[#rows + 1] = self:catalogRow(sku, geo, lineH(), list.rowHeight, y1, y2)
+        end
+    end
+    self.catalogRows = rows
+    self.catalogList:setItems(rows)
+end
+
 -- ----- enable state (permission, in-flight command, data presence) -----
 
 -- Local role read (getAccessLevel + sandbox lists) AND, once a reply has told us, the level the
@@ -2293,6 +2637,11 @@ function Admin:updateEnabled()
         b:setEnable(not modal and paths ~= nil and type(paths[b.internal]) == "string")
     end
 
+    -- shop page: one in-flight catalog write at a time, the reload chip included
+    local catWrite = write and not modal and not isPending("admin.catalog")
+    self.catalogList.optionsDisabled = not catWrite
+    self.shopReloadButton:setEnable(catWrite)
+
     -- settings page: one in-flight option write at a time; a read-only role sees every control
     -- greyed out instead of a page that pretends to be editable
     local optWrite = write and not modal and not isPending("admin.option")
@@ -2301,7 +2650,7 @@ function Admin:updateEnabled()
     local _, overrides = self:optionGroupCount(self.setGroup)
     self.setResetButton:setEnable(optWrite and overrides > 0)
     if self.dialog then
-        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources") or isPending("admin.option"))
+        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources") or isPending("admin.option") or isPending("admin.catalog"))
         self.dialog.confirmButton:setEnable(ok)
     end
 end
@@ -2353,6 +2702,7 @@ function Admin:layout()
     local system = read and self.tab == "System"
     local sources = read and self.tab == "Sources"
     local settings = read and self.tab == "Settings"
+    local shop = read and self.tab == "Shop"
     for _, b in ipairs(self.subTabButtons) do b:setVisible(read) end
     self.refreshButton:setVisible(read)
 
@@ -2532,6 +2882,28 @@ function Admin:layout()
     end
     g.sysPathY = top
 
+    -- shop page: the file status row (status left, reload chip right) over the standing note,
+    -- then the catalog list. Its rows are two lines tall, like the option rows.
+    local shopTop = g.bodyY + CARD_TITLE_H + 4
+    local reloadH = math.max(20, fontH.small + 6)
+    local reloadW = math.min(textWidth(self.shopReloadButton.fullTitle) + 24, math.floor(w * 0.4))
+    self.shopReloadButton:setVisible(shop)
+    self.shopReloadButton:setWidth(reloadW)
+    self.shopReloadButton:setHeight(reloadH)
+    self.shopReloadButton:setX(math.max(PAD, w - PAD - reloadW))
+    self.shopReloadButton:setY(shopTop)
+    self:setButtonTitle(self.shopReloadButton, self.shopReloadButton.fullTitle)
+    g.shopHeadY = shopTop + math.floor((reloadH - fontH.small) / 2)
+    g.shopNoteY = shopTop + reloadH + 6
+    local shopListY = g.shopNoteY + lh + 4
+    local shopW = math.max(160, w - PAD * 2)
+    local shopH = math.max(rowH(), g.bodyY + g.bodyH - PAD - shopListY)
+    self.catalogList:setVisible(shop)
+    self.catalogList:setX(PAD); self.catalogList:setY(shopListY)
+    if self.catalogList.width ~= shopW or self.catalogList.height ~= shopH then
+        self.catalogList:resize(shopW, shopH)
+    end
+
     -- settings page: search row on top, the group nav down the left, the option list plus the
     -- "reset this group" button on the right. The reset row is reserved whether the button is
     -- shown or not, so typing in the search box never re-flows the list.
@@ -2567,6 +2939,7 @@ function Admin:layout()
 
     self:rebuildAudit()
     self:rebuildSettings()
+    self:rebuildCatalog()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
     if self.dialog then self:layoutDialog() end
     self:layoutSuggest()
@@ -2930,6 +3303,38 @@ function Admin:drawSources()
     end
 end
 
+function Admin:drawShop()
+    local g = self.g
+    local snap = self.catalog
+    card(self, 0, g.bodyY, self.width, g.bodyH, tr("Admin_Shop_Title"))
+    -- file status: a parse error wins over the count, because it says the server is still
+    -- running with the previous catalog
+    local file = type(snap) == "table" and type(snap.file) == "table" and snap.file or nil
+    local status, token
+    if file and type(file.error) == "string" and file.error ~= "" then
+        status, token = getText(T .. "Admin_Shop_FileError", file.error), "errorText"
+    elseif file then
+        status, token = getText(T .. "Admin_Shop_File", tostring(file.count or 0), stampText(file.loadedAt, self.offsetMin)), "textMuted"
+    else
+        status, token = isPending("admin.catalog") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), "textFaint"
+    end
+    text(self, fitText(status, math.max(0, self.shopReloadButton.x - PAD * 2)), PAD, g.shopHeadY, token)
+    local rows = self.catalogRows or {}
+    local countText = getText(T .. "Admin_Shop_Count", tostring(#rows))
+    textRight(self, countText, self.width - PAD, g.shopNoteY, "textFaint")
+    text(self, fitText(tr("Admin_Shop_Note"), math.max(0, self.width - PAD * 3 - textWidth(countText))),
+        PAD, g.shopNoteY, "textFaint")
+    if #rows == 0 then
+        local empty
+        if snap == nil then
+            empty = isPending("admin.catalog") and tr("Admin_Loading") or tr("Admin_Dash_Empty")
+        else
+            empty = tr("Admin_Shop_Empty")
+        end
+        text(self, empty, self.catalogList.x + PAD, self.catalogList.y + 4, "textFaint")
+    end
+end
+
 function Admin:drawAudit()
     local g = self.g
     local rh = rowH()
@@ -2972,6 +3377,15 @@ function Admin:drawSystem()
         self:line(getText(T .. "Admin_Sys_Version", tostring(sys.version or "-"), tostring(sys.schemaVersion or "-")), "textFaint")
         self:lineGap()
         self:line(getText(T .. "Admin_Sys_Accounts", tostring(sys.accounts or 0), tostring(sys.frozen or 0)))
+        self:lineRow(tr("Admin_Sys_Terminals"), amountText(sys.terminals or 0))
+        self:lineRow(tr("Admin_Sys_Mailbox"), amountText(sys.mailboxUnclaimed or 0),
+            (tonumber(sys.mailboxUnclaimed) or 0) > 0 and "warn" or "text")
+        local cat = sys.catalog
+        if type(cat) == "table" and type(cat.error) == "string" and cat.error ~= "" then
+            self:lineRow(tr("Admin_Sys_Catalog"), fitText(cat.error, math.floor(self.lw * 0.6)), "errorText")
+        else
+            self:lineRow(tr("Admin_Sys_Catalog"), getText(T .. "Admin_Shop_Count", tostring((type(cat) == "table" and cat.count) or 0)))
+        end
         self:lineRow(tr("Admin_Sys_Size"), sizeText(sys.sizeEstimate))
         local parts = sys.sizeParts
         if type(parts) == "table" then
@@ -3085,6 +3499,7 @@ function Admin:prerender()
         if write ~= self.hadWrite or read ~= self.hadRead then
             if not write then self:closeDialog() end
             if not read then self:closeSuggest() end
+            if not read then self.catalog = nil end
             self:layout()   -- hides/shows the page children for the new permission level
         end
     end
@@ -3145,7 +3560,7 @@ function Admin:prerender()
     end
     -- the auto refresh has to be visible: the pages without their own stamp show it in the tab bar
     local stampAt = ((self.tab == "Dashboard" or self.tab == "System" or self.tab == "Settings") and self.systemAt)
-        or (self.tab == "Sources" and self.sourcesAt) or nil
+        or (self.tab == "Sources" and self.sourcesAt) or (self.tab == "Shop" and self.catalogAt) or nil
     if stampAt then
         textRight(self, getText(T .. "Admin_Updated", U.clockText(stampAt, self.offsetMin)),
             self.refreshButton.x - PAD, math.floor((g.subH - fontH.small) / 2), "textFaint")
@@ -3158,6 +3573,8 @@ function Admin:prerender()
         self:drawCurrencies()
     elseif self.tab == "Sources" then
         self:drawSources()
+    elseif self.tab == "Shop" then
+        self:drawShop()
     elseif self.tab == "Audit" then
         self:drawAudit()
     elseif self.tab == "Settings" then
@@ -3244,6 +3661,8 @@ function Admin:refresh()
         send("admin.icons", { action = "status" })
     elseif self.tab == "Sources" then
         send("admin.sources", { action = "list" })
+    elseif self.tab == "Shop" then
+        send("admin.catalog", { action = "list" })
     end
     self:updateEnabled()
 end
@@ -3280,6 +3699,8 @@ function Admin:dispose()
     self.options = nil
     self.pendingOption = nil
     self.resetQueue = nil
+    self.catalog = nil
+    self.pendingCatalog = nil
     if P.instance == self then P.instance = nil end
 end
 
