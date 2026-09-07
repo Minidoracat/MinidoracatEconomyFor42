@@ -135,6 +135,7 @@
   "IGUI_MinidoracatEconomy_Admin_Wl_ByCategory": "依分类",
   "IGUI_MinidoracatEconomy_Admin_Wl_Saved": "白名单已更新",
   "IGUI_MinidoracatEconomy_Admin_Wl_Count": "分类 %1、物品 %2",
+  "IGUI_MinidoracatEconomy_Admin_Wl_NoMatch": "没有符合的分类或物品",
   "IGUI_MinidoracatEconomy_Admin_Error_whitelist_stale": "白名单档已在服务器上被修改，请先重新加载白名单",
   "IGUI_MinidoracatEconomy_Admin_Error_unknown_item": "物品不存在",
   "IGUI_MinidoracatEconomy_Admin_Error_unknown_listing": "这笔刊登已不存在",

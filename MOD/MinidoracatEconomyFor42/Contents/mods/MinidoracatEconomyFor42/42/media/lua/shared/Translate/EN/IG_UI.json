@@ -135,6 +135,7 @@
   "IGUI_MinidoracatEconomy_Admin_Wl_ByCategory": "By category",
   "IGUI_MinidoracatEconomy_Admin_Wl_Saved": "Whitelist updated",
   "IGUI_MinidoracatEconomy_Admin_Wl_Count": "%1 categories, %2 items",
+  "IGUI_MinidoracatEconomy_Admin_Wl_NoMatch": "No matching category or item",
   "IGUI_MinidoracatEconomy_Admin_Error_whitelist_stale": "whitelist.json changed on the server; reload the whitelist first",
   "IGUI_MinidoracatEconomy_Admin_Error_unknown_item": "Unknown item",
   "IGUI_MinidoracatEconomy_Admin_Error_unknown_listing": "That listing is gone",

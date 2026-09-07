@@ -135,6 +135,7 @@
   "IGUI_MinidoracatEconomy_Admin_Wl_ByCategory": "カテゴリに従う",
   "IGUI_MinidoracatEconomy_Admin_Wl_Saved": "ホワイトリストを更新しました",
   "IGUI_MinidoracatEconomy_Admin_Wl_Count": "カテゴリ %1、アイテム %2",
+  "IGUI_MinidoracatEconomy_Admin_Wl_NoMatch": "一致するカテゴリまたはアイテムはありません",
   "IGUI_MinidoracatEconomy_Admin_Error_whitelist_stale": "サーバー上で whitelist.json が変更されています。先にホワイトリストを再読込してください",
   "IGUI_MinidoracatEconomy_Admin_Error_unknown_item": "アイテムが存在しません",
   "IGUI_MinidoracatEconomy_Admin_Error_unknown_listing": "この出品は存在しません",

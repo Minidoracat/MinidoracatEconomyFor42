@@ -7,12 +7,14 @@
 --   instance:resize(w, h) / :refresh() / :dispose() / :setVisible(v)
 --
 -- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
--- owns everything below it: nine sub pages (Player / Dashboard / Currencies / Sources / Shop /
--- Listings / Audit / System / Settings, the last one an editor for this mod's sandbox options --
--- group nav on the left, one control per option on the right, backed by admin.option runtime
--- overrides; Shop is the same shape for the system shop's catalog.json, backed by admin.catalog;
--- Listings is the market's own page -- the upload whitelist's state over a paged, searchable view
--- of every active listing, backed by admin.listings / admin.whitelist) and the
+-- owns everything below it: ten sub pages (Player / Dashboard / Currencies / Sources / Shop /
+-- Whitelist / Listings / Audit / System / Settings, the last one an editor for this mod's sandbox
+-- options -- group nav on the left, one control per option on the right, backed by admin.option
+-- runtime overrides; Shop is the same shape for the system shop's catalog.json, backed by
+-- admin.catalog; Whitelist edits the market's whitelist.json in place -- one switch per item
+-- category, allow / deny per item, over a local search of every script item this server knows,
+-- backed by admin.whitelist; Listings is a paged, searchable view of every active listing,
+-- backed by admin.listings) and the
 -- write dialogs (adjust / freeze / rename / enable / exchange / source caps / option /
 -- catalog price / catalog cap / delist). The
 -- player page also owns the account search dropdown: a debounced admin.players query whose
@@ -63,7 +65,7 @@ local color, fill, border, text, textWidth, fitText, textRight, textCentre = U.c
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
 local Button, TableCell = U.Button, U.TableCell
 
-local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Listings", "Audit", "System", "Settings" }
+local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Whitelist", "Listings", "Audit", "System", "Settings" }
 local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog", "admin.listings", "admin.whitelist" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
@@ -695,6 +697,96 @@ function ListingCell:render()
     textCentre(self, e.delistLabel, hit.x + hit.w / 2, hit.y + e.chipTextY, off and "textFaint" or "text")
 end
 
+-- ---------- upload whitelist page ----------
+
+-- DisplayCategory name the way the vanilla inventory paints it (ISInventoryPane.lua:2533): the
+-- engine's own IGUI_ItemCat_* key, falling back to the raw script category.
+local function itemCategoryName(category)
+    local key = tostring(category or "-")
+    return getTextOrNull("IGUI_ItemCat_" .. key) or key
+end
+
+local function wlSet(list)
+    local set = {}
+    if type(list) == "table" then
+        for _, v in ipairs(list) do
+            if type(v) == "string" then set[v] = true end
+        end
+    end
+    return set
+end
+
+local WL_ITEM_MAX = 200   -- rows one search ever adds: a single letter matches most of the game
+
+-- Every item this server could ever put on the market: the script manager's whole list
+-- (ScriptManager.java:715-717, a Java ArrayList) minus the hidden and obsolete scripts and the
+-- classes the market refuses whatever the file says (EC.isFixedType). Read once per session and
+-- cached on the panel; every engine call is guarded, so a stub-thin environment simply has no
+-- items instead of throwing.
+local function whitelistUniverse()
+    local uni = { cats = {}, items = {}, byType = {} }
+    local all = nil
+    pcall(function() all = getScriptManager():getAllItems() end)
+    local count = 0
+    if all then pcall(function() count = all:size() end) end
+    for i = 0, count - 1 do
+        local script = nil
+        pcall(function() script = all:get(i) end)
+        local skip = script == nil
+        if not skip then
+            pcall(function()
+                if script:isHidden() or script:getObsolete() then skip = true end
+            end)
+        end
+        if not skip and EC.isFixedType(script) then skip = true end
+        if not skip then
+            local fullType, base, cat = nil, nil, nil
+            pcall(function() fullType = script:getFullName() end)
+            pcall(function() base = script:getDisplayName() end)
+            pcall(function() cat = script:getDisplayCategory() end)
+            if type(fullType) == "string" and fullType ~= "" and uni.byType[fullType] == nil then
+                local name = itemName(fullType)
+                if type(cat) ~= "string" or cat == "" then cat = "Item" end
+                local entry = { fullType = fullType, name = name, cat = cat,
+                    key = string.lower(name .. " " .. tostring(base or "") .. " " .. fullType) }
+                uni.byType[fullType] = entry
+                uni.items[#uni.items + 1] = entry
+                uni.cats[cat] = (uni.cats[cat] or 0) + 1
+            end
+        end
+    end
+    return uni
+end
+
+-- One whitelist row: either a category (its localised name over the raw name and the item count)
+-- or a single item (icon, localised plus untranslated name, over "fullType / category"), with the
+-- allow / deny chips on the right. Every string and hit box is computed once per rebuild
+-- (Admin:whitelistGeometry / whitelistCategoryRow / whitelistItemRow), so the cell only paints
+-- and the click test reads the numbers the paint used.
+local WhitelistCell = ISPanel:derive("MinidoracatEconomyWhitelistCell")
+
+function WhitelistCell:render()
+    local e = self.entry
+    if not e then return end
+    if self.index % 2 == 0 then fill(self, 0, 0, self.width, self.height, "card", "rect") end
+    local off = self.list.optionsDisabled == true
+    if e.icon then
+        -- a texture the engine handed out can still be refused by the renderer: ask once
+        local ok = pcall(self.drawTextureScaled, self, e.icon, PAD, e.iconY, e.iconSize, e.iconSize, 1, 1, 1, 1)
+        if not ok then e.icon = nil end
+    end
+    if e.labelText then text(self, e.labelText, PAD, e.line1Y, "textFaint") end
+    text(self, e.nameText, e.nameX, e.line1Y, "text")
+    if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
+    text(self, e.metaText, e.metaX, e.line2Y, "textFaint")
+    for _, hit in ipairs(e.hits) do
+        fill(self, hit.x, hit.y, hit.w, hit.h, hit.active and "selected" or "well", "pill")
+        border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
+        textCentre(self, hit.label, hit.x + hit.w / 2, hit.y + e.chipTextY,
+            off and "textFaint" or (hit.active and "text" or "textMuted"))
+    end
+end
+
 -- ---------- write dialog ----------
 
 local Dialog = ISPanel:derive("MinidoracatEconomyAdminDialog")
@@ -1226,11 +1318,31 @@ function Admin:createChildren()
     end
     self:addChild(self.catalogList)
 
-    -- listings page: the whitelist card's reload chip, then the search box, the listing list and
-    -- the two page chips. A row carries one control, so the click needs the row-local x and y.
+    -- whitelist page: the reload chip rides the file status row, the search box filters the rows
+    -- locally (the file the server holds is already here), and the list carries one category or
+    -- item per row. A row carries one control line, so the click needs the row-local y as well
+    -- as the x.
     local wlReload = tr("Admin_Wl_Reload")
     self.wlReloadButton = Button.create(0, 0, textWidth(wlReload) + 24, 22, wlReload, self, Admin.onWhitelistReloadClick, "chip")
     self:addChild(self.wlReloadButton)
+    self.wlEntry = newEntry(240, entryH(), { maxLen = 64, clear = true, placeholder = tr("Admin_Wl_Search") })
+    self.wlEntry.target = self
+    self.wlEntry.onTextChangeFunction = Admin.onWhitelistSearch
+    self:addChild(self.wlEntry)
+    self.whitelistList = U.newTable(WhitelistCell, lineH() * 2 + 12)
+    local wlDown = self.whitelistList.onMouseDown
+    self.whitelistList.onMouseDown = function(list, x, y)
+        self.wlClickX = x
+        self.wlClickY = (y + list.scrollOffset) % (list.rowHeight + (list.padding or 0))
+        return wlDown(list, x, y)
+    end
+    self.whitelistList.onSelect = function(_, item)
+        self:onWhitelistRow(item, self.wlClickX or 0, self.wlClickY or 0)
+    end
+    self:addChild(self.whitelistList)
+
+    -- listings page: the search box, the listing list and the two page chips. A row carries one
+    -- control, so the click needs the row-local x and y.
     self.lstEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Market_Search") })
     self.lstEntry.target = self
     self.lstEntry.onTextChangeFunction = Admin.onListingSearch
@@ -1907,6 +2019,43 @@ function Admin:sendWhitelist(args)
     return true
 end
 
+-- ----- upload whitelist actions -----
+
+-- The item universe is a session-long read (every script item the server knows): built on the
+-- first rebuild that needs it, dropped when the panel closes.
+function Admin:whitelistUniverse()
+    if self.wlUniverse == nil then self.wlUniverse = whitelistUniverse() end
+    return self.wlUniverse
+end
+
+-- Local filter only: the file's state is already on this side, so a keystroke never leaves the
+-- client.
+function Admin:onWhitelistSearch()
+    local raw = string.match(entryText(self.wlEntry), "^%s*(.-)%s*$")
+    self.wlQuery = raw ~= "" and string.lower(raw) or nil
+    self:rebuildWhitelist()
+end
+
+-- A click inside the whitelist list: the row's own chips. A category row carries one (it reads
+-- allow while the category is on the list, deny otherwise); an item row carries both, and
+-- clicking the chip that is already lit clears the per-item entry so the item follows its
+-- category again.
+function Admin:onWhitelistRow(item, x, y)
+    if item == nil or self.whitelistList.optionsDisabled then return end
+    for _, hit in ipairs(item.hits) do
+        if x >= hit.x and x < hit.x + hit.w and y >= hit.y and y < hit.y + hit.h then
+            self.message = nil
+            if item.kind == "category" then
+                self:sendWhitelist({ action = "set", category = item.cat, allowed = not item.allowed })
+            else
+                self:sendWhitelist({ action = "set", fullType = item.fullType,
+                    mode = hit.active and "inherit" or hit.id })
+            end
+            return
+        end
+    end
+end
+
 -- ----- dialog lifecycle -----
 
 function Admin:openDialog(mode, ctx)
@@ -2336,7 +2485,12 @@ function Admin:onReply(kind, args)
             end
         end
     elseif kind == "whitelist" then
-        if type(args.whitelist) == "table" then self.whitelist = args.whitelist end
+        -- every reply carries the file's state back, a refusal included, so the page always
+        -- shows what the server actually holds
+        if type(args.whitelist) == "table" then
+            self.whitelist = args.whitelist
+            self:rebuildWhitelist()
+        end
         local req = self.pendingWhitelist
         local mine = req == nil or args.requestId == nil or req.requestId == args.requestId
         if mine then
@@ -2349,6 +2503,8 @@ function Admin:onReply(kind, args)
                 self.message = { text = body, error = true }
             elseif req and req.action == "reload" then
                 self.message = { text = tr("Admin_Wl_Reloaded") }
+            elseif req and req.action == "set" then
+                self.message = { text = tr("Admin_Wl_Saved") }
             end
         end
     elseif kind == "icons" then
@@ -2846,6 +3002,148 @@ function Admin:rebuildListings()
     self.listingsList:setItems(rows)
 end
 
+-- Geometry of a whitelist row's chip strip: identical for every row, so it is computed once per
+-- rebuild. The category chip is as wide as the longer of the two labels, so the text budget does
+-- not move when it flips; the item chips sit side by side against the same right edge.
+function Admin:whitelistGeometry(width, chipH)
+    local allow, deny = tr("Admin_Wl_Allow"), tr("Admin_Wl_Deny")
+    local geo = { chipH = chipH, chipTextY = math.floor((chipH - fontH.small) / 2),
+        allowLabel = allow, denyLabel = deny }
+    geo.allowW = textWidth(allow) + 16
+    geo.denyW = textWidth(deny) + 16
+    geo.catW = math.max(geo.allowW, geo.denyW)
+    geo.catX = math.max(40, width - PAD - geo.catW)
+    geo.denyX = math.max(40, width - PAD - geo.denyW)
+    geo.allowX = math.max(20, geo.denyX - 6 - geo.allowW)
+    geo.textLimit = math.max(0, math.min(geo.catX, geo.allowX) - PAD)
+    return geo
+end
+
+function Admin:whitelistCategoryRow(cat, label, count, allowed, geo, lh, chipY)
+    local item = {
+        kind = "category", cat = cat, allowed = allowed, hits = {},
+        line1Y = 5, line2Y = 5 + lh, chipTextY = geo.chipTextY, metaX = PAD,
+        labelText = tr("Admin_Wl_Category"),
+    }
+    item.nameX = PAD + textWidth(item.labelText) + 6
+    item.nameText = fitText(label, math.max(0, geo.textLimit - item.nameX))
+    -- a category the file names but this server has no item in still gets a row, so a stale
+    -- line can be switched off from here
+    local meta = count > 0 and getText(T .. "Admin_Wl_Items", tostring(count)) or tr("Admin_Wl_Unknown")
+    if label ~= cat then meta = cat .. " / " .. meta end
+    item.metaText = fitText(meta, math.max(0, geo.textLimit - PAD))
+    item.hits[1] = { id = "category", x = geo.catX, y = chipY, w = geo.catW, h = geo.chipH,
+        label = allowed and geo.allowLabel or geo.denyLabel, active = allowed }
+    return item
+end
+
+function Admin:whitelistItemRow(entry, allow, deny, geo, lh, rowHeight, chipY)
+    local size = math.min(math.max(12, rowHeight - 10), 28)
+    local item = {
+        kind = "item", fullType = entry.fullType, hits = {},
+        line1Y = 5, line2Y = 5 + lh, chipTextY = geo.chipTextY,
+        icon = itemTexture(entry.fullType), iconSize = size, iconY = math.floor((rowHeight - size) / 2),
+    }
+    item.nameX = PAD + size + 6
+    item.metaX = item.nameX   -- under the name, clear of the icon
+    local textW = math.max(0, geo.textLimit - item.nameX)
+    item.nameText = fitText(entry.name, textW)
+    local alt = itemBaseName(entry.fullType)
+    if alt then
+        item.altX = item.nameX + textWidth(item.nameText) + 8
+        local altW = geo.textLimit - item.altX
+        if altW > 20 then item.altText = fitText(alt, altW) end
+    end
+    local meta = entry.fullType
+    if entry.cat then meta = meta .. " / " .. itemCategoryName(entry.cat) end
+    if not allow and not deny then meta = meta .. " / " .. tr("Admin_Wl_ByCategory") end
+    item.metaText = fitText(meta, textW)
+    item.hits[1] = { id = "allow", x = geo.allowX, y = chipY, w = geo.allowW, h = geo.chipH,
+        label = geo.allowLabel, active = allow }
+    item.hits[2] = { id = "exclude", x = geo.denyX, y = chipY, w = geo.denyW, h = geo.chipH,
+        label = geo.denyLabel, active = deny }
+    return item
+end
+
+-- The file the server last sent, turned into rows: every category this server has items in (plus
+-- the ones only the file names), then the items the file singles out -- or, while the search box
+-- has text, whatever the whole item universe matches. Built when a reply lands, when the search
+-- text changes and when the geometry changes; never per frame.
+function Admin:rebuildWhitelist()
+    local rows = {}
+    local cats, items = 0, 0
+    local wl = self.whitelist
+    if wl then
+        local list = self.whitelistList
+        local width = math.max(120, list.width - 12)   -- 12 = the scrollbar gutter
+        local chipH = math.max(20, fontH.small + 6)
+        local geo = self:whitelistGeometry(width, chipH)
+        local chipY = math.max(3, math.floor((list.rowHeight - chipH) / 2))
+        local lh = lineH()
+        local query = self.wlQuery
+        local allowed = wlSet(wl.categories)
+        local allowTypes = wlSet(wl.types)
+        local denyTypes = wlSet(wl.excludeTypes)
+        local uni = self:whitelistUniverse()
+
+        local counts = {}
+        for cat, n in pairs(uni.cats) do counts[cat] = n end
+        for cat in pairs(allowed) do
+            if counts[cat] == nil then counts[cat] = 0 end
+        end
+        local catRows = {}
+        for cat, n in pairs(counts) do
+            local label = itemCategoryName(cat)
+            if query == nil or string.find(string.lower(label), query, 1, true) ~= nil
+                or string.find(string.lower(cat), query, 1, true) ~= nil then
+                catRows[#catRows + 1] = { cat = cat, label = label, count = n }
+            end
+        end
+        EC.sortSafe(catRows, function(a, b) return a.label < b.label end)
+
+        local itemRows, seen = {}, {}
+        if query ~= nil then
+            for _, entry in ipairs(uni.items) do
+                if #itemRows >= WL_ITEM_MAX then break end
+                if string.find(entry.key, query, 1, true) ~= nil and not seen[entry.fullType] then
+                    seen[entry.fullType] = true
+                    itemRows[#itemRows + 1] = entry
+                end
+            end
+        end
+        -- the items the file singles out are always reachable, even when this server has no
+        -- script for them any more
+        for _, set in ipairs({ allowTypes, denyTypes }) do
+            for fullType in pairs(set) do
+                local entry = uni.byType[fullType]
+                if entry == nil then
+                    local name = itemName(fullType)
+                    entry = { fullType = fullType, name = name,
+                        key = string.lower(name .. " " .. fullType) }
+                end
+                if not seen[entry.fullType]
+                    and (query == nil or string.find(entry.key, query, 1, true) ~= nil) then
+                    seen[entry.fullType] = true
+                    itemRows[#itemRows + 1] = entry
+                end
+            end
+        end
+        EC.sortSafe(itemRows, function(a, b) return a.name < b.name end)
+
+        for _, c in ipairs(catRows) do
+            rows[#rows + 1] = self:whitelistCategoryRow(c.cat, c.label, c.count, allowed[c.cat] == true, geo, lh, chipY)
+        end
+        for _, entry in ipairs(itemRows) do
+            rows[#rows + 1] = self:whitelistItemRow(entry, allowTypes[entry.fullType] == true,
+                denyTypes[entry.fullType] == true, geo, lh, list.rowHeight, chipY)
+        end
+        cats, items = #catRows, #itemRows
+    end
+    self.wlRows = rows
+    self.wlShown = { cats = cats, items = items }
+    self.whitelistList:setItems(rows)
+end
+
 -- ----- enable state (permission, in-flight command, data presence) -----
 
 -- Local role read (getAccessLevel + sandbox lists) AND, once a reply has told us, the level the
@@ -2908,7 +3206,6 @@ function Admin:updateEnabled()
     -- snapshot, and a read-only role browses without ever arming a delist
     local lstWrite = write and not modal and not isPending("admin.listings")
     self.listingsList.optionsDisabled = not lstWrite
-    self.wlReloadButton:setEnable(write and not modal and not isPending("admin.whitelist"))
     setEntryEditable(self.lstEntry, read and not modal)
     local lstPage, lstPages = 1, 1
     if self.listings then
@@ -2918,6 +3215,13 @@ function Admin:updateEnabled()
     local lstRead = read and not modal and not isPending("admin.listings")
     self.lstPrevButton:setEnable(lstRead and lstPage > 1)
     self.lstNextButton:setEnable(lstRead and lstPage < lstPages)
+
+    -- whitelist page: one in-flight whitelist command at a time, the reload chip included; a
+    -- read-only role browses the file without ever arming a switch
+    local wlWrite = write and not modal and not isPending("admin.whitelist")
+    self.whitelistList.optionsDisabled = not wlWrite
+    self.wlReloadButton:setEnable(wlWrite)
+    setEntryEditable(self.wlEntry, read and not modal)
 
     -- settings page: one in-flight option write at a time; a read-only role sees every control
     -- greyed out instead of a page that pretends to be editable
@@ -2981,6 +3285,7 @@ function Admin:layout()
     local settings = read and self.tab == "Settings"
     local shop = read and self.tab == "Shop"
     local listings = read and self.tab == "Listings"
+    local whitelist = read and self.tab == "Whitelist"
     for _, b in ipairs(self.subTabButtons) do b:setVisible(read) end
     self.refreshButton:setVisible(read)
 
@@ -3182,21 +3487,36 @@ function Admin:layout()
         self.catalogList:resize(shopW, shopH)
     end
 
-    -- listings page: the whitelist card (status left, reload chip right) over the listings card,
-    -- which carries the search row, the list and the page chips along its bottom.
-    local wlH = CARD_TITLE_H + math.max(reloadH, lh) + PAD
-    g.lstWlY = g.bodyY
-    g.lstWlH = wlH
-    local wlW = math.min(textWidth(self.wlReloadButton.fullTitle) + 24, math.floor(w * 0.4))
-    self.wlReloadButton:setVisible(listings)
-    self.wlReloadButton:setWidth(wlW)
+    -- whitelist page: the file status row (status left, reload chip right), the two standing
+    -- notes, the search row, then the list of category / item rows.
+    local wlTop = g.bodyY + CARD_TITLE_H + 4
+    local wlReloadW = math.min(textWidth(self.wlReloadButton.fullTitle) + 24, math.floor(w * 0.4))
+    self.wlReloadButton:setVisible(whitelist)
+    self.wlReloadButton:setWidth(wlReloadW)
     self.wlReloadButton:setHeight(reloadH)
-    self.wlReloadButton:setX(math.max(PAD, w - PAD - wlW))
-    self.wlReloadButton:setY(g.bodyY + CARD_TITLE_H + 2)
+    self.wlReloadButton:setX(math.max(PAD, w - PAD - wlReloadW))
+    self.wlReloadButton:setY(wlTop)
     self:setButtonTitle(self.wlReloadButton, self.wlReloadButton.fullTitle)
-    g.lstWlTextY = self.wlReloadButton.y + math.floor((reloadH - fontH.small) / 2)
+    g.wlHeadY = wlTop + math.floor((reloadH - fontH.small) / 2)
+    g.wlNoteY = wlTop + reloadH + 4
+    g.wlFixedY = g.wlNoteY + lh
+    local wlEntryY = g.wlFixedY + lh + 4
+    self.wlEntry:setVisible(whitelist)
+    self.wlEntry:setX(PAD); self.wlEntry:setY(wlEntryY)
+    self.wlEntry:setWidth(math.max(120, math.min(280, math.floor(w * 0.32)))); self.wlEntry:setHeight(eh)
+    g.wlSearchY = wlEntryY + math.floor((eh - fontH.small) / 2)
+    local wlListY = wlEntryY + eh + 6
+    local wlListW = math.max(160, w - PAD * 2)
+    local wlListH = math.max(rowH(), g.bodyY + g.bodyH - PAD - wlListY)
+    self.whitelistList:setVisible(whitelist)
+    self.whitelistList:setX(PAD); self.whitelistList:setY(wlListY)
+    if self.whitelistList.width ~= wlListW or self.whitelistList.height ~= wlListH then
+        self.whitelistList:resize(wlListW, wlListH)
+    end
 
-    g.lstY = g.bodyY + wlH + PAD
+    -- listings page: the listings card carries the search row, the list and the page chips along
+    -- its bottom (the whitelist has its own page).
+    g.lstY = g.bodyY
     g.lstH = math.max(CARD_TITLE_H + eh + rh, g.bodyY + g.bodyH - g.lstY)
     local lstTop = g.lstY + CARD_TITLE_H + 4
     self.lstEntry:setVisible(listings)
@@ -3263,6 +3583,7 @@ function Admin:layout()
     self:rebuildSettings()
     self:rebuildCatalog()
     self:rebuildListings()
+    self:rebuildWhitelist()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
     if self.dialog then self:layoutDialog() end
     self:layoutSuggest()
@@ -3658,11 +3979,11 @@ function Admin:drawShop()
     end
 end
 
-function Admin:drawListings()
+function Admin:drawWhitelist()
     local g = self.g
-    -- whitelist card: a parse error wins over the counts, because it says the server is still
+    card(self, 0, g.bodyY, self.width, g.bodyH, tr("Admin_Wl_Title"))
+    -- file status: a parse error wins over the counts, because it says the server is still
     -- running with the previous file
-    card(self, 0, g.lstWlY, self.width, g.lstWlH, tr("Admin_Wl_Title"))
     local wl = self.whitelist
     local status, token
     if wl and type(wl.error) == "string" and wl.error ~= "" then
@@ -3675,8 +3996,30 @@ function Admin:drawListings()
     else
         status, token = isPending("admin.whitelist") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), "textFaint"
     end
-    text(self, fitText(status, math.max(0, self.wlReloadButton.x - PAD * 2)), PAD, g.lstWlTextY, token)
+    text(self, fitText(status, math.max(0, self.wlReloadButton.x - PAD * 2)), PAD, g.wlHeadY, token)
+    local noteW = math.max(0, self.width - PAD * 2)
+    text(self, fitText(tr("Admin_Wl_Note"), noteW), PAD, g.wlNoteY, "textFaint")
+    text(self, fitText(tr("Admin_Wl_Fixed"), noteW), PAD, g.wlFixedY, "textFaint")
+    local shown = self.wlShown or { cats = 0, items = 0 }
+    textRight(self, getText(T .. "Admin_Wl_Count", tostring(shown.cats), tostring(shown.items)),
+        self.width - PAD, g.wlSearchY, "textFaint")
+    local rows = self.wlRows or {}
+    if #rows == 0 then
+        local empty
+        if wl == nil then
+            empty = isPending("admin.whitelist") and tr("Admin_Loading") or tr("Admin_Dash_Empty")
+        elseif self.wlQuery then
+            empty = tr("Admin_Wl_NoMatch")
+        else
+            empty = tr("Admin_Wl_Hint")
+        end
+        text(self, fitText(empty, math.max(0, self.whitelistList.width - PAD * 2)),
+            self.whitelistList.x + PAD, self.whitelistList.y + 4, "textFaint")
+    end
+end
 
+function Admin:drawListings()
+    local g = self.g
     card(self, 0, g.lstY, self.width, g.lstH, tr("Admin_Lst_Title"))
     local snap = self.listings
     local rows = self.listingRows or {}
@@ -3960,6 +4303,8 @@ function Admin:prerender()
         self:drawSources()
     elseif self.tab == "Shop" then
         self:drawShop()
+    elseif self.tab == "Whitelist" then
+        self:drawWhitelist()
     elseif self.tab == "Listings" then
         self:drawListings()
     elseif self.tab == "Audit" then
@@ -4052,6 +4397,7 @@ function Admin:refresh()
         send("admin.catalog", { action = "list" })
     elseif self.tab == "Listings" then
         self:requestListings()
+    elseif self.tab == "Whitelist" then
         send("admin.whitelist", { action = "status" })
     end
     self:updateEnabled()
@@ -4070,6 +4416,7 @@ function Admin:setVisible(visible)
         pcall(function() self.auditEntry:unfocus() end)
         pcall(function() self.setEntry:unfocus() end)
         pcall(function() self.lstEntry:unfocus() end)
+        pcall(function() self.wlEntry:unfocus() end)
     end
 end
 
@@ -4080,6 +4427,7 @@ function Admin:dispose()
     pcall(function() self.auditEntry:unfocus() end)
     pcall(function() self.setEntry:unfocus() end)
     pcall(function() self.lstEntry:unfocus() end)
+    pcall(function() self.wlEntry:unfocus() end)
     self.lookup = nil
     self.audit = nil
     self.system = nil
@@ -4097,6 +4445,8 @@ function Admin:dispose()
     self.pendingListings = nil
     self.whitelist = nil
     self.pendingWhitelist = nil
+    self.wlUniverse = nil
+    self.wlRows = nil
     if P.instance == self then P.instance = nil end
 end
 
