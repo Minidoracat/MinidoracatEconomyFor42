@@ -66,6 +66,13 @@ local function itemRowHeight()
     return math.max(math.floor(ROW * 1.6), fontH.small * 2 + 16)
 end
 
+-- Picker tile (the backpack grid): a 48px icon over one fitted name line, the way the vanilla
+-- inventory paints an item. 72x88 at the default font, taller when the player scales the UI font.
+local TILE_ICON = 48
+local function tileSize()
+    return 72, math.max(88, TILE_ICON + fontH.small + 26)
+end
+
 local function newEntry(width, height, placeholder, numbers)
     local e = ISTextEntryBox:new("", 0, 0, width, height)
     e:initialise()
@@ -221,21 +228,23 @@ local function listingRow(it, currency, username, offsetMin, mine)
     }
 end
 
--- One backpack candidate; a refused item keeps its reason where the status line would be.
+-- One backpack candidate. The tile itself only has room for the name, so everything else the
+-- player may want (the script name, the condition/uses line, and the server's refusal when the
+-- item may not be listed) is joined once here for the picker's status line.
 local function candidateRow(it)
     local ok = it.ok == true
-    -- listingStatus is nil when the item has nothing to report; `ok and status or reason`
-    -- would then paint the refusal on a listable row
-    local second
-    if ok then
-        second = listingStatus(it)
-    else
-        second = marketError({ error = it.reason, modDataKey = it.modDataKey })
-    end
+    local name = itemName(it.item)
+    local alt = itemBaseName(it.item)
+    local status = listingStatus(it)
+    local reason = nil
+    if not ok then reason = marketError({ error = it.reason, modDataKey = it.modDataKey }) end
+    local detail = alt and (name .. " (" .. alt .. ")") or name
+    if status then detail = detail .. " - " .. status end
+    if reason then detail = detail .. " - " .. reason end
     return {
         itemId = it.itemId, item = it.item, ok = ok,
-        name = itemName(it.item), altName = itemBaseName(it.item), texture = itemTexture(it.item),
-        secondText = second,
+        name = name, altName = alt, texture = itemTexture(it.item),
+        detailText = detail,
     }
 end
 
@@ -363,28 +372,37 @@ function ListingCell:render()
     textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, off and "textFaint" or "text")
 end
 
--- Picker row (list dialog): the same two lines, greyed out with the server's refusal in place
--- of the status when the item may not be listed.
+-- Picker strip (list dialog): the picker is a grid, but VirtualList is a one-column list, so one
+-- list row carries a whole strip of tiles (entry = the array of candidates on this line) and
+-- paints them itself. Hit testing reads the same cols.tileW, so the click and the paint can never
+-- disagree; hover comes from the list (cols.tileW + list.hoverIndex/hoverCol, resolved once per
+-- frame by the dialog) instead of the cell's own mouse, which only knows the whole strip.
 local CandidateCell = ISPanel:derive("MinidoracatEconomyCandidateCell")
 
 function CandidateCell:render()
-    local e = self.entry
-    if not e then return end
+    local tiles = self.entry
+    if not tiles then return end
+    local Skin = U.Skin
     local cols = self.list.cols
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if e.ok and self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
-    drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
-    local half = math.floor(h / 2)
-    local nameText = fitText(e.name, cols.nameW)
-    text(self, nameText, cols.name, half - fontH.small - 2, e.ok and "text" or "textFaint")
-    if e.altName then
-        local altX = cols.name + textWidth(nameText) + 8
-        local altW = cols.name + cols.nameW - altX
-        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
-    end
-    if e.secondText then
-        text(self, fitText(e.secondText, cols.nameW), cols.name, half + 2, e.ok and "textFaint" or "warn")
+    local tw, th = cols.tileW, cols.tileH
+    local hoverCol = self.list.hoverIndex == self.index and self.list.hoverCol or nil
+    for i = 1, #tiles do
+        local e = tiles[i]
+        local x = (i - 1) * tw
+        local alpha = e.ok and 1 or 0.4
+        local iconX = x + math.floor((tw - TILE_ICON) / 2)
+        Skin.fill(self, x + 2, 2, tw - 4, th - 4, color("card"), "round", alpha)
+        if e.ok and hoverCol == i then
+            Skin.fill(self, x + 2, 2, tw - 4, th - 4, color("hover"), "round", 1)
+        end
+        if e.texture then
+            self:drawTextureScaled(e.texture, iconX, 6, TILE_ICON, TILE_ICON, alpha, 1, 1, 1)
+        else
+            Skin.border(self, iconX, 6, TILE_ICON, TILE_ICON, color("border"), "round", alpha)
+        end
+        if not e.ok then Skin.dot(self, x + tw - 12, 5, 7, color("negative")) end
+        local label = fitText(e.name, tw - 8)
+        textCentre(self, label, x + tw / 2, 6 + TILE_ICON + 6, e.ok and "text" or "textFaint")
     end
 end
 
@@ -526,14 +544,76 @@ function MarketDialog:createChildren()
     self.priceEntry.target = self
     self.priceEntry.onTextChangeFunction = MarketDialog.onPriceChanged
     self:addChild(self.priceEntry)
-    self.pickList = U.newTable(CandidateCell, itemRowHeight())
-    self.pickList.onSelect = function(_, item) self.panel:onCandidate(item) end
+    local only = getText(T .. "Market_OnlyListable")
+    self.onlyButton = Button.create(0, 0, textWidth(only) + 30, math.max(CHIP_H, fontH.small + 10),
+        only, self, MarketDialog.onOnlyListable, "chip")
+    self.onlyListable = true             -- the backpack is mostly unlistable: start on the useful half
+    self.onlyButton.active = true
+    self:addChild(self.onlyButton)
+    local tw, th = tileSize()
+    self.pickList = U.newTable(CandidateCell, th)
+    self.pickList.cols.tileW, self.pickList.cols.tileH = tw, th
+    -- VirtualList hands onSelect the row (a whole strip of tiles) and no x, so the tile is
+    -- resolved here from the click's own x; the scrollbar keeps the framework's handler.
+    local scrollDown = self.pickList.onMouseDown
+    self.pickList.onMouseDown = function(list, x, y)
+        local e = self:tileAt(x, y)
+        if e then
+            self.panel:onCandidate(e)
+            return true
+        end
+        return scrollDown(list, x, y)
+    end
     self:addChild(self.pickList)
 end
 
 function MarketDialog:onCancel() self.panel:closeMarketDialog() end
 function MarketDialog:onConfirm() self.panel:submitMarket(self) end
 function MarketDialog:onPriceChanged() self.message = nil end
+
+function MarketDialog:onOnlyListable()
+    self.onlyListable = not self.onlyListable
+    self.onlyButton.active = self.onlyListable
+    self.pickNote = nil
+    self:rebuildGrid()
+end
+
+-- The candidate under (x, y), or nil outside the tiles (row gap, empty tail of a strip, the
+-- scrollbar column). Returns the strip index and the column too: the paint reads them for hover.
+function MarketDialog:tileAt(x, y)
+    local list = self.pickList
+    local tw = list.cols.tileW
+    if not tw or x < 0 or x >= list:cellWidth() then return nil end
+    local index = list:indexAt(x, y)
+    if not index then return nil end
+    local tiles = list:getItems()[index]
+    local col = math.floor(x / tw) + 1
+    local e = tiles and tiles[col]
+    if not e then return nil end
+    return e, index, col
+end
+
+-- Candidates -> strips of gridCols tiles, dropping the unlistable ones while the filter is on.
+-- Called on a fresh snapshot, on the filter chip, and when a resize changes the column count.
+function MarketDialog:rebuildGrid()
+    local rows = self.panel.candidateRows or {}
+    local perRow = math.max(1, self.gridCols or 1)
+    local grid, strip, shown, listable = {}, nil, 0, 0
+    for i = 1, #rows do
+        local e = rows[i]
+        if e.ok then listable = listable + 1 end
+        if e.ok or not self.onlyListable then
+            if not strip or #strip >= perRow then
+                strip = {}
+                grid[#grid + 1] = strip
+            end
+            strip[#strip + 1] = e
+            shown = shown + 1
+        end
+    end
+    self.candTotal, self.candListable, self.candShown = #rows, listable, shown
+    self.pickList:setItems(grid)
+end
 
 -- Whole numbers only: the entry filters the keyboard, this filters a paste.
 function MarketDialog:priceValue()
@@ -553,12 +633,29 @@ end
 function MarketDialog:layoutInside(maxW, maxH)
     local line = fontH.small + 8
     local mode = self.mode
-    local wide = mode == "pick" and 560 or (mode == "cancel" and 480 or 440)
-    local w = math.max(340, math.min(maxW, wide))
+    local w
+    if mode == "pick" then
+        -- the grid is the page: 90% of the content area, never under a readable minimum
+        w = math.min(maxW, math.max(640, math.floor(maxW * 0.9)))
+    else
+        w = math.max(340, math.min(maxW, mode == "cancel" and 480 or 440))
+    end
     local y = PAD
-    self.titleY = y; y = y + fontH.medium + PAD
+    self.titleY = y
     self.priceEntry:setVisible(mode == "price")
     self.pickList:setVisible(mode == "pick")
+    self.onlyButton:setVisible(mode == "pick")
+    if mode == "pick" then
+        -- title, the listable counter and the filter chip share the top line
+        local chipH = self.onlyButton.height
+        local headH = math.max(fontH.medium, chipH)
+        self.onlyButton:setX(w - PAD - self.onlyButton.width)
+        self.onlyButton:setY(y + math.floor((headH - chipH) / 2))
+        self.countR = self.onlyButton.x - 8
+        y = y + headH + PAD
+    else
+        y = y + fontH.medium + PAD
+    end
     if mode == "buy" then
         self.itemY = y; y = y + math.max(ITEM_ICON, line * 2) + PAD
         self.fromY = y; y = y + line
@@ -575,20 +672,28 @@ function MarketDialog:layoutInside(maxW, maxH)
         self.priceEntry:setX(w - PAD - self.priceEntry.width)
         self.priceEntry:setY(self.priceY)
     else
-        self.hintY = y; y = y + line + 6
-        local rowH = itemRowHeight()
-        local room = maxH - y - self.cancelButton.height - line - PAD * 3
-        local listH = math.max(rowH * 2, math.min(rowH * 6, room))
+        local tw, th = tileSize()
         local listW = w - PAD * 2
+        -- 90% of the content area tall: the tail (status line, error line, buttons) is taken off
+        -- the grid so the dialog lands on that height instead of growing past the content area
+        local tail = PAD + line + line + 6 + self.cancelButton.height + PAD
+        local target = math.min(maxH, math.max(380, math.floor(maxH * 0.9)))
+        local listH = math.max(th + 4, target - y - tail)
         self.pickList:setX(PAD); self.pickList:setY(y)
         if self.pickList.width ~= listW or self.pickList.height ~= listH then
             self.pickList:resize(listW, listH)
         end
         local cols = self.pickList.cols
-        cols.icon = PAD
-        cols.name = PAD + ITEM_ICON + PAD
-        cols.nameW = math.max(0, listW - 12 - cols.name - PAD)
+        cols.tileW, cols.tileH = tw, th
+        -- the scrollbar (10 wide + 2 margin) appears as soon as the grid overflows: budget for
+        -- it always, so the strips never have to reflow when it does
+        local perRow = math.max(1, math.floor((listW - 12) / tw))
+        if self.gridCols ~= perRow then
+            self.gridCols = perRow
+            self:rebuildGrid()
+        end
         y = y + listH + PAD
+        self.statusY = y; y = y + line
     end
     -- the error line is always reserved: an answer from the server must not make the dialog
     -- (and with it the button under the cursor) jump
@@ -621,7 +726,14 @@ function MarketDialog:prerender()
     local title = getText(T .. "Market_ListTitle")
     if mode == "buy" then title = getText(T .. "Market_BuyTitle", self.row.name)
     elseif mode == "cancel" then title = getText(T .. "Market_Cancel") end
-    text(self, fitText(title, w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
+    local titleW = w - PAD * 2
+    if mode == "pick" then
+        -- title, counter and filter chip share the head line: the counter takes its width first
+        self.countText = getText(T .. "Market_PickCount", tostring(self.candListable or 0),
+            tostring(self.candTotal or 0))
+        titleW = self.countR - PAD - textWidth(self.countText) - PAD
+    end
+    text(self, fitText(title, titleW, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
     if mode == "buy" then
         local row = self.row
         drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
@@ -659,9 +771,33 @@ function MarketDialog:prerender()
         textRight(self, amountText(price - ceilPercent(price, info.taxPercent)), w - PAD, self.getY, "positive")
         self.confirmButton:setEnable(price > 0 and not busy and panel:tradeAllowed())
     else
-        text(self, fitText(getText(T .. "Market_PickHint"), w - PAD * 2), PAD, self.hintY, "textMuted")
-        if #self.pickList:getItems() == 0 then
-            text(self, getText(T .. "Market_PickEmpty"), PAD * 2, self.pickList.y + 6, "textMuted")
+        -- one pass over the grid: the tile under the cursor decides the status line, and the
+        -- strips read the same two numbers back when they paint their hover highlight
+        local list = self.pickList
+        local hover = nil
+        list.hoverIndex, list.hoverCol = nil, nil
+        if list:isMouseOver() then
+            local e, index, col = self:tileAt(list:getMouseX(), list:getMouseY())
+            if e then
+                hover, list.hoverIndex, list.hoverCol = e, index, col
+            end
+        end
+        textRight(self, self.countText, self.countR,
+            self.titleY + math.floor((fontH.medium - fontH.small) / 2), "textMuted")
+        -- the hovered tile, else the refusal of the last unlistable tile the player clicked,
+        -- else the invitation to pick one
+        local status, token = getText(T .. "Market_PickSelect"), "textMuted"
+        if hover then
+            status = hover.detailText
+            if not hover.ok then token = "warn" end
+        elseif self.pickNote then
+            status, token = self.pickNote, "warn"
+        end
+        text(self, fitText(status, w - PAD * 2), PAD, self.statusY, token)
+        if (self.candTotal or 0) == 0 then
+            text(self, getText(T .. "Market_PickEmpty"), PAD * 2, list.y + 6, "textMuted")
+        elseif (self.candShown or 0) == 0 then
+            text(self, getText(T .. "Market_NoMatch"), PAD * 2, list.y + 6, "textMuted")
         end
     end
     if self.message then text(self, fitText(self.message, w - PAD * 2), PAD, self.messageY, "errorText") end
@@ -1322,7 +1458,10 @@ function Panel:rebuildCandidates()
     end
     self.candidateRows = rows
     local dlg = self.marketDialog
-    if dlg and dlg.mode == "pick" then dlg.pickList:setItems(rows) end
+    if dlg and dlg.mode == "pick" then
+        dlg.pickNote = nil     -- a fresh backpack: the refusal on the status line may be stale
+        dlg:rebuildGrid()
+    end
 end
 
 function Panel:onMarketMode(button)
@@ -1385,10 +1524,15 @@ end
 
 function Panel:onCandidate(cand)
     local dlg = self.marketDialog
-    if not dlg or dlg.mode ~= "pick" or not cand or not cand.ok then return end
+    if not dlg or dlg.mode ~= "pick" or not cand then return end
+    if not cand.ok then
+        dlg.pickNote = cand.detailText   -- the refusal belongs on the status line, not in a step
+        return
+    end
     dlg.mode = "price"
     dlg.cand = cand
     dlg.message = nil
+    dlg.pickNote = nil
     setEntryText(dlg.priceEntry, "")
     self:layoutMarketDialog()
 end
@@ -1406,7 +1550,7 @@ function Panel:openMarketDialog(mode, row)
     self:addChild(dlg)      -- the buttons exist from here on (instantiate -> createChildren)
     self.marketDialog = dlg
     if mode == "pick" then
-        dlg.pickList:setItems(self.candidateRows or {})
+        dlg:rebuildGrid()
         C.requestCandidates()
     end
     self:layoutMarketDialog()
