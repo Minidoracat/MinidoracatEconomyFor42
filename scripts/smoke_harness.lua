@@ -166,7 +166,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 279     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 280     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1427,6 +1427,12 @@ check(setOpt(mod, "CheckinAmount", 50).error == "forbidden", "a moderator cannot
 local r = setOpt(boss, "CheckinAmount", 50)
 check(r.ok == true and r.options.CheckinAmount.value == 50 and r.options.CheckinAmount.override == true and EC.sandbox("CheckinAmount", 30) == 50,
     "an admin override wins over the sandbox file for every EC.sandbox read")
+local pushed = nil
+for i = #sentCommands, 1, -1 do
+    local s = sentCommands[i]
+    if s.command == "rewards.state" and s.player == mod then pushed = s.args; break end
+end
+check(pushed ~= nil and pushed.amount == 50, "a rewards option change pushes rewards.state to every online player at once")
 check(setOpt(boss, "CheckinAmount", -1).error == "invalid_args" and setOpt(boss, "CheckinAmount", 1.5).error == "invalid_args"
     and setOpt(boss, "CheckinAmount", "50").error == "invalid_args", "range, integer and type are enforced")
 check(setOpt(boss, "AdminAdjustMaxPerTx", 99999).error == "locked" and setOpt(boss, "AdminRoles", "user").error == "locked",

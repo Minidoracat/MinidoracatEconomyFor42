@@ -263,6 +263,19 @@ function R.checkin(player)
     return { ok = true, amount = st.amount, currency = R.CURRENCY, balance = L.getBalance(username, R.CURRENCY).available, txId = res.txId, nextResetMs = st.nextResetMs }
 end
 
+-- A rewards option changed at runtime: refresh every online player's snapshot now instead of
+-- leaving the reward page to its 30 s poll (ECPanel.prerender).
+function R.pushAll()
+    if not md then return end
+    local players = getOnlinePlayers()
+    if not players then return end
+    local ms = EC.now()
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        S.reply(p, "rewards.state", R.state(p:getUsername(), ms))
+    end
+end
+
 -- ---------- commands ----------
 
 S.handlers["rewards.state"] = function(player, args)

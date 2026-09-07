@@ -675,15 +675,21 @@ function Panel:setVisible(visible)
     end
 end
 
--- ISLayoutManager: keep position/size, never auto-show on login
+-- ISLayoutManager: keep position/size, never auto-show on login.
+-- The saved numbers are clamped *before* the parent applies them: UIElement.setWidth/setHeight only
+-- record lastwidth/lastheight (UIElement.java:1772-1779, 1813-1820) and the anchored children
+-- (resize grips, pin button) are moved by width - lastwidth at the next update (:1411-1430), so a
+-- second setWidth in the same frame would drop the first delta and leave the grip off the window.
 function Panel:RestoreLayout(name, layout)
+    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    local w = math.min(sw, math.max(MIN_WIDTH, tonumber(layout.width) or self.width))
+    local h = math.min(sh, math.max(MIN_HEIGHT, tonumber(layout.height) or self.height))
+    layout.width, layout.height = w, h
+    layout.x = math.max(0, math.min(tonumber(layout.x) or self.x, sw - w))
+    layout.y = math.max(0, math.min(tonumber(layout.y) or self.y, sh - h))
     local visible = layout.visible
     layout.visible = nil
     ISCollapsableWindow.RestoreLayout(self, name, layout)
-    self:setWidth(math.min(getCore():getScreenWidth(), math.max(MIN_WIDTH, self.width)))
-    self:setHeight(math.min(getCore():getScreenHeight(), math.max(MIN_HEIGHT, self.height)))
-    self:setX(math.max(0, math.min(self.x, getCore():getScreenWidth() - self.width)))
-    self:setY(math.max(0, math.min(self.y, getCore():getScreenHeight() - self.height)))
     layout.visible = visible
     self:setVisible(false)
 end
