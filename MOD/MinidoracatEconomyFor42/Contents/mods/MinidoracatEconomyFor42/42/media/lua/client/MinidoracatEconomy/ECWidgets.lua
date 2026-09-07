@@ -47,6 +47,7 @@ local MOD_COLORS = {
     negative = { r = 0.95, g = 0.45, b = 0.40, a = 1 },
     warn = { r = 1, g = 0.72, b = 0.30, a = 1 },
     card = { r = 1, g = 1, b = 1, a = 0.04 },
+    surface = { r = 0, g = 0, b = 0, a = 1 },    -- 100 % on the opacity slider means opaque (framework default is 0.8)
     track = { r = 1, g = 1, b = 1, a = 0.10 },
 }
 

@@ -33,9 +33,14 @@ local function number(id, fallback, lo, hi)
     return v
 end
 
--- Milliseconds a toast holds on screen.
+-- Seconds a toast holds on screen (the panel's preference popover edits it).
+function O.toastSeconds()
+    if not options then return O.fallbackToast or O.TOAST_DEFAULT end
+    return number("ToastSeconds", O.TOAST_DEFAULT, O.TOAST_MIN, O.TOAST_MAX)
+end
+
 function O.toastHoldMs()
-    return number("ToastSeconds", O.TOAST_DEFAULT, O.TOAST_MIN, O.TOAST_MAX) * 1000
+    return O.toastSeconds() * 1000
 end
 
 -- Panel chrome opacity, 0.3..1.
@@ -63,6 +68,19 @@ function O.setPanelOpacity(percent, deferSave)
         O.fallbackOpacity = v
     end
     apply()
+end
+
+function O.setToastSeconds(seconds, deferSave)
+    local v = math.floor((tonumber(seconds) or O.TOAST_DEFAULT) + 0.5)
+    if v < O.TOAST_MIN then v = O.TOAST_MIN elseif v > O.TOAST_MAX then v = O.TOAST_MAX end
+    local opt = option("ToastSeconds")
+    if opt then
+        pcall(function() opt:setValue(v) end)
+        dirty = true
+        if not deferSave then O.flush() end
+    else
+        O.fallbackToast = v
+    end
 end
 
 function O.flush()

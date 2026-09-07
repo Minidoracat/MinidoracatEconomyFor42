@@ -779,10 +779,11 @@ function MarketHeader:onMouseDown(x)
     return true
 end
 
--- ---------- title-row opacity slider ----------
--- The window chrome's opacity (U.alpha, kept by EC.Options). Skin.slider is a stateless
--- painter, so the drag lives here: the press remembers where it landed inside the track and
--- onMouseMove walks that x with the engine's deltas (ISUIElement hands over dx/dy, not a point).
+-- ---------- preference sliders ----------
+-- Skin.slider is a stateless painter, so the drag lives here: the press remembers where it
+-- landed inside the track and onMouseMove walks that x with the engine's deltas (ISUIElement
+-- hands over dx/dy, not a point). One class, two specs: the title-row chrome opacity and the
+-- toast seconds in the preference popover. spec = { min, max, get(), set(v, dragging), flush() }.
 local OPACITY_W = 120
 -- 5 % per chip, the step the ModOptions slider uses too; the bounds are ECOptions' own
 local OPACITY_STEP = 5
@@ -804,39 +805,119 @@ local function setOpacityPercent(v, dragging)
     if O and O.setPanelOpacity then O.setPanelOpacity(v, dragging == true) else U.setAlpha(v / 100) end
 end
 
-local OpacitySlider = ISPanel:derive("MinidoracatEconomyOpacitySlider")
-
-function OpacitySlider:valueAt(x)
-    local ratio = x / math.max(1, self.width - 1)
-    if ratio < 0 then ratio = 0 elseif ratio > 1 then ratio = 1 end
-    return OPACITY_MIN + math.floor(ratio * OPACITY_SPAN + 0.5)
+local function optionsFlush()
+    if EC.Options and EC.Options.flush then EC.Options.flush() end   -- one ini write per drag
 end
 
-function OpacitySlider:onMouseDown(x)
+local OPACITY_SPEC = { min = OPACITY_MIN, max = OPACITY_MAX, get = opacityPercent, set = setOpacityPercent, flush = optionsFlush }
+
+local function toastSeconds()
+    local O = EC.Options
+    if O and O.toastSeconds then return O.toastSeconds() end
+    return 5
+end
+
+local TOAST_SPEC = {
+    min = (EC.Options and EC.Options.TOAST_MIN) or 2, max = (EC.Options and EC.Options.TOAST_MAX) or 10,
+    get = toastSeconds,
+    set = function(v, dragging)
+        if EC.Options and EC.Options.setToastSeconds then EC.Options.setToastSeconds(v, dragging == true) end
+    end,
+    flush = optionsFlush,
+}
+
+local PrefSlider = ISPanel:derive("MinidoracatEconomyPrefSlider")
+
+function PrefSlider:valueAt(x)
+    local ratio = x / math.max(1, self.width - 1)
+    if ratio < 0 then ratio = 0 elseif ratio > 1 then ratio = 1 end
+    local s = self.spec
+    return s.min + math.floor(ratio * (s.max - s.min) + 0.5)
+end
+
+function PrefSlider:onMouseDown(x)
     self.dragging = true
     self.dragX = x
-    setOpacityPercent(self:valueAt(x), true)
+    self.spec.set(self:valueAt(x), true)
     return true
 end
 
-function OpacitySlider:onMouseMove(dx)
+function PrefSlider:onMouseMove(dx)
     if not self.dragging then return end
     self.dragX = (self.dragX or 0) + (tonumber(dx) or 0)
-    setOpacityPercent(self:valueAt(self.dragX), true)
+    self.spec.set(self:valueAt(self.dragX), true)
 end
-OpacitySlider.onMouseMoveOutside = OpacitySlider.onMouseMove   -- the pointer leaves the track mid-drag
+PrefSlider.onMouseMoveOutside = PrefSlider.onMouseMove   -- the pointer leaves the track mid-drag
 
-function OpacitySlider:onMouseUp()
-    if self.dragging and EC.Options and EC.Options.flush then EC.Options.flush() end   -- one ini write per drag
+function PrefSlider:onMouseUp()
+    if self.dragging then self.spec.flush() end
     self.dragging = false
     return true
 end
-OpacitySlider.onMouseUpOutside = OpacitySlider.onMouseUp
+PrefSlider.onMouseUpOutside = PrefSlider.onMouseUp
 
-function OpacitySlider:render()
-    U.Skin.slider(self, 0, 0, self.width, self.height, (opacityPercent() - OPACITY_MIN) / OPACITY_SPAN,
+function PrefSlider:render()
+    local s = self.spec
+    U.Skin.slider(self, 0, 0, self.width, self.height, (s.get() - s.min) / math.max(1, s.max - s.min),
         { track = color("track"), fill = color("gold"), knob = color("text"), border = color("border") }, U.alpha)
 end
+
+local function newPrefSlider(width, height, spec)
+    local s = ISPanel:new(0, 0, width, height)
+    setmetatable(s, PrefSlider)
+    s.background = false
+    s.spec = spec
+    s:initialise()
+    return s
+end
+
+-- ---------- window chrome buttons ----------
+-- The vanilla title buttons (Button_Close / Button_Pin / Button_Collapse textures) restyled
+-- with the framework's line icons: the button keeps its click, only the paint changes. Without
+-- the icon capability the vanilla textures stay.
+local CHROME_ICON = 16
+local function iconButton(btn, name)
+    local Icons = U.framework and U.framework.Icons
+    if not (Icons and Icons.get and Icons.get(name)) then return end
+    btn.image = nil
+    btn.iconName = name
+    btn.render = function(b)
+        local hot = b:isMouseOver()
+        Icons.draw(b, b.iconName, math.floor((b.width - CHROME_ICON) / 2), math.floor((b.height - CHROME_ICON) / 2),
+            CHROME_ICON, color(hot and "text" or "textMuted"), 1)
+    end
+end
+
+-- ---------- preference popover ----------
+-- A small panel under the title-row gear: the preferences that are the player's own (kept by
+-- ECOptions in ModOptions.ini). Opens/closes with the gear, closes with the tab and the window.
+local PREFS_W = 300
+local PrefsPopover = ISPanel:derive("MinidoracatEconomyPrefsPopover")
+
+function PrefsPopover:createChildren()
+    local lineH = fontH.small + 8
+    self.toastSlider = newPrefSlider(PREFS_W - PAD * 2 - textWidth("10 s") - 8, lineH, TOAST_SPEC)
+    self:addChild(self.toastSlider)
+    self.toastY = PAD + fontH.medium + PAD + fontH.small + 4
+    self.toastSlider:setX(PAD)
+    self.toastSlider:setY(self.toastY)
+    self.noteY = self.toastY + lineH + PAD
+    self:setHeight(self.noteY + fontH.small + PAD)
+end
+
+function PrefsPopover:prerender()
+    local w, h = self.width, self.height
+    fill(self, 0, 0, w, h, "surface")
+    U.Skin.border(self, 0, 0, w, h, color("border"))
+    text(self, getText(T .. "Prefs_Title"), PAD, PAD, "text", UIFont.Medium)
+    local y = PAD + fontH.medium + PAD
+    text(self, fitText(getText("UI_MinidoracatEconomy_ToastSeconds"), w - PAD * 2), PAD, y - 2, "textMuted")
+    textRight(self, getText(T .. "Prefs_Seconds", tostring(toastSeconds())), w - PAD, self.toastY + math.floor((self.toastSlider.height - fontH.small) / 2), "text")
+    text(self, fitText(getText(T .. "Prefs_ModOptionsNote"), w - PAD * 2), PAD, self.noteY, "textFaint")
+end
+
+function PrefsPopover:onMouseDown() return true end   -- clicks inside never fall through to the window
+function PrefsPopover:onMouseUp() return true end
 
 -- ---------- buy dialog ----------
 -- Same shape as the admin write dialog (ECAdminPanel Dialog): a panel added to the window,
@@ -1418,10 +1499,7 @@ function Panel:createChildren()
 
     -- title row: the chrome opacity (a stateless Skin.slider plus two step chips), left of the
     -- reset chip and the vanilla pin/collapse buttons
-    self.opacitySlider = ISPanel:new(0, 0, OPACITY_W, self:titleBarHeight() - 8)
-    setmetatable(self.opacitySlider, OpacitySlider)
-    self.opacitySlider.background = false
-    self.opacitySlider:initialise()
+    self.opacitySlider = newPrefSlider(OPACITY_W, self:titleBarHeight() - 8, OPACITY_SPEC)
     self:addChild(self.opacitySlider)
     -- the labels carry the step ("-5" / "+5"): the buy/list dialogs already own a bare
     -- "-" / "+" pair, and two chips with the same title in one window is a trap
@@ -1434,7 +1512,37 @@ function Panel:createChildren()
         self["opacity" .. spec[1] .. "Button"] = b
     end
 
+    -- the vanilla title buttons wear the framework icons: close, and lock/unlock for the pin
+    -- state (collapseButton shows while pinned, pinButton while not - ISCollapsableWindow.pin/collapse)
+    iconButton(self.closeButton, "close")
+    iconButton(self.collapseButton, "lock")
+    iconButton(self.pinButton, "unlock")
+
+    -- preferences: a gear left of the opacity group that opens the popover
+    local gear = self:titleBarHeight() - 8
+    self.prefsButton = Button.create(0, 0, gear, gear, "", self, Panel.onPrefs, "chip")
+    iconButton(self.prefsButton, "sliders")
+    self:addChild(self.prefsButton)
+    self.prefsPopover = ISPanel:new(0, 0, PREFS_W, 100)
+    setmetatable(self.prefsPopover, PrefsPopover)
+    self.prefsPopover.background = false
+    self.prefsPopover:initialise()
+    self.prefsPopover:instantiate()
+    self.prefsPopover:setVisible(false)
+    self:addChild(self.prefsPopover)
+
     self:setTab("Wallet")
+end
+
+function Panel:onPrefs()
+    self:showPrefs(not self.prefsPopover:getIsVisible())
+end
+
+function Panel:showPrefs(show)
+    local pop = self.prefsPopover
+    if not pop then return end
+    pop:setVisible(show == true and not self.isCollapsed)
+    if pop:getIsVisible() then pop:bringToTop() end
 end
 
 -- The text boxes that only exist on one page: a hidden one must not keep the keyboard.
@@ -1456,6 +1564,7 @@ function Panel:setTab(tab)
         self:closeBuy()
         self:closeMarketDialog()
         self:unfocusEntries()
+        self:showPrefs(false)
     end
     self.tab = tab
     for _, b in ipairs(self.tabButtons) do b.active = b.internal == tab end
@@ -2362,6 +2471,14 @@ function Panel:layout()
     plus:setX(g.opacityR - textWidth("100%") - 6 - plus.width)
     self.opacitySlider:setX(plus.x - 4 - self.opacitySlider.width)
     minus:setX(self.opacitySlider.x - 4 - minus.width)
+    local gearBtn = self.prefsButton
+    gearBtn:setVisible(barVisible)
+    gearBtn:setX(minus.x - 8 - gearBtn.width)
+    gearBtn:setY(math.floor((th - gearBtn.height) / 2))
+    local pop = self.prefsPopover
+    pop:setX(math.max(PAD, math.min(w - PAD - pop.width, gearBtn.x + gearBtn.width - pop.width)))
+    pop:setY(th + 2)
+    if self.isCollapsed then pop:setVisible(false) end
 
     local isWallet = self.tab == "Wallet"
     self.adminAccess = C.AdminPanel.canRead()
@@ -3118,6 +3235,7 @@ end
 function Panel:setVisible(visible)
     ISCollapsableWindow.setVisible(self, visible)
     self.shown = visible == true
+    if not visible then self:showPrefs(false) end
     if self.adminPanel and not visible then self.adminPanel:setVisible(false) end
     if not visible then
         self:closeBuy()
