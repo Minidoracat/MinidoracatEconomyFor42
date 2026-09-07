@@ -665,7 +665,7 @@ function MarketDialog:layoutInside(maxW, maxH)
         self.priceY = y; y = y + math.max(self.priceEntry.height, line) + 4
         self.hintY = y; y = y + line + 6
         self.feeY = y; y = y + line
-        self.getY = y; y = y + line + 6
+        self.youGetY = y; y = y + line + 6
         self.priceEntry:setX(w - PAD - self.priceEntry.width)
         self.priceEntry:setY(self.priceY)
     else
@@ -764,8 +764,8 @@ function MarketDialog:prerender()
         local price = self:priceValue() or 0
         text(self, getText(T .. "Market_Fee"), PAD, self.feeY, "textMuted")
         textRight(self, amountText(listingFee(price, info.feePercent)), w - PAD, self.feeY, "warn")
-        text(self, getText(T .. "Market_YouGet"), PAD, self.getY, "textMuted")
-        textRight(self, amountText(price - ceilPercent(price, info.taxPercent)), w - PAD, self.getY, "positive")
+        text(self, getText(T .. "Market_YouGet"), PAD, self.youGetY, "textMuted")
+        textRight(self, amountText(price - ceilPercent(price, info.taxPercent)), w - PAD, self.youGetY, "positive")
         self.confirmButton:setEnable(price > 0 and not busy and panel:tradeAllowed())
     else
         -- one pass over the grid: the tile under the cursor decides the status line, and the
@@ -1642,7 +1642,10 @@ function Panel:onMarket(kind, args)
         end
         if args.delivered == false then C.toast(getText(T .. "Shop_Parked")) end
         if kind == "buy" then self:requestBrowse(self.marketPage)
-        elseif kind == "list" then C.requestMyListings() end
+        elseif kind == "list" then
+            C.requestMyListings()
+            if self.marketMode ~= "mine" then self:requestBrowse(self.marketPage) end   -- the new row belongs on the browse page too
+        end
         self:layout()
         return
     end
@@ -1840,7 +1843,7 @@ function Panel:layout()
     self.marketRefreshButton:setVisible(isMarket)
     self.marketRefreshButton:setX(w - PAD - self.marketRefreshButton.width)
     self.marketRefreshButton:setY(g.marketBarY)
-    self.marketListButton:setVisible(isMarket and mineMode)
+    self.marketListButton:setVisible(isMarket)   -- listing starts from either page
     self.marketListButton:setX(self.marketRefreshButton.x - 6 - self.marketListButton.width)
     self.marketListButton:setY(g.marketBarY)
 
