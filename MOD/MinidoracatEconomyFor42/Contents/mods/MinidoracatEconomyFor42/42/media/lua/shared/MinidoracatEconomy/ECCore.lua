@@ -359,20 +359,6 @@ EC.OPTION_GROUPS = { "rewards", "admin", "currency", "general" }
 EC.OPTION_BY_KEY = {}
 for _, o in ipairs(EC.OPTIONS) do EC.OPTION_BY_KEY[o.key] = o end
 
--- Kept for the settings page's group walk (derived from EC.OPTIONS).
-EC.SANDBOX_GROUPS = {}
-for _, id in ipairs(EC.OPTION_GROUPS) do
-    local keys = {}
-    for _, o in ipairs(EC.OPTIONS) do
-        if o.group == id then keys[#keys + 1] = o.key end
-    end
-    EC.SANDBOX_GROUPS[#EC.SANDBOX_GROUPS + 1] = { id = id, keys = keys }
-end
-EC.SANDBOX_RUNTIME = {}
-for _, o in ipairs(EC.OPTIONS) do
-    if o.page then EC.SANDBOX_RUNTIME[o.key] = o.page end
-end
-
 -- "1;3;7" -> { 1, 3, 7 } or nil when any item is not an integer within [min, max] or the list
 -- is empty / too long. Shared by the server validator and the panel's pre-check.
 function EC.parseIntList(text, spec)

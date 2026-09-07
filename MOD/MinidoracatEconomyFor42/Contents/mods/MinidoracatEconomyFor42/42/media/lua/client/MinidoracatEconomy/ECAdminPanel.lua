@@ -8,8 +8,9 @@
 --
 -- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
 -- owns everything below it: seven sub pages (Player / Dashboard / Currencies / Sources / Audit /
--- System / Settings, the last one a read-only view of this mod's sandbox options) and the write
--- dialogs (adjust / freeze / rename / enable / exchange / source caps). The
+-- System / Settings, the last one an editor for this mod's sandbox options -- group nav on the
+-- left, one control per option on the right, backed by admin.option runtime overrides) and the
+-- write dialogs (adjust / freeze / rename / enable / exchange / source caps / option). The
 -- player page also owns the account search dropdown: a debounced admin.players query whose
 -- candidates are drawn by a child panel floating under the search box.
 --
@@ -54,12 +55,12 @@ C.AdminPanel = P
 local PAD, T = U.PAD, U.T
 local CARD_TITLE_H = U.CARD_TITLE_H
 local fontH = U.fontH
-local color, fill, border, text, textWidth, fitText, textRight = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight
+local color, fill, border, text, textWidth, fitText, textRight, textCentre = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
 local Button, TableCell = U.Button, U.TableCell
 
 local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Audit", "System", "Settings" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
@@ -422,16 +423,16 @@ local function configValueText(v)
     return "-"
 end
 
--- ---------- settings page (read-only sandbox values) ----------
+-- ---------- settings page (runtime option editor) ----------
 
--- Value shapes that are not a plain coin amount. Anything else numeric is an amount
--- (amountText), booleans read as on/off, and an unparsable value falls back to tostring.
-local SETTING_FORMAT = {
-    CheckinServerDailyCap = "cap", CheckinMinPlaytimeMinutes = "minutes",
-    RewardDayResetHour = "hour", RewardTimezoneUTC = "timezone",
-    MilestoneDays = "list", MilestoneAmounts = "coinList",
-    AdminRoles = "list", ReadOnlyRoles = "list",
-}
+-- Control strip on the right of every option row: a fixed width, so the name / description
+-- column is the one that reflows and every row's controls line up (the MiniMap settings window
+-- shape). Step buttons and the toggle are painted by the cell and hit-tested from the same
+-- numbers, which are computed once per rebuild.
+local OPTION_CTRL_W = 240
+local OPTION_STEP_W = 26
+local OPTION_TOGGLE_W = 44
+local OPTION_TEXT_MAX = 200   -- ECConfig.validateOption's limit for kind = "text"
 
 -- ";" separated sandbox lists read as a sentence ("1, 3, 7"); the separator is per language.
 local function listText(value, coins)
@@ -455,58 +456,90 @@ local function offsetText(n)
     return getText(T .. "Admin_Set_Timezone", body)
 end
 
-local function settingValueText(key, value)
-    if type(value) == "boolean" then return tr(value and "Admin_On" or "Admin_Off") end
-    local kind = SETTING_FORMAT[key]
-    if kind == "list" then return listText(value, false) end
-    if kind == "coinList" then return listText(value, true) end
+-- Display form of an option value; the schema's unit decides. Serves the rows, the
+-- "overridden (default X)" note and the range hint of the edit dialog.
+local function optionValueText(spec, value)
+    if value == nil then return tr("Admin_Set_Missing") end
+    if spec.kind == "bool" then return tr(value == true and "Admin_On" or "Admin_Off") end
+    if spec.kind == "list_int" then return listText(value, spec.unit == "coin") end
+    if spec.kind == "text" then return listText(value, false) end
     local n = tonumber(value)
     if n == nil then return tostring(value) end
-    if kind == "cap" then
-        if n <= 0 then return tr("Admin_Set_Unlimited") end
-    elseif kind == "minutes" then
-        return getText(T .. "Admin_Set_Minutes", amountText(n))
-    elseif kind == "hour" then
-        return getText(T .. "Admin_Set_Hour", tostring(math.floor(n)))
-    elseif kind == "timezone" then
-        return offsetText(n)
-    end
+    if spec.zeroUnlimited and n <= 0 then return tr("Admin_Set_Unlimited") end
+    if spec.unit == "minutes" then return getText(T .. "Admin_Set_Minutes", amountText(n)) end
+    if spec.unit == "hour" then return getText(T .. "Admin_Set_Hour", tostring(math.floor(n))) end
+    if spec.unit == "tz" then return offsetText(n) end
     return amountText(n)
 end
 
--- One row of the settings list: a group heading (item.group) or an option -- name plus the value
--- right-aligned on the first line, the sandbox tooltip on the second. Text is fitted when the row
--- is bound or the width changed, never per frame (the TableCell rule).
-local SettingCell = ISPanel:derive("MinidoracatEconomySettingCell")
+-- What the edit dialog's box is prefilled with (and what the range hint quotes): the raw value,
+-- never its decorated display form -- the box is parsed back with tonumber / EC.parseIntList.
+local function optionInputText(spec, value)
+    if spec.kind == "list_int" or spec.kind == "text" then return tostring(value or "") end
+    local n = tonumber(value)
+    if n == nil then return "" end
+    if n == math.floor(n) then return tostring(math.floor(n)) end
+    return string.format("%.1f", n)
+end
 
-function SettingCell:render()
+-- Toggle colours are the mod's own tokens (the framework's defaults are grey); built once, since
+-- the painter takes the table every frame.
+local toggleColors = nil
+local function optionToggleColors()
+    if not toggleColors then
+        toggleColors = { on = color("gold"), off = color("well"), knob = color("text"), border = color("border") }
+    end
+    return toggleColors
+end
+
+-- One option row: name over description on the left, the control strip on the right. Every
+-- string, hit box and y is computed in Admin:optionRow (the row width is known there), so the
+-- cell only paints and the click test reads exactly the numbers the paint used.
+local OptionCell = ISPanel:derive("MinidoracatEconomyOptionCell")
+
+function OptionCell:render()
     local e = self.entry
     if not e then return end
     local w, h = self.width, self.height
-    if self.fitEntry ~= e or self.fitWidth ~= w then
-        self.fitEntry, self.fitWidth = e, w
-        local inner = math.max(0, w - PAD * 2)
-        if e.group then
-            self.headText = fitText(e.group, inner, UIFont.Medium)
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    local off = self.list.optionsDisabled == true
+    if e.prefixText then text(self, e.prefixText, PAD, e.line1Y, "textFaint") end
+    text(self, e.nameText, e.nameX, e.line1Y, "text")
+    if e.overText then text(self, e.overText, PAD, e.line2Y, "warn") end
+    if e.descText ~= "" then text(self, e.descText, e.descX, e.line2Y, "textFaint") end
+    if e.runtimeText then text(self, e.runtimeText, e.runtimeX, e.line2Y, "warn") end
+    if e.lockedText then textRight(self, e.lockedText, w - PAD, e.line2Y, "textFaint") end
+    if e.valueText then
+        local token = e.missing and "textFaint" or "accent"
+        if e.valueCentre then
+            textCentre(self, e.valueText, e.valueX + e.valueW / 2, e.valueY, token)
         else
-            self.valueText = fitText(e.value, math.floor(inner * 0.45))
-            self.nameText = fitText(e.name, math.max(0, inner - textWidth(self.valueText) - PAD))
-            local runW = e.runtime and (textWidth(e.runtime) + 8) or 0
-            self.descText = fitText(e.desc, math.max(0, inner - runW))
-            self.runtimeX = PAD + textWidth(self.descText) + (e.runtime and 8 or 0)
-            self.runtimeText = e.runtime and fitText(e.runtime, math.max(0, w - PAD - self.runtimeX)) or nil
+            textRight(self, e.valueText, e.valueX + e.valueW, e.valueY, token)
         end
     end
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if e.group then
-        text(self, self.headText, PAD, math.max(0, h - fontH.medium - 4), "accent", UIFont.Medium)
-        return
+    if e.toggle then
+        local th = math.max(20, fontH.small + 6)
+        local ty = math.floor((h - th) / 2)
+        -- Skin.toggle is a rev >= 3 painter: an older framework has no such key, and the painter
+        -- itself answers false when it declines the geometry. Both fall back to a labelled pill.
+        local painted = false
+        if U.Skin and U.Skin.toggle then
+            local pok, res = pcall(U.Skin.toggle, self, e.toggle.x, ty, e.toggle.w, th, e.toggleOn, optionToggleColors(), off and 0.5 or 1)
+            painted = pok and res ~= false
+        end
+        if not painted then
+            fill(self, e.toggle.x, ty, e.toggle.w, th, e.toggleOn and "selected" or "well", "pill")
+            border(self, e.toggle.x, ty, e.toggle.w, th, off and "border" or "accent", "pill")
+            textCentre(self, e.toggleLabel, e.toggle.x + e.toggle.w / 2, e.valueY, off and "textFaint" or "text")
+        end
     end
-    local lh = lineH()
-    text(self, self.nameText, PAD, 3, "text")
-    textRight(self, self.valueText, w - PAD, 3, e.missing and "textFaint" or "accent")
-    text(self, self.descText, PAD, 3 + lh, "textFaint")
-    if self.runtimeText then text(self, self.runtimeText, self.runtimeX, 3 + lh, "warn") end
+    for _, hit in ipairs(e.hits) do
+        if hit.label then
+            local cy = math.floor((h - e.chipH) / 2)
+            border(self, hit.x, cy, hit.w, e.chipH, off and "border" or "accent", "pill")
+            textCentre(self, hit.label, hit.x + hit.w / 2, e.valueY, off and "textFaint" or "text")
+        end
+    end
 end
 
 -- ---------- write dialog ----------
@@ -515,6 +548,12 @@ local Dialog = ISPanel:derive("MinidoracatEconomyAdminDialog")
 
 -- field descriptors per mode; `flex` marks the reason box that absorbs the leftover height
 local function dialogFields(mode)
+    -- one option value; no reason box (a per-click toggle must not demand an essay, and the
+    -- server audits the change with the actor's name either way)
+    if mode == "option" then
+        return { { key = "value", label = tr("Admin_Set_Edit"), width = 220, maxLen = OPTION_TEXT_MAX } }
+    end
+    if mode == "optionReset" then return {} end   -- confirmation only: the warning line is the body
     if mode == "adjust" then
         return {
             { key = "amount", label = tr("Admin_Adjust_Amount"), width = 180, maxLen = 14, hint = tr("Admin_Adjust_AmountHint") },
@@ -640,6 +679,8 @@ function Dialog:updateInfo()
         else
             info[#info + 1] = { text = tr("Admin_Cur_NoOverride"), token = "textFaint" }
         end
+    elseif self.mode == "option" and self.hintText then
+        info[#info + 1] = { text = self.hintText, token = "textFaint" }
     end
     self.info = info
 end
@@ -1008,8 +1049,26 @@ function Admin:createChildren()
         self.copyButtons[#self.copyButtons + 1] = b
     end
 
-    -- settings page: one virtual list, two lines per row (name / value, then the tooltip)
-    self.settingsList = U.newTable(SettingCell, lineH() * 2 + 8)
+    -- settings page: search box, the option list, the per-group reset button. The group nav is
+    -- painted (name plus an override count per row) and its clicks are resolved in onMouseDown.
+    self.setEntry = newEntry(200, entryH(), { maxLen = 32, clear = true, placeholder = tr("Admin_Set_Search") })
+    self.setEntry.target = self
+    self.setEntry.onTextChangeFunction = Admin.onSettingSearch
+    self:addChild(self.setEntry)
+    local resetLabel = tr("Admin_Set_ResetGroup")
+    self.setResetButton = Button.create(0, 0, textWidth(resetLabel) + 24, 22, resetLabel, self, Admin.onResetGroupClick, "chip")
+    self:addChild(self.setResetButton)
+    self.settingsList = U.newTable(OptionCell, lineH() * 2 + 12)
+    -- VirtualList hands onSelect the row but not the x it was hit at, and the controls of a row
+    -- sit side by side: remember the x of the click that is about to select.
+    local listDown = self.settingsList.onMouseDown
+    self.settingsList.onMouseDown = function(list, x, y)
+        self.settingClickX = x
+        return listDown(list, x, y)
+    end
+    self.settingsList.onSelect = function(_, item)
+        self:onSettingRow(item, self.settingClickX or 0)
+    end
     self:addChild(self.settingsList)
 
     -- last child: the search dropdown paints over the page and takes the click before the row
@@ -1036,6 +1095,7 @@ function Admin:onSubTab(button)
     self:closeDialog()
     self:closeSuggest()
     pcall(function() self.userEntry:unfocus() end)   -- a hidden text box must not keep the keyboard
+    pcall(function() self.setEntry:unfocus() end)
     self:layout()
     self:refresh()
 end
@@ -1339,6 +1399,154 @@ function Admin:onFreezeClick()
     })
 end
 
+-- ----- settings page actions -----
+
+-- Options of one group: how many there are and how many carry a runtime override. Drives the
+-- nav counters and the "reset this group" button; locked options can never be overridden here.
+function Admin:optionGroupCount(group)
+    local snap = self.options
+    local total, overrides = 0, 0
+    for _, spec in ipairs(EC.OPTIONS) do
+        if spec.group == group then
+            total = total + 1
+            local state = snap and snap[spec.key]
+            if state and state.override == true and spec.locked ~= true and state.locked ~= true then
+                overrides = overrides + 1
+            end
+        end
+    end
+    return total, overrides
+end
+
+function Admin:overriddenKeys(group)
+    local keys = {}
+    local snap = self.options
+    for _, spec in ipairs(EC.OPTIONS) do
+        if spec.group == group and spec.locked ~= true then
+            local state = snap and snap[spec.key]
+            if state and state.override == true and state.locked ~= true then keys[#keys + 1] = spec.key end
+        end
+    end
+    return keys
+end
+
+-- Search is a filter over the rows, not a request: the whole option schema is local.
+function Admin:onSettingSearch()
+    local raw = string.match(entryText(self.setEntry), "^%s*(.-)%s*$")
+    local query = raw ~= "" and string.lower(raw) or nil
+    if query == self.setQuery then return end
+    self.setQuery = query
+    self.setResetButton:setVisible(self.tab == "Settings" and self:readAllowed() and query == nil)
+    self:rebuildSettings()
+    self:updateEnabled()
+end
+
+-- Nav rows are painted, so the click is resolved from the row height instead of stored rects.
+function Admin:onSettingNav(y)
+    local g = self.g
+    local rowHeight = g and g.setNavRowH
+    if not rowHeight or y < g.setNavY then return end
+    local index = math.floor((y - g.setNavY) / rowHeight) + 1
+    local group = EC.OPTION_GROUPS[index]
+    if not group or group == self.setGroup then return end
+    self.setGroup = group
+    self:rebuildSettings()
+    self:updateEnabled()
+end
+
+-- A click inside the option list: the row's own hit boxes first, then the value text of an
+-- editable row (a wide, obvious target for the dialog).
+function Admin:onSettingRow(item, x)
+    if item == nil or self.settingsList.optionsDisabled then return end
+    for _, hit in ipairs(item.hits) do
+        if x >= hit.x and x < hit.x + hit.w then
+            self:onOptionAction(item, hit.id)
+            return
+        end
+    end
+    if item.editable and x >= item.valueX and x < item.valueX + item.valueW then
+        self:onOptionAction(item, "edit")
+    end
+end
+
+function Admin:onOptionAction(item, id)
+    local spec = item.spec
+    local state = (self.options or {})[spec.key]
+    local value = state and state.value
+    if id == "reset" then
+        self:sendOption(spec.key, nil, nil)
+    elseif id == "toggle" then
+        self:sendOption(spec.key, value ~= true, nil)
+    elseif id == "minus" or id == "plus" then
+        local base = tonumber(value)
+        if base == nil then base = tonumber(spec.default) or spec.min or 0 end
+        local target = base + (id == "plus" and (spec.step or 1) or -(spec.step or 1))
+        if target < spec.min then target = spec.min end
+        if target > spec.max then target = spec.max end
+        if target ~= base then self:sendOption(spec.key, target, nil) end
+    elseif id == "edit" then
+        local hint = nil
+        if spec.kind == "list_int" then
+            hint = tr("Admin_Set_ListHint")
+        elseif spec.kind == "int" or spec.kind == "number" then
+            hint = getText(T .. "Admin_Set_NumberHint", optionInputText(spec, spec.min), optionInputText(spec, spec.max))
+        end
+        self:openDialog("option", {
+            title = getText(T .. "Admin_Set_EditTitle", item.plainName),
+            confirm = tr("Admin_Set_Edit"),
+            optionKey = spec.key,
+            hint = hint,
+            value = optionInputText(spec, value),
+        })
+    end
+end
+
+-- One write per click. `value == nil` drops the runtime override, so the sandbox file's value is
+-- what the server runs with again (Lua tables have no nil member: the key is simply absent).
+function Admin:sendOption(key, value, dlg)
+    if not self:writeAllowed() then
+        local msg = { text = errorText("forbidden"), error = true }
+        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        return false
+    end
+    local args = { key = key, requestId = newRequestId() }
+    if value ~= nil then args.value = value end
+    if not send("admin.option", args) then
+        local msg = { text = tr("Admin_Throttled"), error = true }
+        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        return false
+    end
+    self.pendingOption = { requestId = args.requestId, key = key }
+    if not dlg then self.message = nil end
+    self:updateEnabled()
+    return true
+end
+
+-- Group reset is one command per key: the queue advances on every reply, so the client cooldown
+-- (and the server's) is never fought against.
+function Admin:nextOptionReset()
+    local queue = self.resetQueue
+    if queue == nil then return end
+    if queue.i > #queue.keys then
+        self.resetQueue = nil
+        return
+    end
+    local key = queue.keys[queue.i]
+    queue.i = queue.i + 1
+    if not self:sendOption(key, nil, nil) then self.resetQueue = nil end
+end
+
+function Admin:onResetGroupClick()
+    local keys = self:overriddenKeys(self.setGroup)
+    if #keys == 0 then return end
+    self:openDialog("optionReset", {
+        title = tr("Admin_Set_ResetGroup"),
+        confirm = tr("Admin_Set_Reset"),
+        warn = getText(T .. "Admin_Set_ResetConfirm", tr("Admin_Set_Group_" .. self.setGroup), tostring(#keys)),
+        optionGroup = self.setGroup,
+    })
+end
+
 -- ----- dialog lifecycle -----
 
 function Admin:openDialog(mode, ctx)
@@ -1359,11 +1567,15 @@ function Admin:openDialog(mode, ctx)
     dlg.titleText = ctx.title
     dlg.confirmLabel = ctx.confirm
     dlg.warnText = ctx.warn
+    dlg.optionKey = ctx.optionKey
+    dlg.optionGroup = ctx.optionGroup
+    dlg.hintText = ctx.hint
     dlg.info = {}
     dlg.message = nil
     dlg:initialise()
-    self:addChild(dlg)
+    self:addChild(dlg)      -- the boxes exist from here on (instantiate -> createChildren)
     self.dialog = dlg
+    if ctx.value ~= nil then setEntryText(dlg.boxes.value, ctx.value) end
     dlg:updateInfo()
     self:layoutDialog()
     self:updateEnabled()
@@ -1390,7 +1602,18 @@ end
 
 -- Local validation first (the server re-validates everything); then one command with a fresh
 -- requestId and the wallet revision the dialog was showing.
+-- The option dialog carries no reason box and the group reset carries no field at all, so both
+-- are answered before the reason gate every other write has to pass.
 function Admin:submitDialog(dlg)
+    if dlg.mode == "option" then return self:submitOption(dlg) end
+    if dlg.mode == "optionReset" then
+        local keys = self:overriddenKeys(dlg.optionGroup)
+        self:closeDialog()
+        if #keys == 0 then return end
+        self.resetQueue = { keys = keys, i = 1 }
+        self:nextOptionReset()
+        return
+    end
     local reason = string.match(entryText(dlg.boxes.reason), "^%s*(.-)%s*$")
     local reasonChars = charCount(reason)
     -- any non-empty reason is accepted; REASON_MAX only guards the one-line JSON files
@@ -1534,6 +1757,50 @@ function Admin:submitDialog(dlg)
     self:updateEnabled()
 end
 
+-- The same checks ECConfig.validateOption runs, so a typo never costs a round trip; the hint
+-- line (the range / the list format) doubles as the error message, because it says what is
+-- accepted. The server re-validates everything regardless.
+function Admin:submitOption(dlg)
+    local spec = EC.OPTION_BY_KEY[dlg.optionKey]
+    if spec == nil then
+        dlg.message = { text = errorText("unknown_option"), error = true }
+        self:layoutDialog()
+        return
+    end
+    local raw = string.match(entryText(dlg.boxes.value), "^%s*(.-)%s*$")
+    local value
+    if spec.kind == "list_int" then
+        if EC.parseIntList(raw, spec) == nil then
+            dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
+            self:layoutDialog()
+            return
+        end
+        value = raw
+    elseif spec.kind == "text" then
+        if raw == "" or charCount(raw) > OPTION_TEXT_MAX or string.find(raw, "%c") then
+            dlg.message = { text = errorText("invalid_args"), error = true }
+            self:layoutDialog()
+            return
+        end
+        value = raw
+    else
+        local n = tonumber(raw)
+        local bad = n == nil or n ~= n or n < spec.min or n > spec.max
+        if not bad and spec.kind == "int" and n ~= math.floor(n) then bad = true end
+        if not bad and spec.kind == "number" and spec.step then
+            local steps = n / spec.step
+            if math.abs(steps - math.floor(steps + 0.5)) > 1e-9 then bad = true end
+        end
+        if bad then
+            dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
+            self:layoutDialog()
+            return
+        end
+        value = n
+    end
+    self:sendOption(dlg.optionKey, value, dlg)
+end
+
 -- ----- replies -----
 
 function Admin:onReply(kind, args)
@@ -1610,6 +1877,29 @@ function Admin:onReply(kind, args)
             local msg = { text = errorText(args.error), error = true }
             if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
         end
+    elseif kind == "option" then
+        -- every reply carries the whole snapshot, a refusal included, so the page always shows
+        -- what the server actually runs with
+        if type(args.currencies) == "table" then C.currencies = args.currencies end
+        if type(args.options) == "table" then
+            self.options = args.options
+            self.optionsSeen = C.options
+        end
+        local req = self.pendingOption
+        local mine = req == nil or args.requestId == nil or req.requestId == args.requestId
+        if mine then
+            self.pendingOption = nil
+            if args.ok then
+                self.message = { text = tr("Admin_Set_Saved") }
+                self:closeDialog()
+            else
+                self.resetQueue = nil   -- a group reset stops at the first refusal
+                local msg = { text = errorText(args.error), error = true }
+                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+            end
+        end
+        self:rebuildSettings()
+        if mine and args.ok then self:nextOptionReset() end
     elseif kind == "icons" then
         if args.ok == false then
             self.message = { text = errorText(args.error), error = true }
@@ -1655,6 +1945,11 @@ function Admin:onReply(kind, args)
         end
         self.system = args
         self.systemAt = EC.now()
+        -- admin.system carries the option snapshot under `sandbox` (ECAdmin.system)
+        if type(args.sandbox) == "table" then
+            self.options = args.sandbox
+            self.optionsSeen = C.options
+        end
         self:layout()
     elseif kind == "sources" then
         -- every reply carries the full list, a write reply included
@@ -1702,7 +1997,12 @@ function Admin:onTimeout(command)
     end
     local label = getTextOrNull(T .. "Admin_Cmd_" .. string.sub(command, 7)) or command
     self.message = { text = getText(T .. "Admin_Timeout", label), error = true }
-    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" then
+    if command == "admin.option" then
+        -- the answer is never coming: forget the write, and stop a group reset where it stands
+        self.pendingOption = nil
+        self.resetQueue = nil
+    end
+    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" then
         if self.dialog then
             self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
             self:layoutDialog()
@@ -1829,25 +2129,110 @@ function Admin:rebuildSources()
     end
 end
 
--- Sandbox values the way the settings page shows them: a heading row per group, then one row per
--- option. Built when a system reply lands or the geometry changes, never per frame.
+-- One row of the settings page: the option's state (value / default / override / locked) turned
+-- into fitted strings, control hit boxes and y positions. The list width is known here, so the
+-- cell never measures anything -- and the click test reads the very numbers the paint used.
+function Admin:optionRow(spec, name, desc, snap, searching, width, lh, chipH, valueY)
+    local state = snap[spec.key]
+    local value = state and state.value
+    local locked = spec.locked == true or (state ~= nil and state.locked == true)
+    local override = state ~= nil and state.override == true and not locked
+    local item = {
+        key = spec.key, spec = spec, plainName = name, missing = state == nil,
+        locked = locked, override = override, hits = {},
+        chipH = chipH, line1Y = 5, line2Y = 5 + lh, valueY = valueY,
+    }
+    local ctrlX = math.max(80, width - PAD - OPTION_CTRL_W)
+    local right = width - PAD
+    local valueRaw = nil
+    -- the reset chip is pinned to the right edge, so the value column stays where it is
+    if override then
+        local label = tr("Admin_Set_Reset")
+        local bw = textWidth(label) + 16
+        right = right - bw
+        item.hits[#item.hits + 1] = { id = "reset", x = right, w = bw, label = label }
+        right = right - 4
+    end
+    if locked then
+        valueRaw = optionValueText(spec, value)
+        item.valueX, item.valueW = ctrlX, math.max(10, right - ctrlX)
+        item.valueY = item.line1Y
+        item.lockedText = fitText(tr("Admin_Set_Locked"), math.max(0, width - PAD - ctrlX))
+    elseif spec.kind == "bool" then
+        item.toggle = { x = ctrlX, w = OPTION_TOGGLE_W }
+        item.toggleOn = value == true
+        item.toggleLabel = tr(item.toggleOn and "Admin_On" or "Admin_Off")
+        item.hits[#item.hits + 1] = { id = "toggle", x = ctrlX, w = OPTION_TOGGLE_W }
+    else
+        local label = tr("Admin_Set_Edit")
+        local bw = textWidth(label) + 16
+        right = right - bw
+        item.hits[#item.hits + 1] = { id = "edit", x = right, w = bw, label = label }
+        right = right - 4
+        item.editable = true
+        if spec.kind == "int" or spec.kind == "number" then
+            item.hits[#item.hits + 1] = { id = "minus", x = ctrlX, w = OPTION_STEP_W, label = "-" }
+            item.hits[#item.hits + 1] = { id = "plus", x = right - OPTION_STEP_W, w = OPTION_STEP_W, label = "+" }
+            item.valueX = ctrlX + OPTION_STEP_W + 4
+            item.valueW = math.max(10, right - OPTION_STEP_W - 8 - item.valueX)
+            item.valueCentre = true
+        else
+            item.valueX = ctrlX
+            item.valueW = math.max(10, right - ctrlX)
+        end
+        valueRaw = optionValueText(spec, value)
+    end
+    if valueRaw then item.valueText = fitText(valueRaw, item.valueW) end
+
+    -- left column: [group] name over [overridden (default X)] description [runtime hint]
+    local leftW = math.max(0, ctrlX - PAD * 2)
+    item.nameX = PAD
+    if searching then
+        item.prefixText = fitText(tr("Admin_Set_Group_" .. spec.group), math.floor(leftW * 0.35))
+        item.nameX = PAD + textWidth(item.prefixText) + 6
+    end
+    item.nameText = fitText(name, math.max(0, ctrlX - PAD - item.nameX))
+    item.descX = PAD
+    if override then
+        item.overText = fitText(getText(T .. "Admin_Set_Overridden", optionValueText(spec, state.default)), math.floor(leftW * 0.5))
+        item.descX = PAD + textWidth(item.overText) + 6
+    end
+    if spec.page then item.runtimeText = getText(T .. "Admin_Set_Runtime", tr("Admin_Tab_" .. spec.page)) end
+    local runW = item.runtimeText and (textWidth(item.runtimeText) + 8) or 0
+    item.descText = fitText(desc, math.max(0, ctrlX - PAD - item.descX - runW))
+    if item.runtimeText then
+        item.runtimeX = item.descX + textWidth(item.descText) + 8
+        item.runtimeText = fitText(item.runtimeText, math.max(0, ctrlX - PAD - item.runtimeX))
+    end
+    return item
+end
+
+-- The selected group's options, or -- while the search box holds text -- every option whose
+-- name, description or key contains it, across groups. Built when a snapshot lands, when the
+-- search text or the group changes and when the geometry changes; never per frame.
 function Admin:rebuildSettings()
     local rows = {}
-    if self.system then
-        local values = type(self.system.sandbox) == "table" and self.system.sandbox or nil
-        for _, group in ipairs(EC.SANDBOX_GROUPS) do
-            rows[#rows + 1] = { group = getTextOrNull(T .. "Admin_Set_Group_" .. group.id) or group.id }
-            for _, key in ipairs(group.keys) do
-                local value = nil
-                if values then value = values[key] end
-                local page = EC.SANDBOX_RUNTIME[key]
-                rows[#rows + 1] = {
-                    name = getTextOrNull("Sandbox_MinidoracatEconomy_" .. key) or key,
-                    desc = getTextOrNull("Sandbox_MinidoracatEconomy_" .. key .. "_tooltip") or "",
-                    value = value ~= nil and settingValueText(key, value) or tr("Admin_Set_Missing"),
-                    missing = value == nil,
-                    runtime = page and getText(T .. "Admin_Set_Runtime", tr("Admin_Tab_" .. page)) or nil,
-                }
+    local snap = self.options
+    if snap then
+        local query = self.setQuery
+        local list = self.settingsList
+        local width = math.max(120, list.width - 12)   -- 12 = the scrollbar gutter
+        local lh = lineH()
+        local chipH = math.max(20, fontH.small + 6)
+        local valueY = math.floor((list.rowHeight - fontH.small) / 2)
+        for _, spec in ipairs(EC.OPTIONS) do
+            local name = getTextOrNull("Sandbox_MinidoracatEconomy_" .. spec.key) or spec.key
+            local desc = getTextOrNull("Sandbox_MinidoracatEconomy_" .. spec.key .. "_tooltip") or ""
+            local take
+            if query then
+                take = string.find(string.lower(name), query, 1, true) ~= nil
+                    or string.find(string.lower(desc), query, 1, true) ~= nil
+                    or string.find(string.lower(spec.key), query, 1, true) ~= nil
+            else
+                take = spec.group == self.setGroup
+            end
+            if take then
+                rows[#rows + 1] = self:optionRow(spec, name, desc, snap, query ~= nil, width, lh, chipH, valueY)
             end
         end
     end
@@ -1907,8 +2292,16 @@ function Admin:updateEnabled()
         local paths = self.system and self.system.paths
         b:setEnable(not modal and paths ~= nil and type(paths[b.internal]) == "string")
     end
+
+    -- settings page: one in-flight option write at a time; a read-only role sees every control
+    -- greyed out instead of a page that pretends to be editable
+    local optWrite = write and not modal and not isPending("admin.option")
+    self.settingsList.optionsDisabled = not optWrite
+    setEntryEditable(self.setEntry, read and not modal)
+    local _, overrides = self:optionGroupCount(self.setGroup)
+    self.setResetButton:setEnable(optWrite and overrides > 0)
     if self.dialog then
-        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources"))
+        local ok = write and not (isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources") or isPending("admin.option"))
         self.dialog.confirmButton:setEnable(ok)
     end
 end
@@ -2139,13 +2532,35 @@ function Admin:layout()
     end
     g.sysPathY = top
 
-    -- settings page: title card, one note line, the option list filling the rest of the card
-    g.setNoteY = g.bodyY + CARD_TITLE_H + 4
-    local setListY = g.setNoteY + lh + 4
-    local setW = math.max(120, w - 2)
-    local setH = math.max(rowH(), g.bodyY + g.bodyH - setListY - 2)
+    -- settings page: search row on top, the group nav down the left, the option list plus the
+    -- "reset this group" button on the right. The reset row is reserved whether the button is
+    -- shown or not, so typing in the search box never re-flows the list.
+    local setTop = g.bodyY + CARD_TITLE_H + 4
+    self.setEntry:setVisible(settings)
+    self.setEntry:setX(PAD); self.setEntry:setY(setTop)
+    self.setEntry:setWidth(math.max(120, math.min(260, math.floor(w * 0.3)))); self.setEntry:setHeight(eh)
+    g.setCountX = PAD + self.setEntry.width + PAD
+    g.setNavY = setTop + eh + 6
+    g.setNavW = math.max(120, math.min(200, math.floor(w * 0.24)))
+    g.setNavRowH = math.max(24, lh + 8)
+    g.setNavH = math.max(g.setNavRowH, g.bodyY + g.bodyH - PAD - g.setNavY)
+    g.setContentX = PAD + g.setNavW + PAD
+    g.setContentW = math.max(160, w - g.setContentX - PAD)
+    g.setHeadY = g.setNavY   -- the group heading; the standing note rides the search row instead
+    local resetH = math.max(20, fontH.small + 6)
+    g.setResetY = g.bodyY + g.bodyH - PAD - resetH
+    local resetW = math.min(textWidth(self.setResetButton.fullTitle) + 24, g.setContentW)
+    self.setResetButton:setVisible(settings and self.setQuery == nil)
+    self.setResetButton:setWidth(resetW)
+    self.setResetButton:setHeight(resetH)
+    self.setResetButton:setX(g.setContentX + g.setContentW - resetW)
+    self.setResetButton:setY(g.setResetY)
+    self:setButtonTitle(self.setResetButton, self.setResetButton.fullTitle)
+    local setListY = g.setHeadY + fontH.medium + 6
+    local setW = math.max(120, g.setContentW)
+    local setH = math.max(rowH(), g.setResetY - 6 - setListY)
     self.settingsList:setVisible(settings)
-    self.settingsList:setX(1); self.settingsList:setY(setListY)
+    self.settingsList:setX(g.setContentX); self.settingsList:setY(setListY)
     if self.settingsList.width ~= setW or self.settingsList.height ~= setH then
         self.settingsList:resize(setW, setH)
     end
@@ -2607,10 +3022,46 @@ end
 function Admin:drawSettings()
     local g = self.g
     card(self, 0, g.bodyY, self.width, g.bodyH, tr("Admin_Set_Title"))
-    text(self, fitText(tr("Admin_Set_Note"), self.width - PAD * 2), PAD, g.setNoteY, "textFaint")
-    if #(self.settingRows or {}) == 0 then
-        text(self, isPending("admin.system") and tr("Admin_Loading") or tr("Admin_Dash_Empty"),
-            self.settingsList.x + PAD, self.settingsList.y + 4, "textFaint")
+    local searching = self.setQuery ~= nil
+    local rows = self.settingRows or {}
+    -- search row: the standing note fills the space beside the box, the row count sits far right
+    local countText = getText(T .. "Admin_Set_Count", tostring(#rows))
+    local headY = self.setEntry.y + math.floor((self.setEntry.height - fontH.small) / 2)
+    textRight(self, countText, self.width - PAD, headY, "textFaint")
+    text(self, fitText(tr("Admin_Set_Note"), math.max(0, self.width - PAD * 2 - g.setCountX - textWidth(countText))),
+        g.setCountX, headY, "textFaint")
+
+    -- group nav: name on the left, the override count (else the option count) on the right. The
+    -- rows are painted, so a click is resolved from g.setNavRowH in onMouseDown.
+    fill(self, PAD, g.setNavY, g.setNavW, g.setNavH, "well", "rect")
+    local ny = g.setNavY
+    for _, id in ipairs(EC.OPTION_GROUPS) do
+        local total, overrides = self:optionGroupCount(id)
+        local active = id == self.setGroup and not searching
+        if active then
+            fill(self, PAD, ny, g.setNavW, g.setNavRowH, "selected", "rect")
+            fill(self, PAD, ny, 2, g.setNavRowH, "accent", "rect")
+        end
+        local ty = ny + math.floor((g.setNavRowH - fontH.small) / 2)
+        local tail = overrides > 0 and getText(T .. "Admin_Set_OverrideCount", tostring(overrides))
+            or getText(T .. "Admin_Set_Count", tostring(total))
+        textRight(self, tail, PAD + g.setNavW - PAD, ty, overrides > 0 and "warn" or "textFaint")
+        text(self, fitText(tr("Admin_Set_Group_" .. id), math.max(0, g.setNavW - PAD * 3 - textWidth(tail))),
+            PAD * 2, ty, active and "accent" or "text")
+        ny = ny + g.setNavRowH
+    end
+
+    -- content column: the group (or "search") as its heading, then the list
+    local title = searching and tr("Admin_Set_Search") or tr("Admin_Set_Group_" .. self.setGroup)
+    text(self, fitText(title, g.setContentW, UIFont.Medium), g.setContentX, g.setHeadY, "text", UIFont.Medium)
+    if #rows == 0 then
+        local empty
+        if self.options == nil then
+            empty = isPending("admin.system") and tr("Admin_Loading") or tr("Admin_Dash_Empty")
+        else
+            empty = tr("Admin_Set_NoMatch")
+        end
+        text(self, empty, self.settingsList.x + PAD, self.settingsList.y + 4, "textFaint")
     end
 end
 
@@ -2642,6 +3093,15 @@ function Admin:prerender()
     if self.iconsRecheckAt and now >= self.iconsRecheckAt then
         self.iconsRecheckAt = nil
         if self:readAllowed() then send("admin.icons", { action = "status" }) end
+        self:updateEnabled()
+    end
+
+    -- Another admin's change reaches us as a config broadcast (ECClient replaces C.options with
+    -- a fresh table): adopt whichever snapshot arrived last, without a round trip of our own.
+    if self.tab == "Settings" and C.options ~= nil and C.options ~= self.optionsSeen then
+        self.optionsSeen = C.options
+        self.options = C.options
+        self:rebuildSettings()
         self:updateEnabled()
     end
 
@@ -2755,6 +3215,12 @@ function Admin:onMouseDown(x, y)
                 return true
             end
         end
+    elseif self.tab == "Settings" then
+        local g = self.g
+        if g and x >= PAD and x < PAD + (g.setNavW or 0) and y >= (g.setNavY or 0) and y < (g.setNavY or 0) + (g.setNavH or 0) then
+            self:onSettingNav(y)
+            return true
+        end
     end
     return true
 end
@@ -2793,6 +3259,7 @@ function Admin:setVisible(visible)
         self:closeSuggest()
         pcall(function() self.userEntry:unfocus() end)
         pcall(function() self.auditEntry:unfocus() end)
+        pcall(function() self.setEntry:unfocus() end)
     end
 end
 
@@ -2801,6 +3268,7 @@ function Admin:dispose()
     self:closeSuggest()
     pcall(function() self.userEntry:unfocus() end)
     pcall(function() self.auditEntry:unfocus() end)
+    pcall(function() self.setEntry:unfocus() end)
     self.lookup = nil
     self.audit = nil
     self.system = nil
@@ -2809,6 +3277,9 @@ function Admin:dispose()
     self.pendingConfig = nil
     self.sources = nil
     self.pendingSource = nil
+    self.options = nil
+    self.pendingOption = nil
+    self.resetQueue = nil
     if P.instance == self then P.instance = nil end
 end
 
@@ -2828,6 +3299,7 @@ function P.create(owner)
     o.cfgSelected = EC.CURRENCY_ORDER[1]
     o.cfgRowRects = {}
     o.srcRowRects = {}
+    o.setGroup = EC.OPTION_GROUPS[1]
     o.offsetMin = U.localOffsetMinutes()
     o.hadWrite = P.canWrite()
     o.hadRead = o.hadWrite or P.canRead()
