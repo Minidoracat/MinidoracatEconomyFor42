@@ -9,6 +9,9 @@
 if not MinidoracatEconomy or not MinidoracatEconomy.makeId then
     require "MinidoracatEconomy/ECCore"
 end
+if not MinidoracatEconomy.Options then
+    require "MinidoracatEconomy/ECOptions"
+end
 local EC = MinidoracatEconomy
 if not EC or not EC.makeId then
     error("MinidoracatEconomy shared core failed to load")
@@ -377,10 +380,13 @@ function C.newRequestId()
 end
 
 -- Toast through the UI framework when present (family rule: capability probe, never a hard call).
+-- Notifications: three lines at most (rev 5 maxLines; an older framework ignores it and
+-- truncates), held for the player's ToastSeconds option.
 function C.toast(message)
     local ui = MinidoracatUI and MinidoracatUI.v1
     if ui and ui.API_MAJOR == 1 and ui.CAPABILITIES and ui.CAPABILITIES.toast == true then
-        pcall(ui.Toast.show, { title = getText("IGUI_MinidoracatEconomy_Toast_Title"), message = message })
+        local hold = EC.Options and EC.Options.toastHoldMs() or 5000
+        pcall(ui.Toast.show, { title = getText("IGUI_MinidoracatEconomy_Toast_Title"), message = message, holdMs = hold, maxLines = 3 })
     end
 end
 

@@ -117,6 +117,65 @@ function EC.parseId(id)
 end
 
 -- Stable insertion sort (family rule: no table.sort under Kahlua, see verify_mod check 6).
+-- "YYYY-MM-DD" (or "YYYY/MM/DD") -> start of that civil day in ms, for a clock that is
+-- offsetMinutes ahead of UTC (the client passes its localOffsetMinutes); nil when malformed.
+-- Days-from-civil (Howard Hinnant), so no os.time / time zone of the JVM is involved.
+function EC.parseDay(text, offsetMinutes)
+    if type(text) ~= "string" then return nil end
+    local y, m, d = string.match(text, "^%s*(%d%d%d%d)[-/](%d%d?)[-/](%d%d?)%s*$")
+    if not y then return nil end
+    y, m, d = tonumber(y), tonumber(m), tonumber(d)
+    if m < 1 or m > 12 or d < 1 or d > 31 then return nil end
+    if m <= 2 then y = y - 1 end
+    local era = math.floor(y / 400)
+    local yoe = y - era * 400
+    local mp = (m + 9) % 12
+    local doy = math.floor((153 * mp + 2) / 5) + d - 1
+    local doe = yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy
+    local days = era * 146097 + doe - 719468
+    return days * 86400000 - (tonumber(offsetMinutes) or 0) * 60000
+end
+
+-- One page of a filtered, sorted list (the history / statement / audit pages all page on
+-- the client: a reply is at most a few hundred rows). opts = { kinds = {[kind]=true}?, kindField?
+-- ("kind"), fromMs?, toMs? (exclusive), timeField? ("ts"), sortKey? (field name or function),
+-- desc?, page?, perPage? }. Returns rows, page, pages, total (rows filtered).
+function EC.filterPage(list, opts)
+    opts = opts or {}
+    local kindField, timeField = opts.kindField or "kind", opts.timeField or "ts"
+    local kinds = opts.kinds
+    local rows = {}
+    for _, e in ipairs(list or {}) do
+        local ok = true
+        if kinds and not kinds[e[kindField]] then ok = false end
+        local t = tonumber(e[timeField])
+        if ok and opts.fromMs and (not t or t < opts.fromMs) then ok = false end
+        if ok and opts.toMs and (not t or t >= opts.toMs) then ok = false end
+        if ok then rows[#rows + 1] = e end
+    end
+    local key = opts.sortKey
+    if key ~= nil then
+        local get = type(key) == "function" and key or function(e) return e[key] end
+        local desc = opts.desc == true
+        EC.sortSafe(rows, function(a, b)
+            local av, bv = get(a), get(b)
+            if av == nil or bv == nil then return av ~= nil and bv == nil end
+            if type(av) ~= type(bv) then av, bv = tostring(av), tostring(bv) end
+            if type(av) == "string" then av, bv = string.lower(av), string.lower(bv) end
+            if av == bv then return false end
+            if desc then return av > bv end
+            return av < bv
+        end)
+    end
+    local total = #rows
+    local perPage = math.max(1, math.floor(tonumber(opts.perPage) or 25))
+    local pages = math.max(1, math.ceil(total / perPage))
+    local page = math.max(1, math.min(pages, math.floor(tonumber(opts.page) or 1)))
+    local out = {}
+    for i = (page - 1) * perPage + 1, math.min(total, page * perPage) do out[#out + 1] = rows[i] end
+    return out, page, pages, total
+end
+
 -- `less(a, b)` must return true only when a sorts strictly before b.
 function EC.sortSafe(list, less)
     for i = 2, #list do

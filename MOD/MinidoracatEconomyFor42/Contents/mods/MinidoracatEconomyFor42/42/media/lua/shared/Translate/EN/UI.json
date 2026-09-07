@@ -1,4 +1,9 @@
 {
   "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
-  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Toggle Economy Center"
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Toggle Economy Center",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Notification duration (seconds)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "How long economy notifications (sales, delists, claims...) stay on screen",
+  "UI_MinidoracatEconomy_PanelOpacity": "Window opacity (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Opacity of the economy window background; the slider in the window title row changes the same value"
 }

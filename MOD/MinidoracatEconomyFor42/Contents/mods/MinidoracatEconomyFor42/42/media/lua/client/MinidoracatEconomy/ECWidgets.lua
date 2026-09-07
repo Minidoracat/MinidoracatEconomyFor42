@@ -95,12 +95,21 @@ end
 
 function U.color(token) return U.theme.colors[token] end
 
+-- Panel opacity (the "chrome"): every fill/border the panels paint is scaled by U.alpha, text
+-- and icons stay solid. Set from ECOptions (ModOptions slider) and the title-row slider.
+U.alpha = 1
+function U.setAlpha(v)
+    v = tonumber(v) or 1
+    if v < 0.2 then v = 0.2 elseif v > 1 then v = 1 end
+    U.alpha = v
+end
+
 function U.fill(el, x, y, w, h, token, shape)
-    U.theme:fill(el, x, y, w, h, token, shape)
+    U.theme:fill(el, x, y, w, h, token, shape, U.alpha)
 end
 
 function U.border(el, x, y, w, h, token, shape)
-    U.theme:border(el, x, y, w, h, token, shape)
+    U.theme:border(el, x, y, w, h, token, shape, U.alpha)
 end
 
 function U.text(el, str, x, y, token, font)
@@ -415,7 +424,7 @@ function U.card(el, x, y, w, h, title)
     if title then
         text(el, title, x + PAD, y + math.floor((U.CARD_TITLE_H - fontH.medium) / 2), "text", UIFont.Medium)
         local c = color("border")
-        el:drawRect(x + 1, y + U.CARD_TITLE_H, w - 2, 1, c.a, c.r, c.g, c.b)
+        el:drawRect(x + 1, y + U.CARD_TITLE_H, w - 2, 1, c.a * U.alpha, c.r, c.g, c.b)
     end
 end
 

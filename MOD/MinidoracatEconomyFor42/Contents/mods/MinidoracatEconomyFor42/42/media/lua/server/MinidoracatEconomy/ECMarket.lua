@@ -35,6 +35,24 @@ Mk.SWEEP_EVERY_MS = 60000
 Mk.QUERY_MAX = 64
 Mk.QTY_MAX = 50                   -- identical items one listing may bundle (one snapshot, rebuilt qty times)
 
+-- Browse sort keys (column headers of the market page): name is the script DisplayName the
+-- server has (English), time is newest first by default.
+local function lname(l) return string.lower(tostring(l.name or l.item or "")) end
+Mk.SORTS = {
+    time = { key = function(l) return l.at or 0 end, desc = true },
+    time_asc = { key = function(l) return l.at or 0 end, desc = false },
+    price = { key = function(l) return l.price or 0 end, desc = false },
+    price_desc = { key = function(l) return l.price or 0 end, desc = true },
+    name = { key = lname, desc = false },
+    name_desc = { key = lname, desc = true },
+    seller = { key = function(l) return string.lower(tostring(l.seller or "")) end, desc = false },
+    seller_desc = { key = function(l) return string.lower(tostring(l.seller or "")) end, desc = true },
+    expires = { key = function(l) return l.expiresAt or 0 end, desc = false },
+    expires_desc = { key = function(l) return l.expiresAt or 0 end, desc = true },
+    qty = { key = function(l) return l.qty or 1 end, desc = false },
+    qty_desc = { key = function(l) return l.qty or 1 end, desc = true },
+}
+
 local md = nil
 local lastSweep = 0
 
@@ -162,17 +180,18 @@ function Mk.browse(username, args)
     local category = type(args.category) == "string" and args.category ~= "" and args.category or nil
     local query = type(args.query) == "string" and string.lower(string.sub((string.gsub(args.query, "^%s*(.-)%s*$", "%1")), 1, Mk.QUERY_MAX)) or ""
     if query == "" then query = nil end
-    local sort = args.sort == "price" and "price" or (args.sort == "price_desc" and "price_desc" or "time")
+    local sort = Mk.SORTS[args.sort] and args.sort or "time"
     local page = isInt(args.page, 1, 100000) and args.page or 1
     local rows = {}
     for _, l in pairs(md.market.listings) do
         if matches(l, category, query) then rows[#rows + 1] = l end
     end
+    local key, desc = Mk.SORTS[sort].key, Mk.SORTS[sort].desc
     EC.sortSafe(rows, function(a, b)
-        if sort == "price" then
-            if a.price ~= b.price then return a.price < b.price end
-        elseif sort == "price_desc" then
-            if a.price ~= b.price then return a.price > b.price end
+        local av, bv = key(a), key(b)
+        if av ~= bv then
+            if desc then return av > bv end
+            return av < bv
         end
         if a.at ~= b.at then return a.at > b.at end
         return a.id < b.id

@@ -1,4 +1,9 @@
 {
   "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat 経済センター",
-  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "経済センター切替"
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "経済センター切替",
+  "UI_MinidoracatEconomy_Options": "Minidoracat 経済センター",
+  "UI_MinidoracatEconomy_ToastSeconds": "通知の表示秒数",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "経済センターの通知（販売・取消・受取など）が表示される秒数",
+  "UI_MinidoracatEconomy_PanelOpacity": "ウィンドウの不透明度（%%）",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "経済センターのウィンドウ背景の不透明度。ウィンドウのタイトル行のスライダーでも変更できます"
 }

@@ -320,7 +320,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 434     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 445     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1931,6 +1931,29 @@ check(M.unclaimed("zed") == 1 and cmd(zed, "mail.claim", { mailId = b6.mailId })
 onlinePlayers = {}
 end)()
 
+-- ===== 情境二十七之二：客戶端分頁／篩選 helper（shared） =====
+io.write("scenario 27b: filterPage / parseDay\n")
+;(function()
+check(EC.parseDay("2026-09-07", 0) == 1788739200000 and EC.parseDay("2026/9/7", 480) == 1788739200000 - 480 * 60000, "parseDay gives the civil day start in ms, shifted by the clock offset")
+check(EC.parseDay("2026-13-01", 0) == nil and EC.parseDay("nope", 0) == nil and EC.parseDay(nil, 0) == nil, "malformed dates are nil")
+local rows = {}
+for i = 1, 60 do rows[i] = { kind = (i % 3 == 0) and "sold" or "listed", ts = 1788739200000 + i * 3600000, price = (i * 7) % 50, name = "n" .. (61 - i) } end
+local page, p, pages, total = EC.filterPage(rows, { perPage = 25, page = 3 })
+check(#page == 10 and p == 3 and pages == 3 and total == 60 and page[1] == rows[51], "paging keeps input order and clamps the last page")
+page, p = EC.filterPage(rows, { perPage = 25, page = 9 })
+check(p == 3 and #page == 10, "a page past the end clamps to the last page")
+page, p, pages, total = EC.filterPage(rows, { kinds = { sold = true }, perPage = 100 })
+check(total == 20 and page[1].kind == "sold" and page[20] == rows[60], "kind filter")
+page, p, pages, total = EC.filterPage(rows, { fromMs = 1788739200000 + 10 * 3600000, toMs = 1788739200000 + 20 * 3600000, perPage = 100 })
+check(total == 10 and page[1] == rows[10] and page[10] == rows[19], "date window is [from, to)")
+page = EC.filterPage(rows, { sortKey = "price", desc = true, perPage = 100 })
+check(page[1].price >= page[2].price and page[99 - 40].price >= page[60].price, "sort by a numeric field, descending")
+page = EC.filterPage(rows, { sortKey = "name", perPage = 100 })
+check(page[1].name == "n1" and page[2].name == "n10", "string sort is case-insensitive lexical")
+page = EC.filterPage(rows, { sortKey = function(e) return e.ts end, perPage = 100 })
+check(page[1] == rows[1] and page[60] == rows[60], "a function sort key works")
+end)()
+
 -- ===== 情境二十八：白名單與快照 codec =====
 io.write("scenario 28: whitelist + codec\n")
 ;(function()
@@ -2179,6 +2202,20 @@ local browsed = cmd(bob, "market.browse", {})
 local lotRow = nil
 for _, r in ipairs(browsed.items) do if r.id == lot.listingId then lotRow = r end end
 check(lotRow and lotRow.qty == 3, "the browse row carries the quantity")
+local function monotonic(sort, field, desc)
+    local rows = Mk.browse("bob", { sort = sort }).items
+    for i = 2, #rows do
+        local a, b = rows[i - 1][field], rows[i][field]
+        if type(a) == "string" then a, b = string.lower(a), string.lower(b) end
+        if (desc and a < b) or (not desc and a > b) then return false end
+    end
+    return #rows >= 2
+end
+local h0 = instanceItem("Base.Hammer"); ann.inventory:AddItem(h0)
+cmd(ann, "market.list", { itemId = h0.id, price = 7 })
+check(monotonic("name", "name", false) and monotonic("name_desc", "name", true) and monotonic("seller_desc", "seller", true) and monotonic("expires", "expiresAt", false) and monotonic("price_desc", "price", true),
+    "column sorts order the page by name, seller, expiry and price in both directions")
+check(Mk.browse("bob", { sort = "bogus" }).sort == "time", "an unknown sort falls back to newest first")
 onlinePlayers = { boss, ann, bob, cat }
 sentCommands = {}
 local lotBuy = cmd(bob, "market.buy", { listingId = lot.listingId, price = 30 })

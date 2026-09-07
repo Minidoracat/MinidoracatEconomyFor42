@@ -1,4 +1,9 @@
 {
   "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat 经济中心",
-  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "经济中心开关"
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "经济中心开关",
+  "UI_MinidoracatEconomy_Options": "Minidoracat 经济中心",
+  "UI_MinidoracatEconomy_ToastSeconds": "通知显示秒数",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "经济中心的右上角通知（售出、下架、领取…）停留几秒",
+  "UI_MinidoracatEconomy_PanelOpacity": "窗口不透明度（%%）",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "经济中心窗口底色的不透明度；窗口标题列的拉条也可调"
 }
