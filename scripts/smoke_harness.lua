@@ -153,6 +153,8 @@ ScriptManager = { instance = { FindItem = function(_, name)
         getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end }
 end } }
 Fluid = { Get = function(name) return { name = name } end }
+worldHours = 1000                -- getGameTime():getWorldAgeHours() 的假值（全域：主函式已逼近 200 個 local）
+function getGameTime() return { getWorldAgeHours = function() return worldHours end } end
 Capability = { AddItem = "AddItem", SaveWorld = "SaveWorld" }
 nextItemId = 1
 function instanceItem(fullType)
@@ -177,6 +179,27 @@ function instanceItem(fullType)
     it.setCondition = function(_, v) it.condition = v end
     it.getCurrentUses = function() return it.uses end
     it.setCurrentUses = function(_, v) it.uses = v end
+    if k.main == "Food" then
+        it.rotten, it.hunger, it.thirst, it.cooked, it.burnt, it.frozen, it.freezing = false, -10, 0, false, false, false, 0
+        it.isRotten = function() return it.rotten end
+        it.getHungChange = function() return it.hunger end
+        it.setHungChange = function(_, v) it.hunger = v end
+        it.getThirstChange = function() return it.thirst end
+        it.setThirstChange = function(_, v) it.thirst = v end
+        it.isCooked = function() return it.cooked end
+        it.setCooked = function(_, v) it.cooked = v end
+        it.isBurnt = function() return it.burnt end
+        it.setBurnt = function(_, v) it.burnt = v end
+        it.isFrozen = function() return it.frozen end
+        it.setFrozen = function(_, v) it.frozen = v end
+        it.getFreezingTime = function() return it.freezing end
+        it.setFreezingTime = function(_, v) it.freezing = v end
+    end
+    it.name, it.customName = fullType, false
+    it.getName = function() return it.name end
+    it.setName = function(_, v) it.name = v end
+    it.isCustomName = function() return it.customName end
+    it.setCustomName = function(_, v) it.customName = v; it.modData.customName = it.name end
     it.getAge = function() return it.age end
     it.setAge = function(_, v) it.age = v end
     it.getHaveBeenRepaired = function() return it.repaired end
@@ -185,7 +208,6 @@ function instanceItem(fullType)
         it.getAlreadyReadPages = function() return it.readPages end
         it.setAlreadyReadPages = function(_, v) it.readPages = v end
     end
-    if k.main == "Food" then it.isRotten = function() return false end end
     if k.fluid then
         it.fluidName, it.fluidAmount = "", 0
         it.getFluidContainer = function()
@@ -282,7 +304,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 408     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 416     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1909,32 +1931,58 @@ local bag = instanceItem("Base.Bag_ALICEpack")
 local okB, whyB = Codec.check(bag)
 check(okB == false and whyB == "not_whitelisted", "containers are refused whatever the file says")
 local apple = instanceItem("Base.Apple")
+check(Codec.check(apple) == true, "perishable food is listable (it keeps ageing in escrow, see below)")
+apple.rotten = true
 local okA, whyA = Codec.check(apple)
-check(okA == false and whyA == "perishable", "perishable food is refused")
+check(okA == false and whyA == "perishable", "rotten food is refused")
 local corn = instanceItem("Base.CannedCorn")
 check(Codec.check(corn) == true, "non-perishable food passes")
 local book = instanceItem("Base.BookCarpentry1"); book.readPages = 3
-local okK, whyK = Codec.check(book)
-check(okK == false and whyK == "read_book", "a partly read book is refused")
+check(Codec.check(book) == true and Codec.rebuild(Codec.snapshot(book)).readPages == 3, "a read book is listable and keeps its page count")
 axe.equipped = true
 local okE, whyE = Codec.check(axe)
 check(okE == false and whyE == "equipped", "an equipped item is refused")
 axe.equipped = false
+-- modData travels with the snapshot (vanilla writes customName / condition:* there, InventoryItem.java:3255, 3268)
 axe.modData.SomeModState = 1
-local okM, whyM, keyM = Codec.check(axe)
-check(okM == false and whyM == "unlisted_moddata" and keyM == "SomeModState", "a modData key outside the allowed list fails closed and names the key")
-axe.modData.SomeModState = nil
+axe.modData.nested = { a = "x", b = { c = true } }
+axe:setName("Old Reliable"); axe:setCustomName(true)
+check(Codec.check(axe) == true, "mod data is never a reason by itself")
+local axeSnap = Codec.snapshot(axe)
+check(axeSnap.name == "Old Reliable" and axeSnap.modData.SomeModState == 1 and axeSnap.modData.nested.b.c == true and axeSnap.modData.customName == "Old Reliable",
+    "the snapshot carries the custom name and nested modData")
+local axeBack = Codec.rebuild(axeSnap)
+check(axeBack.name == "Old Reliable" and axeBack.customName == true and axeBack.modData.SomeModState == 1 and axeBack.modData.nested.b.c == true, "rebuild restores name, custom flag and modData")
+axe.modData.deep = { a = { b = { c = 1 } } }
+local okD, whyD = Codec.check(axe)
+check(okD == false and whyD == "moddata_too_big", "modData nested deeper than the snapshot may carry is refused")
+axe.modData.deep = nil
+axe.modData.big = string.rep("x", 200)
+local okS, whyS = Codec.check(axe)
+check(okS == false and whyS == "moddata_too_big", "an oversized modData string is refused")
+axe.modData.big = nil
+axe.modData.SomeModState = nil; axe.modData.nested = nil
 axe.modData[EC.PLAYER_MODDATA_KEY] = { mailId = "old" }
-check(Codec.check(axe) == true, "our own claim stamp never blocks a listing")
+check(Codec.check(axe) == true and Codec.snapshot(axe).modData[EC.PLAYER_MODDATA_KEY] == nil, "our own claim stamp never blocks a listing and is not carried")
+-- perishable food: state round-trips and the hours spent in escrow age it (Food.java:774)
+worldHours = 1000
+apple.rotten = false; apple.age = 2; apple.hunger = -4; apple.cooked = true
+local appleSnap = Codec.snapshot(apple)
+check(appleSnap.food.listedHours == 1000 and appleSnap.food.hunger == -4 and appleSnap.food.cooked == true, "the food snapshot keeps hunger, cooked state and the listing hour")
+worldHours = 1048
+local appleBack = Codec.rebuild(appleSnap)
+check(appleBack.age == 4 and appleBack.hunger == -4 and appleBack.cooked == true, "48 world hours in escrow add two days of age (rot speed 1)")
+worldHours = 1000
+check(Codec.rebuild(appleSnap).age == 2, "no elapsed time, no extra age")
 -- snapshot / rebuild round trip incl. fluid + allowed modData
-files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["ToolWeapon","VehicleMaintenance"],"types":["Base.Nails"],"excludeTypes":["Base.Saw"],"modDataKeys":["Keep"]}' }, opens = 0 }
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["ToolWeapon","VehicleMaintenance"],"types":["Base.Nails"],"excludeTypes":["Base.Saw"]}' }, opens = 0 }
 check(Codec.load() == true and Codec.status().counts.types == 1, "a hand-edited whitelist loads")
 check(Codec.check(instanceItem("Base.Nails")) == true and Codec.check(instanceItem("Base.Saw")) == false and Codec.check(instanceItem("Base.Bandage")) == false,
     "types / excludeTypes / categories from the file are honoured")
 local can = instanceItem("Base.PetrolCan"); can:getFluidContainer():addFluid(Fluid.Get("Petrol"), 3.5); can.condition = 7; can.modData.Keep = "yes"; can.modData[EC.PLAYER_MODDATA_KEY] = { mailId = "x" }
 local snap = Codec.snapshot(can)
 check(snap.type == "Base.PetrolCan" and snap.condition == 7 and snap.fluid.name == "Petrol" and snap.fluid.amount == 3.5 and snap.modData.Keep == "yes" and snap.modData[EC.PLAYER_MODDATA_KEY] == nil,
-    "the snapshot keeps condition, fluid and allowed modData and drops the claim stamp")
+    "the snapshot keeps condition, fluid and modData and drops the claim stamp")
 local back = Codec.rebuild(snap)
 check(back ~= nil and back.condition == 7 and back.fluidName == "Petrol" and back.fluidAmount == 3.5 and back.modData.Keep == "yes", "rebuild restores the same fields")
 local weapon = instanceItem("Base.Axe"); local scope = instanceItem("Base.x2Scope"); weapon:attachWeaponPart(scope)
@@ -1944,7 +1992,7 @@ files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories": 5}' }, 
 local okL, errL = Codec.load()
 check(okL == false and Codec.status().error ~= nil and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected and the previous whitelist stays")
 -- 固定類別走 ItemType（Radio 的 getCategory 是 "Item"，主類別字串擋不住）：分類允許也不能上架
-files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Electronics","Tool"],"types":[],"excludeTypes":[],"modDataKeys":[]}' }, opens = 0 }
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Electronics","Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
 check(Codec.load() == true and Codec.check(instanceItem("Base.RadioRed")) == false and Codec.check(instanceItem("Base.Saw")) == true,
     "a radio is refused by item class even when its display category is whitelisted")
 -- 面板寫回：一次一個分類或一件物品，寫進檔案、重讀、稽核；手改過的檔案先擋 stale
@@ -1964,7 +2012,7 @@ local wlText = table.concat(files["MinidoracatEconomy/whitelist.json"].lines, "\
 check(off.ok == true and #off.whitelist.categories == 1 and string.find(wlText, '"categories": ["Electronics"]', 1, true) ~= nil
     and Codec.check(instanceItem("Base.Saw")) == false, "turning a category off rewrites the file and takes effect at once")
 check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).whitelist.categories[2] == "Tool" and Codec.check(instanceItem("Base.Saw")) == true, "turning it back on appends it")
-check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).ok == true and #files["MinidoracatEconomy/whitelist.json"].lines == 6, "a no-op edit does not rewrite the file")
+check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).ok == true and #files["MinidoracatEconomy/whitelist.json"].lines == 5, "a no-op edit does not rewrite the file")
 local ex = wcmd(boss, { action = "set", fullType = "Base.Saw", mode = "exclude" })
 check(ex.ok == true and ex.whitelist.excludeTypes[1] == "Base.Saw" and Codec.check(instanceItem("Base.Saw")) == false, "an item exclusion beats its allowed category")
 local al = wcmd(boss, { action = "set", fullType = "Base.Saw", mode = "allow" })

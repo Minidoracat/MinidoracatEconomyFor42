@@ -160,15 +160,12 @@ end
 -- market.* answers stack their own code space on top of the shop one: a listing error
 -- (Market_Error_*), a whitelist refusal the picker also paints per row (Market_Reason_*),
 -- then the shared codes (not_at_terminal, account_frozen, insufficient_funds, timeout...).
--- Takes the whole reply, not just the code: price_range and unlisted_moddata carry arguments.
+-- Takes the whole reply, not just the code: price_range carries the bounds.
 local function marketError(args)
     local code = tostring((args and args.error) or "unknown")
     if code == "price_range" then
         return getText(T .. "Market_Error_price_range",
             amountText(args.min), amountText(args.max))
-    end
-    if code == "unlisted_moddata" then
-        return getText(T .. "Market_Reason_unlisted_moddata", tostring(args.modDataKey or "?"))
     end
     return getTextOrNull(T .. "Market_Error_" .. code) or getTextOrNull(T .. "Market_Reason_" .. code)
         or getTextOrNull(T .. "Shop_Error_" .. code) or getText(T .. "Rewards_Error_generic", code)
@@ -237,7 +234,7 @@ local function candidateRow(it)
     local alt = itemBaseName(it.item)
     local status = listingStatus(it)
     local reason = nil
-    if not ok then reason = marketError({ error = it.reason, modDataKey = it.modDataKey }) end
+    if not ok then reason = marketError({ error = it.reason }) end
     local detail = alt and (name .. " (" .. alt .. ")") or name
     if status then detail = detail .. " - " .. status end
     if reason then detail = detail .. " - " .. reason end

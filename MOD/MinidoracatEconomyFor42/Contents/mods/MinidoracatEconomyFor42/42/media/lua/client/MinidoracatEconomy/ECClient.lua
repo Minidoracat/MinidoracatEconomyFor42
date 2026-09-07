@@ -236,7 +236,7 @@ function C.claimMail(mailId, requestId) send("mail.claim", { mailId = mailId, re
 C.market = nil
 -- Own listings: { items = { view... }, maxListings, atTerminal }.
 C.myListings = nil
--- Backpack candidates: { items = { {itemId, item, ok, reason?, modDataKey?, condition, uses,
+-- Backpack candidates: { items = { {itemId, item, ok, reason?, condition, uses,
 -- category}, ... }, atTerminal, feePercent, priceMin, priceMax, mine, maxListings }.
 C.candidates = nil
 C.marketListeners = {}

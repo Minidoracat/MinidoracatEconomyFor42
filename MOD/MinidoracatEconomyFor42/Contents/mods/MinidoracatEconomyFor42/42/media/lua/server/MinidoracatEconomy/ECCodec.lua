@@ -4,14 +4,13 @@
 -- The market never stores an InventoryItem (Lua has no ByteBuffer for save/load): a listing keeps a
 -- bounded snapshot and the buyer gets a rebuilt item. Only item classes whose rebuild is faithful
 -- may be listed, and the host decides which in {cachedir}/Lua/MinidoracatEconomy/whitelist.json
--- (display categories, extra fullTypes, excluded fullTypes, allowed modData keys). The file is the
--- single source of truth, like the shop's catalog.json: the admin page edits it through
--- Codec.update (one category or one item per write, written straight back, refused with
--- whitelist_stale when the file on disk changed since the last load), and a hand edit takes
--- effect after reload. Fixed rules on top of the file: none of EC.LISTING_FIXED_TYPES (containers,
--- clothing, keys, radios, maps, moveables, animals), no perishable food, no read books, nothing
--- equipped, favourite or broken, and no modData key outside the allowed list (fail closed - a mod
--- that keeps state on the item would lose it in the rebuild).
+-- (display categories, extra fullTypes, excluded fullTypes). The file is the single source of
+-- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
+-- or one item per write, written straight back, refused with whitelist_stale when the file on disk
+-- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
+-- the file: none of EC.LISTING_FIXED_TYPES (containers, clothing, keys, radios, maps, moveables,
+-- animals), nothing rotten, equipped, favourite or broken, and no modData larger than the snapshot
+-- may carry (the data itself travels: vanilla writes customName / condition:* there).
 --
 -- Engine references (snapshot 42.20.4-20260826, all exercised in A7):
 --   instanceItem                    LuaManager.java:5610-5620
@@ -40,11 +39,11 @@ EC.Codec = EC.Codec or {}
 local Codec = EC.Codec
 
 Codec.FILE = X.ROOT .. "/whitelist.json"
-Codec.MODDATA_KEYS_MAX = 8
-Codec.MODDATA_VALUE_MAX = 64
+Codec.MODDATA_MAX_LEAVES = 32      -- scalar values a snapshot's modData may carry
+Codec.MODDATA_MAX_DEPTH = 3        -- nesting: modData -> table -> table
+Codec.MODDATA_STRING_MAX = 128
 Codec.FILE_LINES_MAX = 5000
-Codec.NEVER_ROTS = 1000000000
-Codec.FIELDS = { "categories", "types", "excludeTypes", "modDataKeys" }
+Codec.FIELDS = { "categories", "types", "excludeTypes" }
 Codec.DEFAULT = {
     categories = {
         "Tool", "ToolWeapon", "Weapon", "WeaponCrafted", "MaterialWeapon", "Material", "Ammo",
@@ -54,11 +53,10 @@ Codec.DEFAULT = {
     },
     types = {},
     excludeTypes = {},
-    modDataKeys = {},
 }
 
 -- Sets answer Codec.check; the lists keep the file's order so a write-back stays diff-friendly.
-local wl = { categories = {}, types = {}, excludeTypes = {}, modDataKeys = {}, lists = {}, loadedAt = 0, error = nil, counts = {}, hash = "0" }
+local wl = { categories = {}, types = {}, excludeTypes = {}, lists = {}, loadedAt = 0, error = nil, counts = {}, hash = "0" }
 
 -- ---------- file ----------
 
@@ -139,7 +137,7 @@ function Codec.load()
         end
         parsed[field], lists[field], counts[field] = set, ordered, #ordered
     end
-    wl.categories, wl.types, wl.excludeTypes, wl.modDataKeys = parsed.categories, parsed.types, parsed.excludeTypes, parsed.modDataKeys
+    wl.categories, wl.types, wl.excludeTypes = parsed.categories, parsed.types, parsed.excludeTypes
     wl.lists = lists
     wl.counts = counts
     wl.loadedAt = EC.now()
@@ -251,36 +249,71 @@ local function fluidOf(item)
     return nil
 end
 
--- Returns ok, reason. `unlisted_moddata` carries the offending key in the third value.
+-- Sandbox FoodRotSpeed -> the multiplier Food.getFoodRotSpeed() applies (Food.java:724-732; the
+-- method itself is private, the enum is the sandbox option "FoodRotSpeed").
+local ROT_SPEED = { [1] = 1.7, [2] = 1.4, [3] = 1.0, [4] = 0.7, [5] = 0.4 }
+local function rotSpeed()
+    local ok, v = pcall(function() return getSandboxOptions():getOptionByName("FoodRotSpeed"):getValue() end)
+    return (ok and ROT_SPEED[v]) or 1.0
+end
+
+-- In-game world clock in hours (GameTime.java:901); food ages by this clock (Food.java:739-786).
+local function worldHours()
+    local ok, v = pcall(function() return getGameTime():getWorldAgeHours() end)
+    if ok and type(v) == "number" then return v end
+    return nil
+end
+
+-- Bounded deep copy of a modData table (string/number/boolean/table only, the types Global
+-- ModData can hold, KahluaTableImpl.java:365-404). Returns copy, leaves; nil when the data is
+-- deeper or larger than the snapshot may carry. Our own claim stamp is skipped on purpose.
+local function copyModData(md, depth, leaves)
+    local copy = {}
+    for k, v in pairs(md) do
+        local kt = type(k)
+        if (kt == "string" or kt == "number") and not (depth == 0 and k == EC.PLAYER_MODDATA_KEY) then
+            local t = type(v)
+            if t == "number" or t == "boolean" or t == "string" then
+                if t == "string" and #v > Codec.MODDATA_STRING_MAX then return nil end
+                leaves = leaves + 1
+                if leaves > Codec.MODDATA_MAX_LEAVES then return nil end
+                copy[k] = v
+            elseif t == "table" then
+                if depth + 1 >= Codec.MODDATA_MAX_DEPTH then return nil end
+                local sub
+                sub, leaves = copyModData(v, depth + 1, leaves)
+                if sub == nil then return nil end
+                copy[k] = sub
+            end
+            -- functions / userdata cannot live in ModData either: dropped like the engine would
+        end
+    end
+    return copy, leaves
+end
+
+-- Returns ok, reason. Vanilla itself writes modData (customName, condition:<type>,
+-- InventoryItem.java:3253-3256, 3262-3271), so a mod-data key is never a reason by itself: the
+-- data travels in the snapshot and only an oversized blob is refused (moddata_too_big).
 function Codec.check(item)
     local fullType = call(item, "getFullType")
     if type(fullType) ~= "string" then return false, "invalid_item" end
     if wl.excludeTypes[fullType] then return false, "not_whitelisted" end
     local script = call(item, "getScriptItem")
     if EC.isFixedType(script) then return false, "not_whitelisted" end
-    local main = call(item, "getCategory")
     local display = call(item, "getDisplayCategory")
     if not wl.types[fullType] and not (type(display) == "string" and wl.categories[display]) then return false, "not_whitelisted" end
     if call(item, "isEquipped") == true then return false, "equipped" end
     if call(item, "isFavorite") == true then return false, "favorite" end
     if call(item, "isBroken") == true then return false, "broken" end
-    if main == "Food" then
-        local rots = script and call(script, "getDaysTotallyRotten")
-        if type(rots) == "number" and rots < Codec.NEVER_ROTS then return false, "perishable" end
-        if call(item, "isRotten") == true then return false, "perishable" end
-    end
-    local pages = call(item, "getAlreadyReadPages")
-    if type(pages) == "number" and pages > 0 then return false, "read_book" end
+    if call(item, "isRotten") == true then return false, "perishable" end
     local md = call(item, "getModData")
-    if type(md) == "table" then
-        for k in pairs(md) do
-            if k ~= EC.PLAYER_MODDATA_KEY and not wl.modDataKeys[k] then return false, "unlisted_moddata", tostring(k) end
-        end
-    end
+    if type(md) == "table" and copyModData(md, 0, 0) == nil then return false, "moddata_too_big" end
     return true
 end
 
--- Bounded snapshot; call after Codec.check passed. Our own claim stamp is dropped on purpose.
+-- Bounded snapshot; call after Codec.check passed. Food keeps its edible state and the world
+-- hour it was listed at: escrow is not a freezer, so the rebuild ages it by the hours it spent
+-- there (Codec.rebuild). Our own claim stamp is dropped on purpose.
 function Codec.snapshot(item)
     local s = {
         type = call(item, "getFullType"),
@@ -290,21 +323,27 @@ function Codec.snapshot(item)
         repaired = call(item, "getHaveBeenRepaired"),
         readPages = call(item, "getAlreadyReadPages"),
     }
+    if call(item, "isCustomName") == true then
+        local name = call(item, "getName")
+        if type(name) == "string" and name ~= "" and #name <= Codec.MODDATA_STRING_MAX then s.name = name end
+    end
+    if call(item, "getCategory") == "Food" then
+        s.food = {
+            hunger = call(item, "getHungChange"),
+            thirst = call(item, "getThirstChange"),
+            cooked = call(item, "isCooked") == true,
+            burnt = call(item, "isBurnt") == true,
+            frozen = call(item, "isFrozen") == true,
+            freezing = call(item, "getFreezingTime"),
+            listedHours = worldHours(),
+        }
+    end
     local fluid = fluidOf(item)
     if fluid and fluid.name ~= "" and (fluid.amount or 0) > 0 then s.fluid = { name = fluid.name, amount = fluid.amount } end
     local md = call(item, "getModData")
     if type(md) == "table" then
-        local copy, n = {}, 0
-        for k, v in pairs(md) do
-            if k ~= EC.PLAYER_MODDATA_KEY and wl.modDataKeys[k] and n < Codec.MODDATA_KEYS_MAX then
-                local t = type(v)
-                if t == "number" or t == "boolean" or (t == "string" and #v <= Codec.MODDATA_VALUE_MAX) then
-                    copy[k] = v
-                    n = n + 1
-                end
-            end
-        end
-        if n > 0 then s.modData = copy end
+        local copy, leaves = copyModData(md, 0, 0)
+        if copy and leaves > 0 then s.modData = copy end
     end
     return s
 end
@@ -316,9 +355,28 @@ function Codec.rebuild(s)
     if not item then return nil, "item_unavailable" end
     if type(s.condition) == "number" then call(item, "setCondition", s.condition) end
     if type(s.uses) == "number" then call(item, "setCurrentUses", s.uses) end
-    if type(s.age) == "number" then call(item, "setAge", s.age) end
+    local age = s.age
+    local food = s.food
+    if type(food) == "table" then
+        -- the hours in escrow count like hours on a shelf (Food.java:774: age += hours * rot speed / 24)
+        local now = worldHours()
+        if type(age) == "number" and type(food.listedHours) == "number" and now and now > food.listedHours then
+            age = age + (now - food.listedHours) * rotSpeed() / 24
+        end
+        if type(food.hunger) == "number" then call(item, "setHungChange", food.hunger) end
+        if type(food.thirst) == "number" then call(item, "setThirstChange", food.thirst) end
+        if food.cooked then call(item, "setCooked", true) end
+        if food.burnt then call(item, "setBurnt", true) end
+        if type(food.freezing) == "number" then call(item, "setFreezingTime", food.freezing) end
+        if food.frozen then call(item, "setFrozen", true) end
+    end
+    if type(age) == "number" then call(item, "setAge", age) end
     if type(s.repaired) == "number" then call(item, "setHaveBeenRepaired", s.repaired) end
     if type(s.readPages) == "number" then call(item, "setAlreadyReadPages", s.readPages) end
+    if type(s.name) == "string" then
+        call(item, "setName", s.name)
+        call(item, "setCustomName", true)
+    end
     if type(s.fluid) == "table" then
         local fc = call(item, "getFluidContainer")
         if fc then
@@ -332,7 +390,8 @@ function Codec.rebuild(s)
     if type(s.modData) == "table" then
         local md = call(item, "getModData")
         if type(md) == "table" then
-            for k, v in pairs(s.modData) do md[k] = v end
+            local copy = copyModData(s.modData, 0, 0)
+            for k, v in pairs(copy or {}) do md[k] = v end
         end
     end
     return item

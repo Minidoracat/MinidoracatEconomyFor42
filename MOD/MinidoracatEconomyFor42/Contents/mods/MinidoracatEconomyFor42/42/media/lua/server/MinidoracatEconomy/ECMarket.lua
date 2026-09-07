@@ -214,11 +214,11 @@ function Mk.candidates(player)
         if #out >= Mk.CANDIDATES_MAX then break end
         local it = items:get(i)
         if it then
-            local pass, reason, key = Codec.check(it)
+            local pass, reason = Codec.check(it)
             local id, fullType = nil, nil
             pcall(function() id = it:getID() fullType = it:getFullType() end)
             if id and fullType then
-                local row = { itemId = id, item = fullType, ok = pass == true, reason = (not pass) and reason or nil, modDataKey = key }
+                local row = { itemId = id, item = fullType, ok = pass == true, reason = (not pass) and reason or nil }
                 pcall(function()
                     row.condition = it:getCondition()
                     row.uses = it:getCurrentUses()
@@ -261,8 +261,8 @@ function Mk.list(player, args)
     local inv = player:getInventory()
     local item = inv and findItem(inv, args.itemId) or nil
     if not item then return { ok = false, error = "item_not_found" } end
-    local pass, reason, key = Codec.check(item)
-    if not pass then return { ok = false, error = reason, modDataKey = key } end
+    local pass, reason = Codec.check(item)
+    if not pass then return { ok = false, error = reason } end
     local currency = marketCurrency()
     local fee = pct(price, EC.sandbox("MarketListingFeePercent", 2))
     if fee > 0 and L.getBalance(username, currency).available < fee then return { ok = false, error = "insufficient_funds", fee = fee } end

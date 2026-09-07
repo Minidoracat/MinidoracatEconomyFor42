@@ -70,6 +70,7 @@ local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
+local WL_FILTERS = { "all", "allow", "deny" }   -- state of the row against the file, not a query
 
 local COOLDOWN_MS = 500
 local TIMEOUT_MS = 8000
@@ -1329,6 +1330,15 @@ function Admin:createChildren()
     self.wlEntry.target = self
     self.wlEntry.onTextChangeFunction = Admin.onWhitelistSearch
     self:addChild(self.wlEntry)
+    self.wlFilterButtons = {}
+    for _, key in ipairs(WL_FILTERS) do
+        local title = tr("Admin_Wl_" .. string.upper(string.sub(key, 1, 1)) .. string.sub(key, 2))
+        local b = Button.create(0, 0, textWidth(title) + 22, 22, title, self, Admin.onWhitelistFilter, "chip")
+        b.internal = key
+        b.active = key == self.wlFilter
+        self:addChild(b)
+        self.wlFilterButtons[#self.wlFilterButtons + 1] = b
+    end
     self.whitelistList = U.newTable(WhitelistCell, lineH() * 2 + 12)
     local wlDown = self.whitelistList.onMouseDown
     self.whitelistList.onMouseDown = function(list, x, y)
@@ -2033,6 +2043,15 @@ end
 function Admin:onWhitelistSearch()
     local raw = string.match(entryText(self.wlEntry), "^%s*(.-)%s*$")
     self.wlQuery = raw ~= "" and string.lower(raw) or nil
+    self:rebuildWhitelist()
+end
+
+-- Row state against the file (all / allow / deny), stacked on top of the search text. Local
+-- filter as well: nothing leaves the client.
+function Admin:onWhitelistFilter(button)
+    if self.wlFilter == button.internal then return end
+    self.wlFilter = button.internal
+    for _, b in ipairs(self.wlFilterButtons) do b.active = b.internal == self.wlFilter end
     self:rebuildWhitelist()
 end
 
@@ -3092,17 +3111,24 @@ function Admin:rebuildWhitelist()
             if counts[cat] == nil then counts[cat] = 0 end
         end
         local catRows = {}
+        local filter = self.wlFilter or "all"
         for cat, n in pairs(counts) do
-            local label = itemCategoryName(cat)
-            if query == nil or string.find(string.lower(label), query, 1, true) ~= nil
-                or string.find(string.lower(cat), query, 1, true) ~= nil then
-                catRows[#catRows + 1] = { cat = cat, label = label, count = n }
+            local on = allowed[cat] == true
+            local keep = filter == "all" or (filter == "allow") == on
+            if keep then
+                local label = itemCategoryName(cat)
+                if query == nil or string.find(string.lower(label), query, 1, true) ~= nil
+                    or string.find(string.lower(cat), query, 1, true) ~= nil then
+                    catRows[#catRows + 1] = { cat = cat, label = label, count = n }
+                end
             end
         end
         EC.sortSafe(catRows, function(a, b) return a.label < b.label end)
 
         local itemRows, seen = {}, {}
-        if query ~= nil then
+        -- the universe scan only feeds the unfiltered view: a state filter can only ever show
+        -- the items the file itself names
+        if query ~= nil and filter == "all" then
             for _, entry in ipairs(uni.items) do
                 if #itemRows >= WL_ITEM_MAX then break end
                 if string.find(entry.key, query, 1, true) ~= nil and not seen[entry.fullType] then
@@ -3113,7 +3139,10 @@ function Admin:rebuildWhitelist()
         end
         -- the items the file singles out are always reachable, even when this server has no
         -- script for them any more
-        for _, set in ipairs({ allowTypes, denyTypes }) do
+        local sets = { allowTypes, denyTypes }
+        if filter == "allow" then sets = { allowTypes } end
+        if filter == "deny" then sets = { denyTypes } end
+        for _, set in ipairs(sets) do
             for fullType in pairs(set) do
                 local entry = uni.byType[fullType]
                 if entry == nil then
@@ -3222,6 +3251,7 @@ function Admin:updateEnabled()
     self.whitelistList.optionsDisabled = not wlWrite
     self.wlReloadButton:setEnable(wlWrite)
     setEntryEditable(self.wlEntry, read and not modal)
+    for _, b in ipairs(self.wlFilterButtons) do b:setEnable(read and not modal) end
 
     -- settings page: one in-flight option write at a time; a read-only role sees every control
     -- greyed out instead of a page that pretends to be editable
@@ -3505,6 +3535,18 @@ function Admin:layout()
     self.wlEntry:setX(PAD); self.wlEntry:setY(wlEntryY)
     self.wlEntry:setWidth(math.max(120, math.min(280, math.floor(w * 0.32)))); self.wlEntry:setHeight(eh)
     g.wlSearchY = wlEntryY + math.floor((eh - fontH.small) / 2)
+    local wlChipH = math.max(20, fontH.small + 6)
+    local wlChipY = wlEntryY + math.max(0, math.floor((eh - wlChipH) / 2))
+    local wlChipX = PAD + self.wlEntry.width + PAD
+    for _, b in ipairs(self.wlFilterButtons) do
+        b:setVisible(whitelist)
+        b:setWidth(math.min(textWidth(b.fullTitle) + 22, math.max(24, math.floor(w * 0.16))))
+        b:setHeight(wlChipH)
+        b:setX(wlChipX); b:setY(wlChipY)
+        self:setButtonTitle(b, b.fullTitle)
+        wlChipX = wlChipX + b.width + 4
+    end
+    g.wlCountX = wlChipX + PAD
     local wlListY = wlEntryY + eh + 6
     local wlListW = math.max(160, w - PAD * 2)
     local wlListH = math.max(rowH(), g.bodyY + g.bodyH - PAD - wlListY)
@@ -3991,7 +4033,7 @@ function Admin:drawWhitelist()
     elseif wl then
         local c = type(wl.counts) == "table" and wl.counts or {}
         status = getText(T .. "Admin_Wl_Status", tostring(c.categories or 0), tostring(c.types or 0),
-            tostring(c.excludeTypes or 0), tostring(c.modDataKeys or 0), stampText(wl.loadedAt, self.offsetMin))
+            tostring(c.excludeTypes or 0), stampText(wl.loadedAt, self.offsetMin))
         token = "textMuted"
     else
         status, token = isPending("admin.whitelist") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), "textFaint"
@@ -4001,14 +4043,14 @@ function Admin:drawWhitelist()
     text(self, fitText(tr("Admin_Wl_Note"), noteW), PAD, g.wlNoteY, "textFaint")
     text(self, fitText(tr("Admin_Wl_Fixed"), noteW), PAD, g.wlFixedY, "textFaint")
     local shown = self.wlShown or { cats = 0, items = 0 }
-    textRight(self, getText(T .. "Admin_Wl_Count", tostring(shown.cats), tostring(shown.items)),
-        self.width - PAD, g.wlSearchY, "textFaint")
+    textRight(self, fitText(getText(T .. "Admin_Wl_Count", tostring(shown.cats), tostring(shown.items)),
+        math.max(0, self.width - PAD - g.wlCountX)), self.width - PAD, g.wlSearchY, "textFaint")
     local rows = self.wlRows or {}
     if #rows == 0 then
         local empty
         if wl == nil then
             empty = isPending("admin.whitelist") and tr("Admin_Loading") or tr("Admin_Dash_Empty")
-        elseif self.wlQuery then
+        elseif self.wlQuery or (self.wlFilter or "all") ~= "all" then
             empty = tr("Admin_Wl_NoMatch")
         else
             empty = tr("Admin_Wl_Hint")
@@ -4462,6 +4504,7 @@ function P.create(owner)
     o.owner = owner
     o.tab = "Player"
     o.auditFilter = "all"
+    o.wlFilter = "all"
     o.lstPage = 1
     o.auditQuery = nil
     o.cfgSelected = EC.CURRENCY_ORDER[1]
