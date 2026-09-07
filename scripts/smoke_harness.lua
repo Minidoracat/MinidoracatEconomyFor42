@@ -102,6 +102,18 @@ function getFileReader(path, createIfNull)
         close = function() end,
     }
 end
+-- 假目錄列舉：listFilesInZomboidLuaDirectory(dir) 回該目錄直屬檔名（不含子目錄、不遞迴；LuaManager.java:6057-6068）
+function listFilesInZomboidLuaDirectory(dir)
+    local names, prefix = {}, dir .. "/"
+    for path in pairs(files) do
+        if string.sub(path, 1, #prefix) == prefix then
+            local rest = string.sub(path, #prefix + 1)
+            if not string.find(rest, "/", 1, true) then names[#names + 1] = rest end
+        end
+    end
+    table.sort(names)
+    return javaList(names)
+end
 -- 假二進位檔：getFileInput(path) 回 DataInputStream 形狀（available／read／close）
 binFiles = {}                    -- path -> byte string（全域：主函式已逼近 200 個 local）
 function getFileInput(path)
@@ -332,6 +344,7 @@ require("MinidoracatEconomy/ECCodec")
 require("MinidoracatEconomy/ECMarket")
 require("MinidoracatEconomy/ECRadio")
 require("MinidoracatEconomy/ECAuction")
+require("MinidoracatEconomy/ECExchange")
 require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
@@ -344,7 +357,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 537     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 565     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -567,7 +580,12 @@ io.write("scenario 11: tx.committed event and receipt lines\n")
 local rc = L.credit("Mini doracat[1]", "survivor", 30, "SYSTEM_MINT", { requestId = "x-1", reasonCode = "daily_checkin", kind = "checkin" })
 check(rc.ok and #ev.lines == 2, "commit only queues; nothing is written before the tick")
 fire("OnTickEvenPaused")
-check(#ev.lines == 3 and string.find(ev.lines[3], '"type":"tx.committed"', 1, true) and string.find(ev.lines[3], '"txId":"' .. rc.txId .. '"', 1, true) and string.find(ev.lines[3], '"availableAfter":30', 1, true), "tick writes the tx.committed line with postings")
+do
+    local txLine = nil
+    for _, l in ipairs(ev.lines) do if string.find(l, '"type":"tx.committed"', 1, true) then txLine = l end end
+    check(#ev.lines == 4 and txLine ~= nil and string.find(txLine, '"txId":"' .. rc.txId .. '"', 1, true) and string.find(txLine, '"availableAfter":30', 1, true)
+        and string.find(ev.lines[3], '"type":"exchange.config"', 1, true) ~= nil, "tick writes the exchange.config projection queued at start and the tx.committed line with postings")
+end
 local rp = X.receiptsPath("Mini doracat[1]", nowMs)
 check(rp == "MinidoracatEconomy/receipts/Mini_x0020_doracat_x005b_1_x005d_/202609.json", "receipt path uses the safe account name and UTC month")
 local rf = files[rp]
@@ -2754,6 +2772,161 @@ check(#entries == 1 and entries[1].item == "Base.Axe" and entries[1].kind == "re
 SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
 SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = nil
 SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = nil
+onlinePlayers = {}
+end)()
+
+
+-- ===== 情境三十四：Discord 存入（inbox → EXTERNAL_DISCORD_cat → 玩家） =====
+io.write("scenario 34: discord deposits\n")
+;(function()
+local Ex, Cfg = S.Exchange, S.Config
+local INBOX = "MinidoracatEconomy/inbox/"
+local function deepCopyTable(t)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do out[k] = deepCopyTable(v) end
+    return out
+end
+local function order(fields)
+    files[INBOX .. fields.orderId .. ".json"] = { lines = { EC.jsonEncode(fields) } }
+end
+-- one poll, then a second tick so the export queue (flushed before the poll in registration order) lands
+local function tick() nowMs = nowMs + Ex.POLL_MS + 1; fire("OnTickEvenPaused"); fire("OnTickEvenPaused") end
+local function bal(u) return L.getBalance(u, "cat").available end
+local function events(kind)
+    local out = {}
+    for _, f in pairs(files) do
+        for _, line in ipairs(f.lines or {}) do
+            if string.find(line, '"type":"' .. kind .. '"', 1, true) then out[#out + 1] = EC.jsonDecode(line) end
+        end
+    end
+    return out
+end
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+SandboxVars.MinidoracatEconomy.CatRatePointsPerCoin = 2
+SandboxVars.MinidoracatEconomy.CatPerOrderMin = 10
+SandboxVars.MinidoracatEconomy.CatPerOrderMax = 5000
+SandboxVars.MinidoracatEconomy.CatPerAccountDaily = 300
+SandboxVars.MinidoracatEconomy.CatServerDaily = 350
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local zed = fakePlayer("zed")
+onlinePlayers = { boss, zed }
+fire("OnTickEvenPaused")
+local cfgEv = events("exchange.config")
+check(#cfgEv == 1 and cfgEv[1].currencies[2].id == "cat" and cfgEv[1].currencies[2].exchange.pointsPerCoin == 2 and cfgEv[1].currencies[2].exchange.rateVersion == 1
+    and cfgEv[1].currencies[1].exchange == nil, "start emits the exchange.config projection (cat exchangeable at 2 points per coin, survivor not)")
+check(Ex.stats().tombstones == 0 and Ex.stats().inboxFiles == 0, "an empty inbox: nothing seen, no tombstones")
+-- deposit
+sentCommands = {}
+order({ orderId = "o1", username = "zed", currency = "cat", points = 200, amount = 100, rateSnapshot = 2, rateVersion = 1 })
+tick()
+check(bal("zed") == 100 and L.getBalance("EXTERNAL_DISCORD_cat", "cat").available == -100, "a valid order credits the player from EXTERNAL_DISCORD_cat")
+check(Ex.order("o1").status == "deposited" and Ex.order("o1").txId ~= nil, "the order is tombstoned as deposited")
+check(#events("exchange.deposited") == 1 and events("exchange.deposited")[1].orderId == "o1" and events("exchange.deposited")[1].creditSeq ~= nil, "exchange.deposited is emitted")
+check(lastSent("exchange.notice") ~= nil and lastSent("exchange.notice").player == zed and lastSent("exchange.notice").args.amount == 100, "the online player is told")
+check(lastSent("wallet.changed") ~= nil and lastSent("wallet.changed").args.balances.cat.available == 100, "and the wallet is pushed")
+local rc = L.receipts("zed")
+check(rc[#rc].kind == "exchange_deposit" and rc[#rc].amount == 100 and rc[#rc].counterparty == "EXTERNAL_DISCORD_cat", "the receipt names the external account")
+tick()
+check(bal("zed") == 100 and Ex.stats().inboxFiles == 1, "the file still on disk is not credited twice")
+-- refusals: each one is final for its orderId, nothing moves
+order({ orderId = "o2", username = "zed", currency = "cat", points = 200, amount = 100, rateSnapshot = 3, rateVersion = 1 })
+order({ orderId = "o3", username = "zed", currency = "cat", points = 200, amount = 150, rateSnapshot = 2, rateVersion = 1 })
+order({ orderId = "o4", username = "zed", currency = "cat", points = 10, amount = 5, rateSnapshot = 2, rateVersion = 1 })
+order({ orderId = "o5", username = "", currency = "cat", points = 20, amount = 10, rateSnapshot = 2, rateVersion = 1 })
+order({ orderId = "o6", username = "zed", currency = "survivor", points = 20, amount = 10, rateSnapshot = 2, rateVersion = 1 })
+order({ orderId = "o7", username = "zed", currency = "cat", points = 500, amount = 250, rateSnapshot = 2, rateVersion = 1 })
+order({ orderId = "o8", username = "SYSTEM_MINT", currency = "cat", points = 20, amount = 10, rateSnapshot = 2, rateVersion = 1 })
+tick()
+local reasons = {}
+for _, e in ipairs(events("exchange.failed")) do reasons[e.orderId] = e.reason end
+check(reasons.o2 == "rate_mismatch" and reasons.o3 == "amount_mismatch" and reasons.o4 == "order_range" and reasons.o5 == "invalid_order"
+    and reasons.o6 == "not_exchangeable" and reasons.o7 == "daily_cap" and reasons.o8 == "invalid_order",
+    "each bad order fails with its reason: " .. EC.jsonEncode(reasons))
+check(bal("zed") == 100 and Ex.order("o7").status == "failed", "refused orders move nothing and are tombstoned as failed")
+-- the server-wide daily cap
+order({ orderId = "oa", username = "bob", currency = "cat", points = 500, amount = 250, rateSnapshot = 2, rateVersion = 1 })
+order({ orderId = "ob", username = "cid", currency = "cat", points = 20, amount = 10, rateSnapshot = 2, rateVersion = 1 })
+tick()
+for _, e in ipairs(events("exchange.failed")) do reasons[e.orderId] = e.reason end
+check(bal("bob") == 250 and reasons.ob == "daily_cap" and bal("cid") == 0, "the server-wide cap refuses the order that would cross it (files are polled in name order: oa then ob)")
+check(Ex.stats().depositedToday.cat == 350, "stats report today's gross deposits per currency")
+check(L.conservation("cat") == 0, "deposits are conserved against the external account")
+-- a rate change: the superseded version stays accepted for orders already pinned to it
+files = { [INBOX .. "keep.json"] = files[INBOX .. "keep.json"] }
+for k in pairs(files) do if k ~= INBOX .. "keep.json" then files[k] = nil end end
+files[INBOX .. "keep.json"] = nil
+nowMs = nowMs + 86400000     -- next day: caps reset
+check(Cfg.setExchange("cat", { pointsPerCoin = 4 }, "boss", "r") == true and Cfg.currency("cat").exchange.rateVersion == 2, "setup: rate 2 -> 4, version 2")
+fire("OnTickEvenPaused")
+cfgEv = events("exchange.config")
+check(#cfgEv == 1 and cfgEv[1].currencies[2].exchange.rateVersion == 2 and cfgEv[1].currencies[2].exchange.ring == nil, "the change re-emits the projection without the version ring")
+order({ orderId = "p1", username = "zed", currency = "cat", points = 200, amount = 100, rateSnapshot = 2, rateVersion = 1 })
+order({ orderId = "p2", username = "zed", currency = "cat", points = 200, amount = 50, rateSnapshot = 4, rateVersion = 2 })
+order({ orderId = "p3", username = "zed", currency = "cat", points = 200, amount = 100, rateSnapshot = 3, rateVersion = 1 })
+order({ orderId = "p4", username = "zed", currency = "cat", points = 200, amount = 40, rateSnapshot = 5, rateVersion = 3 })
+tick()
+reasons = {}
+for _, e in ipairs(events("exchange.failed")) do reasons[e.orderId] = e.reason end
+check(bal("zed") == 250 and Ex.order("p1").status == "deposited" and Ex.order("p2").status == "deposited" and reasons.p3 == "rate_mismatch" and reasons.p4 == "rate_mismatch",
+    "old-version orders at the old rate and current-version orders pass; a wrong snapshot or an unknown version fail")
+-- disabled currency
+check(Cfg.setEnabled("cat", false, "boss", "r") == true, "setup: cat disabled")
+order({ orderId = "p5", username = "zed", currency = "cat", points = 40, amount = 10, rateSnapshot = 4, rateVersion = 2 })
+tick()
+for _, e in ipairs(events("exchange.failed")) do reasons[e.orderId] = e.reason end
+check(reasons.p5 == "currency_disabled" and bal("zed") == 250, "a disabled currency refuses deposits")
+Cfg.setEnabled("cat", true, "boss", "r")
+-- pruning: tombstones whose file is gone are dropped
+local before = Ex.stats().tombstones
+files[INBOX .. "p1.json"] = nil
+files[INBOX .. "p3.json"] = nil
+nowMs = nowMs + Ex.PRUNE_EVERY_MS
+tick()
+check(Ex.stats().tombstones == before - 2 and Ex.order("p1") == nil and Ex.order("p2") ~= nil, "tombstones without a file are pruned on the minute scan")
+-- crash before the save: ModData rolls back, the inbox file is still there, replay credits exactly once
+fire("OnTickEvenPaused")
+local saved = deepCopyTable(modDataStore[EC.MODDATA_KEY])
+local pre = bal("zed")
+order({ orderId = "q1", username = "zed", currency = "cat", points = 80, amount = 20, rateSnapshot = 4, rateVersion = 2 })
+tick()
+check(bal("zed") == pre + 20, "setup: deposited after the save point")
+modDataStore[EC.MODDATA_KEY] = saved
+fire("OnServerStarted")
+check(bal("zed") == pre and Ex.order("q1") == nil, "setup: the world rolled back below the deposit")
+onlinePlayers = { boss, zed }
+tick()
+check(bal("zed") == pre + 20 and Ex.order("q1").status == "deposited", "the inbox replay credits the rolled-back deposit exactly once")
+tick()
+check(bal("zed") == pre + 20, "and not again")
+-- tombstone cap: fail closed, the file waits
+local cap = Ex.TOMBSTONE_MAX
+Ex.TOMBSTONE_MAX = Ex.stats().tombstones
+order({ orderId = "q2", username = "zed", currency = "cat", points = 80, amount = 20, rateSnapshot = 4, rateVersion = 2 })
+tick()
+check(bal("zed") == pre + 20 and Ex.order("q2") == nil, "at the tombstone cap a new order is deferred without a tombstone")
+Ex.TOMBSTONE_MAX = cap
+tick()
+check(bal("zed") == pre + 40 and Ex.order("q2").status == "deposited", "once there is room the same file is taken")
+-- unreadable file: logged, left alone, no tombstone
+files[INBOX .. "bad.json"] = { lines = { "{not json" } }
+tick()
+check(Ex.order("bad") == nil and Ex.stats().inboxFiles >= 1, "an unreadable file is neither credited nor tombstoned")
+-- admin.system carries the exchange stats
+sentCommands = {}
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", boss, { requestId = "sys34" })
+local sys = lastSent("admin.system").args
+check(type(sys.exchange) == "table" and sys.exchange.tombstones == Ex.stats().tombstones and sys.exchange.tombstoneMax == Ex.TOMBSTONE_MAX, "admin.system reports the exchange stats")
+SandboxVars.MinidoracatEconomy.CatRatePointsPerCoin = nil
+SandboxVars.MinidoracatEconomy.CatPerOrderMin = nil
+SandboxVars.MinidoracatEconomy.CatPerOrderMax = nil
+SandboxVars.MinidoracatEconomy.CatPerAccountDaily = nil
+SandboxVars.MinidoracatEconomy.CatServerDaily = nil
 onlinePlayers = {}
 end)()
 

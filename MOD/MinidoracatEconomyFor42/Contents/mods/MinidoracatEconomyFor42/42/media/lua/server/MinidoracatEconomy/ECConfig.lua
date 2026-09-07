@@ -22,6 +22,7 @@ local C = EC.Config
 
 C.NAME_MAX = 24
 C.DEFAULT_BALANCE_MAX = 10000000
+C.RATE_RING = 8    -- superseded exchange rates still honoured for orders already in flight (persistence spec 5.4)
 
 local md = nil
 
@@ -42,8 +43,33 @@ local function entry(id)
     return e
 end
 
+-- What the companion projects into GET /currencies: one slim record per currency (no icon
+-- bytes), the exchange block with its version. Emitted at start and after every change.
+function C.exchangeSnapshot()
+    local out = {}
+    for _, id in ipairs(EC.CURRENCY_ORDER) do
+        local e = md.config.currencies[id] or {}
+        local ex = nil
+        if type(e.exchange) == "table" then
+            ex = {}
+            for k, v in pairs(e.exchange) do if k ~= "ring" then ex[k] = v end end
+        end
+        out[#out + 1] = {
+            id = id, enabled = e.enabled ~= false, nameOverride = e.nameOverride, marketUnit = EC.CURRENCIES[id].marketUnit,
+            balanceMax = type(e.balanceMax) == "number" and e.balanceMax or EC.sandbox("BalanceMax", C.DEFAULT_BALANCE_MAX),
+            exchange = ex,
+        }
+    end
+    return out
+end
+
+function C.emitExchangeConfig()
+    X.emit("exchange.config", { currencies = C.exchangeSnapshot() })
+end
+
 -- Every runtime change: event + audit line + config push to everyone online.
 local function changed(id, field, before, after, actor, reason)
+    C.emitExchangeConfig()   -- the projection first, then the change record and its audit line
     X.emit("admin.config", { currency = id, field = field, before = before, after = after, actor = actor, reason = reason })
     X.audit({ action = "config", currency = id, field = field, before = before, after = after, admin = actor, reason = reason })
     S.broadcast("config", { currencies = C.snapshot(), options = C.options(), remoteReadOnly = EC.sandbox("RemoteReadOnly", true) })
@@ -278,12 +304,30 @@ function C.setExchange(id, values, actor, reason)
     local before = {}
     for field in pairs(EXCHANGE_DEFAULTS) do before[field] = e.exchange[field] end
     before.rateVersion = e.exchange.rateVersion
+    -- the rate this version paid stays accepted for orders the companion already took in
+    local ring = e.exchange.ring or {}
+    ring[#ring + 1] = { rateVersion = e.exchange.rateVersion or 1, pointsPerCoin = e.exchange.pointsPerCoin }
+    while #ring > C.RATE_RING do table.remove(ring, 1) end
+    e.exchange.ring = ring
     for field in pairs(EXCHANGE_DEFAULTS) do e.exchange[field] = next_[field] end
     e.exchange.rateVersion = (e.exchange.rateVersion or 1) + 1
     local after = {}
-    for k, v in pairs(e.exchange) do after[k] = v end
+    for k, v in pairs(e.exchange) do if k ~= "ring" then after[k] = v end end
     changed(id, "exchange", before, after, actor, reason)
     return true
+end
+
+-- An order pinned to (rateVersion, rateSnapshot) is honoured when that pair is the current rate
+-- or one of the last C.RATE_RING superseded ones (no clock, no grace window).
+function C.rateAccepted(id, rateVersion, rateSnapshot)
+    local e = md.config.currencies[id]
+    local ex = e and e.exchange
+    if type(ex) ~= "table" then return false end
+    if rateVersion == (ex.rateVersion or 1) then return rateSnapshot == ex.pointsPerCoin end
+    for _, r in ipairs(ex.ring or {}) do
+        if r.rateVersion == rateVersion then return r.pointsPerCoin == rateSnapshot end
+    end
+    return false
 end
 
 -- Display name resolution happens on the client (override -> translation -> id); the server

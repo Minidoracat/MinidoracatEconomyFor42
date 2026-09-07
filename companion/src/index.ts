@@ -5,6 +5,8 @@ import { EventStore, errorCode, errorMessage, type Logger } from "./events.ts";
 import { Accounts } from "./accounts.ts";
 import { parseGlobalModData, economyWatermark } from "./bin.ts";
 import { createServer, type WatermarkState } from "./server.ts";
+import { Orders } from "./orders.ts";
+import path from "node:path";
 
 const log: Logger = {
   info: (m) => console.log(`[companion] ${m}`),
@@ -14,6 +16,7 @@ const log: Logger = {
 
 const store = new EventStore({ economyDir: config.economyDir, stateDir: config.stateDir, maxEvents: config.maxEventsInMemory, log });
 const accounts = new Accounts({ whitelistDb: config.whitelistDb, playersDb: config.playersDb, stateDir: config.stateDir, log });
+const orders = new Orders({ inboxDir: path.join(config.economyDir, "inbox"), stateDir: config.stateDir, store, accounts, log });
 
 // ---- durable watermark from global_mod_data.bin ----
 // The engine writes global_mod_data.tmp and then copies it over the .bin (GlobalModData.java:258-266):
@@ -57,6 +60,7 @@ function pollModData(force = false): void {
 // ---- main ----
 fs.mkdirSync(config.stateDir, { recursive: true });
 store.loadCheckpoint();
+orders.loadIndex();
 log.info(`economyDir=${config.economyDir}`);
 log.info(`modData=${config.modDataBin}`);
 log.info(`checkpoint file=${store.file ?? "-"} offset=${store.offset} nextIndex=${store.nextIndex}`);
@@ -69,10 +73,12 @@ accounts.refresh();
 setInterval(() => {
   try { store.poll(); } catch (err) { log.error(`poll failed: ${errorMessage(err)}`); }
   try { pollModData(); } catch (err) { log.error(`moddata poll failed: ${errorMessage(err)}`); }
+  // inbox files whose outcome is durable are done: delete them so Lua stops seeing them
+  try { orders.sweep(); } catch (err) { log.error(`inbox sweep failed: ${errorMessage(err)}`); }
 }, config.pollMs).unref();
 setInterval(() => accounts.refresh(), config.accountsRefreshMs).unref();
 
-const server = createServer({ config, store, accounts, watermark: () => wm, log });
+const server = createServer({ config, store, accounts, watermark: () => wm, orders, log });
 server.listen(config.port, config.bind, () => {
   log.info(`listening on http://${config.bind}:${config.port}`);
 });

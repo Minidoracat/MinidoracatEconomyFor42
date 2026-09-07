@@ -57,8 +57,8 @@ end
 if not MinidoracatEconomy or not MinidoracatEconomy.Radio then
     require "MinidoracatEconomy/ECRadio"
 end
-if not MinidoracatEconomy or not MinidoracatEconomy.Auction then
-    require "MinidoracatEconomy/ECAuction"
+if not MinidoracatEconomy or not MinidoracatEconomy.Exchange then
+    require "MinidoracatEconomy/ECExchange"
 end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
@@ -615,6 +615,7 @@ function A.system(write)
         terminals = T.count(),
         catalog = Shop.fileStatus(),
         buyback = Shop.buybackStatus(ms),
+        exchange = S.Exchange and S.Exchange.stats() or nil,
         mailboxUnclaimed = md.mailbox and md.mailbox.unclaimed or 0,
         market = Mk.stats(),
         auctions = S.Auction and S.Auction.stats() or nil,

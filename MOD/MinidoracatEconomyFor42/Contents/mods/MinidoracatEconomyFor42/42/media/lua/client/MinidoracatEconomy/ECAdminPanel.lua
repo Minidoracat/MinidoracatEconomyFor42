@@ -5219,6 +5219,14 @@ function Admin:drawSystem()
             self:lineRow(tr("Admin_Sys_Buyback"), getText(T .. "Admin_Sys_BuybackValue", tr(bb.enabled == true and "Admin_On" or "Admin_Off"),
                 amountText(bb.mintedToday or 0), amountText(bb.serverCap or 0)), bb.enabled == true and "warn" or "text")
         end
+        local ex = sys.exchange
+        if type(ex) == "table" then
+            local today = 0
+            if type(ex.depositedToday) == "table" then for _, v in pairs(ex.depositedToday) do today = today + (tonumber(v) or 0) end end
+            self:lineRow(tr("Admin_Sys_Exchange"), getText(T .. "Admin_Sys_ExchangeValue", amountText(today),
+                amountText(ex.tombstones or 0), amountText(ex.tombstoneMax or 0), tostring(math.floor(tonumber(ex.inboxFiles) or 0))),
+                (tonumber(ex.inboxFiles) or 0) > 0 and "warn" or "text")
+        end
         local wl = sys.whitelist
         if type(wl) == "table" and type(wl.error) == "string" and wl.error ~= "" then
             self:lineRow(tr("Admin_Sys_Whitelist"), fitText(wl.error, math.floor(self.lw * 0.6)), "errorText")

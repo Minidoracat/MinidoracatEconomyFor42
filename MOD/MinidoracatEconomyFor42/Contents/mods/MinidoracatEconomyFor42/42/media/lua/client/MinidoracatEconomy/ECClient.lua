@@ -233,6 +233,13 @@ handlers["shop.sell"] = function(args)
     C.requestShop()
 end
 
+-- A Discord deposit landed while this player is online: { orderId, currency, amount, points }.
+-- The wallet push that comes with it repaints the balance; this is only the toast.
+handlers["exchange.notice"] = function(args)
+    local money = C.UI and C.UI.amountText or tostring
+    C.toast(getText("IGUI_MinidoracatEconomy_Exchange_Notice_deposited", money(args.amount), C.currencyName(args.currency), tostring(math.floor(tonumber(args.points) or 0))))
+end
+
 function C.requestShop() send("shop.list") end
 function C.buy(id, count, revision, requestId) send("shop.buy", { id = id, count = count, revision = revision, requestId = requestId }) end
 function C.requestSellCandidates(id) send("shop.candidates", { id = id }) end

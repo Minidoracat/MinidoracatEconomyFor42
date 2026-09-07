@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import type { Watermark } from "./bin.ts";
 import type { LedgerPage, Logger } from "./events.ts";
 import type { AccountRecord } from "./accounts.ts";
+import type { Orders } from "./orders.ts";
 
 const SKEW_SECONDS = 300;
 
@@ -42,6 +43,8 @@ export interface ServerDeps {
   store: LedgerSource;
   accounts: AccountSource;
   watermark: () => WatermarkState;
+  /** Deposit orders (spec 5.2). Optional so a read-only deployment can leave it out. */
+  orders?: Orders;
   log?: Logger;
 }
 
@@ -68,7 +71,7 @@ function json(res: http.ServerResponse, status: number, payload: unknown): void 
   res.end(text);
 }
 
-export function createServer({ config, store, accounts, watermark, log = console }: ServerDeps): http.Server {
+export function createServer({ config, store, accounts, watermark, orders, log = console }: ServerDeps): http.Server {
   const loopback = config.bind === "127.0.0.1" || config.bind === "::1" || config.bind === "localhost";
   const authOptional = config.hmacSecret === "" && loopback;
   if (authOptional) log.warn("HMAC_SECRET is empty: requests are unauthenticated (loopback only)");
@@ -78,7 +81,7 @@ export function createServer({ config, store, accounts, watermark, log = console
 
   const startedAt = Date.now();
 
-  function route(req: http.IncomingMessage, url: URL, res: http.ServerResponse): void {
+  function route(req: http.IncomingMessage, url: URL, res: http.ServerResponse, body: string): void {
     if (req.method === "GET" && url.pathname === "/health") {
       const wm = watermark();
       json(res, 200, {
@@ -88,7 +91,39 @@ export function createServer({ config, store, accounts, watermark, log = console
         durable: wm.durable,
         modData: { mtime: wm.mtime, parsedAt: wm.parsedAt, error: wm.error, sizeBytes: wm.sizeBytes },
         accounts: accounts.stats(),
+        orders: orders?.stats() ?? null,
       });
+      return;
+    }
+    if (orders !== undefined && req.method === "GET" && url.pathname === "/currencies") {
+      const currencies = orders.currencies();
+      if (currencies === null) {
+        json(res, 503, { error: "config_unavailable" });
+        return;
+      }
+      json(res, 200, { currencies, durable: store.durable, currentEpoch: store.currentEpoch });
+      return;
+    }
+    if (orders !== undefined && req.method === "POST" && url.pathname === "/orders") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        json(res, 400, { error: "invalid_json" });
+        return;
+      }
+      const reply = orders.create(parsed);
+      json(res, reply.status, reply.body);
+      return;
+    }
+    if (orders !== undefined && req.method === "GET" && url.pathname.startsWith("/orders/")) {
+      const orderId = decodeURIComponent(url.pathname.slice("/orders/".length));
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(orderId)) {
+        json(res, 400, { error: "invalid_orderId" });
+        return;
+      }
+      const view = orders.status(orderId);
+      json(res, view.status === "unknown" ? 404 : 200, view);
       return;
     }
     if (req.method === "GET" && url.pathname === "/ledger") {
@@ -132,7 +167,7 @@ export function createServer({ config, store, accounts, watermark, log = console
         return;
       }
       try {
-        route(req, url, res);
+        route(req, url, res, body);
       } catch (err) {
         log.error(`request failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
         json(res, 500, { error: "internal" });
