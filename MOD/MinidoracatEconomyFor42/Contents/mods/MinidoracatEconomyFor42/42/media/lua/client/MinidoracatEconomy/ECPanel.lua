@@ -54,10 +54,31 @@ local Button, Cell = U.Button, U.StatementCell
 
 local Panel = ISCollapsableWindow:derive("MinidoracatEconomyPanel")
 
+-- Default size follows the screen (about 3/4 of it, never below the minimum, never off-screen);
+-- a size the player dragged to is kept by ISLayoutManager and only clamped back into the screen.
+local function defaultSize()
+    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    local w = math.min(sw - 40, math.max(MIN_WIDTH, math.floor(sw * 0.74)))
+    local h = math.min(sh - 40, math.max(MIN_HEIGHT, math.floor(sh * 0.78)))
+    return math.max(320, w), math.max(240, h)
+end
+
 -- Taller than vanilla (max(16, small font + 1)) so the Medium title fits; the vanilla
 -- close/pin/collapse buttons and the drag region size themselves from this value.
 function Panel:titleBarHeight()
     return 28
+end
+
+-- Title-bar chip, shown only while the size differs from the default: back to the default size,
+-- centred. One setWidth/setHeight per axis (see RestoreLayout); ISLayoutManager saves the result.
+function Panel:onResetSize()
+    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    local w, h = defaultSize()
+    self:setWidth(w)
+    self:setHeight(h)
+    self:setX(math.floor((sw - w) / 2))
+    self:setY(math.floor((sh - h) / 2))
+    self:layout()
 end
 
 function Panel:createChildren()
@@ -89,6 +110,10 @@ function Panel:createChildren()
     local more = getText(T .. "Wallet_MoreHistory")
     self.moreButton = Button.create(0, 0, textWidth(more) + 24, CHIP_H, more, self, Panel.onMore, "chip")
     self:addChild(self.moreButton)
+
+    local reset = getText(T .. "Window_ResetSize")
+    self.resetSizeButton = Button.create(0, 0, textWidth(reset) + 20, self:titleBarHeight() - 8, reset, self, Panel.onResetSize, "chip")
+    self:addChild(self.resetSizeButton)
 
     self:setTab("Wallet")
 end
@@ -283,6 +308,13 @@ function Panel:layout()
     g.rightX = PAD + LEFT_W + PAD
     g.rightW = w - g.rightX - PAD
     self.g = g
+
+    -- title bar: left of the vanilla pin/collapse button (both are th-2 square at w-1-(th-2))
+    local dw, dh = defaultSize()
+    local rb = self.resetSizeButton
+    rb:setVisible((w ~= dw or h ~= dh) and not self.isCollapsed)
+    rb:setX(w - 1 - (th - 2) - 6 - rb.width)
+    rb:setY(math.floor((th - rb.height) / 2))
 
     local isWallet = self.tab == "Wallet"
     self.adminAccess = C.AdminPanel.canRead()
@@ -692,15 +724,6 @@ function Panel:RestoreLayout(name, layout)
     ISCollapsableWindow.RestoreLayout(self, name, layout)
     layout.visible = visible
     self:setVisible(false)
-end
-
--- Default size follows the screen (about 3/4 of it, never below the minimum, never off-screen);
--- a size the player dragged to is kept by ISLayoutManager and only clamped back into the screen.
-local function defaultSize()
-    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
-    local w = math.min(sw - 40, math.max(MIN_WIDTH, math.floor(sw * 0.74)))
-    local h = math.min(sh - 40, math.max(MIN_HEIGHT, math.floor(sh * 0.78)))
-    return math.max(320, w), math.max(240, h)
 end
 
 function Panel.create()
