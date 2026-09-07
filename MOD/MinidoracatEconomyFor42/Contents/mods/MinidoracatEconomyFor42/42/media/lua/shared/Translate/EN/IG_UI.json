@@ -123,7 +123,7 @@
   "IGUI_MinidoracatEconomy_Admin_Wl_Reloaded": "Whitelist reloaded",
   "IGUI_MinidoracatEconomy_Admin_Tab_Whitelist": "Whitelist",
   "IGUI_MinidoracatEconomy_Admin_Wl_Note": "The list is whitelist.json in the server data folder; toggles here are written straight back and take effect at once. After editing the file by hand, press 'Reload whitelist' first",
-  "IGUI_MinidoracatEconomy_Admin_Wl_Fixed": "Containers, clothing, keys, furniture, radios, maps, animals, rotten food and equipped or broken items can never be listed, whatever the list says; perishable food keeps ageing while it is listed",
+  "IGUI_MinidoracatEconomy_Admin_Wl_Fixed": "Containers, clothing, keys, furniture, maps, animals, rotten food and equipped or broken items can never be listed, whatever the list says; perishable food keeps ageing while it is listed",
   "IGUI_MinidoracatEconomy_Admin_Wl_Search": "Search categories or items (name, original name, ID)",
   "IGUI_MinidoracatEconomy_Admin_Wl_Hint": "Type to search every item on this server; with no text only categories and individually set items are listed",
   "IGUI_MinidoracatEconomy_Admin_Wl_Category": "Category",

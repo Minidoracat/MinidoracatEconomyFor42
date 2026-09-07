@@ -123,7 +123,7 @@
   "IGUI_MinidoracatEconomy_Admin_Wl_Reloaded": "白名單已重新載入",
   "IGUI_MinidoracatEconomy_Admin_Tab_Whitelist": "白名單",
   "IGUI_MinidoracatEconomy_Admin_Wl_Note": "名單來自伺服器資料夾的 whitelist.json；這裡的開關會直接寫回檔案並立即生效。手動改過檔案後請先按「重新載入白名單」",
-  "IGUI_MinidoracatEconomy_Admin_Wl_Fixed": "容器、衣物、鑰匙、家具、無線電、地圖、動物、已腐敗的食物、裝備中或損壞的物品一律不能上架，不受名單影響；會腐敗的食物在託管期間照常腐敗",
+  "IGUI_MinidoracatEconomy_Admin_Wl_Fixed": "容器、衣物、鑰匙、家具、地圖、動物、已腐敗的食物、裝備中或損壞的物品一律不能上架，不受名單影響；會腐敗的食物在託管期間照常腐敗",
   "IGUI_MinidoracatEconomy_Admin_Wl_Search": "搜尋分類或物品（名稱、原文、ID）",
   "IGUI_MinidoracatEconomy_Admin_Wl_Hint": "輸入關鍵字可搜尋伺服器上的所有物品；未輸入時只列分類與已個別指定的物品",
   "IGUI_MinidoracatEconomy_Admin_Wl_Category": "分類",

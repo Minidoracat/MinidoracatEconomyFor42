@@ -137,7 +137,8 @@ knownItems = {
     ["Base.Apple"] = { w = 0.2, cat = "Food", main = "Food", rots = 8 }, ["Base.Bag_ALICEpack"] = { w = 1, cat = "Bag", main = "Container" },
     ["Base.PetrolCan"] = { w = 1.5, cat = "VehicleMaintenance", main = "Normal", fluid = true },
     ["Base.x2Scope"] = { w = 0.3, cat = "WeaponPart", main = "Normal" }, ["Base.BookCarpentry1"] = { w = 0.8, cat = "SkillBook", main = "Literature" },
-    ["Base.RadioRed"] = { w = 1, cat = "Electronics", main = "Item", itemType = "RADIO" },
+    ["Base.RadioRed"] = { w = 1, cat = "Communications", main = "Item", itemType = "RADIO", device = true },
+    ["Base.Mov_Chair"] = { w = 5, cat = "Furniture", main = "Item", itemType = "MOVEABLE" },
 }
 -- ItemType 是暴露給 Lua 的 Java 類別（靜態欄位 CONTAINER…；LuaManager.java:2311）：這裡用哨兵表代替
 ItemType = {}
@@ -194,6 +195,21 @@ function instanceItem(fullType)
         it.setFrozen = function(_, v) it.frozen = v end
         it.getFreezingTime = function() return it.freezing end
         it.setFreezingTime = function(_, v) it.freezing = v end
+    end
+    if k.device then
+        local dev = { channel = 88000, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1 }
+        it.dev = dev
+        it.getDeviceData = function() return {
+            getChannel = function() return dev.channel end, setChannelRaw = function(_, v) dev.channel = v end,
+            getPower = function() return dev.power end, setPower = function(_, v) dev.power = v end,
+            getIsTurnedOn = function() return dev.on end, setTurnedOnRaw = function(_, v) dev.on = v end,
+            getDeviceVolume = function() return dev.volume end, setDeviceVolumeRaw = function(_, v) dev.volume = v end,
+            getHeadphoneType = function() return dev.headphones end, setHeadphoneType = function(_, v) dev.headphones = v end,
+            getMicIsMuted = function() return dev.muted end, setMicIsMuted = function(_, v) dev.muted = v end,
+            getHasBattery = function() return dev.battery end, setHasBattery = function(_, v) dev.battery = v end,
+            getMediaType = function() return dev.mediaType end, setMediaType = function(_, v) dev.mediaType = v end,
+            getMediaIndex = function() return dev.mediaIndex end, setMediaIndex = function(_, v) dev.mediaIndex = v end,
+        } end
     end
     it.name, it.customName = fullType, false
     it.getName = function() return it.name end
@@ -304,7 +320,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 416     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 419     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1991,10 +2007,18 @@ check(Codec.detachParts(weapon, inv) == 1 and #weapon.parts == 0 and inv.count("
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories": 5}' }, opens = 0 }
 local okL, errL = Codec.load()
 check(okL == false and Codec.status().error ~= nil and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected and the previous whitelist stays")
--- 固定類別走 ItemType（Radio 的 getCategory 是 "Item"，主類別字串擋不住）：分類允許也不能上架
-files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Electronics","Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
-check(Codec.load() == true and Codec.check(instanceItem("Base.RadioRed")) == false and Codec.check(instanceItem("Base.Saw")) == true,
-    "a radio is refused by item class even when its display category is whitelisted")
+-- 固定類別走 ItemType（Moveable 的 getCategory 是 "Item"，主類別字串擋不住）：分類允許也不能上架
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Furniture","Communications","Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
+check(Codec.load() == true and Codec.check(instanceItem("Base.Mov_Chair")) == false and Codec.check(instanceItem("Base.Saw")) == true,
+    "furniture is refused by item class even when its display category is whitelisted")
+-- 無線電：DeviceData 隨快照走（頻道、電量、開關、音量、耳機、靜音、電池、媒體）
+local radio = instanceItem("Base.RadioRed"); radio.dev.channel = 93200; radio.dev.power = 0.4; radio.dev.on = true; radio.dev.volume = 0.8; radio.dev.headphones = 2; radio.dev.battery = false
+check(Codec.check(radio) == true, "a radio is listable when its category is on")
+local radioSnap = Codec.snapshot(radio)
+check(radioSnap.device.channel == 93200 and radioSnap.device.on == true and radioSnap.device.battery == false, "the snapshot keeps the tuned state")
+local radioBack = Codec.rebuild(radioSnap)
+check(radioBack.dev.channel == 93200 and radioBack.dev.power == 0.4 and radioBack.dev.on == true and radioBack.dev.volume == 0.8 and radioBack.dev.headphones == 2 and radioBack.dev.battery == false,
+    "rebuild restores channel, power, switch, volume, headphones and battery")
 -- 面板寫回：一次一個分類或一件物品，寫進檔案、重讀、稽核；手改過的檔案先擋 stale
 local boss = fakePlayer("boss"); boss.role = "admin"
 local mod = fakePlayer("mod"); mod.role = "moderator"
@@ -2005,13 +2029,13 @@ local function wcmd(who, args)
     return lastSent("admin.whitelist").args
 end
 local st = wcmd(mod, { action = "status" })
-check(st.ok == true and #st.whitelist.categories == 2 and st.whitelist.categories[1] == "Electronics" and st.perms.write == false, "status carries the four lists and the read-only role sees them")
+check(st.ok == true and #st.whitelist.categories == 3 and st.whitelist.categories[1] == "Furniture" and st.perms.write == false, "status carries the lists and the read-only role sees them")
 check(wcmd(mod, { action = "set", category = "Tool", allowed = false }).error == "forbidden", "a moderator cannot edit the whitelist")
 local off = wcmd(boss, { action = "set", category = "Tool", allowed = false })
 local wlText = table.concat(files["MinidoracatEconomy/whitelist.json"].lines, "\n")
-check(off.ok == true and #off.whitelist.categories == 1 and string.find(wlText, '"categories": ["Electronics"]', 1, true) ~= nil
+check(off.ok == true and #off.whitelist.categories == 2 and string.find(wlText, '"categories": ["Furniture","Communications"]', 1, true) ~= nil
     and Codec.check(instanceItem("Base.Saw")) == false, "turning a category off rewrites the file and takes effect at once")
-check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).whitelist.categories[2] == "Tool" and Codec.check(instanceItem("Base.Saw")) == true, "turning it back on appends it")
+check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).whitelist.categories[3] == "Tool" and Codec.check(instanceItem("Base.Saw")) == true, "turning it back on appends it")
 check(wcmd(boss, { action = "set", category = "Tool", allowed = true }).ok == true and #files["MinidoracatEconomy/whitelist.json"].lines == 5, "a no-op edit does not rewrite the file")
 local ex = wcmd(boss, { action = "set", fullType = "Base.Saw", mode = "exclude" })
 check(ex.ok == true and ex.whitelist.excludeTypes[1] == "Base.Saw" and Codec.check(instanceItem("Base.Saw")) == false, "an item exclusion beats its allowed category")
@@ -2023,9 +2047,10 @@ check(inh.ok == true and #inh.whitelist.types == 1 and Codec.check(instanceItem(
 check(wcmd(boss, { action = "set", fullType = "Base.Nope", mode = "allow" }).error == "unknown_item", "unknown item types are refused")
 check(wcmd(boss, { action = "set", category = "bad cat", allowed = true }).error == "invalid_args" and wcmd(boss, { action = "set", fullType = "Base.Saw", mode = "maybe" }).error == "invalid_args", "malformed edits are refused")
 files["MinidoracatEconomy/whitelist.json"].lines[1] = files["MinidoracatEconomy/whitelist.json"].lines[1] .. " "
-check(wcmd(boss, { action = "set", category = "Electronics", allowed = false }).error == "whitelist_stale" and Codec.check(instanceItem("Base.RadioRed")) == false and Codec.status().counts.categories == 2,
+check(wcmd(boss, { action = "set", category = "Communications", allowed = false }).error == "whitelist_stale" and Codec.check(instanceItem("Base.RadioRed")) == true and Codec.status().counts.categories == 3,
     "a file changed outside the panel is refused as stale until reloaded")
-check(wcmd(boss, { action = "reload" }).ok == true and wcmd(boss, { action = "set", category = "Electronics", allowed = false }).ok == true and Codec.status().counts.categories == 1, "after a reload the edit goes through")
+check(wcmd(boss, { action = "reload" }).ok == true and wcmd(boss, { action = "set", category = "Communications", allowed = false }).ok == true
+    and Codec.check(instanceItem("Base.RadioRed")) == false and Codec.status().counts.categories == 2, "after a reload the edit goes through and the radio category is off")
 local wlAudit = 0
 for _, e in ipairs(X.auditEntries(30)) do if e.action == "whitelist" then wlAudit = wlAudit + 1 end end
 check(wlAudit == 8, "every applied edit and the reload are audited once (no-ops and refusals are not)")

@@ -123,7 +123,7 @@
   "IGUI_MinidoracatEconomy_Admin_Wl_Reloaded": "ホワイトリストを再読込しました",
   "IGUI_MinidoracatEconomy_Admin_Tab_Whitelist": "ホワイトリスト",
   "IGUI_MinidoracatEconomy_Admin_Wl_Note": "リストはサーバーデータフォルダの whitelist.json です。ここでの切り替えはそのままファイルに書き戻され、すぐに反映されます。手動で編集した後は先に「ホワイトリストを再読込」を押してください",
-  "IGUI_MinidoracatEconomy_Admin_Wl_Fixed": "コンテナ・衣類・鍵・家具・ラジオ・地図・動物・腐敗した食品・装備中または破損したアイテムはリストに関係なく常に出品できません。腐敗する食品は出品中も通常どおり劣化します",
+  "IGUI_MinidoracatEconomy_Admin_Wl_Fixed": "コンテナ・衣類・鍵・家具・地図・動物・腐敗した食品・装備中または破損したアイテムはリストに関係なく常に出品できません。腐敗する食品は出品中も通常どおり劣化します",
   "IGUI_MinidoracatEconomy_Admin_Wl_Search": "カテゴリまたはアイテムを検索（名前・原文・ID）",
   "IGUI_MinidoracatEconomy_Admin_Wl_Hint": "キーワードを入力するとサーバー上の全アイテムを検索します。未入力時はカテゴリと個別指定済みのアイテムのみ表示",
   "IGUI_MinidoracatEconomy_Admin_Wl_Category": "カテゴリ",

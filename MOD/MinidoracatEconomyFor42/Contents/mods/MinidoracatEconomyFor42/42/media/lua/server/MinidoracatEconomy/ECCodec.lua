@@ -8,8 +8,8 @@
 -- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
 -- or one item per write, written straight back, refused with whitelist_stale when the file on disk
 -- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
--- the file: none of EC.LISTING_FIXED_TYPES (containers, clothing, keys, radios, maps, moveables,
--- animals), nothing rotten, equipped, favourite or broken, and no modData larger than the snapshot
+-- the file: none of EC.LISTING_FIXED_TYPES (containers, clothing, keys, maps, moveables, animals;
+-- radios travel with their DeviceData), nothing rotten, equipped, favourite or broken, and no modData larger than the snapshot
 -- may carry (the data itself travels: vanilla writes customName / condition:* there).
 --
 -- Engine references (snapshot 42.20.4-20260826, all exercised in A7):
@@ -338,6 +338,22 @@ function Codec.snapshot(item)
             listedHours = worldHours(),
         }
     end
+    -- radio / walkie-talkie: the tuned state lives in DeviceData (Radio.java:46; getters and the
+    -- side-effect-free *Raw setters DeviceData.java:382-604, 1314-1326)
+    local dev = call(item, "getDeviceData")
+    if dev then
+        s.device = {
+            channel = call(dev, "getChannel"),
+            power = call(dev, "getPower"),
+            on = call(dev, "getIsTurnedOn") == true,
+            volume = call(dev, "getDeviceVolume"),
+            headphones = call(dev, "getHeadphoneType"),
+            muted = call(dev, "getMicIsMuted") == true,
+            battery = call(dev, "getHasBattery"),
+            mediaType = call(dev, "getMediaType"),
+            mediaIndex = call(dev, "getMediaIndex"),
+        }
+    end
     local fluid = fluidOf(item)
     if fluid and fluid.name ~= "" and (fluid.amount or 0) > 0 then s.fluid = { name = fluid.name, amount = fluid.amount } end
     local md = call(item, "getModData")
@@ -376,6 +392,21 @@ function Codec.rebuild(s)
     if type(s.name) == "string" then
         call(item, "setName", s.name)
         call(item, "setCustomName", true)
+    end
+    if type(s.device) == "table" then
+        local dev = call(item, "getDeviceData")
+        local d = s.device
+        if dev then
+            if type(d.channel) == "number" then call(dev, "setChannelRaw", d.channel) end
+            if type(d.power) == "number" then call(dev, "setPower", d.power) end
+            if type(d.volume) == "number" then call(dev, "setDeviceVolumeRaw", d.volume) end
+            if type(d.headphones) == "number" then call(dev, "setHeadphoneType", d.headphones) end
+            if type(d.battery) == "boolean" then call(dev, "setHasBattery", d.battery) end
+            if d.muted then call(dev, "setMicIsMuted", true) end
+            if type(d.mediaType) == "number" then call(dev, "setMediaType", d.mediaType) end
+            if type(d.mediaIndex) == "number" then call(dev, "setMediaIndex", d.mediaIndex) end
+            if d.on then call(dev, "setTurnedOnRaw", true) end
+        end
     end
     if type(s.fluid) == "table" then
         local fc = call(item, "getFluidContainer")
