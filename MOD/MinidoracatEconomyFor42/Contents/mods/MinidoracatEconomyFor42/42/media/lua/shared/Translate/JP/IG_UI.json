@@ -129,6 +129,7 @@
   "IGUI_MinidoracatEconomy_Admin_Sys_Listings": "マーケット出品数",
   "IGUI_MinidoracatEconomy_Admin_Sys_Whitelist": "出品ホワイトリスト",
   "IGUI_MinidoracatEconomy_Terminal_Name": "経済ターミナル",
+  "IGUI_MinidoracatEconomy_CatTerminal_Name": "猫娘経済ターミナル",
   "IGUI_MinidoracatEconomy_Terminal_Use": "経済ターミナルを使う",
   "IGUI_MinidoracatEconomy_Terminal_Register": "経済ターミナルとして登録",
   "IGUI_MinidoracatEconomy_Terminal_Unregister": "ターミナル登録を解除",

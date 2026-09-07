@@ -1,0 +1,62 @@
+module Base
+{
+    /* Catgirl economy terminal: the same object as MinidoracatEconomyTerminal (admin-only build
+       entry, not thumpable, registered afterwards through terminal.register) wearing the second
+       tileset of scripts/build_tiles.py (MinidoracatEconomy_catgirl_0..3, face order S/E/N/W).
+       Both entities are economy terminals; an admin picks whichever fits the room. */
+    entity MinidoracatEconomyCatTerminal
+    {
+        component UiConfig
+        {
+            xuiSkin = default,
+            entityStyle = ES_MinidoracatEconomyCatTerminal,
+            uiEnabled = false,
+        }
+        component SpriteConfig
+        {
+            isProp = true,
+            isThumpable = false,
+            face S
+            {
+                layer
+                {
+                    row = MinidoracatEconomy_catgirl_0,
+                }
+            }
+            face E
+            {
+                layer
+                {
+                    row = MinidoracatEconomy_catgirl_1,
+                }
+            }
+            face N
+            {
+                layer
+                {
+                    row = MinidoracatEconomy_catgirl_2,
+                }
+            }
+            face W
+            {
+                layer
+                {
+                    row = MinidoracatEconomy_catgirl_3,
+                }
+            }
+        }
+        component CraftRecipe
+        {
+            OnAddToMenu = MinidoracatEconomy_AdminBuildOnly,
+            timedAction = BuildWoodenStructureMedium,
+            time = 10,
+            category = Furniture,
+            Tags = Furniture,
+            inputs
+            {
+                item 1 tags[base:hammer] mode:keep flags[Prop1;MayDegradeVeryLight],
+                item 1 [Base.Plank],
+            }
+        }
+    }
+}

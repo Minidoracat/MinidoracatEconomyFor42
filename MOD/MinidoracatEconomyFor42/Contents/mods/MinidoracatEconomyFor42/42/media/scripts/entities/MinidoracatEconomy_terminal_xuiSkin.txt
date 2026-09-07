@@ -1,7 +1,7 @@
 module Base
 {
-    /* Build-menu name and icon of the terminal entity. DisplayName goes through Translator.getText
-       (XuiSkin.java:393-394), so the IGUI_ key below resolves from Translate/<LANG>/IG_UI.json. */
+    /* Build-menu name and icon of the terminal entities. DisplayName goes through Translator.getText
+       (XuiSkin.java:393-394), so the IGUI_ keys below resolve from Translate/<LANG>/IG_UI.json. */
     xuiSkin default
     {
         entity ES_MinidoracatEconomyTerminal
@@ -9,6 +9,12 @@ module Base
             LuaWindowClass = ISEntityWindow,
             DisplayName = IGUI_MinidoracatEconomy_Terminal_Name,
             Icon = media/ui/MinidoracatEconomy/terminal_icon.png,
+        }
+        entity ES_MinidoracatEconomyCatTerminal
+        {
+            LuaWindowClass = ISEntityWindow,
+            DisplayName = IGUI_MinidoracatEconomy_CatTerminal_Name,
+            Icon = media/ui/MinidoracatEconomy/catgirl_icon.png,
         }
     }
 }

@@ -86,7 +86,7 @@ end
 local function protectedObject(object)
     local name = spriteName(object)
     if not name or not EC.TERMINAL_SPRITES[name] then return false end
-    if string.find(name, "^MinidoracatEconomy_terminal_") then return true end
+    if string.find(name, "^MinidoracatEconomy_") then return true end
     local ok, sq = pcall(function() return object:getSquare() end)
     if not ok or not sq then return false end
     return C.terminalAt(sq:getX(), sq:getY(), sq:getZ()) ~= nil

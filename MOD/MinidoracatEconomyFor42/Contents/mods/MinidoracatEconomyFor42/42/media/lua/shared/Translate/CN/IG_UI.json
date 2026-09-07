@@ -129,6 +129,7 @@
   "IGUI_MinidoracatEconomy_Admin_Sys_Listings": "市场刊登数",
   "IGUI_MinidoracatEconomy_Admin_Sys_Whitelist": "上架白名单",
   "IGUI_MinidoracatEconomy_Terminal_Name": "经济终端",
+  "IGUI_MinidoracatEconomy_CatTerminal_Name": "猫娘经济终端",
   "IGUI_MinidoracatEconomy_Terminal_Use": "使用经济终端",
   "IGUI_MinidoracatEconomy_Terminal_Register": "登录为经济终端",
   "IGUI_MinidoracatEconomy_Terminal_Unregister": "移除终端登录",

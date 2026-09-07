@@ -129,6 +129,7 @@
   "IGUI_MinidoracatEconomy_Admin_Sys_Listings": "Market listings",
   "IGUI_MinidoracatEconomy_Admin_Sys_Whitelist": "Listing whitelist",
   "IGUI_MinidoracatEconomy_Terminal_Name": "Economy Terminal",
+  "IGUI_MinidoracatEconomy_CatTerminal_Name": "Catgirl Economy Terminal",
   "IGUI_MinidoracatEconomy_Terminal_Use": "Use economy terminal",
   "IGUI_MinidoracatEconomy_Terminal_Register": "Register as economy terminal",
   "IGUI_MinidoracatEconomy_Terminal_Unregister": "Remove terminal registration",

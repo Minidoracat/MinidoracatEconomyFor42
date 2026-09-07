@@ -4,7 +4,7 @@
 # ///
 """Build the mod's world-object tiles from source art.
 
-    uv run scripts/build_tiles.py            # assets/tiles/terminal/{S,E,N,W}.png -> pack + tiledef
+    uv run scripts/build_tiles.py            # assets/tiles/<set>/{S,E,N,W}.png -> pack + tiledef + icons
     uv run scripts/build_tiles.py --check    # parse what is shipped and print the entries
 
 Output (all under the mod's 42/media/):
@@ -23,6 +23,8 @@ Conventions (checked against vanilla Tiles2x.pack and B42 tile mods such as Dyla
       (IsoWorld.getSpriteID) so client and server agree on what a placed object is.
 
 Facing order follows vanilla furniture: 0 = S (front toward lower-left), 1 = E, 2 = N, 3 = W.
+Every tileset in TILESETS lands on the same pack page and in the same tiledef (tileset numbers
+1, 2, ... in file order; IsoWorld.java:670-701 maps <file, tileset, index> to the sprite id).
 """
 from __future__ import annotations
 
@@ -36,20 +38,28 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 MEDIA = ROOT / "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media"
-SOURCE = ROOT / "assets/tiles/terminal"
 PACK_NAME = "MinidoracatEconomy"
-TILESET = "MinidoracatEconomy_terminal"
 TILEDEF_NAME = "MinidoracatEconomy_tiles"
 FILE_NUMBER = 7429            # tiledef file number (100..8189); must be unique across loaded mods
 FACES = ["S", "E", "N", "W"]
 CELL_W, CELL_H = 128, 256
-TARGET_H = 176                # object height in the cell: one machine, so every facing shares it
 MAX_W = 124                   # never wider than the tile footprint (vanilla consoles are 114)
-BOTTOM_Y = 252                # lowest opaque row of the vanilla consoles inside the 256 cell
+
+# One entry per world object: source folder under assets/tiles/, object height inside the cell
+# (one machine, so every facing shares it), the lowest opaque row inside the 256 cell, and the
+# build-menu icon (optionally only the top part of the S face: a full-body figure is a smear at
+# 64px, her head and tablet are not). The ATM is a box that reaches the front corner of the tile
+# like the vanilla consoles (bottom 252); the catgirl stands on a round base centred on the tile,
+# so her base rim ends where a floor-centred ellipse does, above the vanilla console front edge.
+TILESETS = [
+    {"name": "MinidoracatEconomy_terminal", "source": "terminal", "height": 176, "bottom": 252,
+     "custom_name": "Economy Terminal", "icon": "terminal_icon.png", "icon_top": 1.0},
+    {"name": "MinidoracatEconomy_catgirl", "source": "catgirl", "height": 216, "bottom": 236,
+     "custom_name": "Economy Terminal (Catgirl)", "icon": "catgirl_icon.png", "icon_top": 0.42},
+]
 
 PROPS = {
     "BlocksPlacement": "",
-    "CustomName": "Economy Terminal",
     "GroupName": "Economy",
     "Material": "Electric",
     "MaterialType": "Metal",
@@ -57,20 +67,20 @@ PROPS = {
 }
 
 
-def fit_face(path: Path) -> Image.Image:
+def fit_face(path: Path, target_h: int, bottom_y: int) -> Image.Image:
     """Trim the alpha bbox, scale to the shared height and seat it on the tile floor."""
     img = Image.open(path).convert("RGBA")
     bbox = img.getbbox()
     if not bbox:
         raise SystemExit(f"{path}: fully transparent")
     img = img.crop(bbox)
-    scale = TARGET_H / img.height
+    scale = target_h / img.height
     if img.width * scale > MAX_W:
         scale = MAX_W / img.width
     size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
     img = img.resize(size, Image.LANCZOS)
     cell = Image.new("RGBA", (CELL_W, CELL_H), (0, 0, 0, 0))
-    cell.paste(img, ((CELL_W - img.width) // 2, BOTTOM_Y - img.height), img)
+    cell.paste(img, ((CELL_W - img.width) // 2, bottom_y - img.height), img)
     return cell
 
 
@@ -90,12 +100,12 @@ def pstr(s: str) -> bytes:
     return u32(len(b)) + b
 
 
-def write_pack(sheet: Image.Image, cells: list[Image.Image], out: Path) -> list[tuple]:
+def write_pack(sheet: Image.Image, cells: list[tuple[str, Image.Image]], out: Path) -> list[tuple]:
     entries = []
-    for i, c in enumerate(cells):
+    for i, (name, c) in enumerate(cells):
         bbox = c.getbbox() or (0, 0, 1, 1)
         x0, y0, x1, y1 = bbox
-        entries.append((f"{TILESET}_{i}", i * CELL_W + x0, y0, x1 - x0, y1 - y0, x0, y0, CELL_W, CELL_H))
+        entries.append((name, i * CELL_W + x0, y0, x1 - x0, y1 - y0, x0, y0, CELL_W, CELL_H))
     png = io.BytesIO()
     sheet.save(png, format="PNG", optimize=True)
     png_bytes = png.getvalue()
@@ -112,21 +122,27 @@ def write_pack(sheet: Image.Image, cells: list[Image.Image], out: Path) -> list[
 def write_tiledef(out: Path) -> None:
     def line(s: str) -> bytes:
         return s.encode("latin-1") + b"\n"     # IsoWorld.readString: LF only, CR is rejected
-    body = b"tdef" + u32(1) + u32(1)
-    body += line(TILESET) + line(f"{TILESET}.png") + u32(len(FACES)) + u32(1) + u32(1) + u32(len(FACES))
-    for face in FACES:
-        props = dict(PROPS)
-        props["Facing"] = face
-        body += u32(len(props))
-        for k, v in props.items():
-            body += line(k) + line(v)
+    body = b"tdef" + u32(1) + u32(len(TILESETS))
+    for number, ts in enumerate(TILESETS, start=1):
+        body += line(ts["name"]) + line(f"{ts['name']}.png")
+        body += u32(len(FACES)) + u32(1) + u32(number) + u32(len(FACES))
+        for face in FACES:
+            props = dict(PROPS)
+            props["CustomName"] = ts["custom_name"]
+            props["Facing"] = face
+            body += u32(len(props))
+            for k, v in props.items():
+                body += line(k) + line(v)
     out.write_bytes(body)
 
 
-def write_icon(src: Path, out: Path, size: int = 64) -> None:
+def write_icon(src: Path, out: Path, top: float = 1.0, size: int = 64) -> None:
     """Square build-menu icon (xuiSkin Icon=, loaded by Texture.trygetTexture) from the S face."""
     img = Image.open(src).convert("RGBA")
     img = img.crop(img.getbbox())
+    if top < 1.0:
+        img = img.crop((0, 0, img.width, max(1, round(img.height * top))))
+        img = img.crop(img.getbbox())
     scale = (size - 4) / max(img.width, img.height)
     img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
     icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -179,16 +195,20 @@ def main() -> None:
     if args.check:
         check()
         return
-    cells = [fit_face(SOURCE / f"{face}.png") for face in FACES]
-    sheet = build_sheet(cells)
-    (SOURCE / "sheet_preview.png").parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(SOURCE / "sheet_preview.png")
+    cells: list[tuple[str, Image.Image]] = []
+    for ts in TILESETS:
+        source = ROOT / "assets/tiles" / ts["source"]
+        faces = [fit_face(source / f"{face}.png", ts["height"], ts["bottom"]) for face in FACES]
+        build_sheet(faces).save(source / "sheet_preview.png")
+        cells += [(f"{ts['name']}_{i}", c) for i, c in enumerate(faces)]
+        write_icon(source / "S.png", MEDIA / "ui" / "MinidoracatEconomy" / ts["icon"], ts["icon_top"])
+    sheet = build_sheet([c for _, c in cells])
     entries = write_pack(sheet, cells, MEDIA / "texturepacks" / f"{PACK_NAME}.pack")
     write_tiledef(MEDIA / f"{TILEDEF_NAME}.tiles")
-    write_icon(SOURCE / "S.png", MEDIA / "ui" / "MinidoracatEconomy" / "terminal_icon.png")
     for e in entries:
         print(f"{e[0]}: {e[3]}x{e[4]} at {e[5]},{e[6]}")
-    print(f"wrote {PACK_NAME}.pack, {TILEDEF_NAME}.tiles (file number {FILE_NUMBER}) and ui/MinidoracatEconomy/terminal_icon.png")
+    icons = ", ".join(f"ui/MinidoracatEconomy/{ts['icon']}" for ts in TILESETS)
+    print(f"wrote {PACK_NAME}.pack, {TILEDEF_NAME}.tiles (file number {FILE_NUMBER}) and {icons}")
 
 
 if __name__ == "__main__":
