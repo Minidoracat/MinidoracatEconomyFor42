@@ -357,7 +357,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 565     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 567     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2750,6 +2750,7 @@ zed.inventory.items = playerInv; zed.modData = playerMd
 cmd(zed, "hello")
 check(bal() == before + 20 and zed.inventory.count("Base.Nails") == 0, "after a rollback the sale is paid again from the pending record")
 check(L.conservation("survivor") == 0, "the repaid mint is conserved")
+check(Shop.buybackRoom("zed", "nails", nowMs).account == 200 - 140 - 20 and Shop.buybackStatus(nowMs).mintedToday == 160, "the repaid mint counts against today's caps (the day buckets rolled back too)")
 -- rollback with the balance cap in the way: the items come back through the mailbox instead
 fire("OnTickEvenPaused")
 saved = deepCopyTable(modDataStore[EC.MODDATA_KEY])
@@ -2888,6 +2889,16 @@ files[INBOX .. "p3.json"] = nil
 nowMs = nowMs + Ex.PRUNE_EVERY_MS
 tick()
 check(Ex.stats().tombstones == before - 2 and Ex.order("p1") == nil and Ex.order("p2") ~= nil, "tombstones without a file are pruned on the minute scan")
+-- a failed directory listing is not an empty inbox: nothing is pruned, nothing replayed
+do
+    local real = listFilesInZomboidLuaDirectory
+    listFilesInZomboidLuaDirectory = function() error("disk") end
+    local n = Ex.stats().tombstones
+    nowMs = nowMs + Ex.PRUNE_EVERY_MS
+    tick()
+    check(Ex.stats().tombstones == n and Ex.order("p2") ~= nil, "a listing failure skips the poll and keeps every tombstone")
+    listFilesInZomboidLuaDirectory = real
+end
 -- crash before the save: ModData rolls back, the inbox file is still there, replay credits exactly once
 fire("OnTickEvenPaused")
 local saved = deepCopyTable(modDataStore[EC.MODDATA_KEY])

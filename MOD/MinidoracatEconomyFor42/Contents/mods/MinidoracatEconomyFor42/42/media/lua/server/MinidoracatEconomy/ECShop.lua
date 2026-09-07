@@ -553,6 +553,13 @@ function Shop.restoreFromPending(username, id, pend)
         payload = { sku = pend.sku, item = pend.snapshot and pend.snapshot.type or nil, qty = qty, buybackId = id },
     })
     if res.ok then
+        -- the repaid mint counts against today's caps like any other: the day buckets rolled
+        -- back with the world too, so without this the player could sell a full cap on top
+        local day = buybackDay(EC.now(), true)
+        day.total = day.total + total
+        day.accounts[username] = (day.accounts[username] or 0) + total
+        local sku = type(pend.sku) == "string" and file.byId[pend.sku] or nil
+        if sku then day.skus[sku.id] = (day.skus[sku.id] or 0) + math.max(1, math.floor(qty / sku.qty)) end
         X.emit("shop.buyback", { username = username, buybackId = id, sku = pend.sku, qty = qty, total = total, currency = currency, txId = res.txId, restored = true })
         return true
     end

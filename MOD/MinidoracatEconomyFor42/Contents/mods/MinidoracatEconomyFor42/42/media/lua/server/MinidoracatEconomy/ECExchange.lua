@@ -184,21 +184,28 @@ end
 
 -- ---------- polling ----------
 
+-- nil when the listing itself failed: that is not "no files", and a poll must not act on it
+-- (the prune below would drop every tombstone and the next good listing would replay them all)
 local function listInbox()
     local names = {}
     local ok, list = pcall(listFilesInZomboidLuaDirectory, Ex.DIR)
-    if not ok or not list then return names end
-    pcall(function()
+    if not ok or not list then return nil end
+    local walked = pcall(function()
         for i = 0, list:size() - 1 do
             local name = tostring(list:get(i))
             if string.match(name, "^[A-Za-z0-9_%-]+%.json$") then names[#names + 1] = name end
         end
     end)
+    if not walked then return nil end
     return names
 end
 
 function Ex.poll()
     local names = listInbox()
+    if names == nil then
+        EC.log("inbox listing failed; skipping this poll")
+        return
+    end
     lastSeen = #names
     local processed = 0
     local present = {}
