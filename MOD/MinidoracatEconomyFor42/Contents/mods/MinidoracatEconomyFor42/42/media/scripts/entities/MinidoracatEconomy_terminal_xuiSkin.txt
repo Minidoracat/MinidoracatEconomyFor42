@@ -8,7 +8,7 @@ module Base
         {
             LuaWindowClass = ISEntityWindow,
             DisplayName = IGUI_MinidoracatEconomy_Terminal_Name,
-            Icon = Build_CookingPit,
+            Icon = media/ui/MinidoracatEconomy/terminal_icon.png,
         }
     }
 }

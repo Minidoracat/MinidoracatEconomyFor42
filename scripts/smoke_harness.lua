@@ -212,9 +212,12 @@ end
 worldSprites = {}                -- "x,y,z" -> sprite name（getCell():getGridSquare 的假物件）
 function getCell()
     return { getGridSquare = function(_, x, y, z)
-        local name = worldSprites[x .. "," .. y .. "," .. z]
+        local key = x .. "," .. y .. "," .. z
+        local name = worldSprites[key]
         if not name then return nil end
-        return { getObjects = function() return javaList({ { getSprite = function() return { getName = function() return name end } end } }) end }
+        local obj = { getSprite = function() return { getName = function() return name end } end }
+        return { getObjects = function() return javaList({ obj }) end,
+            transmitRemoveItemFromSquare = function(_, o) if o == obj then worldSprites[key] = nil end end }
     end }
 end
 
@@ -270,7 +273,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 390     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 393     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1637,6 +1640,17 @@ check(lastSent("terminal.unregister").args.error == "forbidden" and T.count() ==
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.unregister", boss, { id = r.id })
 check(lastSent("terminal.unregister").args.ok == true and T.count() == 0 and #lastSent("terminals").args.list == 0, "an admin unregisters and everyone gets the empty list")
+-- demolish: admin only; removes the world object and any registration on that square
+reg(boss, 100, 200, 0)
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.demolish", zed, { x = 100, y = 200, z = 0 })
+check(lastSent("terminal.demolish").args.error == "forbidden" and worldSprites["100,200,0"] ~= nil, "a player cannot demolish a terminal")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.demolish", boss, { x = 100, y = 200, z = 0 })
+check(lastSent("terminal.demolish").args.ok == true and worldSprites["100,200,0"] == nil and T.count() == 0, "an admin demolish removes the object and the registration")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.demolish", boss, { x = 100, y = 200, z = 0 })
+check(lastSent("terminal.demolish").args.error == "no_terminal_object", "demolishing an empty square is refused")
 onlinePlayers = {}
 end)()
 

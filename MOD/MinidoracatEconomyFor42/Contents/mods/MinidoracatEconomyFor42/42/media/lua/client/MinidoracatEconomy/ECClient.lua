@@ -169,6 +169,7 @@ end
 function C.requestTerminals() send("terminals") end
 function C.registerTerminal(x, y, z, kind, requestId) send("terminal.register", { x = x, y = y, z = z, kind = kind or "atm", requestId = requestId }) end
 function C.unregisterTerminal(id, requestId) send("terminal.unregister", { id = id, requestId = requestId }) end
+function C.demolishTerminal(x, y, z, requestId) send("terminal.demolish", { x = x, y = y, z = z, requestId = requestId }) end
 
 -- Shop snapshot (shop.list / shop.buy replies carry the same fields): { revision, currency,
 -- items = { {id, item, qty, price, dailyCap, category, enabled, remaining?, override?}, ... },

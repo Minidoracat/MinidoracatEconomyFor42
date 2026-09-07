@@ -61,15 +61,44 @@ local function onFillMenu(playerNum, context, worldobjects, test)
         context:addOption(getText(T .. "Terminal_Use"), nil, useTerminal)
     end
     if isAdmin() then
+        local tile = hasTerminalTile(square, worldobjects)
         if terminal then
             context:addOption(getText(T .. "Terminal_Unregister"), nil, function()
                 C.unregisterTerminal(terminal.id, C.newRequestId())
             end)
-        elseif hasTerminalTile(square, worldobjects) then
+        elseif tile then
             context:addOption(getText(T .. "Terminal_Register"), nil, function()
                 C.registerTerminal(x, y, z, "atm", C.newRequestId())
             end)
         end
+        if tile then
+            context:addOption(getText(T .. "Terminal_Demolish"), nil, function()
+                C.demolishTerminal(x, y, z, C.newRequestId())
+            end)
+        end
+    end
+end
+
+-- Only admins take a terminal down: the entity is not thumpable and not moveable, and the
+-- sledgehammer cursor (ISDestroyCursor.canDestroy, server/BuildingObjects, shared code) refuses
+-- the mod's own terminal tiles and any registered terminal square for everyone else. Vanilla
+-- consoles that nobody registered stay destroyable as usual.
+local function protectedObject(object)
+    local name = spriteName(object)
+    if not name or not EC.TERMINAL_SPRITES[name] then return false end
+    if string.find(name, "^MinidoracatEconomy_terminal_") then return true end
+    local ok, sq = pcall(function() return object:getSquare() end)
+    if not ok or not sq then return false end
+    return C.terminalAt(sq:getX(), sq:getY(), sq:getZ()) ~= nil
+end
+
+local function guardDestroyCursor()
+    if not ISDestroyCursor or ISDestroyCursor.MinidoracatEconomyGuarded then return end
+    ISDestroyCursor.MinidoracatEconomyGuarded = true
+    local base = ISDestroyCursor.canDestroy
+    ISDestroyCursor.canDestroy = function(self, object)
+        if not isAdmin() and protectedObject(object) then return false end
+        return base(self, object)
     end
 end
 
@@ -85,5 +114,7 @@ end
 
 C.handlers["terminal.register"] = function(args) onReply("Terminal_Registered", args) end
 C.handlers["terminal.unregister"] = function(args) onReply("Terminal_Unregistered", args) end
+C.handlers["terminal.demolish"] = function(args) onReply("Terminal_Demolished", args) end
 
 Events.OnFillWorldObjectContextMenu.Add(onFillMenu)
+Events.OnGameStart.Add(guardDestroyCursor)

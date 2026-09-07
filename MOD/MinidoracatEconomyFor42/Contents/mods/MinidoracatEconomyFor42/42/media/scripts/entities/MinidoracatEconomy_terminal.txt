@@ -16,6 +16,7 @@ module Base
         component SpriteConfig
         {
             isProp = true,
+            isThumpable = false,
             face S
             {
                 layer

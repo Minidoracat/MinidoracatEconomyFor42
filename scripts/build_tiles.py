@@ -123,6 +123,18 @@ def write_tiledef(out: Path) -> None:
     out.write_bytes(body)
 
 
+def write_icon(src: Path, out: Path, size: int = 64) -> None:
+    """Square build-menu icon (xuiSkin Icon=, loaded by Texture.trygetTexture) from the S face."""
+    img = Image.open(src).convert("RGBA")
+    img = img.crop(img.getbbox())
+    scale = (size - 4) / max(img.width, img.height)
+    img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+    icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    icon.paste(img, ((size - img.width) // 2, (size - img.height) // 2), img)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    icon.save(out, optimize=True)
+
+
 def check() -> None:
     pack = MEDIA / "texturepacks" / f"{PACK_NAME}.pack"
     data = pack.read_bytes()
@@ -173,9 +185,10 @@ def main() -> None:
     sheet.save(SOURCE / "sheet_preview.png")
     entries = write_pack(sheet, cells, MEDIA / "texturepacks" / f"{PACK_NAME}.pack")
     write_tiledef(MEDIA / f"{TILEDEF_NAME}.tiles")
+    write_icon(SOURCE / "S.png", MEDIA / "ui" / "MinidoracatEconomy" / "terminal_icon.png")
     for e in entries:
         print(f"{e[0]}: {e[3]}x{e[4]} at {e[5]},{e[6]}")
-    print(f"wrote {PACK_NAME}.pack and {TILEDEF_NAME}.tiles (file number {FILE_NUMBER})")
+    print(f"wrote {PACK_NAME}.pack, {TILEDEF_NAME}.tiles (file number {FILE_NUMBER}) and ui/MinidoracatEconomy/terminal_icon.png")
 
 
 if __name__ == "__main__":

@@ -140,7 +140,50 @@ function T.unregister(player, args)
     return { ok = true, id = id }
 end
 
+-- Admin removal of the world object itself (right-click "demolish"): the square's terminal-tile
+-- object is transmitted away (IsoGridSquare.transmitRemoveItemFromSquare, the ClientCommands.lua
+-- server pattern) and a registration on that square is dropped with it. Players never get this
+-- path: the entity is not thumpable, not moveable, and the client refuses the sledgehammer.
+function T.demolish(player, args)
+    if not isAdmin(player) then return { ok = false, error = "forbidden" } end
+    if type(args) ~= "table" or not isInt(args.x) or not isInt(args.y) or not isInt(args.z) then
+        return { ok = false, error = "invalid_args" }
+    end
+    local removed = false
+    local ok = pcall(function()
+        local sq = getCell():getGridSquare(args.x, args.y, args.z)
+        if not sq then return end
+        local objects = sq:getObjects()
+        local victims = {}
+        for i = 0, objects:size() - 1 do
+            local o = objects:get(i)
+            local sprite = o and o:getSprite()
+            local name = sprite and sprite:getName()
+            if name and EC.TERMINAL_SPRITES[name] then victims[#victims + 1] = o end
+        end
+        for _, o in ipairs(victims) do
+            sq:transmitRemoveItemFromSquare(o)
+            removed = true
+        end
+    end)
+    if not ok or not removed then return { ok = false, error = "no_terminal_object" } end
+    local id = T.at(args.x, args.y, args.z)
+    if id then
+        md.terminals[id] = nil
+        X.emit("terminal.unregistered", { terminalId = id, x = args.x, y = args.y, z = args.z, actor = player:getUsername(), demolished = true })
+        broadcastList()
+    end
+    X.audit({ action = "terminal", target = id or (args.x .. "," .. args.y .. "," .. args.z), field = "demolish", admin = player:getUsername() })
+    return { ok = true, id = id }
+end
+
 -- ---------- commands ----------
+
+S.handlers["terminal.demolish"] = function(player, args)
+    local res = T.demolish(player, args)
+    res.requestId = type(args) == "table" and args.requestId or nil
+    S.reply(player, "terminal.demolish", res)
+end
 
 S.handlers["terminals"] = function(player, args)
     S.reply(player, "terminals", { list = T.list(), remoteReadOnly = EC.sandbox("RemoteReadOnly", true), range = EC.TERMINAL_RANGE })
