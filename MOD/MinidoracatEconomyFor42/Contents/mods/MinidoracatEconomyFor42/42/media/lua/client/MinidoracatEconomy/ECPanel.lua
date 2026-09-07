@@ -101,6 +101,25 @@ local function itemName(fullType)
     return name
 end
 
+-- The script's own DisplayName (Item.java:493-495): the untranslated, usually English, name.
+-- Shown next to the localised name (and searched) so players on any language can find "Nails";
+-- nil when it is the same string as the localised name or the script is unknown.
+local itemBaseNames = {}
+local function itemBaseName(fullType)
+    local base = itemBaseNames[fullType]
+    if base == nil then
+        base = false
+        local ok, script = pcall(function() return ScriptManager.instance:FindItem(fullType) end)
+        if ok and script then
+            local okName, value = pcall(function() return script:getDisplayName() end)
+            if okName and type(value) == "string" and value ~= "" then base = value end
+        end
+        itemBaseNames[fullType] = base
+    end
+    if not base or base == itemName(fullType) then return nil end
+    return base
+end
+
 local function itemTexture(fullType)
     local tex = itemTextures[fullType]
     if tex == nil then
@@ -141,7 +160,7 @@ local function shopRow(it, currency)
     return {
         id = it.id, item = it.item, qty = qty, price = tonumber(it.price) or 0,
         dailyCap = cap, remaining = remaining, soldOut = soldOut, currency = currency,
-        name = itemName(it.item), texture = itemTexture(it.item),
+        name = itemName(it.item), altName = itemBaseName(it.item), texture = itemTexture(it.item),
         qtyText = getText(T .. "Shop_QtyPer", tostring(qty)),
         priceText = amountText(it.price), remainText = remainText, remainToken = remainToken,
         buyLabel = getText(T .. "Shop_Buy"),
@@ -162,7 +181,13 @@ function ShopCell:render()
     if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
     drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
     local half = math.floor(h / 2)
-    text(self, fitText(e.name, cols.nameW), cols.name, half - fontH.small - 2, "text")
+    local nameText = fitText(e.name, cols.nameW)
+    text(self, nameText, cols.name, half - fontH.small - 2, "text")
+    if e.altName then
+        local altX = cols.name + textWidth(nameText) + 8
+        local altW = cols.name + cols.nameW - altX
+        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
+    end
     text(self, e.qtyText, cols.name, half + 2, "textFaint")
     local ty = math.floor((h - fontH.small) / 2)
     textRight(self, e.priceText, cols.priceR, ty, "accent")
@@ -188,7 +213,13 @@ function MailCell:render()
     if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
     drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
     local half = math.floor(h / 2)
-    text(self, fitText(e.nameText, cols.nameW), cols.name, half - fontH.small - 2, "text")
+    local nameText = fitText(e.nameText, cols.nameW)
+    text(self, nameText, cols.name, half - fontH.small - 2, "text")
+    if e.altName then
+        local altX = cols.name + textWidth(nameText) + 8
+        local altW = cols.name + cols.nameW - altX
+        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
+    end
     text(self, e.fromText, cols.name, half + 2, "textFaint")
     local ty = math.floor((h - fontH.small) / 2)
     textRight(self, e.timeText, cols.timeR, ty, "textFaint")
@@ -484,6 +515,9 @@ local function normalize(e, offsetMin)
         -- integration postings (spec 21.3): the mod id plus its own wording when it gave one
         desc = tostring(e.sourceMod)
         if type(e.reasonText) == "string" and e.reasonText ~= "" then desc = desc .. " - " .. e.reasonText end
+    elseif type(e.item) == "string" then
+        -- shop purchases carry the item and count (ring and receipt files alike)
+        desc = itemName(e.item) .. " x" .. tostring(math.floor(tonumber(e.qty) or 1))
     end
     local kind = e.kind or e.type
     return {
@@ -626,7 +660,9 @@ function Panel:rebuildShop()
         if it.enabled ~= false and (self.shopCat == nil or it.category == self.shopCat) then
             local row = shopRow(it, shop.currency)
             if query == nil or string.find(string.lower(row.name), query, 1, true)
-                or string.find(string.lower(tostring(row.id)), query, 1, true) then
+                or (row.altName and string.find(string.lower(row.altName), query, 1, true))
+                or string.find(string.lower(tostring(row.id)), query, 1, true)
+                or string.find(string.lower(tostring(row.item)), query, 1, true) then
                 rows[#rows + 1] = row
             end
         end
@@ -641,7 +677,7 @@ function Panel:rebuildMail()
         local qty = tonumber(e.qty) or 1
         local name = itemName(e.item)
         rows[#rows + 1] = {
-            id = e.id, item = e.item, qty = qty, name = name, texture = itemTexture(e.item),
+            id = e.id, item = e.item, qty = qty, name = name, altName = itemBaseName(e.item), texture = itemTexture(e.item),
             nameText = name .. " x" .. tostring(qty),
             fromText = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or tostring(e.kind),
             timeText = stampText(tonumber(e.at) or 0, self.offsetMin),

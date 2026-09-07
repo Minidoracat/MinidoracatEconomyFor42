@@ -213,7 +213,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 337     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 341     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1635,22 +1635,38 @@ check(cmd(zed, "shop.buy", { id = "bandage", count = 3, revision = rev }).ok == 
 check(cmd(zed, "shop.buy", { id = "axe", revision = rev }).error == "insufficient_funds" and L.getBalance("zed", "survivor").available == 40, "insufficient funds refuse with zero debit")
 check(cmd(zed, "shop.buy", { id = "nails", count = 6, revision = rev }).error == "too_many_items", "more than 100 items per purchase is refused")
 local rc = L.receipts("zed")
-check(rc[#rc].kind == "shop_buy" and rc[#rc].amount == -36 and rc[#rc].counterparty == "SYSTEM_BURN", "the receipt ring shows the burn")
--- admin overrides
+check(rc[#rc].kind == "shop_buy" and rc[#rc].amount == -36 and rc[#rc].counterparty == "SYSTEM_BURN" and rc[#rc].item == "Base.Bandage" and rc[#rc].qty == 3,
+    "the receipt ring shows the burn with what was bought")
+-- admin edits are written into catalog.json and pushed to everyone online
 check(cmd(mod, "admin.catalog", { action = "set", id = "bandage", enabled = false }).error == "forbidden", "a moderator cannot change the catalog")
+sentCommands = {}
 local set = cmd(boss, "admin.catalog", { action = "set", id = "bandage", enabled = false, price = 99 })
 local bandage = nil
 for _, it in ipairs(set.items) do if it.id == "bandage" then bandage = it end end
-check(set.ok == true and bandage.enabled == false and bandage.price == 99 and bandage.override == true and bandage.filePrice == 12 and set.revision ~= rev,
-    "an admin override disables and reprices a SKU and bumps the revision")
+local fileText = table.concat(files["MinidoracatEconomy/catalog.json"].lines, "\n")
+check(set.ok == true and bandage.enabled == false and bandage.price == 99 and set.revision ~= rev
+    and string.find(fileText, '"price":99', 1, true) ~= nil and string.find(fileText, '"enabled":false', 1, true) ~= nil
+    and Shop.fileStatus().count == 13, "an admin edit disables and reprices a SKU in catalog.json itself and bumps the revision")
+local pushed = nil
+for _, s in ipairs(sentCommands) do if s.command == "shop.list" and s.player == zed then pushed = s.args end end
+check(pushed ~= nil and pushed.revision == set.revision, "the change is pushed to every online player as a fresh shop.list")
 check(cmd(zed, "shop.buy", { id = "bandage", revision = set.revision }).error == "unknown_sku", "a disabled SKU cannot be bought")
-check(cmd(boss, "admin.catalog", { action = "set", id = "bandage", clear = "all" }).items ~= nil and Shop.sku("bandage").enabled == true and Shop.sku("bandage").price == 12
-    and S.modData().config.catalog.bandage == nil, "clear=all removes the override row")
-check(cmd(boss, "admin.catalog", { action = "set", id = "nope", enabled = false }).error == "unknown_sku", "unknown SKUs cannot be overridden")
-local au = X.auditEntries(10)
+check(cmd(boss, "admin.catalog", { action = "set", id = "bandage", enabled = true, price = 12 }).ok == true and Shop.sku("bandage").enabled == true
+    and Shop.sku("bandage").price == 12, "editing back restores the row")
+check(cmd(boss, "admin.catalog", { action = "set", id = "nope", enabled = false }).error == "unknown_sku", "unknown SKUs cannot be edited")
+check(cmd(boss, "admin.catalog", { action = "set", id = "bandage", price = 0 }).error == "invalid_args", "out-of-range values are refused")
+-- a hand edit on disk since the last load must not be overwritten by the panel
+files["MinidoracatEconomy/catalog.json"].lines[1] = files["MinidoracatEconomy/catalog.json"].lines[1] .. " "
+check(cmd(boss, "admin.catalog", { action = "set", id = "bandage", price = 13 }).error == "catalog_stale" and Shop.sku("bandage").price == 12,
+    "a file changed outside the panel is refused as stale until reloaded")
+check(cmd(boss, "admin.catalog", { action = "reload" }).ok == true and cmd(boss, "admin.catalog", { action = "set", id = "bandage", price = 13 }).ok == true
+    and Shop.sku("bandage").price == 13, "after a reload the edit goes through")
+cmd(boss, "admin.catalog", { action = "set", id = "bandage", price = 12 })
+local au = X.auditEntries(20)
 local catalogAudit = 0
 for _, e in ipairs(au) do if e.action == "catalog" then catalogAudit = catalogAudit + 1 end end
-check(catalogAudit >= 3, "catalog overrides are audited per field")
+check(catalogAudit >= 5, "catalog edits are audited per field")
+rev = cmd(zed, "shop.list").revision
 -- backpack full -> stays in the mailbox until claimed at a terminal
 zed.inventory.maxWeight = 0.5
 rev = cmd(zed, "shop.list").revision
@@ -1755,18 +1771,19 @@ check(o.entries[b2.mailId].state == "claimed" and M.unclaimed("zed") == 0 and an
 fire("OnTickEvenPaused")
 local saved = deepCopy(modDataStore[EC.MODDATA_KEY])
 local balanceBefore = L.getBalance("zed", "survivor").available
-local b3 = cmd(zed, "shop.buy", { id = "lighter", revision = rev })
-check(b3.delivered == true and zed.inventory.count("Base.Lighter") == 1, "setup: lighter delivered after the save point")
+local b3 = cmd(zed, "shop.buy", { id = "lighter", count = 2, revision = rev })
+check(b3.delivered == true and zed.inventory.count("Base.Lighter") == 2, "setup: two lighters delivered after the save point")
 modDataStore[EC.MODDATA_KEY] = deepCopy(saved)
 nowMs = nowMs + 1000
 fire("OnServerStarted")
 onlinePlayers = { boss, zed }
 sentItemPackets = {}
 cmd(zed, "hello")
-check(zed.inventory.count("Base.Lighter") == 0 and L.getBalance("zed", "survivor").available == balanceBefore
-    and sentItemPackets[#sentItemPackets] ~= nil and sentItemPackets[#sentItemPackets].remove ~= nil
+local removed = 0
+for _, pk in ipairs(sentItemPackets) do if pk.remove ~= nil then removed = removed + 1 end end
+check(zed.inventory.count("Base.Lighter") == 0 and L.getBalance("zed", "survivor").available == balanceBefore and removed == 2
     and zed.modData[KEY].claims[b3.mailId] == nil and anomalies("removed-rolled-back") == 1,
-    "an item whose claim rolled back with the world is removed (the money came back) and its witness dropped")
+    "every item of a claim that rolled back with the world is removed (the money came back) and its witness dropped")
 -- a durable claim whose entry was pruned after the TTL is left alone
 rev = cmd(zed, "shop.list").revision
 local b4 = cmd(zed, "shop.buy", { id = "twine", revision = rev })

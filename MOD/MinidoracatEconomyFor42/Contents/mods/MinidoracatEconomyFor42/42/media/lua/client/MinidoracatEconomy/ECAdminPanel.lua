@@ -551,8 +551,8 @@ end
 -- "back to the file value" chip on the second. Every string and hit box is computed once per
 -- rebuild (Admin:catalogGeometry / Admin:catalogRow), so the cell only paints and the click test
 -- reads exactly the numbers the paint used.
-local CATALOG_CTRL_W = 300
 local CATALOG_STEP_W = 26
+local CATALOG_VALUE_MIN_W = 64
 local CATALOG_TOGGLE_W = 44
 local PRICE_MAX = 1000000000   -- ECShop's own price ceiling
 local CAP_MAX = 1000000
@@ -577,6 +577,24 @@ end
 
 -- Item icon: the script item's normal texture, cached per fullType (false = asked and missing).
 -- A geometry change rebuilds every row, and ScriptManager lookups are not free.
+-- The script's untranslated DisplayName (Item.java:493-495), shown faint after the localised
+-- name so the host can match a row against the item id on any language; nil when identical.
+local itemBaseNames = {}
+local function itemBaseName(fullType)
+    local base = itemBaseNames[fullType]
+    if base == nil then
+        base = false
+        local ok, script = pcall(function() return ScriptManager.instance:FindItem(fullType) end)
+        if ok and script then
+            local okName, value = pcall(function() return script:getDisplayName() end)
+            if okName and type(value) == "string" and value ~= "" then base = value end
+        end
+        itemBaseNames[fullType] = base
+    end
+    if not base or base == itemName(fullType) then return nil end
+    return base
+end
+
 local itemTextures = {}
 local function itemTexture(fullType)
     if type(fullType) ~= "string" then return nil end
@@ -601,13 +619,6 @@ local function capValueText(cap)
     return amountText(n)
 end
 
--- What the file says about an overridden SKU ("12 / 5 / on"): the summary the overridden note
--- quotes, so the admin can see what "back to the file value" would restore.
-local function fileSummary(sku)
-    return amountText(tonumber(sku.filePrice) or 0) .. " / " .. capValueText(sku.fileDailyCap)
-        .. " / " .. tr(sku.fileEnabled ~= false and "Admin_On" or "Admin_Off")
-end
-
 local CatalogCell = ISPanel:derive("MinidoracatEconomyCatalogCell")
 
 function CatalogCell:render()
@@ -622,7 +633,7 @@ function CatalogCell:render()
         if not ok then e.icon = nil end
     end
     text(self, e.nameText, e.nameX, e.line1Y, e.toggleOn and "text" or "textFaint")
-    if e.overText then text(self, e.overText, PAD, e.line2Y, "warn") end
+    if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
     text(self, e.metaText, e.metaX, e.line2Y, "textFaint")
     local labelToken = off and "textFaint" or "textMuted"
     text(self, e.enabledLabel, e.labelLeftX, e.textY1, labelToken)
@@ -1706,8 +1717,6 @@ function Admin:onCatalogAction(item, id)
     local cap = math.floor(tonumber(sku.dailyCap) or 0)
     if id == "toggle" then
         self:sendCatalog({ action = "set", id = sku.id, enabled = sku.enabled == false }, nil)
-    elseif id == "clear" then
-        self:sendCatalog({ action = "set", id = sku.id, clear = "all" }, nil)
     elseif id == "priceMinus" or id == "pricePlus" then
         local step = priceStep(price)
         local target = price + (id == "pricePlus" and step or -step)
@@ -2280,7 +2289,8 @@ function Admin:rebuildReceipts()
             txId = e.txId, currency = e.currency,
             cells = {
                 stampText(e.ts, self.offsetMin), currencyName(e.currency), signedText(amount),
-                kindText(e.kind), amountText(e.after), tostring(e.txId or "-"),
+                kindText(e.kind), amountText(e.after),
+                (type(e.item) == "string" and (itemName(e.item) .. " x" .. tostring(math.floor(tonumber(e.qty) or 1)) .. "  ") or "") .. tostring(e.txId or "-"),
             },
             tokens = { "textMuted", "text", amount >= 0 and "positive" or "negative", "text", "text", "textFaint" },
             muted = e.rolledBack == true,
@@ -2495,31 +2505,32 @@ function Admin:rebuildSettings()
 end
 
 -- Geometry of a catalog row's control strip: identical for every row, so it is computed once per
--- rebuild and the rows only carry their own strings.
+-- rebuild and the rows only carry their own strings. The strip is as wide as its content (labels
+-- in the player's font, two steppers, a value that fits "1,000,000", the edit chip) instead of a
+-- fixed number: a fixed 300 px lost the price digits at large UI fonts.
 function Admin:catalogGeometry(width, chipH)
     local labelW = math.max(textWidth(tr("Admin_Shop_Enabled")), textWidth(tr("Admin_Shop_Price")), textWidth(tr("Admin_Shop_Cap")))
-    local clearLabel, editLabel = tr("Admin_Shop_Clear"), tr("Admin_Set_Edit")
+    local editLabel = tr("Admin_Set_Edit")
     local geo = {
         chipH = chipH, chipTextY = math.floor((chipH - fontH.small) / 2), labelW = labelW,
-        clearLabel = clearLabel, clearW = textWidth(clearLabel) + 16,
         editLabel = editLabel, editW = textWidth(editLabel) + 16,
     }
-    geo.leftW = math.max(labelW + 4 + CATALOG_TOGGLE_W, geo.clearW)
-    geo.ctrlX = math.max(70, width - PAD - CATALOG_CTRL_W)
+    geo.valueW = math.max(CATALOG_VALUE_MIN_W, textWidth("1,000,000") + 8)
+    geo.leftW = labelW + 4 + CATALOG_TOGGLE_W
+    local stripW = geo.leftW + 8 + labelW + 6 + CATALOG_STEP_W + 4 + geo.valueW + 4 + CATALOG_STEP_W + 4 + geo.editW
+    geo.ctrlX = math.max(70, width - PAD - stripW)
     geo.toggleX = geo.ctrlX + labelW + 4
     geo.labelX = geo.ctrlX + geo.leftW + 8
     geo.editX = width - PAD - geo.editW
     geo.plusX = geo.editX - 4 - CATALOG_STEP_W
-    geo.minusX = geo.labelX + labelW + 6
-    geo.valueX = geo.minusX + CATALOG_STEP_W + 4
-    geo.valueW = math.max(10, geo.plusX - 4 - geo.valueX)
+    geo.valueX = geo.plusX - 4 - geo.valueW
+    geo.minusX = geo.valueX - 4 - CATALOG_STEP_W
     return geo
 end
 
--- One catalog row: icon plus item name over "id / category / per-unit count" on the left, the
--- listed toggle and the price steppers on the right's first line, the daily cap steppers on its
--- second. An overridden SKU prefixes its second line with what the file says and gains the
--- "back to the file value" chip.
+-- One catalog row: icon plus item name (and its untranslated name) over "id / category /
+-- per-unit count" on the left, the listed toggle and the price steppers on the right's first
+-- line, the daily cap steppers on its second.
 function Admin:catalogRow(sku, geo, lh, rowHeight, y1, y2)
     local name = itemName(sku.item)
     local size = math.min(math.max(12, rowHeight - 10), 28)
@@ -2546,21 +2557,20 @@ function Admin:catalogRow(sku, geo, lh, rowHeight, y1, y2)
     item.hits[#item.hits + 1] = { id = "capMinus", x = geo.minusX, y = y2, w = CATALOG_STEP_W, h = geo.chipH, label = "-" }
     item.hits[#item.hits + 1] = { id = "capPlus", x = geo.plusX, y = y2, w = CATALOG_STEP_W, h = geo.chipH, label = "+" }
     item.hits[#item.hits + 1] = { id = "capEdit", x = geo.editX, y = y2, w = geo.editW, h = geo.chipH, label = geo.editLabel }
-    if sku.override == true then
-        item.hits[#item.hits + 1] = { id = "clear", x = geo.ctrlX, y = y2, w = geo.clearW, h = geo.chipH, label = geo.clearLabel }
-    end
 
-    local leftW = math.max(0, geo.ctrlX - PAD * 2)
     item.nameX = PAD + size + 6
-    item.nameText = fitText(name, math.max(0, geo.ctrlX - PAD - item.nameX))
-    item.metaX = PAD
-    if sku.override == true then
-        item.overText = fitText(getText(T .. "Admin_Shop_Overridden", fileSummary(sku)), math.floor(leftW * 0.55))
-        item.metaX = PAD + textWidth(item.overText) + 6
+    local textW = math.max(0, geo.ctrlX - PAD - item.nameX)
+    item.nameText = fitText(name, textW)
+    local alt = itemBaseName(sku.item)
+    if alt then
+        item.altX = item.nameX + textWidth(item.nameText) + 8
+        local altW = geo.ctrlX - PAD - item.altX
+        if altW > 20 then item.altText = fitText(alt, altW) end
     end
+    item.metaX = item.nameX   -- under the name, clear of the icon
     local meta = tostring(sku.id) .. " / " .. categoryText(sku.category) .. " / "
         .. getText(T .. "Shop_QtyPer", tostring(math.floor(tonumber(sku.qty) or 1)))
-    item.metaText = fitText(meta, math.max(0, geo.ctrlX - PAD - item.metaX))
+    item.metaText = fitText(meta, textW)
     return item
 end
 

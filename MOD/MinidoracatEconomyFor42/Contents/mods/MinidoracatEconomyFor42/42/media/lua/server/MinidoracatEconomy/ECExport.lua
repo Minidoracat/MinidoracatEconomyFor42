@@ -242,6 +242,8 @@ local function onCommitted(ev)
                 sourceMod = ev.payload and ev.payload.sourceMod or nil,
                 reasonText = ev.reasonText,
                 ref = ev.payload and ev.payload.ref or nil,
+                item = ev.payload and ev.payload.item or nil,
+                qty = ev.payload and ev.payload.qty or nil,
             }))
         end
     end

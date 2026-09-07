@@ -145,7 +145,9 @@ local function stampOf(item)
     return nil
 end
 
--- mailId -> { item, stamp } over the backpack and up to three levels of carried bags.
+-- mailId -> { stamp, items = { {item, container}, ... } } over the backpack and up to three levels
+-- of carried bags. A purchase of N items carries N stamps with the same mailId: every one of them
+-- belongs to the same decision (live: 2 + 3 bandages, one per purchase was taken back at first).
 local function scanStamped(inv)
     local found = {}
     local function scan(container, depth)
@@ -154,7 +156,14 @@ local function scanStamped(inv)
         for i = 0, items:size() - 1 do
             local it = items:get(i)
             local st = it and stampOf(it)
-            if st and not found[st.mailId] then found[st.mailId] = { item = it, stamp = st, container = container } end
+            if st then
+                local rec = found[st.mailId]
+                if not rec then
+                    rec = { stamp = st, items = {} }
+                    found[st.mailId] = rec
+                end
+                rec.items[#rec.items + 1] = { item = it, container = container }
+            end
             if depth < 3 and it then
                 local okc, inner = pcall(function() return it:getInventory() end)
                 if okc and inner and inner ~= container then scan(inner, depth + 1) end
@@ -267,12 +276,14 @@ function M.reconcile(player)
             local st = rec.stamp
             if S.isRolledBack(st.epoch, tonumber(st.seq) or 0) then
                 -- the claim (and the purchase before it) rolled back with the world: money is back
-                pcall(function()
-                    rec.container:Remove(rec.item)
-                    sendRemoveItemFromContainer(rec.container, rec.item)
-                end)
+                for _, r in ipairs(rec.items) do
+                    pcall(function()
+                        r.container:Remove(r.item)
+                        sendRemoveItemFromContainer(r.container, r.item)
+                    end)
+                end
                 p.claims[mailId] = nil
-                anomaly(username, mailId, "removed-rolled-back", { txId = st.txId })
+                anomaly(username, mailId, "removed-rolled-back", { txId = st.txId, count = #rec.items })
                 changed = true
             end
         end

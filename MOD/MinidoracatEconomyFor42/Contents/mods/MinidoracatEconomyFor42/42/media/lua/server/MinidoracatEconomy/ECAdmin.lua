@@ -764,10 +764,10 @@ S.handlers["admin.option"] = function(player, args)
     S.reply(player, "admin.option", res)
 end
 
--- admin.catalog {action=list|set|reload, id?, price?, dailyCap?, enabled?, clear?, reason?, requestId}:
--- list = merged catalog with this admin's own remaining caps (read gate); set = runtime override
--- of one SKU (write gate, audited); reload = re-read catalog.json (write gate). Every reply
--- carries the whole catalog snapshot so the page redraws from one source.
+-- admin.catalog {action=list|set|reload, id?, price?, dailyCap?, enabled?, reason?, requestId}:
+-- list = the catalog with this admin's own remaining caps (read gate); set = edit one SKU in
+-- catalog.json (write gate, audited, pushed to everyone online); reload = re-read the file
+-- (write gate). Every reply carries the whole catalog snapshot so the page redraws from one source.
 S.handlers["admin.catalog"] = function(player, args)
     local action = type(args) == "table" and args.action or "list"
     local write = action == "set" or action == "reload"
@@ -778,8 +778,7 @@ S.handlers["admin.catalog"] = function(player, args)
             res = { ok = false, error = "invalid_args" }
         else
             local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
-            local ok, err = Shop.setOverride(args.id, { price = args.price, dailyCap = args.dailyCap, enabled = args.enabled, clear = args.clear },
-                player:getUsername(), reason)
+            local ok, err = Shop.update(args.id, { price = args.price, dailyCap = args.dailyCap, enabled = args.enabled }, player:getUsername(), reason)
             if not ok then res = { ok = false, error = err } end
             res.id = args.id
         end

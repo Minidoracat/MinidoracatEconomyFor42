@@ -3,10 +3,12 @@
 -- The catalog is a server-owned file, {cachedir}/Lua/MinidoracatEconomy/catalog.json (one JSON
 -- document: {"items":[{"id","item","qty","price","dailyCap","category","enabled"}]}), read at
 -- start and on admin.catalog{action="reload"}; a broken file keeps the previous catalog and the
--- error is shown in the panel. Admins override enabled / price / dailyCap per SKU at runtime in
--- ModData (config.catalog[id]) - same file-default-plus-override shape as the sandbox options.
--- Players see the merged view under a revision string; shop.buy carries that revision and is
--- refused when the catalog changed underneath (no silent repricing).
+-- error is shown in the panel. The admin page edits enabled / price / dailyCap per SKU and those
+-- edits are written straight back into the file (the file is the single source of truth, it never
+-- rolls back with the world save; a hand edit made since the last load is detected by hash and
+-- refused until the admin reloads). Every change is pushed to everyone online. Players see the
+-- catalog under a revision string (the file hash); shop.buy carries that revision and is refused
+-- when the catalog changed underneath (no silent repricing).
 --
 -- A purchase burns the market currency (player -> SYSTEM_BURN), counts against the per-account
 -- daily cap (reward day, ECRewards.dayKey) and puts a mailbox entry in the same tick (rule one);
@@ -135,22 +137,27 @@ local function readFile()
     return table.concat(lines, "\n")
 end
 
-local function writeDefault()
+-- Canonical serialisation: one SKU per line so a host can still hand-edit the file.
+local function writeCatalog(rows)
     local writer = nil
     local ok = pcall(function() writer = getFileWriter(Shop.FILE, true, false) end)
     if not ok or not writer then return false end
-    pcall(function()
+    local wrote = pcall(function()
         writer:writeln("{")
         writer:writeln('  "items": [')
-        for i, row in ipairs(Shop.DEFAULT_ITEMS) do
-            writer:writeln("    " .. EC.jsonEncode({ id = row.id, item = row.item, qty = row.qty, price = row.price, dailyCap = row.dailyCap, category = row.category, enabled = true })
-                .. (i < #Shop.DEFAULT_ITEMS and "," or ""))
+        for i, row in ipairs(rows) do
+            writer:writeln("    " .. EC.jsonEncode({ id = row.id, item = row.item, qty = row.qty, price = row.price, dailyCap = row.dailyCap, category = row.category, enabled = row.enabled ~= false })
+                .. (i < #rows and "," or ""))
         end
         writer:writeln("  ]")
         writer:writeln("}")
     end)
     pcall(function() writer:close() end)
-    return true
+    return wrote
+end
+
+local function hashOf(text)
+    return EC.hashHex(EC.hashUpdate(EC.hashInit(), text))
 end
 
 -- Loads the file; on the first run writes the default catalog first. A bad file keeps the
@@ -158,7 +165,7 @@ end
 function Shop.load()
     local text = readFile()
     if text == nil then
-        if not writeDefault() then
+        if not writeCatalog(Shop.DEFAULT_ITEMS) then
             file.error = "catalog file unavailable"
             return false, file.error
         end
@@ -173,7 +180,7 @@ function Shop.load()
     file.items, file.byId, file.count = parsed.items, parsed.byId, #parsed.items
     file.loadedAt = EC.now()
     file.error = nil
-    file.hash = EC.hashHex(EC.hashUpdate(EC.hashInit(), text))
+    file.hash = hashOf(text)
     return true
 end
 
@@ -181,26 +188,16 @@ function Shop.fileStatus()
     return { count = file.count, loadedAt = file.loadedAt, error = file.error, path = Shop.FILE }
 end
 
--- ---------- merged view ----------
+-- ---------- catalog view ----------
 
 function Shop.revision()
-    return tostring(md.config.catalogRev) .. ":" .. file.hash
+    return file.hash
 end
 
 function Shop.sku(id)
     local base = type(id) == "string" and file.byId[id] or nil
     if not base then return nil end
-    local o = md.config.catalog[id] or {}
-    local enabled = base.enabled
-    if o.enabled ~= nil then enabled = o.enabled end   -- not `and/or`: an override of false must win
-    return {
-        id = base.id, item = base.item, qty = base.qty, category = base.category,
-        price = type(o.price) == "number" and o.price or base.price,
-        dailyCap = type(o.dailyCap) == "number" and o.dailyCap or base.dailyCap,
-        enabled = enabled,
-        filePrice = base.price, fileDailyCap = base.dailyCap, fileEnabled = base.enabled,
-        override = (o.price ~= nil or o.dailyCap ~= nil or o.enabled ~= nil) or nil,
-    }
+    return { id = base.id, item = base.item, qty = base.qty, category = base.category, price = base.price, dailyCap = base.dailyCap, enabled = base.enabled }
 end
 
 -- The one currency the shop trades in (exactly one registry entry has marketUnit, spec 18.1).
@@ -254,61 +251,73 @@ function Shop.snapshot(username, ms)
     }
 end
 
--- ---------- overrides (admin) ----------
+-- ---------- admin edits (written to the file) ----------
 
--- fields = { price?, dailyCap?, enabled?, clear? }: price / dailyCap integers and enabled boolean
--- set an override; clear = "price" | "dailyCap" | "enabled" | "all" removes one (back to the
--- file). Returns ok, err.
-function Shop.setOverride(id, fields, actor, reason)
-    if not file.byId[id] then return false, "unknown_sku" end
+-- Every online player gets a fresh snapshot: the list they are looking at must not go stale
+-- after an admin took something off the shelf or repriced it.
+function Shop.pushAll()
+    local players = getOnlinePlayers()
+    if not players then return end
+    local ms = EC.now()
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        local snap = Shop.snapshot(p:getUsername(), ms)
+        snap.atTerminal = T.near(p)
+        snap.unclaimed = M.unclaimed(p:getUsername())
+        S.reply(p, "shop.list", snap)
+    end
+end
+
+-- fields = { price?, dailyCap?, enabled? } ; the SKU row is changed in the file. Returns ok, err.
+-- Refused with catalog_stale when the file on disk no longer matches what was loaded (a hand
+-- edit the panel would otherwise overwrite): reload first.
+function Shop.update(id, fields, actor, reason)
+    local row = file.byId[id]
+    if not row then return false, "unknown_sku" end
     if type(fields) ~= "table" then return false, "invalid_args" end
-    local o = md.config.catalog[id] or {}
     local changes = {}
     if fields.price ~= nil then
         if not isInt(fields.price, 1, Shop.PRICE_MAX) then return false, "invalid_args" end
-        changes[#changes + 1] = { "price", o.price, fields.price }
+        changes[#changes + 1] = { "price", row.price, fields.price }
     end
     if fields.dailyCap ~= nil then
         if not isInt(fields.dailyCap, 0, Shop.CAP_MAX) then return false, "invalid_args" end
-        changes[#changes + 1] = { "dailyCap", o.dailyCap, fields.dailyCap }
+        changes[#changes + 1] = { "dailyCap", row.dailyCap, fields.dailyCap }
     end
     if fields.enabled ~= nil then
         if type(fields.enabled) ~= "boolean" then return false, "invalid_args" end
-        changes[#changes + 1] = { "enabled", o.enabled, fields.enabled }
+        changes[#changes + 1] = { "enabled", row.enabled, fields.enabled }
     end
-    if fields.clear ~= nil then
-        if fields.clear == "all" then
-            for _, f in ipairs({ "price", "dailyCap", "enabled" }) do changes[#changes + 1] = { f, o[f], nil } end
-        elseif fields.clear == "price" or fields.clear == "dailyCap" or fields.clear == "enabled" then
-            changes[#changes + 1] = { fields.clear, o[fields.clear], nil }
-        else
-            return false, "invalid_args"
-        end
-    end
-    local changed = false
+    local changed = {}
     for _, c in ipairs(changes) do
-        local field, before, after = c[1], c[2], c[3]
-        if before ~= after then
-            o[field] = after
-            changed = true
-            X.emit("admin.catalog", { sku = id, field = field, before = before, after = after, actor = actor, reason = reason })
-            X.audit({ action = "catalog", target = id, field = field, before = before, after = after, admin = actor, reason = reason })
-        end
+        if c[2] ~= c[3] then changed[#changed + 1] = c end
     end
-    if o.price == nil and o.dailyCap == nil and o.enabled == nil then
-        md.config.catalog[id] = nil
-    else
-        md.config.catalog[id] = o
+    if #changed == 0 then return true end
+    local onDisk = readFile()
+    if onDisk == nil or hashOf(onDisk) ~= file.hash then return false, "catalog_stale" end
+    for _, c in ipairs(changed) do row[c[1]] = c[3] end
+    if not writeCatalog(file.items) then
+        for _, c in ipairs(changed) do row[c[1]] = c[2] end
+        return false, "file_write_failed"
     end
-    if changed then md.config.catalogRev = md.config.catalogRev + 1 end
+    local ok, err = Shop.load()   -- re-read what was written: hash, count and a sanity parse
+    if not ok then
+        EC.log("catalog.json unreadable after the panel wrote it: " .. tostring(err))
+        return false, "file_write_failed"
+    end
+    for _, c in ipairs(changed) do
+        X.emit("admin.catalog", { sku = id, field = c[1], before = c[2], after = c[3], actor = actor, reason = reason })
+        X.audit({ action = "catalog", target = id, field = c[1], before = c[2], after = c[3], admin = actor, reason = reason })
+    end
+    Shop.pushAll()
     return true
 end
 
 function Shop.reload(actor)
     local ok, err = Shop.load()
-    md.config.catalogRev = md.config.catalogRev + 1
     X.emit("admin.catalog", { field = "reload", after = ok and file.count or nil, error = err, actor = actor })
     X.audit({ action = "catalog", target = "file", field = "reload", after = ok and tostring(file.count) or ("error: " .. tostring(err)), admin = actor })
+    if ok then Shop.pushAll() end
     return ok, err
 end
 
@@ -344,7 +353,7 @@ function Shop.buy(player, args)
     if L.getBalance(username, currency).available < total then return { ok = false, error = "insufficient_funds" } end
     local res = L.debit(username, currency, total, Shop.BURN_ACCOUNT, {
         kind = "shop_buy", requestId = "shop:" .. username .. ":" .. args.requestId, reasonCode = "shop_buy",
-        payload = { sku = sku.id, item = sku.item, qty = sku.qty, count = count, unitPrice = sku.price },
+        payload = { sku = sku.id, item = sku.item, qty = sku.qty * count, count = count, unitPrice = sku.price },
     })
     if not res.ok then return { ok = false, error = res.error } end
     local row = dailyRow(day, username, true)
@@ -383,8 +392,6 @@ end
 
 function Shop.init(root)
     md = root
-    md.config.catalog = md.config.catalog or {}
-    md.config.catalogRev = md.config.catalogRev or 1
     md.shopDaily = md.shopDaily or {}
     local ok, err = Shop.load()
     EC.log("catalog: " .. (ok and (file.count .. " items") or ("error " .. tostring(err))))

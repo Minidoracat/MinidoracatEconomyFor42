@@ -256,6 +256,7 @@ function L.post(tx)
             txId = txId, seq = seq, ts = ts, kind = tx.kind, currency = p.currency, amount = p.amount,
             before = before, after = w.available, counterparty = L.counterparty(tx.postings, p),
             sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonText = tx.reasonText,
+            item = tx.payload and tx.payload.item or nil, qty = tx.payload and tx.payload.qty or nil,
         })
     end
 
