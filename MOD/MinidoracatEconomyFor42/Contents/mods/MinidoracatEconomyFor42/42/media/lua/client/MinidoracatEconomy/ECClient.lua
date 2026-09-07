@@ -18,9 +18,18 @@ EC.Client = EC.Client or {}
 local C = EC.Client
 
 C.session = nil          -- hello.ack payload from the current server process
+C.unclaimed = 0          -- pending mailbox items; every reply that knows the number refreshes it
 
 local function send(command, args)
     sendClientCommand(getPlayer(), EC.COMMAND_MODULE, command, args or {})
+end
+
+-- hello.ack and every reply that touches the mailbox (mail.list/claim, shop.buy, market.buy/
+-- cancel/notice) carry the pending count: the float button and the Mail tab paint it as a
+-- bubble without a page of their own being open.
+local function setUnclaimed(args)
+    local n = tonumber(args.unclaimed)
+    if n then C.unclaimed = math.max(0, math.floor(n)) end
 end
 
 local handlers = {}
@@ -28,6 +37,7 @@ C.handlers = handlers
 
 handlers["hello.ack"] = function(args)
     C.session = args
+    setUnclaimed(args)
     C.currencies = args.currencies or C.currencies
     if type(args.terminals) == "table" then C.terminals = args.terminals end
     EC.log("session epoch=" .. tostring(args.epoch) .. " loadedSeq=" .. tostring(args.loadedSeq)
@@ -186,12 +196,14 @@ end
 
 handlers["shop.list"] = function(args)
     C.shop = args
+    setUnclaimed(args)
     notifyShop("list", args)
 end
 
 -- Reply of one purchase: { ok, error?, requestId, txId?, item, qty, total, currency, delivered,
 -- deliveryError?, balance, revision, remaining?, unclaimed }.
 handlers["shop.buy"] = function(args)
+    setUnclaimed(args)
     if args.ok then C.requestWallet() end
     notifyShop("buy", args)
     C.requestShop()
@@ -213,11 +225,13 @@ end
 
 handlers["mail.list"] = function(args)
     C.mail = args
+    setUnclaimed(args)
     notifyMail("list", args)
 end
 
 -- Reply of one claim: { ok, error?, requestId, mailId, item, qty, entries, unclaimed }.
 handlers["mail.claim"] = function(args)
+    setUnclaimed(args)
     if C.mail then
         C.mail.entries = args.entries or C.mail.entries
         C.mail.unclaimed = args.unclaimed or C.mail.unclaimed
@@ -234,11 +248,17 @@ function C.claimMail(mailId, requestId) send("mail.claim", { mailId = mailId, re
 -- expiresAt, condition, uses, fluid, fluidAmount}, ... }, categories, currency, sort, category,
 -- query, mine, maxListings, feePercent, taxPercent, priceMin, priceMax, listingDays, atTerminal }.
 C.market = nil
--- Own listings: { items = { view... }, maxListings, atTerminal }.
+-- Own listings: { items = { view... (qty >= 1) }, maxListings, atTerminal }.
 C.myListings = nil
--- Backpack candidates: { items = { {itemId, item, ok, reason?, condition, uses,
--- category}, ... }, atTerminal, feePercent, priceMin, priceMax, mine, maxListings }.
+-- Backpack candidates: { items = { {itemId, itemIds = {...}, count, item, ok, reason?,
+-- condition?, uses?, category?}, ... }, atTerminal, feePercent, priceMin, priceMax, mine,
+-- maxListings }. One row per item state: `itemIds` holds every stacked item the server merged
+-- into it and `count` is how many (the picker lists a lot, not a single item).
 C.candidates = nil
+-- Own market history (market.history / admin.marketHistory reply): { username, entries =
+-- { {kind, listingId, item, qty, price, fee?, tax?, currency?, other?, reason?, admin?, ts,
+-- epoch, seq, rolledBack}, ... } (oldest first), total, truncated, error? }.
+C.marketHistory = nil
 C.marketListeners = {}
 function C.onMarket(fn) C.marketListeners[#C.marketListeners + 1] = fn end
 local function notifyMarket(kind, args)
@@ -263,7 +283,8 @@ handlers["market.candidates"] = function(args)
     notifyMarket("candidates", args)
 end
 
--- market.list reply: { ok, error?, requestId, listingId?, fee?, expiresAt?, mine (own listings), min?, max?, modDataKey? }
+-- market.list reply: { ok, error?, requestId, listingId?, qty?, fee?, expiresAt?,
+-- mine (own listings), min?, max?, modDataKey? }
 handlers["market.list"] = function(args)
     if type(args.mine) == "table" then
         C.myListings = C.myListings or {}
@@ -275,17 +296,53 @@ end
 
 -- market.buy reply: { ok, error?, requestId, txId?, listingId, item, price, tax, delivered, deliveryError?, balance, unclaimed }
 handlers["market.buy"] = function(args)
+    setUnclaimed(args)
     if args.ok then C.requestWallet() end
     notifyMarket("buy", args)
 end
 
 -- market.cancel reply: { ok, error?, requestId, listingId, mailId?, delivered?, mine, unclaimed }
 handlers["market.cancel"] = function(args)
+    setUnclaimed(args)
     if type(args.mine) == "table" then
         C.myListings = C.myListings or {}
         C.myListings.items = args.mine
     end
     notifyMarket("cancel", args)
+end
+
+-- market.history reply: the player's own ring (oldest first). A refusal (busy/server_busy)
+-- must not wipe the snapshot the page is already showing.
+handlers["market.history"] = function(args)
+    if not args.error then C.marketHistory = args end
+    notifyMarket("history", args)
+end
+
+-- The server pushes this to an online seller when their listing left the market:
+-- { kind = "sold"|"delisted"|"expired", listingId, item, qty, price, tax?, currency?, buyer?,
+-- reason?, unclaimed }. The toast has to fire without any page being open, so it lives here.
+handlers["market.notice"] = function(args)
+    setUnclaimed(args)
+    local kind = tostring(args.kind or "")
+    local key = getTextOrNull("IGUI_MinidoracatEconomy_Market_Notice_" .. kind)
+    if key then
+        local money = C.UI and C.UI.amountText or tostring
+        local name = C.itemLabel(args.item)
+        local qty = tostring(math.max(1, math.floor(tonumber(args.qty) or 1)))
+        local third = ""
+        if kind == "sold" then
+            third = money((tonumber(args.price) or 0) - (tonumber(args.tax) or 0))
+        elseif kind == "delisted" then
+            third = (type(args.reason) == "string" and args.reason ~= "") and args.reason or "-"
+        end
+        C.toast(getText("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, name, qty, third))
+    end
+    notifyMarket("notice", args)
+end
+
+-- The whitelist changed under an open picker: { at }. The candidate list is now stale.
+handlers["market.whitelist"] = function(args)
+    notifyMarket("whitelist", args)
 end
 
 function C.requestMarket(opts)
@@ -294,9 +351,23 @@ function C.requestMarket(opts)
 end
 function C.requestMyListings() send("market.mine") end
 function C.requestCandidates() send("market.candidates") end
-function C.listItem(itemId, price, requestId) send("market.list", { itemId = itemId, price = price, requestId = requestId }) end
+-- `itemIds` is the whole lot the player picked; `price` is the total for it.
+function C.listItem(itemIds, price, requestId) send("market.list", { itemIds = itemIds, price = price, requestId = requestId }) end
 function C.buyListing(listingId, price, requestId) send("market.buy", { listingId = listingId, price = price, requestId = requestId }) end
 function C.cancelListing(listingId, requestId) send("market.cancel", { listingId = listingId, requestId = requestId }) end
+function C.requestMarketHistory() send("market.history") end
+
+-- Localised item name (engine call, cached): the notice toast needs it before any UI exists.
+local itemLabels = {}
+function C.itemLabel(fullType)
+    local name = itemLabels[fullType]
+    if name == nil then
+        local ok, value = pcall(getItemNameFromFullType, fullType)
+        name = (ok and type(value) == "string" and value ~= "") and value or tostring(fullType)
+        itemLabels[fullType] = name
+    end
+    return name
+end
 
 -- One id per request; the server echoes it so a reply can be matched to its dialog.
 local requestCounter = 0
@@ -335,6 +406,7 @@ local function onGameStart()
     if not isClient() then return end
     sent = false
     C.session = nil
+    C.unclaimed = 0
     C.wallet = nil
     C.rewards = nil
     C.shop = nil
@@ -342,6 +414,7 @@ local function onGameStart()
     C.market = nil
     C.myListings = nil
     C.candidates = nil
+    C.marketHistory = nil
     C.terminals = {}
     Events.OnTick.Add(firstTick)
 end

@@ -66,7 +66,7 @@ local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.st
 local Button, TableCell = U.Button, U.TableCell
 
 local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Whitelist", "Listings", "Audit", "System", "Settings" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog", "admin.listings", "admin.whitelist" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog", "admin.listings", "admin.whitelist", "admin.marketHistory" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 local AUDIT_FILTERS = { "all", "adjust", "freeze", "config", "rolled" }   -- rolled = the audit files, rolled-back lines only
@@ -405,9 +405,13 @@ local function auditSpec()
         { header = tr("Wallet_Col_Time"), sample = "00-00 00:00" },
         { header = tr("Admin_Audit_Col_Admin"), sample = "admin0000" },
         { header = tr("Admin_Audit_Col_Action"), sample = tr("Admin_Audit_Action_unfreeze") },
-        { header = tr("Admin_Audit_Col_Target"), sample = "playerName00" },
+        -- the target is a fullType / a DisplayCategory / a SKU id as often as an account now,
+        -- and the change column carries a translated "field: before -> after" for the
+        -- structural actions: both are budgeted for that, not for a player name and an amount
+        { header = tr("Admin_Audit_Col_Target"), sample = "Base.Screwdriver" },
         { header = tr("Admin_Col_Currency"), sample = currencyName(EC.CURRENCY_ORDER[1]) },
-        { header = tr("Admin_Audit_Col_Change"), sample = "-999,999", right = true },
+        { header = tr("Admin_Audit_Col_Change"), right = true,
+            sample = getText(T .. "Admin_Audit_Change", tr("Admin_Audit_Field_category"), tr("Admin_Audit_Value_inherit"), tr("Admin_Audit_Value_exclude")) },
         { header = tr("Admin_Audit_Col_Reason"), sample = "", flex = true },
         { header = tr("Admin_Col_Tx"), sample = "0000000000000:0000" },
     }
@@ -785,6 +789,78 @@ function WhitelistCell:render()
         border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
         textCentre(self, hit.label, hit.x + hit.w / 2, hit.y + e.chipTextY,
             off and "textFaint" or (hit.active and "text" or "textMuted"))
+    end
+end
+
+-- ---------- audit page ----------
+
+-- Every audit action, every field it names and the enumerated values now carry a translation;
+-- anything the files do not know falls back to the raw string the server wrote, so a new action
+-- added on the server side is still readable here.
+local function auditFieldText(field)
+    return getTextOrNull(T .. "Admin_Audit_Field_" .. tostring(field)) or tostring(field)
+end
+
+local function auditValueText(value)
+    if value == nil then return nil end
+    local s = tostring(value)
+    return getTextOrNull(T .. "Admin_Audit_Value_" .. s) or s
+end
+
+-- What the target column means depends on the action: the whitelist names item fullTypes and
+-- DisplayCategories (painted the way the vanilla inventory does), the catalog names its own SKU
+-- ids and a forced delist names the seller's account -- both of which stay verbatim. Anything
+-- else that looks like a fullType is shown by its item name.
+local function auditTargetText(action, field, target)
+    local raw = tostring(target or "-")
+    if action == "whitelist" then
+        if field == "reload" then return auditFieldText("reload") end
+        if field == "category" then return itemCategoryName(raw) end
+        return itemName(raw)
+    end
+    if action == "catalog" or action == "delist" then return raw end
+    if string.find(raw, ".", 1, true) then return itemName(raw) end
+    return raw
+end
+
+-- The change column for the structural actions (whitelist / catalog / terminal): "field: before
+-- -> after", or the field name alone when the action carries no value pair (a file reload).
+-- The money actions keep their signed amount and config keeps its own value pair.
+local function auditChangeText(e)
+    local field = e.field
+    if field == nil or field == "" then return nil end
+    local before, after = auditValueText(e.before), auditValueText(e.after)
+    if before == nil and after == nil then return auditFieldText(field) end
+    return getText(T .. "Admin_Audit_Change", auditFieldText(field), before or "-", after or "-")
+end
+
+-- The shared table cell plus the selection band: the audit table is the only one whose rows are
+-- picked (the detail strip under it describes the selected line).
+local AuditCell = TableCell:derive("MinidoracatEconomyAuditCell")
+
+function AuditCell:render()
+    if self.list:isSelected(self.index) then fill(self, 0, 0, self.width, self.height, "selected", "rect") end
+    TableCell.render(self)
+end
+
+-- ---------- one player's market history (admin.marketHistory) ----------
+
+-- One history row: "kind / item / xN" over "time / counterparty / reason", the amount on the
+-- right. Every string and width is computed once per rebuild (Admin:historyRow), so the cell
+-- only paints.
+local AdminHistoryCell = ISPanel:derive("MinidoracatEconomyAdminHistoryCell")
+
+function AdminHistoryCell:render()
+    local e = self.entry
+    if not e then return end
+    local w, h = self.width, self.height
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    text(self, e.headText, PAD, e.line1Y, e.rolled and "textFaint" or "text")
+    textRight(self, e.amountLabel, e.amountRight, e.line1Y, e.rolled and "textFaint" or "accent")
+    text(self, e.metaText, PAD, e.line2Y, "textFaint")
+    if e.rolled then
+        U.strike(self, PAD, e.line1Y, e.headW)
+        textRight(self, e.rolledLabel, e.amountRight, e.line2Y, "textFaint")
     end
 end
 
@@ -1289,8 +1365,18 @@ function Admin:createChildren()
         self:addChild(b)
         self.auditFilterButtons[#self.auditFilterButtons + 1] = b
     end
-    self.auditList = U.newTable(TableCell, rowH())
+    self.auditList = U.newTable(AuditCell, rowH())
+    self.auditList.onSelect = function(_, item)
+        self:onAuditRow(item)
+    end
     self:addChild(self.auditList)
+    -- detail strip under the table: two copy chips over the selected line's own strings
+    self.auditCopyNameButton = Button.create(0, 0, 90, 22, tr("Admin_Audit_CopyName"), self, Admin.onAuditCopy, "chip")
+    self.auditCopyNameButton.internal = "name"
+    self:addChild(self.auditCopyNameButton)
+    self.auditCopyIdButton = Button.create(0, 0, 90, 22, tr("Admin_Audit_CopyId"), self, Admin.onAuditCopy, "chip")
+    self.auditCopyIdButton.internal = "id"
+    self:addChild(self.auditCopyIdButton)
 
     -- system page: one copy button per path
     self.copyButtons = {}
@@ -1374,6 +1460,13 @@ function Admin:createChildren()
         self:onListingRow(item, self.lstClickX or 0, self.lstClickY or 0)
     end
     self:addChild(self.listingsList)
+    -- the same card in history mode: the search box asks for an account (Enter, or a pause,
+    -- sends admin.marketHistory) and this list replaces the listing rows
+    self.lstEntry.onCommandEntered = function() self:onListingEnter() end
+    self.lstHistoryButton = Button.create(0, 0, 90, 22, tr("Admin_Lst_History"), self, Admin.onListingMode, "chip")
+    self:addChild(self.lstHistoryButton)
+    self.historyList = U.newTable(AdminHistoryCell, lineH() * 2 + 12)
+    self:addChild(self.historyList)
 
     -- settings page: search box, the option list, the per-group reset button. The group nav is
     -- painted (name plus an override count per row) and its clicks are resolved in onMouseDown.
@@ -1574,6 +1667,64 @@ function Admin:onAuditFilter(button)
         self:updateEnabled()
     end
     self:rebuildAudit()
+end
+
+-- A click in the audit table picks the line the detail strip describes. The strings are built
+-- once, here: a geometry change (and any fresh read) goes through rebuildAudit, which drops the
+-- pick along with the rows it pointed at.
+function Admin:onAuditRow(item)
+    self.auditSelected = item
+    self:buildAuditDetail()
+    self:updateEnabled()
+end
+
+-- Detail strip strings for the selected line: the summary, the full change and the full reason
+-- (which is allowed a second line, since the table column can only ever show its head).
+function Admin:buildAuditDetail()
+    local d = self.auditSelected
+    self.auditDetail = nil
+    if d == nil then return end
+    local g = self.g
+    local budget = math.max(0, (g and g.auditDetailTextW) or 0)
+    local full = math.max(0, self.width - PAD * 2)
+    local head = d.actionText .. " / " .. d.targetText
+    if d.rawTarget ~= d.targetText then head = head .. " (" .. d.rawTarget .. ")" end
+    head = head .. " / " .. d.adminName .. " / " .. d.stamp
+    local reason, rest = d.reasonFull, nil
+    if textWidth(reason) > full then
+        if (g and g.auditDetailLines or 4) < 4 then
+            -- a short card only has three lines: no second reason line to spill onto
+            reason = fitText(reason, full)
+        else
+            -- fitText cuts on a codepoint boundary and appends "...": its head is where line
+            -- two starts
+            local cut = fitText(reason, full)
+            local n = #cut - 3
+            if n > 0 then
+                reason = string.sub(d.reasonFull, 1, n)
+                rest = fitText(string.sub(d.reasonFull, n + 1), full)
+            else
+                reason = cut
+            end
+        end
+    end
+    self.auditDetail = { head = fitText(head, budget), change = fitText(d.changeFull, budget),
+        reason = reason, reason2 = rest }
+end
+
+-- The two copy chips: the translated name the admin reads, and the raw id the server wrote
+-- (a fullType such as "Base.Screwdriver", the only form a command or a file edit accepts).
+function Admin:onAuditCopy(button)
+    local d = self.auditSelected
+    if d == nil then return end
+    local value = button.internal == "id" and d.rawTarget or d.targetText
+    if not (Clipboard and Clipboard.setClipboard) then
+        self.message = { text = tr("Admin_Sys_CopyFailed"), error = true }
+        return
+    end
+    local ok = pcall(Clipboard.setClipboard, value)
+    self.message = ok and { text = getText(T .. "Admin_Audit_Copied", value) }
+        or { text = tr("Admin_Sys_CopyFailed"), error = true }
 end
 
 function Admin:onCopyPath(button)
@@ -1965,10 +2116,63 @@ function Admin:requestListings()
 end
 
 function Admin:onListingSearch()
+    if self.lstMode == "history" then
+        -- an account is asked for once the typing stops (Enter does not have to be pressed);
+        -- prerender owns the clock, so a fast typist costs one command, not one per key
+        self.histQueryAt = EC.now()
+        return
+    end
     local raw = string.match(entryText(self.lstEntry), "^%s*(.-)%s*$")
     self.lstQuery = raw ~= "" and string.lower(raw) or nil
     self.lstPage = 1
     self:requestListings()
+end
+
+-- The card has two modes over the same search box: every active listing, or one player's own
+-- market history (a read: admin.marketHistory passes the read gate, so a read-only role may
+-- look). Switching clears the box and whatever the other mode was holding.
+function Admin:onListingMode()
+    local history = self.lstMode ~= "history"
+    self.lstMode = history and "history" or "listings"
+    self.lstHistoryButton.active = history
+    self.message = nil
+    setEntryText(self.lstEntry, "")
+    self.histQueryAt = nil
+    self.histUser = nil
+    self.histSentUser = nil
+    self.marketHistory = nil
+    if history then
+        self.lstQuery = nil
+        self.lstSentQuery = nil
+    end
+    if self.lstEntry.setPlaceholderText then
+        pcall(function() self.lstEntry:setPlaceholderText(tr(history and "Admin_Lst_HistoryUser" or "Market_Search")) end)
+    end
+    self:layout()
+end
+
+function Admin:onListingEnter()
+    if self.lstMode ~= "history" then return end
+    self.histQueryAt = nil
+    self:requestMarketHistory()
+end
+
+-- One read per account. No requestId: the reply names the account it answered for, which is
+-- what a late answer is matched against.
+function Admin:requestMarketHistory()
+    local username = string.match(entryText(self.lstEntry), "^%s*(.-)%s*$")
+    if username == "" then
+        self.histUser = nil
+        self.histSentUser = nil
+        self.marketHistory = nil
+        self:rebuildHistory()
+        self:updateEnabled()
+        return false
+    end
+    if not send("admin.marketHistory", { username = username }) then return false end
+    self.histSentUser = username
+    self:updateEnabled()
+    return true
 end
 
 function Admin:onListingPage(button)
@@ -2609,6 +2813,20 @@ function Admin:onReply(kind, args)
         self.players = type(args.players) == "table" and args.players or {}
         self.playersTotal = tonumber(args.total) or #self.players
         self.playersTruncated = args.truncated == true
+    elseif kind == "marketHistory" then
+        -- the reply names the account it answered for: anything else is a late answer to an
+        -- account the admin has already moved on from, and is dropped
+        if args.error ~= nil then
+            self.message = { text = errorText(args.error), error = true }
+        elseif type(args.entries) == "table" then
+            local who = tostring(args.username or self.histSentUser or "")
+            if self.histSentUser == nil or string.lower(who) == string.lower(self.histSentUser) then
+                self.histUser = who
+                self.marketHistory = args
+                self.historyAt = EC.now()
+                self:rebuildHistory()
+            end
+        end
     end
     self:updateEnabled()
 end
@@ -2707,6 +2925,7 @@ function Admin:rebuildAudit()
             elseif filter == "freeze" then keep = action == "freeze" or action == "unfreeze"
             else keep = action == filter end
             local target = e.target or e.field or "-"
+            local targetText = auditTargetText(action, e.field, target)
             local delta = tonumber(e.delta)
             local change, changeToken
             if action == "config" then
@@ -2716,24 +2935,32 @@ function Admin:rebuildAudit()
                 change = signedText(delta)
                 changeToken = delta >= 0 and "positive" or "negative"
             else
-                change = "-"
-                changeToken = "textFaint"
+                -- the structural actions (whitelist / catalog / terminal) name a field, not money
+                change = auditChangeText(e)
+                changeToken = change and "text" or "textFaint"
+                change = change or "-"
             end
             local reason = tostring(e.reason or "-")
             local txId = tostring(e.txId or "-")
             local admin = tostring(e.admin or "-")
+            local actionText = auditActionText(action)
+            local stamp = stampText(e.ts, self.offsetMin)
             if keep and q then
-                local hay = string.lower(admin .. " " .. action .. " " .. auditActionText(action) .. " " .. tostring(target) .. " " .. reason .. " " .. txId)
+                local hay = string.lower(admin .. " " .. action .. " " .. actionText .. " "
+                    .. tostring(target) .. " " .. targetText .. " " .. reason .. " " .. txId)
                 keep = string.find(hay, q, 1, true) ~= nil
             end
             if keep then
                 rows[#rows + 1] = {
                     cells = {
-                        stampText(e.ts, self.offsetMin), admin, auditActionText(action), tostring(target),
+                        stamp, admin, actionText, targetText,
                         e.currency and currencyName(e.currency) or "-", change, reason, txId,
                     },
                     tokens = { "textMuted", "text", "text", "text", "textMuted", changeToken, "textMuted", "textFaint" },
                     muted = e.rolledBack == true,
+                    -- what the detail strip and the two copy chips read
+                    rawTarget = tostring(target), targetText = targetText, actionText = actionText,
+                    adminName = admin, stamp = stamp, changeFull = change, reasonFull = reason,
                 }
             end
         end
@@ -2741,6 +2968,10 @@ function Admin:rebuildAudit()
     self.auditRows = rows
     self.auditTotal = #src
     self.auditList:setItems(rows)
+    -- a filter switch or a fresh read invalidates the picked line
+    self.auditList:setSelectedIndex(nil)
+    self.auditSelected = nil
+    self:buildAuditDetail()
 end
 
 -- Rejection counters arrive as a map; the drawn order has to be stable, so the rows are built
@@ -3021,6 +3252,51 @@ function Admin:rebuildListings()
     self.listingsList:setItems(rows)
 end
 
+-- One history line: "kind / item / xN" over "time / counterparty / reason", the amount right
+-- aligned. A rolled-back line is struck through and labelled, exactly like the wallet's own
+-- receipt rows.
+function Admin:historyRow(rec, lh, width)
+    local kind = tostring(rec.kind or "?")
+    local qty = math.max(1, math.floor(tonumber(rec.qty) or 1))
+    local head = (getTextOrNull(T .. "Market_Kind_" .. kind) or kind) .. "  " .. itemName(rec.item)
+    if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
+    local meta = stampText(rec.ts, self.offsetMin)
+    if type(rec.other) == "string" and rec.other ~= "" then
+        meta = meta .. " / " .. getText(T .. "Market_History_Other", rec.other)
+    end
+    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. rec.reason end
+    local rolled = rec.rolledBack == true
+    local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
+    local amountLabel = amountText(rec.price)
+    local right = math.max(60, width - PAD)
+    local headW = math.max(0, right - textWidth(amountLabel) - PAD * 2)
+    local metaW = rolled and math.max(0, headW - textWidth(rolledLabel) - PAD) or headW
+    local item = {
+        line1Y = 5, line2Y = 5 + lh, amountRight = right, amountLabel = amountLabel,
+        rolled = rolled, rolledLabel = rolledLabel,
+        headText = fitText(head, headW), metaText = fitText(meta, metaW),
+    }
+    item.headW = textWidth(item.headText)
+    return item
+end
+
+-- The history the server last sent, turned into rows. The reply is oldest first (the server
+-- reads the files forward); the page reads newest first.
+function Admin:rebuildHistory()
+    local rows = {}
+    local snap = self.marketHistory
+    if snap and type(snap.entries) == "table" then
+        local width = math.max(120, self.historyList.width - 12)   -- 12 = the scrollbar gutter
+        local lh = lineH()
+        local src = snap.entries
+        for i = #src, 1, -1 do
+            if type(src[i]) == "table" then rows[#rows + 1] = self:historyRow(src[i], lh, width) end
+        end
+    end
+    self.historyRows = rows
+    self.historyList:setItems(rows)
+end
+
 -- Geometry of a whitelist row's chip strip: identical for every row, so it is computed once per
 -- rebuild. The category chip is as wide as the longer of the two labels, so the text budget does
 -- not move when it flips; the item chips sit side by side against the same right edge.
@@ -3221,6 +3497,9 @@ function Admin:updateEnabled()
 
     setEntryEditable(self.auditEntry, read and not modal)
     for _, b in ipairs(self.auditFilterButtons) do b:setEnable(read and not modal) end
+    local picked = read and not modal and self.auditSelected ~= nil
+    self.auditCopyNameButton:setEnable(picked)
+    self.auditCopyIdButton:setEnable(picked)
     for _, b in ipairs(self.copyButtons) do
         local paths = self.system and self.system.paths
         b:setEnable(not modal and paths ~= nil and type(paths[b.internal]) == "string")
@@ -3244,6 +3523,7 @@ function Admin:updateEnabled()
     local lstRead = read and not modal and not isPending("admin.listings")
     self.lstPrevButton:setEnable(lstRead and lstPage > 1)
     self.lstNextButton:setEnable(lstRead and lstPage < lstPages)
+    self.lstHistoryButton:setEnable(read and not modal)
 
     -- whitelist page: one in-flight whitelist command at a time, the reload chip included; a
     -- read-only role browses the file without ever arming a switch
@@ -3458,14 +3738,34 @@ function Admin:layout()
     g.auditHeaderY = self.auditEntry.y + eh + 6
     local auditListY = g.auditHeaderY + rh
     local auditW = math.max(200, w - 2)
-    local auditH = math.max(rh, g.bodyY + g.bodyH - auditListY - lh - 4)
+    -- The detail strip is a band under the table, so picking a line never re-flows the rows
+    -- above it: three lines (summary / change / reason) always, the reason's second line only
+    -- when the card is tall enough to keep three rows in the table as well.
+    local avail = g.bodyY + g.bodyH - auditListY - lh - 8
+    local detailH = math.min(lh * 4 + 6, math.max(lh * 3 + 6, avail - rh * 3))
+    g.auditDetailH = detailH
+    g.auditDetailLines = math.floor((detailH - 6) / lh)
+    local auditH = math.max(rh, avail - detailH)
     self.auditList:setVisible(audit)
     self.auditList:setX(1); self.auditList:setY(auditListY)
     if self.auditList.width ~= auditW or self.auditList.height ~= auditH then
         self.auditList:resize(auditW, auditH)
     end
     layoutColumns(self.auditList, auditSpec(), auditW - 12)
-    g.auditBottom = auditListY + auditH
+    g.auditDetailY = auditListY + auditH + 4
+    g.auditBottom = g.auditDetailY + detailH
+    local copyH = math.max(20, fontH.small + 6)
+    local copyMax = math.max(40, math.floor(w * 0.22))
+    local copyId, copyName = self.auditCopyIdButton, self.auditCopyNameButton
+    copyId:setVisible(audit)
+    copyId:setWidth(math.min(textWidth(copyId.fullTitle) + 20, copyMax)); copyId:setHeight(copyH)
+    copyId:setX(math.max(PAD, w - PAD - copyId.width)); copyId:setY(g.auditDetailY + 2)
+    self:setButtonTitle(copyId, copyId.fullTitle)
+    copyName:setVisible(audit)
+    copyName:setWidth(math.min(textWidth(copyName.fullTitle) + 20, copyMax)); copyName:setHeight(copyH)
+    copyName:setX(math.max(PAD, copyId.x - 6 - copyName.width)); copyName:setY(g.auditDetailY + 2)
+    self:setButtonTitle(copyName, copyName.fullTitle)
+    g.auditDetailTextW = math.max(0, copyName.x - PAD * 2)
 
     -- system page: state card left, paths card right. Each path is "label / value / copy": two
     -- lines when the card has the room, one line at the minimum window height with a large UI font
@@ -3557,35 +3857,50 @@ function Admin:layout()
     end
 
     -- listings page: the listings card carries the search row, the list and the page chips along
-    -- its bottom (the whitelist has its own page).
+    -- its bottom (the whitelist has its own page). In history mode the same card shows one
+    -- player's market history instead: no paging, so that list takes the chips' room as well.
+    local history = listings and self.lstMode == "history"
+    local paged = listings and not history
     g.lstY = g.bodyY
     g.lstH = math.max(CARD_TITLE_H + eh + rh, g.bodyY + g.bodyH - g.lstY)
     local lstTop = g.lstY + CARD_TITLE_H + 4
+    local pageH = math.max(20, fontH.small + 6)
+    local histW = math.min(textWidth(self.lstHistoryButton.fullTitle) + 22, math.max(40, math.floor(w * 0.25)))
+    self.lstHistoryButton:setVisible(listings)
+    self.lstHistoryButton:setWidth(histW); self.lstHistoryButton:setHeight(pageH)
+    self.lstHistoryButton:setX(math.max(PAD, w - PAD - histW))
+    self.lstHistoryButton:setY(g.lstY + math.floor((CARD_TITLE_H - pageH) / 2))
+    self:setButtonTitle(self.lstHistoryButton, self.lstHistoryButton.fullTitle)
     self.lstEntry:setVisible(listings)
     self.lstEntry:setX(PAD); self.lstEntry:setY(lstTop)
     self.lstEntry:setWidth(math.max(120, math.min(240, math.floor(w * 0.28)))); self.lstEntry:setHeight(eh)
     g.lstNoteX = PAD + self.lstEntry.width + PAD
     g.lstHeadY = lstTop + math.floor((eh - fontH.small) / 2)
-    local pageH = math.max(20, fontH.small + 6)
     local lstListY = lstTop + eh + 6
     g.lstPageY = math.max(lstListY + rh + 6, g.lstY + g.lstH - PAD - pageH)
     g.lstPageTextY = g.lstPageY + math.floor((pageH - fontH.small) / 2)
     local prevW = math.min(textWidth(self.lstPrevButton.fullTitle) + 24, math.floor(w * 0.2))
     local nextW = math.min(textWidth(self.lstNextButton.fullTitle) + 24, math.floor(w * 0.2))
-    self.lstNextButton:setVisible(listings)
+    self.lstNextButton:setVisible(paged)
     self.lstNextButton:setWidth(nextW); self.lstNextButton:setHeight(pageH)
     self.lstNextButton:setX(math.max(PAD, w - PAD - nextW)); self.lstNextButton:setY(g.lstPageY)
     self:setButtonTitle(self.lstNextButton, self.lstNextButton.fullTitle)
-    self.lstPrevButton:setVisible(listings)
+    self.lstPrevButton:setVisible(paged)
     self.lstPrevButton:setWidth(prevW); self.lstPrevButton:setHeight(pageH)
     self.lstPrevButton:setX(math.max(PAD, self.lstNextButton.x - 6 - prevW)); self.lstPrevButton:setY(g.lstPageY)
     self:setButtonTitle(self.lstPrevButton, self.lstPrevButton.fullTitle)
     local lstW = math.max(160, w - PAD * 2)
     local lstListH = math.max(rh, g.lstPageY - 6 - lstListY)
-    self.listingsList:setVisible(listings)
+    self.listingsList:setVisible(paged)
     self.listingsList:setX(PAD); self.listingsList:setY(lstListY)
     if self.listingsList.width ~= lstW or self.listingsList.height ~= lstListH then
         self.listingsList:resize(lstW, lstListH)
+    end
+    local histH = math.max(rh, g.lstY + g.lstH - PAD - lstListY)
+    self.historyList:setVisible(history)
+    self.historyList:setX(PAD); self.historyList:setY(lstListY)
+    if self.historyList.width ~= lstW or self.historyList.height ~= histH then
+        self.historyList:resize(lstW, histH)
     end
 
     -- settings page: search row on top, the group nav down the left, the option list plus the
@@ -3625,6 +3940,7 @@ function Admin:layout()
     self:rebuildSettings()
     self:rebuildCatalog()
     self:rebuildListings()
+    self:rebuildHistory()
     self:rebuildWhitelist()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
     if self.dialog then self:layoutDialog() end
@@ -4060,9 +4376,33 @@ function Admin:drawWhitelist()
     end
 end
 
+-- The listings card in history mode: the same header row, one player's own market history under
+-- it (newest first) and no paging.
+function Admin:drawListingHistory()
+    local g = self.g
+    local rows = self.historyRows or {}
+    local snap = self.marketHistory
+    local countText = ""
+    if snap then
+        countText = getText(T .. "Admin_Lst_Count", tostring(math.floor(tonumber(snap.total) or #rows)))
+        textRight(self, countText, self.width - PAD, g.lstHeadY, "textFaint")
+    end
+    text(self, fitText(tr("Admin_Lst_HistoryHint"),
+        math.max(0, self.width - PAD * 2 - g.lstNoteX - textWidth(countText))), g.lstNoteX, g.lstHeadY, "textFaint")
+    if #rows > 0 then return end
+    local empty = nil
+    if isPending("admin.marketHistory") then empty = tr("Admin_Loading")
+    elseif self.histUser then empty = tr("Admin_Lst_HistoryEmpty") end
+    if empty then
+        text(self, fitText(empty, math.max(0, self.historyList.width - PAD * 2)),
+            self.historyList.x + PAD, self.historyList.y + 4, "textFaint")
+    end
+end
+
 function Admin:drawListings()
     local g = self.g
     card(self, 0, g.lstY, self.width, g.lstH, tr("Admin_Lst_Title"))
+    if self.lstMode == "history" then return self:drawListingHistory() end
     local snap = self.listings
     local rows = self.listingRows or {}
     local countText = getText(T .. "Admin_Lst_Count", tostring((snap and snap.total) or 0))
@@ -4106,6 +4446,18 @@ function Admin:drawAudit()
     if #(self.auditRows or {}) == 0 then
         text(self, (isPending("admin.audit") or isPending("admin.auditFile")) and tr("Admin_Loading") or tr("Admin_Audit_Empty"),
             self.auditList.x + PAD, g.auditHeaderY + rh + 4, "textFaint")
+    end
+    local d = self.auditDetail
+    local detailY = g.auditDetailY
+    fill(self, 1, detailY, math.max(0, self.width - 2), g.auditDetailH, "well", "rect")
+    if d == nil then
+        text(self, fitText(tr("Admin_Audit_DetailHint"), math.max(0, g.auditDetailTextW)), PAD, detailY + 3, "textFaint")
+    else
+        local lh = lineH()
+        text(self, d.head, PAD, detailY + 3, "text")
+        text(self, d.change, PAD, detailY + 3 + lh, "textMuted")
+        text(self, d.reason, PAD, detailY + 3 + lh * 2, "textMuted")
+        if d.reason2 and g.auditDetailLines > 3 then text(self, d.reason2, PAD, detailY + 3 + lh * 3, "textMuted") end
     end
     text(self, fitText(tr(rolled and "Admin_Audit_RolledNote" or "Admin_Audit_ReasonNote"), self.width - PAD * 2), PAD, g.auditBottom + 2, "textFaint")
 end
@@ -4261,7 +4613,10 @@ function Admin:prerender()
         if write ~= self.hadWrite or read ~= self.hadRead then
             if not write then self:closeDialog() end
             if not read then self:closeSuggest() end
-            if not read then self.catalog = nil; self.listings = nil; self.whitelist = nil end
+            if not read then
+                self.catalog = nil; self.listings = nil; self.whitelist = nil
+                self.marketHistory = nil; self.histUser = nil; self.histSentUser = nil
+            end
             self:layout()   -- hides/shows the page children for the new permission level
         end
     end
@@ -4307,9 +4662,17 @@ function Admin:prerender()
 
     -- a page or a search text the admin changed while the cooldown (or an older answer) was
     -- still holding the command
-    if self.tab == "Listings" and self.hadRead
+    if self.tab == "Listings" and self.hadRead and self.lstMode ~= "history"
         and (self.lstSentQuery ~= self.lstQuery or self.lstSentPage ~= (self.lstPage or 1)) then
         self:requestListings()
+    end
+
+    -- the account typed in history mode: one command per pause, never one per keystroke
+    if self.histQueryAt and now - self.histQueryAt > PLAYERS_DEBOUNCE_MS then
+        self.histQueryAt = nil
+        if self.tab == "Listings" and self.lstMode == "history" and self.hadRead then
+            self:requestMarketHistory()
+        end
     end
 
     -- visible auto refresh of the open page (read permission only)
@@ -4330,7 +4693,7 @@ function Admin:prerender()
     -- the auto refresh has to be visible: the pages without their own stamp show it in the tab bar
     local stampAt = ((self.tab == "Dashboard" or self.tab == "System" or self.tab == "Settings") and self.systemAt)
         or (self.tab == "Sources" and self.sourcesAt) or (self.tab == "Shop" and self.catalogAt)
-        or (self.tab == "Listings" and self.listingsAt) or nil
+        or (self.tab == "Listings" and (self.lstMode == "history" and self.historyAt or self.listingsAt)) or nil
     if stampAt then
         textRight(self, getText(T .. "Admin_Updated", U.clockText(stampAt, self.offsetMin)),
             self.refreshButton.x - PAD, math.floor((g.subH - fontH.small) / 2), "textFaint")
@@ -4438,7 +4801,11 @@ function Admin:refresh()
     elseif self.tab == "Shop" then
         send("admin.catalog", { action = "list" })
     elseif self.tab == "Listings" then
-        self:requestListings()
+        if self.lstMode == "history" then
+            if self.histUser then self:requestMarketHistory() end
+        else
+            self:requestListings()
+        end
     elseif self.tab == "Whitelist" then
         send("admin.whitelist", { action = "status" })
     end
@@ -4489,6 +4856,11 @@ function Admin:dispose()
     self.pendingWhitelist = nil
     self.wlUniverse = nil
     self.wlRows = nil
+    self.marketHistory = nil
+    self.histUser = nil
+    self.histSentUser = nil
+    self.auditSelected = nil
+    self.auditDetail = nil
     if P.instance == self then P.instance = nil end
 end
 
@@ -4506,6 +4878,7 @@ function P.create(owner)
     o.auditFilter = "all"
     o.wlFilter = "all"
     o.lstPage = 1
+    o.lstMode = "listings"
     o.auditQuery = nil
     o.cfgSelected = EC.CURRENCY_ORDER[1]
     o.cfgRowRects = {}

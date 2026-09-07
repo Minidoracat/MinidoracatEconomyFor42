@@ -200,6 +200,13 @@ end
 -- One market row (browse page or own listings). `mine` is the page, `own` the seller test: the
 -- browse page shows the player their own listing (so they see their price next to the others)
 -- but offers Market_Own instead of a buy chip.
+-- A lot of N identical items is one listing: `Market_Lot` is appended to the painted name
+-- (`nameText`), never to `name` — the search and the toasts want the bare item name.
+local function lotText(qty)
+    if qty <= 1 then return nil end
+    return getText(T .. "Market_Lot", tostring(qty))
+end
+
 local function listingRow(it, currency, username, offsetMin, mine)
     local price = tonumber(it.price) or 0
     local name = itemName(it.item)
@@ -215,9 +222,12 @@ local function listingRow(it, currency, username, offsetMin, mine)
         local left = expires - EC.now()
         expiresText = left > 86400000 and stampText(expires, offsetMin) or durationText(left)
     end
+    local qty = math.max(1, math.floor(tonumber(it.qty) or 1))
+    local lot = lotText(qty)
     return {
-        id = it.id, item = it.item, seller = seller, price = price, currency = currency,
-        name = name, altName = alt, texture = itemTexture(it.item),
+        id = it.id, item = it.item, seller = seller, price = price, currency = currency, qty = qty,
+        name = name, nameText = lot and (name .. " " .. lot) or name,
+        altName = alt, texture = itemTexture(it.item),
         statusText = listingStatus(it), priceText = amountText(price), expiresText = expiresText,
         own = own, mine = mine, actionMuted = own and not mine,
         actionLabel = mine and getText(T .. "Market_Cancel")
@@ -235,13 +245,18 @@ local function candidateRow(it)
     local status = listingStatus(it)
     local reason = nil
     if not ok then reason = marketError({ error = it.reason }) end
+    -- the server merges same-state stacks into one row: itemIds is the whole lot
+    local ids = type(it.itemIds) == "table" and it.itemIds or { it.itemId }
+    local count = math.max(1, math.floor(tonumber(it.count) or #ids))
+    local lot = lotText(count)
     local detail = alt and (name .. " (" .. alt .. ")") or name
+    if lot then detail = lot .. " " .. detail end
     if status then detail = detail .. " - " .. status end
     if reason then detail = detail .. " - " .. reason end
     return {
-        itemId = it.itemId, item = it.item, ok = ok,
+        itemId = it.itemId, itemIds = ids, count = count, item = it.item, ok = ok,
         name = name, altName = alt, texture = itemTexture(it.item),
-        detailText = detail,
+        qtyText = lot, detailText = detail,
     }
 end
 
@@ -344,7 +359,7 @@ function ListingCell:render()
     if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
     drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
     local half = math.floor(h / 2)
-    local nameText = fitText(e.name, cols.nameW)
+    local nameText = fitText(e.nameText, cols.nameW)
     text(self, nameText, cols.name, half - fontH.small - 2, "text")
     if e.altName then
         local altX = cols.name + textWidth(nameText) + 8
@@ -397,10 +412,85 @@ function CandidateCell:render()
         else
             Skin.border(self, iconX, 6, TILE_ICON, TILE_ICON, color("border"), "round", alpha)
         end
-        if not e.ok then Skin.dot(self, x + tw - 12, 5, 7, color("negative")) end
+        -- the refusal dot owns the far corner; the lot count sits to its left
+        local rightX = x + tw - 4
+        if not e.ok then
+            Skin.dot(self, x + tw - 12, 5, 7, color("negative"))
+            rightX = x + tw - 14
+        end
+        if e.qtyText then textRight(self, e.qtyText, rightX, 4, e.ok and "accent" or "textFaint") end
         local label = fitText(e.name, tw - 8)
         textCentre(self, label, x + tw / 2, 6 + TILE_ICON + 6, e.ok and "text" or "textFaint")
     end
+end
+
+-- ---------- market history ----------
+-- The player's own market ring (market.history): two lines per row, so the row height follows
+-- the font the way itemRowHeight does.
+local function historyLine() return fontH.small + 8 end
+local function historyRowHeight() return historyLine() * 2 + 8 end
+
+local HISTORY_KINDS = { "listed", "sold", "bought", "cancelled", "expired", "delisted", "restored" }
+local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "warn", expired = "warn" }
+
+-- One history line. The amount is what the record moved for this player: a sale nets the tax
+-- off, a purchase is money out, everything else is the listing price as it stood.
+local function historyRow(rec, offsetMin)
+    local kind = tostring(rec.kind or "")
+    local qty = math.max(1, math.floor(tonumber(rec.qty) or 1))
+    local price = tonumber(rec.price) or 0
+    local amount = price
+    if kind == "sold" then amount = price - (tonumber(rec.tax) or 0)
+    elseif kind == "bought" then amount = -price end
+    local name = itemName(rec.item)
+    local lot = lotText(qty)
+    local parts = { stampText(tonumber(rec.ts) or 0, offsetMin) }
+    if type(rec.other) == "string" and rec.other ~= "" then
+        parts[#parts + 1] = getText(T .. "Market_History_Other", rec.other)
+    end
+    if type(rec.reason) == "string" and rec.reason ~= "" then parts[#parts + 1] = rec.reason end
+    return {
+        kind = kind,
+        kindText = getTextOrNull(T .. "Market_Kind_" .. kind) or kind,
+        kindToken = HISTORY_TOKENS[kind] or "text",
+        nameText = lot and (name .. " " .. lot) or name,
+        amountText = amountText(amount),
+        detailText = table.concat(parts, "  "),
+        rolledBack = rec.rolledBack == true,
+    }
+end
+
+local HistoryCell = ISPanel:derive("MinidoracatEconomyMarketHistoryCell")
+
+function HistoryCell:render()
+    local e = self.entry
+    if not e then return end
+    local cols = self.list.cols
+    local w, h = self.width, self.height
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
+    local line = historyLine()
+    local top = math.max(0, math.floor((h - line * 2) / 2))
+    local muted = e.rolledBack
+    text(self, e.kindText, cols.kind, top, muted and "textFaint" or e.kindToken)
+    text(self, fitText(e.nameText, cols.nameW), cols.name, top, muted and "textFaint" or "text")
+    textRight(self, e.amountText, cols.amountR, top, muted and "textFaint" or "accent")
+    if muted then
+        text(self, getText(T .. "Wallet_RolledBack"), cols.status, top, "textFaint")
+        strike(self, cols.kind, top, cols.amountR - cols.kind)
+    end
+    text(self, fitText(e.detailText, w - cols.kind - PAD), cols.kind, top + line, "textFaint")
+end
+
+-- Count bubble on the top-right corner of a tab button (the Mail tab); the float button paints
+-- the same shape without the toolkit (U.init has not run before the first window opens).
+local BADGE_H = 18
+local function drawBadge(el, rightX, y, n)
+    local label = n > 99 and "99+" or tostring(n)
+    local w = math.max(BADGE_H, textWidth(label) + 8)
+    local x = rightX - w
+    fill(el, x, y, w, BADGE_H, "negative", "pill")
+    textCentre(el, label, x + w / 2, y + math.floor((BADGE_H - fontH.small) / 2), "text")
 end
 
 -- ---------- buy dialog ----------
@@ -541,6 +631,11 @@ function MarketDialog:createChildren()
     self.priceEntry.target = self
     self.priceEntry.onTextChangeFunction = MarketDialog.onPriceChanged
     self:addChild(self.priceEntry)
+    -- the lot size: only shown when the picked row carries more than one item
+    self.qtyEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
+    self.qtyEntry.target = self
+    self.qtyEntry.onTextChangeFunction = MarketDialog.onPriceChanged
+    self:addChild(self.qtyEntry)
     local only = getText(T .. "Market_OnlyListable")
     self.onlyButton = Button.create(0, 0, textWidth(only) + 30, math.max(CHIP_H, fontH.small + 10),
         only, self, MarketDialog.onOnlyListable, "chip")
@@ -621,6 +716,22 @@ function MarketDialog:priceValue()
     return math.floor(n)
 end
 
+-- The lot size to list, 1..count. nil = not a usable number: the confirm stays closed instead
+-- of the server refusing a request the client could already tell was wrong.
+function MarketDialog:lotCount()
+    return (self.cand and self.cand.count) or 1
+end
+
+function MarketDialog:qtyValue()
+    local max = self:lotCount()
+    if max <= 1 then return 1 end
+    local raw = string.match(entryText(self.qtyEntry), "^%s*(.-)%s*$")
+    if not string.match(raw, "^%d+$") then return nil end
+    local n = tonumber(raw)
+    if not n or n < 1 or n > max then return nil end
+    return math.floor(n)
+end
+
 function MarketDialog:available()
     local currency = (self.row and self.row.currency) or (C.market and C.market.currency)
     local bal = C.wallet and C.wallet.balances and C.wallet.balances[currency]
@@ -640,6 +751,8 @@ function MarketDialog:layoutInside(maxW, maxH)
     local y = PAD
     self.titleY = y
     self.priceEntry:setVisible(mode == "price")
+    local multi = mode == "price" and self:lotCount() > 1
+    self.qtyEntry:setVisible(multi)
     self.pickList:setVisible(mode == "pick")
     self.onlyButton:setVisible(mode == "pick")
     if mode == "pick" then
@@ -662,6 +775,13 @@ function MarketDialog:layoutInside(maxW, maxH)
         self.bodyY = y; y = y + line + 6
     elseif mode == "price" then
         self.itemY = y; y = y + math.max(ITEM_ICON, line) + PAD
+        self.qtyY, self.qtyHintY = nil, nil
+        if multi then
+            self.qtyY = y; y = y + math.max(self.qtyEntry.height, line) + 4
+            self.qtyHintY = y; y = y + line + 6
+            self.qtyEntry:setX(w - PAD - self.qtyEntry.width)
+            self.qtyEntry:setY(self.qtyY)
+        end
         self.priceY = y; y = y + math.max(self.priceEntry.height, line) + 4
         self.hintY = y; y = y + line + 6
         self.feeY = y; y = y + line
@@ -721,7 +841,7 @@ function MarketDialog:prerender()
     fill(self, 0, 0, w, h, "surface")
     border(self, 0, 0, w, h, "accent")
     local title = getText(T .. "Market_ListTitle")
-    if mode == "buy" then title = getText(T .. "Market_BuyTitle", self.row.name)
+    if mode == "buy" then title = getText(T .. "Market_BuyTitle", self.row.nameText)
     elseif mode == "cancel" then title = getText(T .. "Market_Cancel") end
     local titleW = w - PAD * 2
     if mode == "pick" then
@@ -735,7 +855,7 @@ function MarketDialog:prerender()
         local row = self.row
         drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
         local tx = PAD + ITEM_ICON + PAD
-        text(self, fitText(row.name, w - tx - PAD), tx, self.itemY, "text")
+        text(self, fitText(row.nameText, w - tx - PAD), tx, self.itemY, "text")
         if row.statusText then
             text(self, fitText(row.statusText, w - tx - PAD), tx, self.itemY + fontH.small + 4, "textFaint")
         end
@@ -756,7 +876,15 @@ function MarketDialog:prerender()
         local cand = self.cand
         drawIcon(self, cand.texture, PAD, self.itemY, ITEM_ICON)
         local tx = PAD + ITEM_ICON + PAD
-        text(self, fitText(cand.name, w - tx - PAD), tx, self.itemY + math.floor((ITEM_ICON - fontH.small) / 2), "text")
+        local count = self:lotCount()
+        local candName = count > 1 and (cand.name .. " " .. cand.qtyText) or cand.name
+        text(self, fitText(candName, w - tx - PAD), tx, self.itemY + math.floor((ITEM_ICON - fontH.small) / 2), "text")
+        if self.qtyY then
+            text(self, getText(T .. "Market_Qty"), PAD,
+                self.qtyY + math.floor((self.qtyEntry.height - fontH.small) / 2), "textMuted")
+            text(self, fitText(getText(T .. "Market_QtyHint", tostring(count), tostring(count)), w - PAD * 2),
+                PAD, self.qtyHintY, "textFaint")
+        end
         text(self, getText(T .. "Market_Price"), PAD,
             self.priceY + math.floor((self.priceEntry.height - fontH.small) / 2), "textMuted")
         text(self, getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax)),
@@ -766,7 +894,7 @@ function MarketDialog:prerender()
         textRight(self, amountText(listingFee(price, info.feePercent)), w - PAD, self.feeY, "warn")
         text(self, getText(T .. "Market_YouGet"), PAD, self.youGetY, "textMuted")
         textRight(self, amountText(price - ceilPercent(price, info.taxPercent)), w - PAD, self.youGetY, "positive")
-        self.confirmButton:setEnable(price > 0 and not busy and panel:tradeAllowed())
+        self.confirmButton:setEnable(price > 0 and self:qtyValue() ~= nil and not busy and panel:tradeAllowed())
     else
         -- one pass over the grid: the tile under the cursor decides the status line, and the
         -- strips read the same two numbers back when they paint their hover highlight
@@ -877,10 +1005,11 @@ function Panel:createChildren()
     self:addChild(self.mailList)
 
     -- market page: mode/refresh bar over either the browse cards (category + search + sort on
-    -- the left, the listing table on the right) or the single "my listings" card
+    -- the left, the listing table on the right) or the single "my listings" / "history" card
+    local MODE_KEYS = { browse = "Browse", mine = "Mine", history = "History" }
     self.marketModeButtons = {}
-    for _, mode in ipairs({ "browse", "mine" }) do
-        local title = getText(T .. "Market_" .. (mode == "browse" and "Browse" or "Mine"))
+    for _, mode in ipairs({ "browse", "mine", "history" }) do
+        local title = getText(T .. "Market_" .. MODE_KEYS[mode])
         local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, Panel.onMarketMode, "chip")
         b.internal = mode
         b.active = mode == self.marketMode
@@ -905,6 +1034,8 @@ function Panel:createChildren()
     self.marketList = U.newTable(ListingCell, itemRowHeight())
     self.marketList.onSelect = function(_, item) self:onMarketRow(item) end
     self:addChild(self.marketList)
+    self.marketHistoryList = U.newTable(HistoryCell, historyRowHeight())
+    self:addChild(self.marketHistoryList)
     for _, spec in ipairs({ { "Refresh", Panel.onMarketRefresh }, { "List", Panel.onMarketList },
         { "Prev", Panel.onMarketPage }, { "Next", Panel.onMarketPage } }) do
         local title = getText(T .. "Market_" .. spec[1])
@@ -972,6 +1103,8 @@ function Panel:refresh()
         -- and the own-listings page is always asked for (it is short and it is the write side)
         if self.marketMode == "mine" then
             C.requestMyListings()
+        elseif self.marketMode == "history" then
+            C.requestMarketHistory()
         elseif not C.market or EC.now() - (self.marketAt or 0) > SHOP_POLL_MS then
             self:requestBrowse(1)
         end
@@ -1125,15 +1258,13 @@ end
 
 -- The mailbox tab carries the pending count: a purchase that did not fit in the backpack is
 -- otherwise invisible until the player opens the page. Every reply that knows the number
--- (shop.list, shop.buy, mail.list, mail.claim) passes it here.
+-- (shop.list, shop.buy, mail.list, mail.claim, market.buy/cancel/notice) passes it here; the
+-- number itself is painted as a corner bubble in prerender, so the tab keeps its width.
 function Panel:updateMailTab(unclaimed)
     local n = tonumber(unclaimed)
-    if n then self.unclaimedCount = n end
-    local b = self.mailTabButton
-    if not b then return end
-    local title = getText(T .. "Tab_Mail")
-    if (self.unclaimedCount or 0) > 0 then title = title .. " (" .. tostring(self.unclaimedCount) .. ")" end
-    if b.title ~= title then b:setTitle(title) end
+    if not n then return end
+    self.unclaimedCount = math.max(0, math.floor(n))
+    C.unclaimed = self.unclaimedCount
 end
 
 -- Category chips are the categories the snapshot actually uses (plus "all"), so a server that
@@ -1386,12 +1517,29 @@ function Panel:updateMarketInfo()
     end
 end
 
-function Panel:requestBrowse(page)
-    self.marketPage = math.max(1, tonumber(page) or 1)
-    self.marketAt = EC.now()
-    self.marketQueryAt = nil
+-- The server drops a second market.browse from the same player inside its 500 ms command
+-- window without answering it (ECServer COMMAND_COOLDOWN_MS), so flipping two sort chips in a
+-- row used to lose the second one for good. Every request goes through this gate: inside the
+-- window nothing is sent, the wish is remembered, and prerender sends the *current* chip state
+-- once the window is over (only the newest state can ever be wanted).
+local BROWSE_MIN_MS = 600
+
+function Panel:sendBrowse()
+    self.browseWanted = nil
+    self.browseSentAt = EC.now()
+    self.marketAt = self.browseSentAt
     C.requestMarket({ category = self.marketCat, query = self.marketQuery,
         sort = self.marketSort, page = self.marketPage })
+end
+
+function Panel:requestBrowse(page)
+    self.marketPage = math.max(1, tonumber(page) or 1)
+    self.marketQueryAt = nil
+    if self.browseSentAt and EC.now() - self.browseSentAt < BROWSE_MIN_MS then
+        self.browseWanted = true
+        return
+    end
+    self:sendBrowse()
 end
 
 -- The category chips are the categories the current page actually carries (plus "all"), the
@@ -1414,7 +1562,9 @@ function Panel:rebuildMarketCategories()
     end
     self.marketCatButtons = {}
     for _, cat in ipairs(cats) do
-        local title = cat == "" and getText(T .. "Shop_All") or (getTextOrNull(T .. "Shop_Cat_" .. cat) or cat)
+        -- DisplayCategory names come from the item scripts: vanilla translates them under
+        -- IGUI_ItemCat_<cat> (ISInventoryPane.lua:2533), an unknown one shows the raw name
+        local title = cat == "" and getText(T .. "Shop_All") or (getTextOrNull("IGUI_ItemCat_" .. cat) or cat)
         local b = Button.create(0, 0, math.min(LEFT_W - PAD * 2, textWidth(title) + 22), CHIP_H, title, self, Panel.onMarketCat, "chip")
         b.internal = cat
         b.active = (self.marketCat or "") == cat
@@ -1461,14 +1611,38 @@ function Panel:rebuildCandidates()
     end
 end
 
+-- The server keeps the ring oldest first (it appends); the page reads newest first.
+function Panel:rebuildMarketHistory()
+    local snap = C.marketHistory
+    local src = (snap and snap.entries) or {}
+    local rows = {}
+    for i = #src, 1, -1 do
+        rows[#rows + 1] = historyRow(src[i], self.offsetMin)
+    end
+    self.marketHistoryRows = rows
+    self.marketHistoryList:setItems(rows)
+end
+
+-- Whatever the visible mode wants from the server (mode chips, refresh chip, seller notice).
+function Panel:requestMarketMode()
+    if self.marketMode == "mine" then
+        C.requestMyListings()
+    elseif self.marketMode == "history" then
+        C.requestMarketHistory()
+    else
+        self:requestBrowse(self.marketPage)
+    end
+end
+
 function Panel:onMarketMode(button)
     if self.marketMode == button.internal then return end
     self.marketMode = button.internal
     for _, b in ipairs(self.marketModeButtons) do b.active = b.internal == self.marketMode end
     self:closeMarketDialog()
     self:rebuildMarket()
+    self:rebuildMarketHistory()
     self:layout()
-    if self.marketMode == "mine" then C.requestMyListings() else self:requestBrowse(self.marketPage) end
+    self:requestMarketMode()
 end
 
 function Panel:onMarketSort(button)
@@ -1494,7 +1668,8 @@ function Panel:onMarketSearch()
 end
 
 function Panel:onMarketRefresh()
-    if self.marketMode == "mine" then C.requestMyListings() else self:requestBrowse(self.marketPage) end
+    self.marketHistoryError = nil
+    self:requestMarketMode()
 end
 
 function Panel:onMarketPage(button)
@@ -1531,6 +1706,7 @@ function Panel:onCandidate(cand)
     dlg.message = nil
     dlg.pickNote = nil
     setEntryText(dlg.priceEntry, "")
+    setEntryText(dlg.qtyEntry, tostring(cand.count or 1))   -- the whole lot by default
     self:layoutMarketDialog()
 end
 
@@ -1568,6 +1744,7 @@ function Panel:closeMarketDialog()
     if not dlg then return end
     self.marketDialog = nil
     pcall(function() dlg.priceEntry:unfocus() end)
+    pcall(function() dlg.qtyEntry:unfocus() end)
     dlg:setVisible(false)
     self:removeChild(dlg)
 end
@@ -1588,7 +1765,7 @@ function Panel:submitMarket(dlg)
         dlg.message = marketError({ error = "not_at_terminal" })
         return
     end
-    local mode, price, itemId, listingId, name = dlg.mode, nil, nil, nil, nil
+    local mode, price, itemIds, qty, listingId, name = dlg.mode, nil, nil, 1, nil, nil
     if mode == "price" then
         local info = self.marketInfo
         price = dlg:priceValue()
@@ -1596,26 +1773,60 @@ function Panel:submitMarket(dlg)
             dlg.message = getText(T .. "Market_Error_price_range", amountText(info.priceMin), amountText(info.priceMax))
             return
         end
-        itemId, name = dlg.cand.itemId, dlg.cand.name
+        local count = dlg:lotCount()
+        qty = dlg:qtyValue()
+        if qty == nil then
+            dlg.message = getText(T .. "Market_QtyHint", tostring(count), tostring(count))
+            return
+        end
+        -- the lot the player asked for, taken off the front of the server's own id list
+        itemIds, name = {}, dlg.cand.name
+        for i = 1, qty do itemIds[i] = dlg.cand.itemIds[i] end
     else
         listingId, price, name = dlg.row.id, dlg.row.price, dlg.row.name
     end
     dlg.message = nil
-    self.marketPending = { requestId = C.newRequestId(), at = EC.now(), kind = mode, name = name }
+    self.marketPending = { requestId = C.newRequestId(), at = EC.now(), kind = mode, name = name, qty = qty }
     if mode == "buy" then
         C.buyListing(listingId, price, self.marketPending.requestId)
     elseif mode == "cancel" then
         C.cancelListing(listingId, self.marketPending.requestId)
     else
-        C.listItem(itemId, price, self.marketPending.requestId)
+        C.listItem(itemIds, price, self.marketPending.requestId)
     end
 end
 
 function Panel:onMarket(kind, args)
+    if kind == "notice" then
+        -- the server told an online seller their listing left the market: the page it is on is
+        -- now one row out of date (ECClient already raised the toast)
+        self:updateMailTab(args.unclaimed)
+        if self.tab == "Market" and self.shown and not self.isCollapsed then self:requestMarketMode() end
+        return
+    end
+    if kind == "whitelist" then
+        local open = self.marketDialog
+        if open and open.mode == "pick" then C.requestCandidates() end
+        return
+    end
+    if kind == "history" then
+        self.marketHistoryError = args.error and marketError(args) or nil
+        self:rebuildMarketHistory()
+        return
+    end
     if kind == "browse" or kind == "mine" or kind == "candidates" then
         if kind == "browse" then
             self.marketAt = EC.now()
-            self.marketPage = math.max(1, tonumber(args.page) or self.marketPage)
+            -- an answer to a request the player has already moved past (the throttle window
+            -- swallowed the newer one): keep the chips as they are and ask again
+            local page = tonumber(args.page)
+            if (args.sort ~= nil and args.sort ~= self.marketSort)
+                or ((args.category or "") ~= (self.marketCat or ""))
+                or (page ~= nil and page ~= self.marketPage) then
+                self.browseWanted = true
+            else
+                self.marketPage = math.max(1, page or self.marketPage)
+            end
             self:rebuildMarketCategories()
         end
         self:updateMarketInfo()
@@ -1636,7 +1847,12 @@ function Panel:onMarket(kind, args)
         if kind == "buy" then
             C.toast(getText(T .. "Market_Bought", name, amountText(args.price)))
         elseif kind == "list" then
-            C.toast(getText(T .. "Market_Listed", name, amountText(args.fee)))
+            local listed = math.max(1, math.floor(tonumber(args.qty) or (pending and pending.qty) or 1))
+            if listed > 1 then
+                C.toast(getText(T .. "Market_ListedQty", name, tostring(listed), amountText(args.fee)))
+            else
+                C.toast(getText(T .. "Market_Listed", name, amountText(args.fee)))
+            end
         else
             C.toast(getText(T .. "Market_Cancelled"))
         end
@@ -1827,10 +2043,12 @@ function Panel:layout()
 
     -- market: a mode/refresh bar over the page. Browsing keeps the shop's two-card split
     -- (filters left, listings right) and adds the pager strip under the table; the own-listings
-    -- page has nothing to filter, so it takes one card across the whole width.
+    -- and history pages have nothing to filter, so they take one card across the whole width.
     local isMarket = self.tab == "Market"
     local mineMode = self.marketMode == "mine"
-    local browseMode = isMarket and not mineMode
+    local historyMode = self.marketMode == "history"
+    local wideMode = mineMode or historyMode
+    local browseMode = isMarket and not wideMode
     g.marketBarY = g.contentY
     g.marketCardY = g.contentY + CHIP_H + PAD
     g.marketCardH = math.max(CARD_TITLE_H + ROW * 3, g.contentH - CHIP_H - PAD)
@@ -1873,14 +2091,14 @@ function Panel:layout()
         chipX = chipX + b.width + 6
     end
 
-    g.marketCardX = mineMode and g.leftX or g.rightX
-    g.marketCardW = mineMode and (w - PAD * 2) or g.rightW
+    g.marketCardX = wideMode and g.leftX or g.rightX
+    g.marketCardW = wideMode and (w - PAD * 2) or g.rightW
     g.marketHeaderY = g.marketCardY + CARD_TITLE_H + ROW
     local mktListY = g.marketHeaderY + ROW
-    local mktFooterH = mineMode and 0 or ROW
+    local mktFooterH = wideMode and 0 or ROW
     local mktListW = g.marketCardW - 2
     local mktListH = math.max(ROW * 2, g.marketCardY + g.marketCardH - mktListY - PAD - mktFooterH)
-    self.marketList:setVisible(isMarket)
+    self.marketList:setVisible(isMarket and not historyMode)
     self.marketList:setX(g.marketCardX + 1); self.marketList:setY(mktListY)
     local mktCols = self.marketList.cols
     local mktInner = mktListW - 12
@@ -1898,6 +2116,23 @@ function Panel:layout()
     if self.marketList.width ~= mktListW or self.marketList.height ~= mktListH then
         self.marketList:resize(mktListW, mktListH)
     end
+
+    -- history: the same card, two lines per row, no icon column (kind, item, amount, status)
+    local hist = self.marketHistoryList
+    hist:setVisible(isMarket and historyMode)
+    hist:setX(g.marketCardX + 1); hist:setY(mktListY)
+    local hCols = hist.cols
+    local hInner = mktListW - 12
+    local kindW = 0
+    for _, k in ipairs(HISTORY_KINDS) do
+        kindW = math.max(kindW, textWidth(getTextOrNull(T .. "Market_Kind_" .. k) or k))
+    end
+    hCols.kind = PAD
+    hCols.name = hCols.kind + kindW + PAD
+    hCols.status = math.max(hCols.name, hInner - textWidth(getText(T .. "Wallet_RolledBack")) - PAD)
+    hCols.amountR = hCols.status - PAD
+    hCols.nameW = math.max(0, hCols.amountR - textWidth("-999,999") - PAD - hCols.name)
+    if hist.width ~= mktListW or hist.height ~= mktListH then hist:resize(mktListW, mktListH) end
     g.marketFooterY = mktListY + mktListH + 2
     local pageW = textWidth(getText(T .. "Market_Page", "99", "99"))
     x = g.marketCardX + PAD + pageW + PAD
@@ -2178,10 +2413,34 @@ function Panel:drawMail()
     end
 end
 
+-- History page: one card, the note line, and the ring newest first. No column header (the kind
+-- label already names each line) and no pager (the server sends the whole ring at once).
+function Panel:drawMarketHistory()
+    local g = self.g
+    local list = self.marketHistoryList
+    card(self, g.marketCardX, g.marketCardY, g.marketCardW, g.marketCardH, getText(T .. "Market_History_Title"))
+    local ty = g.marketCardY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
+    local noteW = g.marketCardW - PAD * 2
+    if self.marketHistoryError then
+        text(self, fitText(self.marketHistoryError, noteW), g.marketCardX + PAD, ty, "errorText")
+        return
+    end
+    if not C.marketHistory then
+        text(self, getText(T .. "Wallet_Loading"), g.marketCardX + PAD, ty, "textMuted")
+        return
+    end
+    text(self, fitText(getText(T .. "Market_History_Note"), noteW), g.marketCardX + PAD, ty, "textMuted")
+    if #list:getItems() == 0 then
+        text(self, getText(T .. "Market_History_Empty"), list.x + PAD,
+            list.y + math.floor((ROW - fontH.small) / 2), "textMuted")
+    end
+end
+
 function Panel:drawMarket()
     local g = self.g
     local mine = self.marketMode == "mine"
     local info = self.marketInfo
+    if self.marketMode == "history" then return self:drawMarketHistory() end
     if not mine then
         -- left card: category chips, the search box, the sort chips (all children, placed in layout)
         card(self, g.leftX, g.marketCardY, g.leftW, g.marketCardH)
@@ -2269,6 +2528,10 @@ function Panel:prerender()
     if self.marketQueryAt and EC.now() >= self.marketQueryAt and self.tab == "Market" then
         self:requestBrowse(1)
     end
+    -- a browse the 500 ms server throttle would have eaten: send the newest chip state now
+    if self.browseWanted and EC.now() - (self.browseSentAt or 0) >= BROWSE_MIN_MS then
+        self:sendBrowse()
+    end
     local w = self:getWidth()
     local h = self:getHeight()
     local th = self:titleBarHeight()
@@ -2337,6 +2600,13 @@ function Panel:render()
     local h = self:getHeight()
     local th = self:titleBarHeight()
     if self.isCollapsed then h = th end
+    -- Pending mailbox count as a corner bubble on the Mail tab: painted here, after the tab
+    -- buttons had their own render pass, so a hover fill cannot cover it.
+    local mailTab = self.mailTabButton
+    local unclaimed = math.floor(tonumber(C.unclaimed) or 0)
+    if not self.isCollapsed and mailTab and unclaimed > 0 and mailTab:getIsVisible() then
+        drawBadge(self, mailTab.x + mailTab.width - 2, mailTab.y + 2, unclaimed)
+    end
     if not self.isCollapsed and self.resizable and self.resizeWidget:getIsVisible() then
         local rh = self:resizeWidgetHeight()
         local c = color("border")
