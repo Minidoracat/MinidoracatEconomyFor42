@@ -2667,9 +2667,9 @@ worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
 cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
 -- catalog: the default file has no buyback; the panel turns it on for two SKUs
 local list = cmd(zed, "shop.list")
-check(list.buyback.enabled == false and list.items[1].buyback == false and list.items[1].bidPrice == 0, "the default catalog buys nothing and the faucet is closed")
+check(list.buyback.enabled == false and list.items[1].buyback == false and list.items[1].bidPrice > 0, "the default catalog carries bid prices but buys nothing; the faucet is closed")
 check(cmd(boss, "admin.catalog", { action = "set", id = "axe", bidPrice = 150 }).error == "invalid_args", "bidPrice must stay below the price")
-check(cmd(boss, "admin.catalog", { action = "set", id = "axe", buyback = true }).error == "invalid_args", "buyback needs a bidPrice first")
+check(cmd(boss, "admin.catalog", { action = "set", id = "axe", bidPrice = 0, buyback = true }).error == "invalid_args", "buyback needs a bidPrice of at least 1")
 local set = cmd(boss, "admin.catalog", { action = "set", id = "axe", bidPrice = 60, buyback = true, buybackCap = 2 })
 local fileText = table.concat(files["MinidoracatEconomy/catalog.json"].lines, "\n")
 check(set.ok == true and Shop.sku("axe").bidPrice == 60 and Shop.sku("axe").buyback == true and Shop.sku("axe").buybackCap == 2
