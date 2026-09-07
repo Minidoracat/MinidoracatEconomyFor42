@@ -238,6 +238,7 @@ handlers.hello = function(player, args)
         currencies = S.Config and S.Config.snapshot() or nil,
         terminals = S.Terminal and S.Terminal.list() or nil,
         terminalRange = EC.TERMINAL_RANGE,
+        unclaimed = S.Mailbox and S.Mailbox.unclaimed(player:getUsername()) or 0,   -- the float button badge
     })
 end
 

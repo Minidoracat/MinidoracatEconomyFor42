@@ -364,6 +364,21 @@ function Codec.snapshot(item)
     return s
 end
 
+-- Items with the same signature are interchangeable copies (one listing may carry several of
+-- them): the whole snapshot except the clock it was taken at.
+function Codec.signature(s)
+    local food = s.food
+    if type(food) == "table" and food.listedHours ~= nil then
+        local copy = {}
+        for k, v in pairs(s) do copy[k] = v end
+        local f = {}
+        for k, v in pairs(food) do if k ~= "listedHours" then f[k] = v end end
+        copy.food = f
+        s = copy
+    end
+    return EC.jsonEncode(s)
+end
+
 -- Fresh item from a snapshot; nil, err when the script no longer exists on this server.
 function Codec.rebuild(s)
     if type(s) ~= "table" or type(s.type) ~= "string" then return nil, "invalid_snapshot" end

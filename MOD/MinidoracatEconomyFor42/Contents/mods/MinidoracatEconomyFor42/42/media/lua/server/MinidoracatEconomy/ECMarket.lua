@@ -33,6 +33,7 @@ Mk.CANDIDATES_MAX = 200
 Mk.PENDING_MAX = 64               -- pendingOuts per player (spec 19.7 rule two)
 Mk.SWEEP_EVERY_MS = 60000
 Mk.QUERY_MAX = 64
+Mk.QTY_MAX = 50                   -- identical items one listing may bundle (one snapshot, rebuilt qty times)
 
 local md = nil
 local lastSweep = 0
@@ -130,10 +131,19 @@ end
 local function view(l)
     local s = l.snapshot or {}
     return {
-        id = l.id, seller = l.seller, item = l.item, name = l.name, category = l.category,
+        id = l.id, seller = l.seller, item = l.item, name = l.name, category = l.category, qty = l.qty or 1,
         price = l.price, at = l.at, expiresAt = l.expiresAt,
         condition = s.condition, uses = s.uses, fluid = s.fluid and s.fluid.name or nil, fluidAmount = s.fluid and s.fluid.amount or nil,
     }
+end
+
+-- Seller-side push: sold / expired / delisted happen without the seller asking, so the online
+-- seller hears about it (toast + mailbox badge) instead of finding out on the next refresh.
+local function notify(username, fields)
+    local p = S.onlinePlayer(username)
+    if not p then return end
+    fields.unclaimed = M.unclaimed(username)
+    S.reply(p, "market.notice", fields)
 end
 
 -- Search space on the server is what it can compare without translations: fullType, the script
@@ -203,9 +213,11 @@ function Mk.mine(username)
 end
 
 -- What the seller can list from the top level of the backpack: every item with the verdict and
--- the reason, so the picker can grey out the rest instead of round-tripping per item.
+-- the reason, so the picker can grey out the rest instead of round-tripping per item. Identical
+-- copies (same snapshot signature and verdict) fold into one row with every itemId, so the
+-- picker offers a quantity instead of forty plank tiles.
 function Mk.candidates(player)
-    local out = {}
+    local out, groups = {}, {}
     local inv = player:getInventory()
     if not inv then return out end
     local ok, items = pcall(function() return inv:getItems() end)
@@ -218,13 +230,22 @@ function Mk.candidates(player)
             local id, fullType = nil, nil
             pcall(function() id = it:getID() fullType = it:getFullType() end)
             if id and fullType then
-                local row = { itemId = id, item = fullType, ok = pass == true, reason = (not pass) and reason or nil }
-                pcall(function()
-                    row.condition = it:getCondition()
-                    row.uses = it:getCurrentUses()
-                    row.category = it:getDisplayCategory()
-                end)
-                out[#out + 1] = row
+                local key = fullType .. "|" .. tostring(pass == true) .. "|" .. tostring(reason or "")
+                if pass then key = key .. "|" .. Codec.signature(Codec.snapshot(it)) end
+                local row = groups[key]
+                if row then
+                    row.itemIds[#row.itemIds + 1] = id
+                    row.count = row.count + 1
+                else
+                    row = { itemId = id, itemIds = { id }, count = 1, item = fullType, ok = pass == true, reason = (not pass) and reason or nil }
+                    pcall(function()
+                        row.condition = it:getCondition()
+                        row.uses = it:getCurrentUses()
+                        row.category = it:getDisplayCategory()
+                    end)
+                    groups[key] = row
+                    out[#out + 1] = row
+                end
             end
         end
     end
@@ -246,9 +267,18 @@ local function findItem(inv, itemId)
     return nil
 end
 
+-- args.itemIds (or the single itemId) are interchangeable copies from the top level of the
+-- backpack; price is for the whole lot.
 function Mk.list(player, args)
     local username = player:getUsername()
-    if not validRequest(args) or not isInt(args.itemId, -2147483648, 2147483647) then return { ok = false, error = "invalid_args" } end
+    if not validRequest(args) then return { ok = false, error = "invalid_args" } end
+    local ids = type(args.itemIds) == "table" and args.itemIds or { args.itemId }
+    if #ids < 1 or #ids > Mk.QTY_MAX then return { ok = false, error = "invalid_args" } end
+    local seen = {}
+    for _, id in ipairs(ids) do
+        if not isInt(id, -2147483648, 2147483647) or seen[id] then return { ok = false, error = "invalid_args" } end
+        seen[id] = true
+    end
     local prior = L.priorResult("list:" .. username .. ":" .. args.requestId)
     if prior then return { ok = prior.ok, duplicate = true, error = prior.error } end
     local price = args.price
@@ -259,32 +289,43 @@ function Mk.list(player, args)
     if ownerCount(username) >= EC.sandbox("MarketMaxListings", 5) then return { ok = false, error = "too_many_listings" } end
     if md.market.count >= Mk.MAX_LISTINGS then return { ok = false, error = "market_full" } end
     local inv = player:getInventory()
-    local item = inv and findItem(inv, args.itemId) or nil
-    if not item then return { ok = false, error = "item_not_found" } end
-    local pass, reason = Codec.check(item)
-    if not pass then return { ok = false, error = reason } end
+    if not inv then return { ok = false, error = "item_not_found" } end
+    local items, signature = {}, nil
+    for _, id in ipairs(ids) do
+        local item = findItem(inv, id)
+        if not item then return { ok = false, error = "item_not_found" } end
+        local pass, reason = Codec.check(item)
+        if not pass then return { ok = false, error = reason } end
+        local sig = Codec.signature(Codec.snapshot(item))
+        if signature == nil then signature = sig
+        elseif sig ~= signature then return { ok = false, error = "mixed_items" } end
+        items[#items + 1] = item
+    end
     local currency = marketCurrency()
     local fee = pct(price, EC.sandbox("MarketListingFeePercent", 2))
     if fee > 0 and L.getBalance(username, currency).available < fee then return { ok = false, error = "insufficient_funds", fee = fee } end
 
     local ms = EC.now()
-    Codec.detachParts(item, inv)
-    local snapshot = Codec.snapshot(item)
+    for _, item in ipairs(items) do Codec.detachParts(item, inv) end
+    local snapshot = Codec.snapshot(items[1])
+    local qty = #items
     local id = S.newId()
     local _, seq = EC.parseId(id)
-    -- phase 1: the seller's own save remembers the operation before the item leaves the backpack
+    -- phase 1: the seller's own save remembers the operation before the items leave the backpack
     local p = playerData(player)
-    addPending(p, id, { itemId = args.itemId, snapshot = snapshot, kind = "listing", price = price, seq = seq, epoch = md.meta.epoch, at = ms })
+    addPending(p, id, { itemId = ids[1], itemIds = ids, qty = qty, snapshot = snapshot, kind = "listing", price = price, seq = seq, epoch = md.meta.epoch, at = ms })
     transmit(player)
-    -- phase 2: the item leaves the backpack
-    inv:Remove(item)
-    sendRemoveItemFromContainer(inv, item)
+    -- phase 2: the items leave the backpack
+    for _, item in ipairs(items) do
+        inv:Remove(item)
+        sendRemoveItemFromContainer(inv, item)
+    end
     -- phase 3: listing + fee in ModData (same tick). pending stays until reconcile clears it.
     local name, category = nil, nil
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
-    pcall(function() category = item:getDisplayCategory() end)
+    pcall(function() category = items[1]:getDisplayCategory() end)
     local l = {
-        id = id, seller = username, item = snapshot.type, snapshot = snapshot, price = price, fee = fee,
+        id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, price = price, fee = fee,
         at = ms, expiresAt = ms + EC.sandbox("MarketListingDays", 7) * 86400000,
         category = type(category) == "string" and category or "other", name = type(name) == "string" and name or nil,
     }
@@ -292,30 +333,37 @@ function Mk.list(player, args)
     if fee > 0 then
         local res = L.debit(username, currency, fee, Mk.BURN_ACCOUNT, {
             kind = "market_fee", requestId = "list:" .. username .. ":" .. args.requestId, reasonCode = "market_fee",
-            payload = { item = snapshot.type, qty = 1, listingId = id },
+            payload = { item = snapshot.type, qty = qty, listingId = id },
         })
         if not res.ok then
             -- balance was checked above; only a ledger-level refusal can land here (frozen mid-tick)
             removeListing(id)
-            local back = Codec.rebuild(snapshot)
-            if back then inv:AddItem(back) sendAddItemToContainer(inv, back) end
+            for _ = 1, qty do
+                local back = Codec.rebuild(snapshot)
+                if back then inv:AddItem(back) sendAddItemToContainer(inv, back) end
+            end
             p.pendingOuts[id] = nil
             transmit(player)
             return { ok = false, error = res.error }
         end
     end
-    X.emit("market.listed", { listingId = id, seller = username, item = snapshot.type, price = price, fee = fee, currency = currency, expiresAt = l.expiresAt })
-    return { ok = true, listingId = id, fee = fee, expiresAt = l.expiresAt }
+    X.emit("market.listed", { listingId = id, seller = username, item = snapshot.type, qty = qty, price = price, fee = fee, currency = currency, expiresAt = l.expiresAt })
+    X.market(username, { kind = "listed", listingId = id, item = snapshot.type, qty = qty, price = price, fee = fee, currency = currency })
+    return { ok = true, listingId = id, qty = qty, fee = fee, expiresAt = l.expiresAt }
 end
 
 -- ---------- returns (cancel / expiry / admin delist) ----------
 
 -- Listing -> seller mailbox. `force` lets system returns exceed the mailbox cap (spec 12 stage D).
-local function returnListing(l, reasonKind, force)
+local function returnListing(l, reasonKind, force, extra)
     if not force and not M.hasFreeSlot(l.seller) then return false, "mailbox_full" end
     removeListing(l.id)
-    local entry = M.add(l.seller, { kind = "return", item = l.item, qty = 1, txId = nil, price = l.price, snapshot = l.snapshot, listingId = l.id })
-    X.emit("market." .. reasonKind, { listingId = l.id, seller = l.seller, item = l.item, price = l.price, mailId = entry.id })
+    local qty = l.qty or 1
+    local entry = M.add(l.seller, { kind = "return", item = l.item, qty = qty, txId = nil, price = l.price, snapshot = l.snapshot, listingId = l.id })
+    X.emit("market." .. reasonKind, { listingId = l.id, seller = l.seller, item = l.item, qty = qty, price = l.price, mailId = entry.id })
+    local line = { kind = reasonKind, listingId = l.id, item = l.item, qty = qty, price = l.price, mailId = entry.id }
+    for k, v in pairs(extra or {}) do line[k] = v end
+    X.market(l.seller, line)
     return true, entry
 end
 
@@ -335,8 +383,9 @@ end
 function Mk.delist(admin, listingId, reason)
     local l = md.market.listings[listingId]
     if not l then return false, "unknown_listing" end
-    returnListing(l, "delisted", true)
+    returnListing(l, "delisted", true, { admin = admin, reason = reason })
     X.audit({ action = "delist", admin = admin, target = l.seller, field = listingId, before = tostring(l.item), after = tostring(l.price), reason = reason })
+    notify(l.seller, { kind = "delisted", listingId = l.id, item = l.item, qty = l.qty or 1, price = l.price, reason = reason })
     return true
 end
 
@@ -359,6 +408,7 @@ function Mk.buy(player, args)
     local tax = pct(l.price, EC.sandbox("MarketSalesTaxPercent", 5))
     if tax >= l.price then tax = l.price - 1 end
     if tax < 0 then tax = 0 end
+    local qty = l.qty or 1
     local postings = {
         { account = username, currency = currency, amount = -l.price },
         { account = l.seller, currency = currency, amount = l.price - tax },
@@ -366,16 +416,19 @@ function Mk.buy(player, args)
     if tax > 0 then postings[#postings + 1] = { account = Mk.BURN_ACCOUNT, currency = currency, amount = tax } end
     local res = L.post({
         kind = "market_buy", requestId = "buy:" .. username .. ":" .. args.requestId, reasonCode = "market_buy", actor = username,
-        payload = { item = l.item, qty = 1, listingId = l.id, seller = l.seller, buyer = username, tax = tax },
+        payload = { item = l.item, qty = qty, listingId = l.id, seller = l.seller, buyer = username, tax = tax },
         postings = postings,
     })
     if not res.ok then return { ok = false, error = res.error } end
     removeListing(l.id)
-    local entry = M.add(username, { kind = "market", item = l.item, qty = 1, txId = res.txId, price = l.price, snapshot = l.snapshot, listingId = l.id })
-    X.emit("market.sold", { listingId = l.id, seller = l.seller, buyer = username, item = l.item, price = l.price, tax = tax, currency = currency, txId = res.txId, mailId = entry.id })
+    local entry = M.add(username, { kind = "market", item = l.item, qty = qty, txId = res.txId, price = l.price, snapshot = l.snapshot, listingId = l.id })
+    X.emit("market.sold", { listingId = l.id, seller = l.seller, buyer = username, item = l.item, qty = qty, price = l.price, tax = tax, currency = currency, txId = res.txId, mailId = entry.id })
+    X.market(l.seller, { kind = "sold", listingId = l.id, item = l.item, qty = qty, price = l.price, tax = tax, currency = currency, txId = res.txId, other = username })
+    X.market(username, { kind = "bought", listingId = l.id, item = l.item, qty = qty, price = l.price, currency = currency, txId = res.txId, other = l.seller })
+    notify(l.seller, { kind = "sold", listingId = l.id, item = l.item, qty = qty, price = l.price, tax = tax, currency = currency, buyer = username })
     local claim = M.claim(player, entry.id)
     return {
-        ok = true, txId = res.txId, listingId = l.id, mailId = entry.id, item = l.item, price = l.price, tax = tax, currency = currency,
+        ok = true, txId = res.txId, listingId = l.id, mailId = entry.id, item = l.item, qty = qty, price = l.price, tax = tax, currency = currency,
         delivered = claim.ok == true, deliveryError = (not claim.ok) and claim.error or nil,
         balance = L.getBalance(username, currency).available,
     }
@@ -393,7 +446,10 @@ function Mk.onTick()
     for _, l in pairs(md.market.listings) do
         if (l.expiresAt or 0) <= ms then dead[#dead + 1] = l end
     end
-    for _, l in ipairs(dead) do returnListing(l, "expired", true) end
+    for _, l in ipairs(dead) do
+        returnListing(l, "expired", true)
+        notify(l.seller, { kind = "expired", listingId = l.id, item = l.item, qty = l.qty or 1, price = l.price })
+    end
 end
 
 -- ---------- rebuild from a pending record (rule three row 4, called by ECMailbox.reconcileOuts) ----------
@@ -401,16 +457,17 @@ end
 function Mk.restoreFromPending(username, id, pend)
     if md.market.listings[id] then return false end
     local l = {
-        id = id, seller = username, item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot, price = pend.price, fee = 0,
+        id = id, seller = username, item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot, qty = pend.qty or 1, price = pend.price, fee = 0,
         at = pend.at or EC.now(), expiresAt = (pend.at or EC.now()) + EC.sandbox("MarketListingDays", 7) * 86400000, category = "other",
     }
-    if type(l.item) ~= "string" or not isInt(l.price, 1, 1000000000) then return false end
+    if type(l.item) ~= "string" or not isInt(l.price, 1, 1000000000) or not isInt(l.qty, 1, Mk.QTY_MAX) then return false end
     pcall(function()
         local script = ScriptManager.instance:FindItem(l.item)
         l.name = script:getDisplayName()
         l.category = script:getDisplayCategory() or "other"
     end)
     addListing(l)
+    X.market(username, { kind = "restored", listingId = id, item = l.item, qty = l.qty, price = l.price })
     return true
 end
 
@@ -463,6 +520,14 @@ S.handlers["market.cancel"] = function(player, args)
     res.mine = Mk.mine(player:getUsername())
     res.unclaimed = M.unclaimed(player:getUsername())
     S.reply(player, "market.cancel", res)
+end
+
+-- The player's own market history: the newest lines of this and last month's market file (tailed
+-- like the receipts; rolled-back lines are flagged by epoch/seq).
+S.handlers["market.history"] = function(player, args)
+    local W = EC.Wallet
+    local username = player:getUsername()
+    W.tail(player, "market.history", W.marketPaths(username, W.recentMonths(EC.now())), { username = username })
 end
 
 function Mk.init(root)

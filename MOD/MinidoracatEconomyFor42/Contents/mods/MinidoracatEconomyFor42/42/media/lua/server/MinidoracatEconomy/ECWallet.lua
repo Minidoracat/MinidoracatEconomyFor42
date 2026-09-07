@@ -164,6 +164,15 @@ function W.receiptPaths(username, months)
     return paths
 end
 
+-- Market history file paths for a username (same layout as the receipts, under market/).
+function W.marketPaths(username, months)
+    local paths = {}
+    for _, m in ipairs(months) do
+        paths[#paths + 1] = X.ROOT .. "/market/" .. EC.safeName(username) .. "/" .. m .. ".json"
+    end
+    return paths
+end
+
 -- Previous and current UTC month keys (the "recent" window spans a month boundary).
 function W.recentMonths(ms)
     local prev = EC.monthKey(ms - 30 * 86400000)

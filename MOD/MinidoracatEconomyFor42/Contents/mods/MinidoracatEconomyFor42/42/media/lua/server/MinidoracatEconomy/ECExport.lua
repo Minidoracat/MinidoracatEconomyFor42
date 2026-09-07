@@ -50,6 +50,12 @@ local function receiptsPath(account, ms)
     return X.ROOT .. sep .. "receipts" .. sep .. EC.safeName(account) .. sep .. EC.monthKey(ms) .. ".json"
 end
 
+-- market/<safeName>/YYYYMM.json: one line per market event of that account (the player and
+-- admin "market history" pages tail it like the receipts)
+local function marketPath(account, ms)
+    return X.ROOT .. "/market/" .. EC.safeName(account) .. "/" .. EC.monthKey(ms) .. ".json"
+end
+
 local function auditPath(ms)
     return X.ROOT .. sep .. "audit" .. sep .. EC.monthKey(ms) .. ".json"
 end
@@ -147,6 +153,16 @@ function X.emit(type_, fields)
     end
     X.enqueue(eventsPath(ms), EC.jsonEncode(rec))
     return rec
+end
+
+-- One market history line for `account` (seller or buyer side of a listing event): the
+-- events file already has the neutral record, this is the per-player view the pages tail.
+function X.market(account, fields)
+    local ms = EC.now()
+    local rec = baseRecord("market", ms)
+    rec.seq = md.meta.seq
+    for k, v in pairs(fields or {}) do rec[k] = v end
+    X.enqueue(marketPath(account, ms), EC.jsonEncode(rec))
 end
 
 -- Full record goes to the audit + events files; a trimmed copy lands in the bounded ModData ring

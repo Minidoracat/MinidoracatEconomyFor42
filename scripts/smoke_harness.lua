@@ -320,7 +320,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 419     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 434     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2157,6 +2157,81 @@ local dl = cmd(boss, "admin.listings", { action = "delist", listingId = lh.listi
 check(dl.ok == true and not Mk.hasListing(lh.listingId) and M.unclaimed("cat") == 1 and dl.total == 0, "an admin delist returns the item to the seller mailbox and is audited")
 local au = X.auditEntries(5)
 check(au[1].action == "delist" and au[1].target == "cat", "delist audit row")
+-- lots: identical copies fold into one candidate row and list as one listing with qty
+sentCommands = {}
+local p1, p2, p3 = instanceItem("Base.Plank"), instanceItem("Base.Plank"), instanceItem("Base.Plank")
+local s1 = instanceItem("Base.Saw"); s1.condition = 4
+for _, it in ipairs({ p1, p2, p3, s1 }) do cat.inventory:AddItem(it) end
+local cands = cmd(cat, "market.candidates").items
+local plankRow, sawRow = nil, nil
+for _, r in ipairs(cands) do
+    if r.item == "Base.Plank" then plankRow = r elseif r.item == "Base.Saw" then sawRow = r end
+end
+check(plankRow and plankRow.count == 3 and #plankRow.itemIds == 3 and sawRow and sawRow.count == 1, "three identical planks are one candidate row with three itemIds")
+check(cmd(cat, "market.list", { itemIds = { p1.id, s1.id }, price = 30 }).error == "mixed_items", "a lot must be interchangeable copies")
+check(cmd(cat, "market.list", { itemIds = { p1.id, p1.id }, price = 30 }).error == "invalid_args", "the same item twice is refused")
+local lot = cmd(cat, "market.list", { itemIds = { p1.id, p2.id, p3.id }, price = 30 })
+check(lot.ok == true and lot.qty == 3 and cat.inventory.count("Base.Plank") == 0 and Mk.mine("cat")[1].qty == 3 and lot.fee == 1,
+    "the lot leaves the backpack as one listing of three at one price and one fee")
+local pendLot = cat.modData[EC.PLAYER_MODDATA_KEY].pendingOuts[lot.listingId]
+check(pendLot and pendLot.qty == 3 and #pendLot.itemIds == 3, "the pending record keeps every itemId of the lot")
+local browsed = cmd(bob, "market.browse", {})
+local lotRow = nil
+for _, r in ipairs(browsed.items) do if r.id == lot.listingId then lotRow = r end end
+check(lotRow and lotRow.qty == 3, "the browse row carries the quantity")
+onlinePlayers = { boss, ann, bob, cat }
+sentCommands = {}
+local lotBuy = cmd(bob, "market.buy", { listingId = lot.listingId, price = 30 })
+check(lotBuy.ok == true and lotBuy.qty == 3 and bob.inventory.count("Base.Plank") == 3, "buying the lot delivers three rebuilt planks")
+local notice = nil
+for i = #sentCommands, 1, -1 do
+    local c = sentCommands[i]
+    if c.command == "market.notice" and c.player == cat then notice = c.args break end
+end
+check(notice and notice.kind == "sold" and notice.qty == 3 and notice.price == 30 and notice.buyer == "bob" and notice.unclaimed == M.unclaimed("cat"),
+    "the online seller is told about the sale with the mailbox count")
+-- delist notice and the market history file
+local h2 = instanceItem("Base.Hammer"); cat.inventory:AddItem(h2)
+local lh2 = cmd(cat, "market.list", { itemId = h2.id, price = 80 })
+sentCommands = {}
+cmd(boss, "admin.listings", { action = "delist", listingId = lh2.listingId, reason = "dup" })
+notice = nil
+for i = #sentCommands, 1, -1 do
+    local c = sentCommands[i]
+    if c.command == "market.notice" and c.player == cat then notice = c.args break end
+end
+check(notice and notice.kind == "delisted" and notice.reason == "dup" and notice.item == "Base.Hammer", "the online seller is told about a forced delist with the reason")
+for _ = 1, 4 do fire("OnTickEvenPaused") end
+local mpath = "MinidoracatEconomy/market/cat/" .. EC.monthKey(nowMs) .. ".json"
+local kinds = {}
+for _, line in ipairs((files[mpath] or { lines = {} }).lines) do
+    local rec = EC.jsonDecode(line)
+    if type(rec) == "table" then kinds[#kinds + 1] = rec.kind end
+end
+check(table.concat(kinds, ",") == "listed,delisted,listed,sold,listed,delisted", "the seller's market file journals every listing event in order: " .. table.concat(kinds, ","))
+local bpath = "MinidoracatEconomy/market/bob/" .. EC.monthKey(nowMs) .. ".json"
+check(files[bpath] and #files[bpath].lines == 2 and string.find(files[bpath].lines[2], '"kind":"bought"', 1, true) ~= nil, "the buyer's market file has the bought lines")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "market.history", cat, {})
+for _ = 1, 3 do fire("OnTickEvenPaused") end
+local hist = lastSent("market.history").args
+check(hist.username == "cat" and hist.total == 6 and hist.entries[#hist.entries].kind == "delisted" and hist.entries[#hist.entries].reason == "dup" and hist.entries[1].rolledBack == false,
+    "market.history tails the player's own file")
+sentCommands = {}
+cmd(bob, "admin.marketHistory", { username = "cat" })
+check(lastSent("admin.marketHistory") == nil or lastSent("admin.marketHistory").args.error == "forbidden", "a player cannot read another player's market history")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.marketHistory", boss, { username = "cat" })
+for _ = 1, 3 do fire("OnTickEvenPaused") end
+check(lastSent("admin.marketHistory").args.total == 6, "an admin reads any player's market history")
+-- a whitelist edit is broadcast so open pickers refresh
+sentCommands = {}
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.whitelist", boss, { action = "set", fullType = "Base.Hammer", mode = "exclude", requestId = "wl-x" })
+local wlPush = 0
+for _, c in ipairs(sentCommands) do if c.command == "market.whitelist" then wlPush = wlPush + 1 end end
+check(wlPush == #onlinePlayers, "a whitelist change is pushed to every online player")
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.whitelist", boss, { action = "set", fullType = "Base.Hammer", mode = "inherit", requestId = "wl-y" })
 onlinePlayers = {}
 SandboxVars.MinidoracatEconomy.MarketMaxListings = nil
 end)()

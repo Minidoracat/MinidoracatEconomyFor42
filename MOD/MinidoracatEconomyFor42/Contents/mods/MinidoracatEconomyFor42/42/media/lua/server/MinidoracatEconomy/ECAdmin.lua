@@ -818,10 +818,27 @@ S.handlers["admin.whitelist"] = function(player, args)
         local ok, err = Codec.reload(player:getUsername())
         if not ok then res = { ok = false, error = "whitelist_invalid", detail = err } end
     end
+    if write and res.ok then
+        -- an open picker re-asks for its candidates: the verdicts it shows just changed
+        S.broadcast("market.whitelist", { at = EC.now() })
+    end
     if type(args) == "table" then res.requestId = args.requestId end
     res.whitelist = Codec.status(true)
     res.perms = { read = true, write = A.isAdmin(player) }
     S.reply(player, "admin.whitelist", res)
+end
+
+-- admin.marketHistory {username} (read gate): that player's market history file, tailed like
+-- the receipts (this and last month, newest first, rolled-back lines flagged).
+S.handlers["admin.marketHistory"] = function(player, args)
+    if not gate(player, "admin.marketHistory", false) then return end
+    local username = type(args) == "table" and args.username or nil
+    if type(username) ~= "string" or username == "" or #username > 64 then
+        S.reply(player, "admin.marketHistory", { entries = {}, error = "invalid_args" })
+        return
+    end
+    local W = EC.Wallet
+    W.tail(player, "admin.marketHistory", W.marketPaths(username, W.recentMonths(EC.now())), { username = username })
 end
 
 -- admin.auditFile (read gate): the newest entries of the previous and current month's audit

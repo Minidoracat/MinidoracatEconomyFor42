@@ -65,8 +65,8 @@ function M.hasFreeSlot(username)
     return M.unclaimed(username) < M.PER_ACCOUNT and md.mailbox.unclaimed < M.GLOBAL_MAX
 end
 
--- fields = { kind, item, qty, txId, price?, snapshot?, listingId? }. A snapshot entry rebuilds one
--- item through ECCodec; without one the entry is `qty` fresh items of `item` (system shop).
+-- fields = { kind, item, qty, txId, price?, snapshot?, listingId? }. A snapshot entry rebuilds
+-- `qty` copies through ECCodec; without one the entry is `qty` fresh items of `item` (system shop).
 -- Caller checked hasFreeSlot (or is a system return allowed past the cap); this never fails.
 function M.add(username, fields)
     local o = owner(username, true)
@@ -200,7 +200,7 @@ local function deliver(player, entry, claimSeq)
     if not inv then return false, "no_inventory" end
     local first, err = build(entry)
     if not first then return false, err or "item_unavailable" end
-    local n = type(entry.snapshot) == "table" and 1 or math.max(1, math.min(M.ITEMS_MAX, entry.qty or 1))
+    local n = math.max(1, math.min(M.ITEMS_MAX, entry.qty or 1))
     local okRoom, room = pcall(function() return inv:hasRoomFor(player, itemWeight(first) * n) end)
     if not okRoom or room ~= true then return false, "backpack_full" end
     local list = ArrayList.new()
@@ -315,8 +315,9 @@ end
 
 -- ---------- login reconciliation of list-out (rule three rows 4-6) ----------
 
--- pendingOuts[listingId] = { itemId, snapshot, price, seq, epoch, at }. Cleared only here (or
--- by an eviction): a listing is durable once it came from an earlier epoch's save.
+-- pendingOuts[listingId] = { itemIds (itemId = the first), qty, snapshot, price, seq, epoch, at }.
+-- Cleared only here (or by an eviction): a listing is durable once it came from an earlier
+-- epoch's save. A lot counts as "still in the backpack" when any of its items is.
 reconcileOuts = function(player, p, inv)
     local Mk = S.Market
     if not Mk then return false end
@@ -324,17 +325,25 @@ reconcileOuts = function(player, p, inv)
     local changed = false
     for id, pend in pairs(p.pendingOuts) do
         local hasListing = Mk.hasListing(id)
-        local original = nil
-        pcall(function() original = inv:getItemWithID(pend.itemId) end)
+        local originals = {}
+        for _, itemId in ipairs(type(pend.itemIds) == "table" and pend.itemIds or { pend.itemId }) do
+            pcall(function()
+                local found = inv:getItemWithID(itemId)
+                if found then originals[#originals + 1] = found end
+            end)
+        end
+        local original = originals[1]
         local durable = pend.epoch ~= md.meta.epoch and not S.isRolledBack(pend.epoch, tonumber(pend.seq) or 0)
         if original and hasListing then
             -- row 6: the world has the listing, the (older) player save still has the item: the
             -- listing is authoritative, the original goes
             pcall(function()
-                inv:Remove(original)
-                sendRemoveItemFromContainer(inv, original)
+                for _, o in ipairs(originals) do
+                    inv:Remove(o)
+                    sendRemoveItemFromContainer(inv, o)
+                end
             end)
-            anomaly(username, id, "removed-listed-original", { itemId = pend.itemId })
+            anomaly(username, id, "removed-listed-original", { itemId = pend.itemId, qty = #originals })
             if durable then p.pendingOuts[id] = nil end
             changed = true
         elseif original and not hasListing then
