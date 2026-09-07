@@ -57,21 +57,22 @@ Shop.DAILY_KEEP_DAYS = 31
 Shop.FILE_LINES_MAX = 20000
 
 -- Written when the file is missing so the host sees the shape. Prices are in the market currency
--- (daily check-in pays 30 by default); the host is expected to edit this.
+-- (daily check-in pays 30 by default); the host is expected to edit this. bidPrice is what buyback
+-- would pay once the host turns the row's buyback flag (and the sandbox switch) on.
 Shop.DEFAULT_ITEMS = {
-    { id = "bandage", item = "Base.Bandage", qty = 1, price = 12, dailyCap = 5, category = "medical" },
-    { id = "antibiotics", item = "Base.Antibiotics", qty = 1, price = 60, dailyCap = 2, category = "medical" },
-    { id = "ripped_sheets", item = "Base.RippedSheets", qty = 5, price = 10, dailyCap = 5, category = "medical" },
-    { id = "canned_corn", item = "Base.CannedCorn", qty = 2, price = 20, dailyCap = 5, category = "food" },
-    { id = "nails", item = "Base.Nails", qty = 20, price = 25, dailyCap = 5, category = "material" },
-    { id = "screws", item = "Base.Screws", qty = 20, price = 25, dailyCap = 5, category = "material" },
-    { id = "plank", item = "Base.Plank", qty = 5, price = 30, dailyCap = 5, category = "material" },
-    { id = "rope", item = "Base.Rope", qty = 2, price = 24, dailyCap = 5, category = "material" },
-    { id = "twine", item = "Base.Twine", qty = 1, price = 12, dailyCap = 5, category = "material" },
-    { id = "lighter", item = "Base.Lighter", qty = 1, price = 15, dailyCap = 2, category = "tool" },
-    { id = "hammer", item = "Base.Hammer", qty = 1, price = 80, dailyCap = 1, category = "tool" },
-    { id = "saw", item = "Base.Saw", qty = 1, price = 90, dailyCap = 1, category = "tool" },
-    { id = "axe", item = "Base.Axe", qty = 1, price = 150, dailyCap = 1, category = "tool" },
+    { id = "bandage", item = "Base.Bandage", qty = 1, price = 12, dailyCap = 5, category = "medical", bidPrice = 5 },
+    { id = "antibiotics", item = "Base.Antibiotics", qty = 1, price = 60, dailyCap = 2, category = "medical", bidPrice = 25 },
+    { id = "ripped_sheets", item = "Base.RippedSheets", qty = 5, price = 10, dailyCap = 5, category = "medical", bidPrice = 4 },
+    { id = "canned_corn", item = "Base.CannedCorn", qty = 2, price = 20, dailyCap = 5, category = "food", bidPrice = 8 },
+    { id = "nails", item = "Base.Nails", qty = 20, price = 25, dailyCap = 5, category = "material", bidPrice = 10 },
+    { id = "screws", item = "Base.Screws", qty = 20, price = 25, dailyCap = 5, category = "material", bidPrice = 10 },
+    { id = "plank", item = "Base.Plank", qty = 5, price = 30, dailyCap = 5, category = "material", bidPrice = 12 },
+    { id = "rope", item = "Base.Rope", qty = 2, price = 24, dailyCap = 5, category = "material", bidPrice = 10 },
+    { id = "twine", item = "Base.Twine", qty = 1, price = 12, dailyCap = 5, category = "material", bidPrice = 5 },
+    { id = "lighter", item = "Base.Lighter", qty = 1, price = 15, dailyCap = 2, category = "tool", bidPrice = 6 },
+    { id = "hammer", item = "Base.Hammer", qty = 1, price = 80, dailyCap = 1, category = "tool", bidPrice = 30 },
+    { id = "saw", item = "Base.Saw", qty = 1, price = 90, dailyCap = 1, category = "tool", bidPrice = 35 },
+    { id = "axe", item = "Base.Axe", qty = 1, price = 150, dailyCap = 1, category = "tool", bidPrice = 60 },
 }
 
 local md = nil

@@ -3792,7 +3792,14 @@ function Panel:drawShop()
     end
     local note = getText(T .. "Shop_Note", C.currencyName(shop.currency))
     if shop.buyback and shop.buyback.enabled == true then
-        note = note .. "  " .. getText(T .. "Shop_BuybackNote", amountText(shop.buyback.accountRemaining or 0), amountText(shop.buyback.serverRemaining or 0))
+        local any = false
+        for _, it in ipairs(shop.items or {}) do if it.buyback == true and it.enabled ~= false then any = true end end
+        if any then
+            note = note .. "  " .. getText(T .. "Shop_BuybackNote", amountText(shop.buyback.accountRemaining or 0))
+        else
+            -- the switch is on but no catalog row is marked: say so instead of an empty promise
+            note = note .. "  " .. getText(T .. "Shop_BuybackNone")
+        end
     end
     text(self, fitText(note, g.rightW - PAD * 2), g.rightX + PAD, ty, "textMuted")
     local cols = self.shopList.cols

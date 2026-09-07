@@ -2406,9 +2406,15 @@ function Admin:onCatalogAction(item, id)
             value = tostring(cap),
         })
     elseif id == "buybackToggle" then
-        -- the server refuses a flag without a bid price; say so here instead of a bare error
+        -- the server refuses the flag without a bid price: ask for the price and turn it on in
+        -- the same write instead of bouncing the admin off a bare error
         if sku.buyback ~= true and bid < 1 then
-            self.message = { text = tr("Admin_Shop_BuybackHint"), error = true }
+            self:openDialog("catalogBid", {
+                title = getText(T .. "Admin_Shop_EditBidPrice", item.plainName),
+                confirm = tr("Admin_Shop_BuybackOn"), catalogId = sku.id, catalogMax = price - 1, catalogMin = 1, catalogEnable = true,
+                hint = tr("Admin_Shop_BuybackHint"),
+                value = tostring(math.max(1, math.floor(price / 2))),
+            })
             return
         end
         self:sendCatalog({ action = "set", id = sku.id, buyback = sku.buyback ~= true }, nil)
@@ -2733,6 +2739,8 @@ function Admin:openDialog(mode, ctx)
     dlg.optionGroup = ctx.optionGroup
     dlg.catalogId = ctx.catalogId
     dlg.catalogMax = ctx.catalogMax   -- bid price: the ceiling is price - 1, not a constant
+    dlg.catalogMin = ctx.catalogMin
+    dlg.catalogEnable = ctx.catalogEnable   -- bid price dialog opened from the buyback toggle: also turn it on
     dlg.listingId = ctx.listingId
     dlg.auctionId = ctx.auctionId
     dlg.hintText = ctx.hint
@@ -2991,7 +2999,10 @@ function Admin:submitCatalogValue(dlg)
     local mode = dlg.mode
     local lo, hi = 0, CAP_MAX
     if mode == "catalogPrice" then lo, hi = 1, PRICE_MAX
-    elseif mode == "catalogBid" then hi = math.max(0, math.floor(tonumber(dlg.catalogMax) or 0)) end
+    elseif mode == "catalogBid" then
+        lo = math.floor(tonumber(dlg.catalogMin) or 0)
+        hi = math.max(lo, math.floor(tonumber(dlg.catalogMax) or 0))
+    end
     local n = parseInt(entryText(dlg.boxes.value))
     if n == nil or n < lo or n > hi then
         dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
@@ -3001,7 +3012,9 @@ function Admin:submitCatalogValue(dlg)
     local args = { action = "set", id = dlg.catalogId }
     if mode == "catalogPrice" then args.price = n
     elseif mode == "catalogCap" then args.dailyCap = n
-    elseif mode == "catalogBid" then args.bidPrice = n
+    elseif mode == "catalogBid" then
+        args.bidPrice = n
+        if dlg.catalogEnable then args.buyback = true end
     else args.buybackCap = n end
     self:sendCatalog(args, dlg)
 end
