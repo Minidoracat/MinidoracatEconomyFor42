@@ -40,7 +40,7 @@ Rd.CATEGORY = "Economy"
 Rd.LATEST_MAX = 3               -- listings named per broadcast
 Rd.MESSAGE_MAX = 200            -- spec 17.3: one short line, never a wall of text
 Rd.LANGUAGES = { CH = true, CN = true, EN = true, JP = true }
-Rd.TEMPLATE_KEYS = { "Radio_Empty", "Radio_Summary", "Radio_Latest", "Radio_Item", "Radio_ItemQty", "Radio_Sep" }
+Rd.TEMPLATE_KEYS = { "Radio_Empty", "Radio_Summary", "Radio_Latest", "Radio_Item", "Radio_ItemQty", "Radio_Sep", "Radio_Auctions", "Radio_Channel" }
 
 local md = nil
 local lastBroadcast = 0
@@ -135,7 +135,7 @@ function Rd.compose()
             sellerCount = sellerCount + 1
         end
     end
-    if #rows == 0 then return Rd.text("Radio_Empty") end
+    if #rows == 0 then return Rd.text("Radio_Empty") .. Rd.auctionLine() end
     EC.sortSafe(rows, function(a, b)
         if a.at ~= b.at then return a.at > b.at end
         return a.id < b.id
@@ -154,8 +154,21 @@ function Rd.compose()
     end
     local latest = Rd.text("Radio_Latest", table.concat(parts, Rd.text("Radio_Sep")))
     if #msg + #latest <= Rd.MESSAGE_MAX then msg = msg .. latest end
+    msg = msg .. Rd.auctionLine()
     if #msg > Rd.MESSAGE_MAX then msg = string.sub(msg, 1, Rd.MESSAGE_MAX) end
     return msg
+end
+
+-- Auctions that end before the next broadcast (stage F): "N auctions end within the hour".
+function Rd.auctionLine()
+    local items = md.auctions and md.auctions.items or nil
+    if not items then return "" end
+    local now, horizon, n = EC.now(), Rd.intervalMs(), 0
+    for _, a in pairs(items) do
+        if (a.expiresAt or 0) > now and (a.expiresAt or 0) - now <= horizon then n = n + 1 end
+    end
+    if n == 0 then return "" end
+    return Rd.text("Radio_Auctions", tostring(n))
 end
 
 -- ---------- transmit ----------

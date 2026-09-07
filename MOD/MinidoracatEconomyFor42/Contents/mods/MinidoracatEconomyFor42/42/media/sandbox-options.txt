@@ -300,3 +300,43 @@ option MinidoracatEconomy.RadioLanguage
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_RadioLanguage,
 }
+
+option MinidoracatEconomy.AuctionMinHours
+{
+    type = integer,
+    min = 1,
+    max = 168,
+    default = 6,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AuctionMinHours,
+}
+
+option MinidoracatEconomy.AuctionMaxHours
+{
+    type = integer,
+    min = 1,
+    max = 168,
+    default = 72,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AuctionMaxHours,
+}
+
+option MinidoracatEconomy.AuctionMaxPerPlayer
+{
+    type = integer,
+    min = 1,
+    max = 50,
+    default = 3,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AuctionMaxPerPlayer,
+}
+
+option MinidoracatEconomy.AuctionMinIncrementPercent
+{
+    type = integer,
+    min = 1,
+    max = 100,
+    default = 5,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AuctionMinIncrementPercent,
+}

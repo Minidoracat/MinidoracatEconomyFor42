@@ -59,5 +59,13 @@
   "Sandbox_MinidoracatEconomy_RadioRange": "市场电台收讯范围（格）",
   "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "距离交易站多少格内的收音机收得到；0＝全地图都收得到。",
   "Sandbox_MinidoracatEconomy_RadioLanguage": "市场电台语言",
-  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto＝跟服务器语言；或指定 CH／CN／EN／JP。物品名称仍依服务器语言。"
+  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto＝跟服务器语言；或指定 CH／CN／EN／JP。物品名称仍依服务器语言。",
+  "Sandbox_MinidoracatEconomy_AuctionMinHours": "拍卖最短时长（小时）",
+  "Sandbox_MinidoracatEconomy_AuctionMinHours_tooltip": "创建拍卖时可选的最短持续时间（真实小时）。",
+  "Sandbox_MinidoracatEconomy_AuctionMaxHours": "拍卖最长时长（小时）",
+  "Sandbox_MinidoracatEconomy_AuctionMaxHours_tooltip": "创建拍卖时可选的最长持续时间（真实小时）。",
+  "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer": "每人同时拍卖上限",
+  "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer_tooltip": "一名玩家同时可挂的拍卖数（另计市场刊登上限）。",
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent": "最低加价幅度（%%）",
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新出价至少要比目前最高价高出这个百分比（最少 1 币）。"
 }

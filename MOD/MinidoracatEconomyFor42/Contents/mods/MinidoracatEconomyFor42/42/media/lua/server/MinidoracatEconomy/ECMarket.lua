@@ -147,6 +147,9 @@ local function addPending(p, id, rec)
     end
 end
 
+-- Shared with ECAuction (same three-phase list-out, kind "auction").
+function Mk.addPending(p, id, rec) return addPending(p, id, rec) end
+
 -- ---------- views ----------
 
 local function view(l)
@@ -479,6 +482,10 @@ end
 -- ---------- rebuild from a pending record (rule three row 4, called by ECMailbox.reconcileOuts) ----------
 
 function Mk.restoreFromPending(username, id, pend)
+    if pend.kind == "auction" then
+        local Au = S.Auction
+        return Au ~= nil and Au.restoreFromPending(username, id, pend)
+    end
     if md.market.listings[id] then return false end
     local l = {
         id = id, seller = username, item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot, qty = pend.qty or 1, price = pend.price, fee = 0,
@@ -495,8 +502,11 @@ function Mk.restoreFromPending(username, id, pend)
     return true
 end
 
+-- An escrow record of either kind: the reconcile treats a pending auction like a pending listing.
 function Mk.hasListing(id)
-    return md.market.listings[id] ~= nil
+    if md.market.listings[id] ~= nil then return true end
+    local Au = S.Auction
+    return Au ~= nil and Au.hasAuction(id)
 end
 
 function Mk.stats()

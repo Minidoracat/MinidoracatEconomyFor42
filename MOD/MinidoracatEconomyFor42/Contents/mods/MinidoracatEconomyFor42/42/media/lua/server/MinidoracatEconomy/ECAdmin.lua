@@ -57,6 +57,9 @@ end
 if not MinidoracatEconomy or not MinidoracatEconomy.Radio then
     require "MinidoracatEconomy/ECRadio"
 end
+if not MinidoracatEconomy or not MinidoracatEconomy.Auction then
+    require "MinidoracatEconomy/ECAuction"
+end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
 local L = EC and EC.Ledger
@@ -593,6 +596,7 @@ function A.system(write)
         catalog = Shop.fileStatus(),
         mailboxUnclaimed = md.mailbox and md.mailbox.unclaimed or 0,
         market = Mk.stats(),
+        auctions = S.Auction and S.Auction.stats() or nil,
         whitelist = Codec.status(),
     }
 end
@@ -803,6 +807,25 @@ S.handlers["admin.listings"] = function(player, args)
     for k, v in pairs(snap) do res[k] = v end
     res.perms = { read = true, write = A.isAdmin(player) }
     S.reply(player, "admin.listings", res)
+end
+
+-- admin.auctions {action=list|cancel, auctionId?, reason?, requestId}: every active auction (read
+-- gate); cancel releases the highest bid and returns the items to the seller (write gate, audited).
+S.handlers["admin.auctions"] = function(player, args)
+    local Au = S.Auction
+    local action = type(args) == "table" and args.action or "list"
+    if not gate(player, "admin.auctions", action == "cancel") then return end
+    local res = { ok = true }
+    if action == "cancel" then
+        local reason = type(args.reason) == "string" and args.reason or ""
+        local ok, err = Au.adminCancel(player:getUsername(), args.auctionId, reason)
+        if not ok then res = { ok = false, error = err } end
+    end
+    if type(args) == "table" then res.requestId = args.requestId end
+    local page = Au.browse(player:getUsername(), { page = type(args) == "table" and args.page or 1, sort = "ending", query = type(args) == "table" and args.query or nil })
+    res.items, res.page, res.pages, res.total = page.items, page.page, page.pages, page.total
+    res.perms = { read = true, write = A.isAdmin(player) }
+    S.reply(player, "admin.auctions", res)
 end
 
 -- admin.whitelist {action=status|set|reload, category?, allowed?, fullType?, mode?, requestId}: the

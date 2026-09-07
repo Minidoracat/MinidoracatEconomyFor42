@@ -68,9 +68,15 @@ function M.capacity()
     return EC.sandbox("MailboxPerAccount", 50)
 end
 
+local function escrowCount(username)
+    local Mk, Au = S.Market, S.Auction
+    local n = (Mk and Mk.ownerCount) and Mk.ownerCount(username) or 0
+    if Au and Au.ownerCount then n = n + Au.ownerCount(username) end
+    return n
+end
+
 function M.used(username)
-    local Mk = S.Market
-    return M.unclaimed(username) + ((Mk and Mk.ownerCount) and Mk.ownerCount(username) or 0)
+    return M.unclaimed(username) + escrowCount(username)
 end
 
 function M.hasFreeSlot(username)
@@ -79,8 +85,7 @@ end
 
 -- What the client shows next to the mailbox count.
 function M.usage(username)
-    local Mk = S.Market
-    return { unclaimed = M.unclaimed(username), listings = (Mk and Mk.ownerCount) and Mk.ownerCount(username) or 0, capacity = M.capacity() }
+    return { unclaimed = M.unclaimed(username), listings = escrowCount(username), capacity = M.capacity() }
 end
 
 -- fields = { kind, item, qty, txId, price?, snapshot?, listingId? }. A snapshot entry rebuilds

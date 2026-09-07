@@ -192,17 +192,27 @@ local function validate(tx)
         end
         local cur = L.currency(p.currency)
         if not cur then return "unknown_currency" end
-        local key = p.account .. "\1" .. p.currency
-        if seen[key] then return "invalid_args" end     -- one posting per account+currency per tx
+        -- bucket: "available" (default) or "reserved" (auction bids: money the player still owns
+        -- but cannot spend; a reserve is one tx with -X available / +X reserved on the same wallet)
+        local bucket = p.bucket or "available"
+        if bucket ~= "available" and bucket ~= "reserved" then return "invalid_args" end
+        if bucket == "reserved" and L.isSystemAccount(p.account) then return "invalid_args" end
+        local key = p.account .. "\1" .. p.currency .. "\1" .. bucket
+        if seen[key] then return "invalid_args" end     -- one posting per account+currency+bucket per tx
         seen[key] = true
         sums[p.currency] = (sums[p.currency] or 0) + p.amount
         if not L.isSystemAccount(p.account) then
             if not cur.enabled and p.amount > 0 then return "currency_disabled" end
             if L.isFrozen(p.account) and not tx.allowFrozen then return "account_frozen" end
             local w = wallet(p.account, p.currency, false)
-            local available = w and w.available or 0
-            if available + p.amount < 0 then return "insufficient_funds" end
-            if available + p.amount > cur.balanceMax then return "balance_cap" end
+            if bucket == "reserved" then
+                local reserved = w and w.reserved or 0
+                if reserved + p.amount < 0 then return "insufficient_reserved" end
+            else
+                local available = w and w.available or 0
+                if available + p.amount < 0 then return "insufficient_funds" end
+                if available + p.amount > cur.balanceMax then return "balance_cap" end
+            end
             if p.expectedRev ~= nil and (w and w.rev or 0) ~= p.expectedRev then return "revision_mismatch" end
         end
     end
@@ -242,22 +252,25 @@ function L.post(tx)
     local committed = {}
     for _, p in ipairs(tx.postings) do
         local w = wallet(p.account, p.currency, true)
-        local before = w.available
-        w.available = before + p.amount
+        local reserved = p.bucket == "reserved"
+        local availableBefore, reservedBefore = w.available, w.reserved
+        if reserved then w.reserved = reservedBefore + p.amount else w.available = availableBefore + p.amount end
         w.rev = w.rev + 1
         local entry = {
             txId = txId, seq = seq, ts = ts, kind = tx.kind, reasonCode = tx.reasonCode,
-            account = p.account, currency = p.currency, amount = p.amount,
-            availableBefore = before, availableAfter = w.available,
-            reservedBefore = w.reserved, reservedAfter = w.reserved,
+            account = p.account, currency = p.currency, amount = p.amount, bucket = reserved and "reserved" or nil,
+            availableBefore = availableBefore, availableAfter = w.available,
+            reservedBefore = reservedBefore, reservedAfter = w.reserved,
         }
         committed[#committed + 1] = entry
-        pushReceipt(p.account, {
+        -- the receipt (statement) tells the story of the spendable balance: a reserve shows as the
+        -- available line ("bid held -X"), the mirror line on the reserved bucket is only in the event
+        if not reserved then pushReceipt(p.account, {
             txId = txId, seq = seq, ts = ts, kind = tx.kind, currency = p.currency, amount = p.amount,
-            before = before, after = w.available, counterparty = L.counterparty(tx.postings, p),
+            before = availableBefore, after = w.available, reservedAfter = w.reserved, counterparty = L.counterparty(tx.postings, p),
             sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonText = tx.reasonText,
             item = tx.payload and tx.payload.item or nil, qty = tx.payload and tx.payload.qty or nil,
-        })
+        }) end
     end
 
     local result = { ok = true, txId = txId, seq = seq, duplicate = false }

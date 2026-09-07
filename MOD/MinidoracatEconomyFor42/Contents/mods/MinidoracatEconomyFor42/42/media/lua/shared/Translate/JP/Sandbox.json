@@ -59,5 +59,13 @@
   "Sandbox_MinidoracatEconomy_RadioRange": "マーケットラジオの受信範囲（マス）",
   "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "取引ステーションから何マス以内のラジオが受信できるか。0 でマップ全体。",
   "Sandbox_MinidoracatEconomy_RadioLanguage": "マーケットラジオの言語",
-  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = サーバーの言語。または CH／CN／EN／JP を指定。アイテム名はサーバーの言語のままです。"
+  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = サーバーの言語。または CH／CN／EN／JP を指定。アイテム名はサーバーの言語のままです。",
+  "Sandbox_MinidoracatEconomy_AuctionMinHours": "オークションの最短時間（時間）",
+  "Sandbox_MinidoracatEconomy_AuctionMinHours_tooltip": "出品時に選べる最短の継続時間（実時間）。",
+  "Sandbox_MinidoracatEconomy_AuctionMaxHours": "オークションの最長時間（時間）",
+  "Sandbox_MinidoracatEconomy_AuctionMaxHours_tooltip": "出品時に選べる最長の継続時間（実時間）。",
+  "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer": "プレイヤーごとの同時オークション上限",
+  "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer_tooltip": "1 人が同時に出せるオークション数（マーケット出品の上限とは別）。",
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent": "最低入札増加幅（%%）",
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "新しい入札は現在の最高額をこの割合以上（最低 1 コイン）上回る必要があります。"
 }

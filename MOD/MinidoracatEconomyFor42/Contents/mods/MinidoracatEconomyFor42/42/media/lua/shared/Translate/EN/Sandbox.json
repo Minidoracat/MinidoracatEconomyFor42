@@ -59,5 +59,13 @@
   "Sandbox_MinidoracatEconomy_RadioRange": "Market radio range (tiles)",
   "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "Radios within this many tiles of a trade terminal receive the broadcast; 0 = the whole map.",
   "Sandbox_MinidoracatEconomy_RadioLanguage": "Market radio language",
-  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = the server language; or one of CH / CN / EN / JP. Item names still follow the server language."
+  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = the server language; or one of CH / CN / EN / JP. Item names still follow the server language.",
+  "Sandbox_MinidoracatEconomy_AuctionMinHours": "Auction minimum duration (hours)",
+  "Sandbox_MinidoracatEconomy_AuctionMinHours_tooltip": "The shortest duration (real hours) a seller may pick when creating an auction.",
+  "Sandbox_MinidoracatEconomy_AuctionMaxHours": "Auction maximum duration (hours)",
+  "Sandbox_MinidoracatEconomy_AuctionMaxHours_tooltip": "The longest duration (real hours) a seller may pick when creating an auction.",
+  "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer": "Max auctions per player",
+  "Sandbox_MinidoracatEconomy_AuctionMaxPerPlayer_tooltip": "How many auctions one player may run at the same time (market listings have their own cap).",
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent": "Minimum bid increment (%%)",
+  "Sandbox_MinidoracatEconomy_AuctionMinIncrementPercent_tooltip": "A new bid must beat the current high bid by at least this percentage (minimum 1 coin)."
 }

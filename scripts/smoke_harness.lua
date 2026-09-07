@@ -331,6 +331,7 @@ require("MinidoracatEconomy/ECShop")
 require("MinidoracatEconomy/ECCodec")
 require("MinidoracatEconomy/ECMarket")
 require("MinidoracatEconomy/ECRadio")
+require("MinidoracatEconomy/ECAuction")
 require("MinidoracatEconomy/ECAdmin")
 local EC = MinidoracatEconomy
 local S = EC.Server
@@ -343,7 +344,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 462     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 502     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2469,6 +2470,150 @@ SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = nil
 SandboxVars.MinidoracatEconomy.RadioFrequency = nil
 SandboxVars.MinidoracatEconomy.RadioRange = nil
 SandboxVars.MinidoracatEconomy.RadioLanguage = nil
+onlinePlayers = {}
+end)()
+
+-- ===== 情境三十二：拍賣 =====
+io.write("scenario 32: auctions\n")
+;(function()
+local Au, Mk, M, Rd = S.Auction, S.Market, S.Mailbox, S.Radio
+local KEY = EC.PLAYER_MODDATA_KEY
+local function deepCopyTable(t)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do out[k] = deepCopyTable(v) end
+    return out
+end
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+radioSent = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local ann = fakePlayer("ann"); ann.x, ann.y = 101, 200; ann.inventory = fakeInventory(50)
+local bob = fakePlayer("bob"); bob.x, bob.y = 101, 201; bob.inventory = fakeInventory(50)
+local cat = fakePlayer("cat"); cat.x, cat.y = 101, 199; cat.inventory = fakeInventory(50)
+onlinePlayers = { boss, ann, bob, cat }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function bal(u) return L.getBalance(u, "survivor") end
+local function notices(who, kind)
+    local n = 0
+    for _, c in ipairs(sentCommands) do if c.command == "market.notice" and c.player == who and c.args.kind == kind then n = n + 1 end end
+    return n
+end
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_catgirl_0" }
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "trade" })
+for _, u in ipairs({ "ann", "bob", "cat" }) do L.credit(u, "survivor", 500, "SYSTEM_MINT", { requestId = "au-seed-" .. u, reasonCode = "t" }) end
+-- create: validation, fee, escrow, slot
+local axe = instanceItem("Base.Axe"); axe.condition = 6; ann.inventory:AddItem(axe)
+check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 2 }).error == "hours_range", "duration below the sandbox minimum is refused")
+check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 0, hours = 24 }).error == "price_range", "start price must be in the market range")
+local created = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 24 })
+check(created.ok == true and created.fee == 2 and ann.inventory.count("Base.Axe") == 0 and Au.hasAuction(created.auctionId) and bal("ann").available == 498,
+    "creating an auction escrows the item and burns the listing fee on the start price")
+check(ann.modData[KEY].pendingOuts[created.auctionId].kind == "auction" and ann.modData[KEY].pendingOuts[created.auctionId].hours == 24, "the pending record is an auction with its duration")
+check(M.used("ann") == 1 and M.usage("ann").listings == 1, "an auction occupies a mailbox slot like a listing")
+local browse = cmd(bob, "auction.browse", {})
+check(browse.total == 1 and browse.items[1].startPrice == 100 and browse.items[1].bid == nil and browse.items[1].minNext == 100 and browse.items[1].bids == 0 and browse.minHours == 6,
+    "browse shows the auction with the start price as the first acceptable bid")
+-- bids: seller refused, too low refused, reserve moves the bucket, outbid releases in the same tick
+local id = created.auctionId
+check(cmd(ann, "auction.bid", { auctionId = id, amount = 150 }).error == "own_auction", "the seller cannot bid")
+check(cmd(bob, "auction.bid", { auctionId = id, amount = 99 }).error == "bid_too_low", "a bid under the start price is refused")
+sentCommands = {}
+local b1 = cmd(bob, "auction.bid", { auctionId = id, amount = 100 })
+check(b1.ok == true and b1.reserved == 100 and bal("bob").available == 400 and bal("bob").reserved == 100, "a bid moves the amount from available to reserved")
+check(notices(ann, "auction_bid") == 1, "the seller hears about the bid")
+check(cmd(cat, "auction.bid", { auctionId = id, amount = 104 }).error == "bid_too_low", "the next bid must beat the high bid by the increment (5% -> 105)")
+sentCommands = {}
+local b2 = cmd(cat, "auction.bid", { auctionId = id, amount = 120 })
+check(b2.ok == true and bal("cat").reserved == 120 and bal("cat").available == 380, "the new high bidder reserves the full amount")
+check(bal("bob").reserved == 0 and bal("bob").available == 500, "the outbid player is released in the same tick")
+check(notices(bob, "auction_outbid") == 1, "the outbid player is told")
+local b3 = cmd(cat, "auction.bid", { auctionId = id, amount = 150 })
+check(b3.ok == true and bal("cat").reserved == 150 and bal("cat").available == 350, "raising your own bid only reserves the difference")
+check(L.conservation("survivor") == 0, "reserves keep the currency conserved")
+check(cmd(ann, "auction.cancel", { auctionId = id }).error == "has_bids", "a seller cannot cancel once someone has bid")
+local mine = cmd(cat, "auction.mine", {})
+check(#mine.bidding == 1 and mine.bidding[1].leading == true and #mine.selling == 0, "auction.mine lists the auctions I am bidding on")
+check(#cmd(bob, "auction.mine", {}).bidding == 1 and cmd(bob, "auction.mine", {}).bidding[1].leading == false, "an outbid player still sees the auction under bidding, not leading")
+-- radio: an auction ending within the interval is announced
+SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = 10
+nowMs = nowMs + 24 * 3600000 - 5 * 60000     -- 5 minutes before expiry
+check(string.find(Rd.compose(), "IGUI_MinidoracatEconomy_Radio_Auctions", 1, true) ~= nil, "the radio summary mentions an auction ending within the next interval")
+SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = nil
+-- settlement: expiry sweep pays the seller minus tax from the winner's reserve, item to the winner
+sentCommands = {}
+nowMs = nowMs + 6 * 60000
+fire("OnTickEvenPaused")
+check(not Au.hasAuction(id), "the auction is gone after settlement")
+check(bal("cat").reserved == 0 and bal("cat").available == 350 and bal("ann").available == 498 + 150 - 8, "the winner's reserve pays the seller 150 minus 8 tax")
+check(cat.inventory.count("Base.Axe") == 1 and cat.inventory.items[#cat.inventory.items].condition == 6, "the winner standing at the terminal receives the rebuilt item at once")
+check(notices(ann, "auction_sold") == 1 and notices(cat, "auction_won") == 1, "seller and winner are told")
+check(L.conservation("survivor") == 0, "settlement keeps the currency conserved")
+check(M.used("ann") == 0, "the seller's slot is free again")
+-- unsold: back to the seller through the mailbox
+local saw = instanceItem("Base.Saw"); ann.inventory:AddItem(saw)
+local c2 = cmd(ann, "auction.create", { itemId = saw.id, startPrice = 50, hours = 6 })
+sentCommands = {}
+nowMs = nowMs + 6 * 3600000 + 60000
+fire("OnTickEvenPaused")
+check(not Au.hasAuction(c2.auctionId) and M.unclaimed("ann") == 1 and notices(ann, "auction_unsold") == 1, "an unsold auction returns to the seller's mailbox")
+cmd(ann, "mail.list")
+local entries = lastSent("mail.list").args.entries
+check(#entries == 1 and entries[1].kind == "return" and entries[1].item == "Base.Saw", "the return entry is claimable")
+cmd(ann, "mail.claim", { mailId = entries[1].id })
+check(ann.inventory.count("Base.Saw") == 1, "claiming brings the saw back")
+-- seller cancel without bids; admin cancel with a bid releases the reserve
+local h1 = instanceItem("Base.Hammer"); ann.inventory:AddItem(h1)
+local c3 = cmd(ann, "auction.create", { itemId = h1.id, startPrice = 20, hours = 6 })
+local cx = cmd(ann, "auction.cancel", { auctionId = c3.auctionId })
+check(cx.ok == true and cx.delivered == true and ann.inventory.count("Base.Hammer") == 1 and not Au.hasAuction(c3.auctionId), "a seller cancels an unbid auction and gets the item back at once")
+local h2 = instanceItem("Base.Hammer"); ann.inventory:AddItem(h2)
+local c4 = cmd(ann, "auction.create", { itemId = h2.id, startPrice = 20, hours = 6 })
+cmd(bob, "auction.bid", { auctionId = c4.auctionId, amount = 30 })
+check(bal("bob").reserved == 30, "setup: bob holds a reserve")
+check(cmd(bob, "admin.auctions", { action = "cancel", auctionId = c4.auctionId, reason = "x" }).error == "forbidden", "a player cannot admin-cancel")
+sentCommands = {}
+local ac = cmd(boss, "admin.auctions", { action = "cancel", auctionId = c4.auctionId, reason = "dup" })
+check(ac.ok == true and ac.total == 0 and bal("bob").reserved == 0 and bal("bob").available == 500 and M.unclaimed("ann") == 1 and notices(ann, "auction_cancelled") == 1 and notices(bob, "auction_refund") == 1,
+    "an admin cancel releases the bid and returns the items to the seller's mailbox")
+check(X.auditEntries(1)[1].action == "auction" and X.auditEntries(1)[1].target == "ann", "the admin cancel is audited")
+-- market history lines
+for _ = 1, 4 do fire("OnTickEvenPaused") end
+local kinds = {}
+for _, line in ipairs((files["MinidoracatEconomy/market/ann/" .. EC.monthKey(nowMs) .. ".json"] or { lines = {} }).lines) do
+    local rec = EC.jsonDecode(line)
+    if type(rec) == "table" and string.find(rec.kind, "auction", 1, true) then kinds[#kinds + 1] = rec.kind end
+end
+check(table.concat(kinds, ",") == "auction_created,auction_sold,auction_created,auction_unsold,auction_created,auction_cancelled,auction_created,auction_cancelled", "the seller's market file journals the auction lifecycle: " .. table.concat(kinds, ","))
+-- rollback: an auction created after the save point is rebuilt from the player save (row 4)
+fire("OnTickEvenPaused")
+local saved = deepCopyTable(modDataStore[EC.MODDATA_KEY])
+local n1 = instanceItem("Base.Nails"); ann.inventory:AddItem(n1)
+local c5 = cmd(ann, "auction.create", { itemId = n1.id, startPrice = 10, hours = 12 })
+local playerInv, playerMd = deepCopyTable(ann.inventory.items), deepCopyTable(ann.modData)
+modDataStore[EC.MODDATA_KEY] = saved
+fire("OnServerStarted")
+check(not S.Auction.hasAuction(c5.auctionId), "setup: the world rolled back below the auction")
+ann.inventory.items = playerInv; ann.modData = playerMd
+cmd(ann, "hello")
+check(S.Auction.hasAuction(c5.auctionId) and ann.inventory.count("Base.Nails") == 0, "a pending auction is rebuilt from the player save after a rollback")
+-- downtime policy: 6 h of downtime extends every active auction; 25 h cancels them
+local before = modDataStore[EC.MODDATA_KEY].auctions.items[c5.auctionId].expiresAt
+local action, downtime = S.Auction.applyDowntime(nowMs + 6 * 3600000, nowMs)
+check(action == "extended" and modDataStore[EC.MODDATA_KEY].auctions.items[c5.auctionId].expiresAt == before + 6 * 3600000, "a 6 h downtime extends the auction by 6 h")
+check(S.Auction.applyDowntime(nowMs + 3 * 60000, nowMs) == "ignored", "a 3 min downtime changes nothing")
+local action2 = S.Auction.applyDowntime(nowMs + 25 * 3600000, nowMs)
+check(action2 == "cancelled" and not S.Auction.hasAuction(c5.auctionId) and M.unclaimed("ann") >= 1, "a 25 h downtime cancels every auction and returns the items")
 onlinePlayers = {}
 end)()
 
