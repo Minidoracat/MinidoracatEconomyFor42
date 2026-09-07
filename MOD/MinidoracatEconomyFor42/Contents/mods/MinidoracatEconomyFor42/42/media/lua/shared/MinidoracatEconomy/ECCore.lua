@@ -84,10 +84,14 @@ function EC.sortSafe(list, less)
     return list
 end
 
+-- Runtime overrides (server only): ECConfig installs a reader over ModData config.options so an
+-- admin change from the settings page wins over the sandbox file without a restart.
+EC.optionOverride = nil   -- function(key) -> value or nil
+
 -- Sandbox read with type guard: a missing page (mod loaded without sandbox-options) or a
 -- value of the wrong type silently falls back to the code default, logged once per key.
 local sandboxWarned = {}
-function EC.sandbox(key, default)
+function EC.sandboxDefault(key, default)
     local page = SandboxVars and SandboxVars[EC.SANDBOX_PAGE]
     local v = page and page[key]
     if v == nil or type(v) ~= type(default) then
@@ -98,6 +102,14 @@ function EC.sandbox(key, default)
         return default
     end
     return v
+end
+
+function EC.sandbox(key, default)
+    if EC.optionOverride then
+        local v = EC.optionOverride(key)
+        if v ~= nil and type(v) == type(default) then return v end
+    end
+    return EC.sandboxDefault(key, default)
 end
 
 -- "admin;moderator" -> { admin = true, moderator = true } (sandbox strings cannot contain commas:
@@ -314,19 +326,67 @@ function EC.safeName(name)
     end))
 end
 
--- Sandbox options of this mod, grouped the way the admin panel's settings page shows them.
--- Values are server-owned (sandbox-options.txt / the server's SandboxVars file); the panel only
--- displays them. `runtime` names the panel page where a runtime override exists.
-EC.SANDBOX_GROUPS = {
-    { id = "rewards", keys = { "CheckinAmount", "CheckinMinPlaytimeMinutes", "CheckinServerDailyCap", "RewardDayResetHour", "RewardTimezoneUTC", "MilestoneDays", "MilestoneAmounts" } },
-    { id = "admin", keys = { "AdminRoles", "ReadOnlyRoles", "AdminAdjustMaxPerTx", "AdminAdjustDailyPerAdmin", "AdminAdjustServerDaily" } },
-    { id = "currency", keys = { "BalanceMax", "CatRatePointsPerCoin", "CatPerOrderMin", "CatPerOrderMax", "CatPerAccountDaily", "CatServerDaily" } },
-    { id = "general", keys = { "RemoteReadOnly" } },
+-- Sandbox options of this mod: one schema shared by the server (validation of runtime overrides,
+-- `admin.option`) and the admin panel's settings page (controls, grouping, formatting).
+--   kind     bool | int | number | list_int | text
+--   min/max/step  numeric bounds (ints) / step of the +- buttons
+--   unit     coin | minutes | hour | tz | roles | days   (presentation only)
+--   locked   true = server file only: the caps that limit admins and the role lists must not be
+--            raised from inside the panel by the very people they limit (spec 19.3 decision 11)
+--   currency values live in config.currencies (ECConfig) and are edited through the currency page
+EC.OPTIONS = {
+    { key = "CheckinAmount", group = "rewards", kind = "int", min = 0, max = 1000000, step = 10, default = 30, unit = "coin" },
+    { key = "CheckinMinPlaytimeMinutes", group = "rewards", kind = "int", min = 0, max = 1440, step = 5, default = 15, unit = "minutes" },
+    { key = "CheckinServerDailyCap", group = "rewards", kind = "int", min = 0, max = 100000000, step = 1000, default = 0, unit = "coin", zeroUnlimited = true },
+    { key = "RewardDayResetHour", group = "rewards", kind = "int", min = 0, max = 23, step = 1, default = 0, unit = "hour" },
+    { key = "RewardTimezoneUTC", group = "rewards", kind = "number", min = -12, max = 14, step = 0.5, default = 8, unit = "tz" },
+    { key = "MilestoneDays", group = "rewards", kind = "list_int", min = 1, max = 3650, maxItems = 16, default = "1;3;7;14;30", unit = "days" },
+    { key = "MilestoneAmounts", group = "rewards", kind = "list_int", min = 0, max = 1000000, maxItems = 16, default = "100;150;250;400;1000", unit = "coin" },
+    { key = "AdminRoles", group = "admin", kind = "text", default = "admin", unit = "roles", locked = true },
+    { key = "ReadOnlyRoles", group = "admin", kind = "text", default = "moderator", unit = "roles", locked = true },
+    { key = "AdminAdjustMaxPerTx", group = "admin", kind = "int", min = 1, max = 100000000, default = 5000, unit = "coin", locked = true },
+    { key = "AdminAdjustDailyPerAdmin", group = "admin", kind = "int", min = 1, max = 100000000, default = 10000, unit = "coin", locked = true },
+    { key = "AdminAdjustServerDaily", group = "admin", kind = "int", min = 1, max = 100000000, default = 50000, unit = "coin", locked = true },
+    { key = "BalanceMax", group = "currency", kind = "int", min = 1000, max = 1000000000, step = 100000, default = 10000000, unit = "coin", page = "Currencies" },
+    { key = "CatRatePointsPerCoin", group = "currency", kind = "int", min = 1, max = 1000000, default = 1, page = "Currencies" },
+    { key = "CatPerOrderMin", group = "currency", kind = "int", min = 1, max = 1000000, default = 10, page = "Currencies" },
+    { key = "CatPerOrderMax", group = "currency", kind = "int", min = 1, max = 1000000, default = 5000, page = "Currencies" },
+    { key = "CatPerAccountDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 5000, page = "Currencies" },
+    { key = "CatServerDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 50000, page = "Currencies" },
+    { key = "RemoteReadOnly", group = "general", kind = "bool", default = true },
 }
-EC.SANDBOX_RUNTIME = {   -- key -> admin page holding the live override
-    BalanceMax = "Currencies", CatRatePointsPerCoin = "Currencies", CatPerOrderMin = "Currencies",
-    CatPerOrderMax = "Currencies", CatPerAccountDaily = "Currencies", CatServerDaily = "Currencies",
-}
+EC.OPTION_GROUPS = { "rewards", "admin", "currency", "general" }
+EC.OPTION_BY_KEY = {}
+for _, o in ipairs(EC.OPTIONS) do EC.OPTION_BY_KEY[o.key] = o end
+
+-- Kept for the settings page's group walk (derived from EC.OPTIONS).
+EC.SANDBOX_GROUPS = {}
+for _, id in ipairs(EC.OPTION_GROUPS) do
+    local keys = {}
+    for _, o in ipairs(EC.OPTIONS) do
+        if o.group == id then keys[#keys + 1] = o.key end
+    end
+    EC.SANDBOX_GROUPS[#EC.SANDBOX_GROUPS + 1] = { id = id, keys = keys }
+end
+EC.SANDBOX_RUNTIME = {}
+for _, o in ipairs(EC.OPTIONS) do
+    if o.page then EC.SANDBOX_RUNTIME[o.key] = o.page end
+end
+
+-- "1;3;7" -> { 1, 3, 7 } or nil when any item is not an integer within [min, max] or the list
+-- is empty / too long. Shared by the server validator and the panel's pre-check.
+function EC.parseIntList(text, spec)
+    if type(text) ~= "string" then return nil end
+    local out = {}
+    for item in string.gmatch(text, "[^;]+") do
+        local n = tonumber((string.gsub(item, "^%s*(.-)%s*$", "%1")))
+        if not n or n ~= math.floor(n) or n < spec.min or n > spec.max then return nil end
+        out[#out + 1] = n
+        if #out > (spec.maxItems or 16) then return nil end
+    end
+    if #out == 0 then return nil end
+    return out
+end
 
 function EC.countKeys(t)
     local n = 0

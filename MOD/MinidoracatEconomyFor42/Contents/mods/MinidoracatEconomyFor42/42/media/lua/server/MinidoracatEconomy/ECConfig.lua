@@ -42,10 +42,28 @@ local function entry(id)
     return e
 end
 
+-- Every runtime change: event + audit line + config push to everyone online.
+local function changed(id, field, before, after, actor, reason)
+    X.emit("admin.config", { currency = id, field = field, before = before, after = after, actor = actor, reason = reason })
+    X.audit({ action = "config", currency = id, field = field, before = before, after = after, admin = actor, reason = reason })
+    S.broadcast("config", { currencies = C.snapshot(), options = C.options(), remoteReadOnly = EC.sandbox("RemoteReadOnly", true) })
+end
+
+-- Runtime option overrides (settings page): config.options[key] wins over the sandbox file for
+-- every EC.sandbox() read on the server. Locked options (admin caps, role lists) are never
+-- stored here; the Cat* exchange keys are routed to the currency's exchange block instead.
+local function optionOverride(key)
+    local opts = md and md.config and md.config.options
+    if not opts then return nil end
+    return opts[key]   -- not `and/or`: a stored false must come back as false
+end
+
 function C.init(root)
     md = root
     md.config = md.config or {}
     md.config.currencies = md.config.currencies or {}
+    md.config.options = md.config.options or {}
+    EC.optionOverride = optionOverride
     for _, id in ipairs(EC.CURRENCY_ORDER) do
         local e = entry(id)
         if EXCHANGE_SANDBOX[id] and type(e.exchange) ~= "table" then
@@ -57,6 +75,92 @@ function C.init(root)
             end
         end
     end
+end
+
+-- Sandbox key -> { currency, field } for the exchange values that live in config.currencies.
+local EXCHANGE_BY_KEY = {}
+for id, keys in pairs(EXCHANGE_SANDBOX) do
+    for field, key in pairs(keys) do EXCHANGE_BY_KEY[key] = { currency = id, field = field } end
+end
+
+-- Effective value of an option as the server runs with it right now.
+function C.optionValue(spec)
+    local ex = EXCHANGE_BY_KEY[spec.key]
+    if ex then
+        local e = md.config.currencies[ex.currency]
+        local v = e and type(e.exchange) == "table" and e.exchange[ex.field] or nil
+        if v ~= nil then return v end
+    end
+    return EC.sandbox(spec.key, spec.default)
+end
+
+-- Settings page snapshot: key -> { value (effective), default (sandbox file / code), override }.
+function C.options()
+    local out = {}
+    for _, spec in ipairs(EC.OPTIONS) do
+        local ex = EXCHANGE_BY_KEY[spec.key]
+        local default = EC.sandboxDefault(spec.key, spec.default)
+        local value = C.optionValue(spec)
+        local override
+        if ex then
+            override = value ~= default
+        else
+            override = md.config.options[spec.key] ~= nil
+        end
+        out[spec.key] = { value = value, default = default, override = override, locked = spec.locked == true }
+    end
+    return out
+end
+
+-- Validates `value` against the option schema; returns the normalised value or nil, error.
+local function validateOption(spec, value)
+    local kind = spec.kind
+    if kind == "bool" then
+        if type(value) ~= "boolean" then return nil, "invalid_args" end
+        return value
+    elseif kind == "int" or kind == "number" then
+        if type(value) ~= "number" or value ~= value or value < spec.min or value > spec.max then return nil, "invalid_args" end
+        if kind == "int" and value ~= math.floor(value) then return nil, "invalid_args" end
+        if kind == "number" and spec.step and math.abs(value / spec.step - math.floor(value / spec.step + 0.5)) > 1e-9 then return nil, "invalid_args" end
+        return value
+    elseif kind == "list_int" then
+        local list = EC.parseIntList(value, spec)
+        if not list then return nil, "invalid_args" end
+        local parts = {}
+        for i, n in ipairs(list) do parts[i] = tostring(n) end
+        return table.concat(parts, ";")
+    elseif kind == "text" then
+        if type(value) ~= "string" or value == "" or #value > 200 or string.find(value, "%c") then return nil, "invalid_args" end
+        return value
+    end
+    return nil, "invalid_args"
+end
+
+-- value = nil clears the override (back to the sandbox file). Audited like every config change;
+-- reason is optional here (a toggle per click must not demand an essay).
+function C.setOption(key, value, actor, reason)
+    local spec = EC.OPTION_BY_KEY[key]
+    if not spec then return false, "unknown_option" end
+    if spec.locked then return false, "locked" end
+    local ex = EXCHANGE_BY_KEY[key]
+    if ex then
+        local v = value
+        if v == nil then v = EC.sandboxDefault(key, spec.default) end
+        local ok, err = validateOption(spec, v)
+        if ok == nil then return false, err end
+        return C.setExchange(ex.currency, { [ex.field] = ok }, actor, reason)
+    end
+    local normalised = nil
+    if value ~= nil then
+        local ok, err = validateOption(spec, value)
+        if ok == nil then return false, err end
+        normalised = ok
+    end
+    local before = md.config.options[key]
+    if before == normalised then return true end
+    md.config.options[key] = normalised
+    changed("options", key, before, normalised, actor, reason)
+    return true
 end
 
 -- Merged view used by the ledger, the client snapshot and the companion projection.
@@ -87,12 +191,6 @@ function C.snapshot()
         list[#list + 1] = C.currency(id)
     end
     return list
-end
-
-local function changed(id, field, before, after, actor, reason)
-    X.emit("admin.config", { currency = id, field = field, before = before, after = after, actor = actor, reason = reason })
-    X.audit({ action = "config", currency = id, field = field, before = before, after = after, admin = actor, reason = reason })
-    S.broadcast("config", { currencies = C.snapshot() })
 end
 
 -- name: string (1..NAME_MAX, no control chars) or nil/"" to clear the override.

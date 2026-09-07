@@ -561,18 +561,6 @@ function A.sizeEstimate()
     return bytes
 end
 
--- Current sandbox values (what the server actually runs with), for the settings page.
-local function sandboxValues()
-    local out = {}
-    for _, group in ipairs(EC.SANDBOX_GROUPS) do
-        for _, key in ipairs(group.keys) do
-            local v = SandboxVars and SandboxVars.MinidoracatEconomy and SandboxVars.MinidoracatEconomy[key]
-            if v ~= nil then out[key] = v end
-        end
-    end
-    return out
-end
-
 function A.system(write)
     local ms = EC.now()
     local accounts, frozen = 0, 0
@@ -597,7 +585,7 @@ function A.system(write)
         supply = supply(),
         issued = { today = sumRollups(1, ms), week = sumRollups(7, ms), month = sumRollups(30, ms) },
         perms = { read = true, write = write == true },
-        sandbox = sandboxValues(),
+        sandbox = Cfg.options(),
     }
 end
 
@@ -745,6 +733,26 @@ S.handlers["admin.receipts"] = function(player, args)
         return
     end
     W.tail(player, "admin.receipts", W.receiptPaths(target, W.recentMonths(EC.now())), { username = target })
+end
+
+-- admin.option {key, value | nil (= back to the sandbox file), reason?, requestId} (write gate):
+-- runtime override of one sandbox option (ECConfig.setOption validates against EC.OPTIONS;
+-- locked options are refused). Reply carries the whole option snapshot so the page redraws.
+S.handlers["admin.option"] = function(player, args)
+    if not gate(player, "admin.option", true) then return end
+    local res
+    if type(args) ~= "table" or type(args.key) ~= "string" then
+        res = { ok = false, error = "invalid_args" }
+    else
+        local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
+        local ok, err = Cfg.setOption(args.key, args.value, player:getUsername(), reason)
+        res = ok and { ok = true } or { ok = false, error = err }
+        res.key = args.key
+    end
+    if type(args) == "table" then res.requestId = args.requestId end
+    res.options = Cfg.options()
+    res.currencies = Cfg.snapshot()
+    S.reply(player, "admin.option", res)
 end
 
 -- admin.auditFile (read gate): the newest entries of the previous and current month's audit

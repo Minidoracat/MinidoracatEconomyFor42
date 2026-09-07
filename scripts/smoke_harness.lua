@@ -166,7 +166,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 267     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 279     -- 家族慣例：條數守門，防整段被註解仍全綠
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1397,6 +1397,62 @@ check(table.concat(names, ",") == "zed*,Zack" and pl.query == "z", "substring ma
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.players", zed, { query = "b" })
 check(lastSent("admin.players").args.error == "forbidden", "a plain player cannot list accounts")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境二十四：設定頁的 runtime 選項覆寫 =====
+io.write("scenario 24: runtime option overrides\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+SandboxVars.MinidoracatEconomy.CheckinAmount = 30
+SandboxVars.MinidoracatEconomy.RemoteReadOnly = true
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local mod = fakePlayer("mod"); mod.role = "moderator"
+onlinePlayers = { boss, mod }
+local function setOpt(who, key, value, extra)
+    nowMs = nowMs + 600
+    local args = { key = key, value = value, requestId = "opt-" .. key .. "-" .. tostring(nowMs) }
+    for k, v in pairs(extra or {}) do args[k] = v end
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.option", who, args)
+    return lastSent("admin.option").args
+end
+local snap = Cfg.options()
+check(snap.CheckinAmount.value == 30 and snap.CheckinAmount.default == 30 and snap.CheckinAmount.override == false and snap.AdminRoles.locked == true,
+    "options() reports effective value, sandbox default, override flag and lock")
+check(setOpt(mod, "CheckinAmount", 50).error == "forbidden", "a moderator cannot change options")
+local r = setOpt(boss, "CheckinAmount", 50)
+check(r.ok == true and r.options.CheckinAmount.value == 50 and r.options.CheckinAmount.override == true and EC.sandbox("CheckinAmount", 30) == 50,
+    "an admin override wins over the sandbox file for every EC.sandbox read")
+check(setOpt(boss, "CheckinAmount", -1).error == "invalid_args" and setOpt(boss, "CheckinAmount", 1.5).error == "invalid_args"
+    and setOpt(boss, "CheckinAmount", "50").error == "invalid_args", "range, integer and type are enforced")
+check(setOpt(boss, "AdminAdjustMaxPerTx", 99999).error == "locked" and setOpt(boss, "AdminRoles", "user").error == "locked",
+    "locked options (admin caps, role lists) are refused from the panel")
+check(setOpt(boss, "Nope", 1).error == "unknown_option", "unknown keys are refused")
+check(setOpt(boss, "RewardTimezoneUTC", 5.5).ok == true and setOpt(boss, "RewardTimezoneUTC", 5.3).error == "invalid_args",
+    "half-hour timezone steps are accepted, others refused")
+check(setOpt(boss, "MilestoneDays", " 1; 3 ;7").ok == true and Cfg.options().MilestoneDays.value == "1;3;7"
+    and setOpt(boss, "MilestoneDays", "1;x").error == "invalid_args" and setOpt(boss, "MilestoneDays", "").error == "invalid_args",
+    "integer lists are normalised and validated")
+local rro = setOpt(boss, "RemoteReadOnly", false)
+check(rro.ok == true and lastSent("config").args.remoteReadOnly == false,
+    "a boolean option is broadcast with the config push (remoteReadOnly)")
+-- Cat* keys route to the currency exchange block (single source of truth for the rate)
+local rc = setOpt(boss, "CatRatePointsPerCoin", 3)
+check(rc.ok == true and Cfg.currency("cat").exchange.pointsPerCoin == 3 and rc.options.CatRatePointsPerCoin.value == 3 and rc.options.CatRatePointsPerCoin.override == true,
+    "exchange keys are applied to config.currencies.cat.exchange")
+-- clearing an override
+local cl = setOpt(boss, "CheckinAmount", nil)
+check(cl.ok == true and cl.options.CheckinAmount.override == false and EC.sandbox("CheckinAmount", 30) == 30, "value=nil clears the override")
+local au = X.auditEntries(50)
+local optAudit = 0
+for _, e in ipairs(au) do if e.action == "config" and e.currency == "options" then optAudit = optAudit + 1 end end
+check(optAudit >= 4, "every option change is audited (currency=options, field=key)")
+SandboxVars.MinidoracatEconomy.RemoteReadOnly = nil
+SandboxVars.MinidoracatEconomy.CheckinAmount = nil
 onlinePlayers = {}
 end)()
 

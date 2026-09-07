@@ -39,6 +39,9 @@ handlers["config"] = function(args)
     if type(args.currencies) == "table" then
         C.currencies = args.currencies
     end
+    if type(args.options) == "table" then C.options = args.options end
+    -- the remote read-only switch is a runtime option now: the session mirrors the live value
+    if args.remoteReadOnly ~= nil and C.session then C.session.remoteReadOnly = args.remoteReadOnly end
 end
 
 -- Display name: admin override -> translation key -> id. Never cache the result across ticks.
