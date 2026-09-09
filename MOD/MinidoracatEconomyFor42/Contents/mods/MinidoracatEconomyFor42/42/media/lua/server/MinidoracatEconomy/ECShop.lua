@@ -362,10 +362,9 @@ function Shop.update(id, fields, actor, reason)
     if not validateSku(next, id) then return false, "invalid_args" end
     local onDisk = readFile()
     if onDisk == nil or hashOf(onDisk) ~= file.hash then return false, "catalog_stale" end
-    local changed = changes
-    for _, c in ipairs(changed) do row[c[1]] = c[3] end
+    for _, c in ipairs(changes) do row[c[1]] = c[3] end
     if not writeCatalog(file.items) then
-        for _, c in ipairs(changed) do row[c[1]] = c[2] end
+        for _, c in ipairs(changes) do row[c[1]] = c[2] end
         return false, "file_write_failed"
     end
     local ok, err = Shop.load()   -- re-read what was written: hash, count and a sanity parse
@@ -373,7 +372,7 @@ function Shop.update(id, fields, actor, reason)
         EC.log("catalog.json unreadable after the panel wrote it: " .. tostring(err))
         return false, "file_write_failed"
     end
-    for _, c in ipairs(changed) do
+    for _, c in ipairs(changes) do
         X.emit("admin.catalog", { sku = id, field = c[1], before = c[2], after = c[3], actor = actor, reason = reason })
         X.audit({ action = "catalog", target = id, field = c[1], before = c[2], after = c[3], admin = actor, reason = reason })
     end

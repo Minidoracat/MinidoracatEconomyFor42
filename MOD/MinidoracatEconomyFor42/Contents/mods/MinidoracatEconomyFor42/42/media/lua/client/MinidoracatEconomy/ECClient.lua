@@ -87,16 +87,16 @@ end
 C.rewards = nil
 C.rewardsListeners = {}
 function C.onRewards(fn) C.rewardsListeners[#C.rewardsListeners + 1] = fn end
-local function notifyRewards(kind, args)
-    for _, fn in ipairs(C.rewardsListeners) do
+local function notify(listeners, label, kind, args)
+    for _, fn in ipairs(listeners) do
         local ok, err = pcall(fn, kind, args)
-        if not ok then EC.log("rewards listener failed: " .. tostring(err)) end
+        if not ok then EC.log(label .. " listener failed: " .. tostring(err)) end
     end
 end
 
 handlers["rewards.state"] = function(args)
     C.rewards = args
-    notifyRewards("state", args)
+    notify(C.rewardsListeners, "rewards", "state", args)
 end
 
 handlers["rewards.checkin"] = function(args)
@@ -105,14 +105,14 @@ handlers["rewards.checkin"] = function(args)
         if C.rewards then C.rewards.claimed = true end
         C.toast(getText("IGUI_MinidoracatEconomy_Rewards_Granted", tostring(args.amount), C.currencyName(args.currency)))
     end
-    notifyRewards("checkin", args)
+    notify(C.rewardsListeners, "rewards", "checkin", args)
 end
 
 handlers["milestone.granted"] = function(args)
     EC.log("milestone " .. tostring(args.index) .. " (" .. tostring(args.days) .. " days) +" .. tostring(args.amount))
     C.toast(getText("IGUI_MinidoracatEconomy_Rewards_MilestoneGranted", tostring(args.days), tostring(args.amount), C.currencyName(args.currency)))
     if C.rewards then C.requestRewards() end
-    notifyRewards("milestone", args)
+    notify(C.rewardsListeners, "rewards", "milestone", args)
 end
 
 function C.requestRewards() send("rewards.state") end
@@ -122,16 +122,11 @@ function C.checkin() send("rewards.checkin") end
 C.wallet = nil
 C.walletListeners = {}
 function C.onWallet(fn) C.walletListeners[#C.walletListeners + 1] = fn end
-local function notifyWallet(kind, args)
-    for _, fn in ipairs(C.walletListeners) do
-        local ok, err = pcall(fn, kind, args)
-        if not ok then EC.log("wallet listener failed: " .. tostring(err)) end
-    end
-end
+
 
 handlers["wallet.state"] = function(args)
     C.wallet = args
-    notifyWallet("state", args)
+    notify(C.walletListeners, "wallet", "state", args)
 end
 
 -- Balances arrive with the push; the receipt ring is refreshed with one extra round trip
@@ -144,12 +139,12 @@ handlers["wallet.changed"] = function(args)
             C.toast(getText(args.frozen and "IGUI_MinidoracatEconomy_Toast_Frozen" or "IGUI_MinidoracatEconomy_Toast_Unfrozen"))
         end
     end
-    notifyWallet("changed", args)
+    notify(C.walletListeners, "wallet", "changed", args)
     C.requestWallet()
 end
 
 handlers["wallet.history"] = function(args)
-    notifyWallet("history", args)
+    notify(C.walletListeners, "wallet", "history", args)
 end
 
 function C.requestWallet() send("wallet.state") end
@@ -187,7 +182,6 @@ function C.nearTerminal()
     return false
 end
 
-function C.requestTerminals() send("terminals") end
 function C.registerTerminal(x, y, z, kind, requestId) send("terminal.register", { x = x, y = y, z = z, kind = kind or "atm", requestId = requestId }) end
 function C.unregisterTerminal(id, requestId) send("terminal.unregister", { id = id, requestId = requestId }) end
 function C.demolishTerminal(x, y, z, requestId) send("terminal.demolish", { x = x, y = y, z = z, requestId = requestId }) end
@@ -198,17 +192,12 @@ function C.demolishTerminal(x, y, z, requestId) send("terminal.demolish", { x = 
 C.shop = nil
 C.shopListeners = {}
 function C.onShop(fn) C.shopListeners[#C.shopListeners + 1] = fn end
-local function notifyShop(kind, args)
-    for _, fn in ipairs(C.shopListeners) do
-        local ok, err = pcall(fn, kind, args)
-        if not ok then EC.log("shop listener failed: " .. tostring(err)) end
-    end
-end
+
 
 handlers["shop.list"] = function(args)
     C.shop = args
     setUnclaimed(args)
-    notifyShop("list", args)
+    notify(C.shopListeners, "shop", "list", args)
 end
 
 -- Reply of one purchase: { ok, error?, requestId, txId?, item, qty, total, currency, delivered,
@@ -216,7 +205,7 @@ end
 handlers["shop.buy"] = function(args)
     setUnclaimed(args)
     if args.ok then C.requestWallet() end
-    notifyShop("buy", args)
+    notify(C.shopListeners, "shop", "buy", args)
     C.requestShop()
 end
 
@@ -224,12 +213,12 @@ end
 -- buyback = { enabled, accountRemaining, serverRemaining, skuRemaining? } }; shop.sell: { ok, error?,
 -- requestId, txId?, item, qty, count, total, currency, balance, revision, buyback }.
 handlers["shop.candidates"] = function(args)
-    notifyShop("candidates", args)
+    notify(C.shopListeners, "shop", "candidates", args)
 end
 
 handlers["shop.sell"] = function(args)
     if args.ok then C.requestWallet() end
-    notifyShop("sell", args)
+    notify(C.shopListeners, "shop", "sell", args)
     C.requestShop()
 end
 
@@ -249,17 +238,12 @@ function C.sell(id, itemIds, revision, requestId) send("shop.sell", { id = id, i
 C.mail = nil
 C.mailListeners = {}
 function C.onMail(fn) C.mailListeners[#C.mailListeners + 1] = fn end
-local function notifyMail(kind, args)
-    for _, fn in ipairs(C.mailListeners) do
-        local ok, err = pcall(fn, kind, args)
-        if not ok then EC.log("mail listener failed: " .. tostring(err)) end
-    end
-end
+
 
 handlers["mail.list"] = function(args)
     C.mail = args
     setUnclaimed(args)
-    notifyMail("list", args)
+    notify(C.mailListeners, "mail", "list", args)
 end
 
 -- Reply of one claim: { ok, error?, requestId, mailId, item, qty, entries, unclaimed }.
@@ -270,7 +254,7 @@ handlers["mail.claim"] = function(args)
         C.mail.unclaimed = args.unclaimed or C.mail.unclaimed
         C.mail.usage = args.usage or C.mail.usage
     end
-    notifyMail("claim", args)
+    notify(C.mailListeners, "mail", "claim", args)
 end
 
 function C.requestMail() send("mail.list") end
@@ -295,26 +279,21 @@ C.candidates = nil
 C.marketHistory = nil
 C.marketListeners = {}
 function C.onMarket(fn) C.marketListeners[#C.marketListeners + 1] = fn end
-local function notifyMarket(kind, args)
-    for _, fn in ipairs(C.marketListeners) do
-        local ok, err = pcall(fn, kind, args)
-        if not ok then EC.log("market listener failed: " .. tostring(err)) end
-    end
-end
+
 
 handlers["market.browse"] = function(args)
     C.market = args
-    notifyMarket("browse", args)
+    notify(C.marketListeners, "market", "browse", args)
 end
 
 handlers["market.mine"] = function(args)
     C.myListings = args
-    notifyMarket("mine", args)
+    notify(C.marketListeners, "market", "mine", args)
 end
 
 handlers["market.candidates"] = function(args)
     C.candidates = args
-    notifyMarket("candidates", args)
+    notify(C.marketListeners, "market", "candidates", args)
 end
 
 -- market.list reply: { ok, error?, requestId, listingId?, qty?, fee?, expiresAt?,
@@ -325,14 +304,14 @@ handlers["market.list"] = function(args)
         C.myListings.items = args.mine
     end
     if args.ok then C.requestWallet() end
-    notifyMarket("list", args)
+    notify(C.marketListeners, "market", "list", args)
 end
 
 -- market.buy reply: { ok, error?, requestId, txId?, listingId, item, price, tax, delivered, deliveryError?, balance, unclaimed }
 handlers["market.buy"] = function(args)
     setUnclaimed(args)
     if args.ok then C.requestWallet() end
-    notifyMarket("buy", args)
+    notify(C.marketListeners, "market", "buy", args)
 end
 
 -- market.cancel reply: { ok, error?, requestId, listingId, mailId?, delivered?, mine, unclaimed }
@@ -342,14 +321,14 @@ handlers["market.cancel"] = function(args)
         C.myListings = C.myListings or {}
         C.myListings.items = args.mine
     end
-    notifyMarket("cancel", args)
+    notify(C.marketListeners, "market", "cancel", args)
 end
 
 -- market.history reply: the player's own ring (oldest first). A refusal (busy/server_busy)
 -- must not wipe the snapshot the page is already showing.
 handlers["market.history"] = function(args)
     if not args.error then C.marketHistory = args end
-    notifyMarket("history", args)
+    notify(C.marketListeners, "market", "history", args)
 end
 
 -- The server pushes this to an online seller when their listing left the market, and to both
@@ -378,12 +357,12 @@ handlers["market.notice"] = function(args)
         end
         C.toast(getText("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, name, qty, third))
     end
-    notifyMarket("notice", args)
+    notify(C.marketListeners, "market", "notice", args)
 end
 
 -- The whitelist changed under an open picker: { at }. The candidate list is now stale.
 handlers["market.whitelist"] = function(args)
-    notifyMarket("whitelist", args)
+    notify(C.marketListeners, "market", "whitelist", args)
 end
 
 function C.requestMarket(opts)
@@ -428,12 +407,12 @@ end
 
 handlers["auction.browse"] = function(args)
     C.auction = args
-    notifyMarket("auction.browse", args)
+    notify(C.marketListeners, "market", "auction.browse", args)
 end
 
 handlers["auction.mine"] = function(args)
     C.myAuctions = args
-    notifyMarket("auction.mine", args)
+    notify(C.marketListeners, "market", "auction.mine", args)
 end
 
 -- auction.create reply: { ok, error?, requestId, auctionId?, qty?, fee?, expiresAt?, mine }
@@ -441,7 +420,7 @@ handlers["auction.create"] = function(args)
     setUnclaimed(args)
     setMyAuctions(args.mine)
     if args.ok then C.requestWallet() end
-    notifyMarket("auction.create", args)
+    notify(C.marketListeners, "market", "auction.create", args)
 end
 
 -- auction.bid reply: { ok, error?, requestId, auctionId, amount, minNext, reserved, balance }.
@@ -449,7 +428,7 @@ end
 handlers["auction.bid"] = function(args)
     setUnclaimed(args)
     if args.ok then C.requestWallet() end
-    notifyMarket("auction.bid", args)
+    notify(C.marketListeners, "market", "auction.bid", args)
 end
 
 -- auction.cancel reply: { ok, error?, requestId, auctionId, mailId, delivered, deliveryError?,
@@ -457,7 +436,7 @@ end
 handlers["auction.cancel"] = function(args)
     setUnclaimed(args)
     setMyAuctions(args.mine)
-    notifyMarket("auction.cancel", args)
+    notify(C.marketListeners, "market", "auction.cancel", args)
 end
 
 -- The newest auction.history this client asked for. A search is typed, so two answers can be in
@@ -469,7 +448,7 @@ local auctionHistoryId = nil
 handlers["auction.history"] = function(args)
     local stale = auctionHistoryId ~= nil and args.requestId ~= nil and args.requestId ~= auctionHistoryId
     if not stale and not args.error then C.auctionHistory = args end
-    notifyMarket("auction.history", args)
+    notify(C.marketListeners, "market", "auction.history", args)
 end
 
 function C.requestAuctions(opts)

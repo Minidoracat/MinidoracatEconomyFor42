@@ -200,11 +200,7 @@ def main():
             for mm in pat.finditer(line):
                 jargon.append(f"  第 {lineno} 行 {desc}：{mm.group().strip()}")
     if jargon:
-        seen, uniq = set(), []
-        for j in jargon:
-            if j not in seen:
-                seen.add(j)
-                uniq.append(j)
+        uniq = list(dict.fromkeys(jargon))
         print(f"\n術語警示（{len(uniq)} 處）——玩家層條目出現這些通常代表該改寫 CHANGELOG："
               "\n" + "\n".join(uniq[:12]))
         if len(uniq) > 12:

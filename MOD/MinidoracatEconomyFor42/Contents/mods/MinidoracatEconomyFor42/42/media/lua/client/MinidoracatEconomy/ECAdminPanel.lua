@@ -2011,15 +2011,13 @@ end
 -- what the server runs with again (Lua tables have no nil member: the key is simply absent).
 function Admin:sendOption(key, value, dlg)
     if not self:writeAllowed() then
-        local msg = { text = errorText("forbidden"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, errorText("forbidden"))
         return false
     end
     local args = { key = key, requestId = newRequestId() }
     if value ~= nil then args.value = value end
     if not send("admin.option", args) then
-        local msg = { text = tr("Admin_Throttled"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, tr("Admin_Throttled"))
         return false
     end
     self.pendingOption = { requestId = args.requestId, key = key }
@@ -2164,14 +2162,12 @@ end
 -- One write per click; every reply carries the whole catalog back, so nothing is guessed here.
 function Admin:sendCatalog(args, dlg)
     if not self:writeAllowed() then
-        local msg = { text = errorText("forbidden"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, errorText("forbidden"))
         return false
     end
     args.requestId = newRequestId()
     if not send("admin.catalog", args) then
-        local msg = { text = tr("Admin_Throttled"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, tr("Admin_Throttled"))
         return false
     end
     self.pendingCatalog = { requestId = args.requestId, id = args.id, action = args.action }
@@ -2284,16 +2280,14 @@ end
 -- One write per click; every reply carries the current page back, so nothing is guessed here.
 function Admin:sendListings(args, dlg)
     if not self:writeAllowed() then
-        local msg = { text = errorText("forbidden"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, errorText("forbidden"))
         return false
     end
     args.requestId = newRequestId()
     args.page = self.lstPage or 1
     args.query = self.lstQuery
     if not send("admin.listings", args) then
-        local msg = { text = tr("Admin_Throttled"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, tr("Admin_Throttled"))
         return false
     end
     self.pendingListings = { requestId = args.requestId, action = args.action, listingId = args.listingId }
@@ -2423,16 +2417,14 @@ end
 -- One write per click; every reply carries the current page back, so nothing is guessed here.
 function Admin:sendAuctions(args, dlg)
     if not self:writeAllowed() then
-        local msg = { text = errorText("forbidden"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, errorText("forbidden"))
         return false
     end
     args.requestId = newRequestId()
     args.page = self.aucPage or 1
     args.query = self.aucQuery
     if not send("admin.auctions", args) then
-        local msg = { text = tr("Admin_Throttled"), error = true }
-        if dlg then dlg.message = msg; self:layoutDialog() else self.message = msg end
+        self:dialogError(dlg, tr("Admin_Throttled"))
         return false
     end
     self.pendingAuctions = { requestId = args.requestId, action = args.action, auctionId = args.auctionId }
@@ -2571,11 +2563,12 @@ function Admin:layoutDialog()
     dlg:setY(math.max(0, math.floor((self.height - dlg.height) / 2)))
 end
 
--- Every dialog refusal is the same two steps: the message goes on the dialog and the dialog is
--- laid out again so the line has room. Callers `return self:dialogError(dlg, body)`.
+-- A refusal goes to the supplied dialog, or the footer when there is no dialog.
+-- Only dialog messages need layout; callers may `return self:dialogError(dlg, body)`.
 function Admin:dialogError(dlg, body)
-    dlg.message = { text = body, error = true }
-    self:layoutDialog()
+    local target = dlg or self
+    target.message = { text = body, error = true }
+    if dlg then self:layoutDialog() end
 end
 
 function Admin:closeDialog()
@@ -2862,8 +2855,7 @@ function Admin:onReply(kind, args)
             if self.dialog then self.dialog.message = msg else self.message = msg end
             self:requestLookup(req.username)
         else
-            local msg = { text = errorText(args.error), error = true }
-            if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+            self:dialogError(self.dialog, errorText(args.error))
         end
     elseif kind == "freeze" then
         local req = self.pendingFreeze
@@ -2874,8 +2866,7 @@ function Admin:onReply(kind, args)
             self:closeDialog()
             self:requestLookup(req.username)
         else
-            local msg = { text = errorText(args.error), error = true }
-            if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+            self:dialogError(self.dialog, errorText(args.error))
         end
     elseif kind == "config" then
         local req = self.pendingConfig
@@ -2887,8 +2878,7 @@ function Admin:onReply(kind, args)
             self:closeDialog()
             self:layout()
         else
-            local msg = { text = errorText(args.error), error = true }
-            if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+            self:dialogError(self.dialog, errorText(args.error))
         end
     elseif kind == "option" then
         -- every reply carries the whole snapshot, a refusal included, so the page always shows
@@ -2907,8 +2897,7 @@ function Admin:onReply(kind, args)
                 self:closeDialog()
             else
                 self.resetQueue = nil   -- a group reset stops at the first refusal
-                local msg = { text = errorText(args.error), error = true }
-                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+                self:dialogError(self.dialog, errorText(args.error))
             end
         end
         self:rebuildSettings()
@@ -2930,8 +2919,7 @@ function Admin:onReply(kind, args)
                 -- tell the host which line to go and fix
                 local body = errorText(args.error)
                 if type(args.detail) == "string" and args.detail ~= "" then body = body .. ": " .. args.detail end
-                local msg = { text = body, error = true }
-                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+                self:dialogError(self.dialog, body)
             elseif req and req.action == "reload" then
                 local file = args.file
                 self.message = { text = getText(T .. "Admin_Shop_Reloaded", tostring((file and file.count) or args.count or 0)) }
@@ -2955,8 +2943,7 @@ function Admin:onReply(kind, args)
         if mine then
             self.pendingListings = nil
             if not args.ok then
-                local msg = { text = errorText(args.error), error = true }
-                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+                self:dialogError(self.dialog, errorText(args.error))
             elseif req and req.action == "delist" then
                 self.message = { text = tr("Admin_Lst_Delisted") }
                 self:closeDialog()
@@ -2982,8 +2969,7 @@ function Admin:onReply(kind, args)
             if mine then
                 self.pendingAuctions = nil
                 if not args.ok then
-                    local msg = { text = errorText(args.error), error = true }
-                    if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+                    self:dialogError(self.dialog, errorText(args.error))
                 elseif req and req.action == "cancel" then
                     self.message = { text = tr("Auction_Cancelled") }
                     self:closeDialog()
@@ -3079,8 +3065,7 @@ function Admin:onReply(kind, args)
                 self.message = { text = tr("Admin_Src_Saved") }
                 self:closeDialog()
             else
-                local msg = { text = errorText(args.error), error = true }
-                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+                self:dialogError(self.dialog, errorText(args.error))
             end
         elseif args.ok == false then
             self.message = { text = errorText(args.error), error = true }

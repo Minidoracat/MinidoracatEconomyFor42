@@ -180,14 +180,8 @@ end
 function getModFileReader(modId, path, create)
     local f = io.open("MOD/" .. modId .. "/Contents/mods/" .. modId .. "/42/" .. path, "rb")
     if not f then return nil end
-    local data = f:read("*a"); f:close()
-    local pos = 1
-    return { readLine = function()
-        if pos > #data then return nil end
-        local nl = string.find(data, "\n", pos, true) or (#data + 1)
-        local line = string.sub(data, pos, nl - 1); pos = nl + 1
-        return (string.gsub(line, "\r$", ""))
-    end, close = function() end }
+    return { readLine = function() local line = f:read("*l"); return line and (line:gsub("\r$", "")) end,
+        close = function() f:close() end }
 end
 worldHours = 1000                -- getGameTime():getWorldAgeHours() 的假值（全域：主函式已逼近 200 個 local）
 function getGameTime() return { getWorldAgeHours = function() return worldHours end } end

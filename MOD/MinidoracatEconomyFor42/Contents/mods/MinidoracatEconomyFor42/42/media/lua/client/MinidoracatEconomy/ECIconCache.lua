@@ -53,7 +53,6 @@ local function reset()
         entries = {},            -- id -> { hash, bytes, checked, ready, texture, pending, attempts, nextAt }
         writeJob = nil,
         downloads = 0,
-        readyVersion = 0,
     }
 end
 reset()
@@ -144,7 +143,6 @@ local function entryFor(id, hash, bytes)
     if not e or e.hash ~= hash or e.bytes ~= bytes then
         e = { hash = hash, bytes = bytes, checked = false, ready = false, texture = nil, pending = nil, attempts = 0, nextAt = 0 }
         state.entries[id] = e
-        state.readyVersion = state.readyVersion + 1
     end
     return e
 end
@@ -155,7 +153,6 @@ local function markReady(id, e, s)
     local ok, tex = pcall(getTexture, abs or "")
     e.texture = (ok and tex) or nil
     if not e.texture then EC.log("icon " .. id .. " cached but getTexture failed for " .. tostring(abs)) end
-    state.readyVersion = state.readyVersion + 1
 end
 
 -- Drop the in-flight state and schedule a retry; `attempts` is charged by request() alone, so a
@@ -340,7 +337,6 @@ function IC.onTick()
                     state.writeJob = nil
                 end
                 state.entries[id] = nil
-                state.readyVersion = state.readyVersion + 1
             end
         end
         pumpWrite()
@@ -354,7 +350,6 @@ function IC.texture(id)
     return e and e.ready and e.texture or nil
 end
 
-function IC.readyVersion() return state.readyVersion end
 function IC.state() return state end
 
 local function onGameStart()

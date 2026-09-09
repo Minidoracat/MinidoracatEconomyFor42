@@ -331,13 +331,6 @@ function C.rateAccepted(id, rateVersion, rateSnapshot)
     return false
 end
 
--- Display name resolution happens on the client (override -> translation -> id); the server
--- only needs it for logs.
-function C.displayName(id)
-    local cur = C.currency(id)
-    if not cur then return tostring(id) end
-    return cur.nameOverride or getText(cur.nameKey)
-end
 
 S.Config = C
 S.onInit(C.init)

@@ -79,29 +79,12 @@ local function tileSize()
 end
 
 local function newEntry(width, height, placeholder, numbers)
-    local e = ISTextEntryBox:new("", 0, 0, width, height)
-    e:initialise()
-    e:instantiate()
-    local bg, br = color("well"), color("border")
-    e.backgroundColor = { r = bg.r, g = bg.g, b = bg.b, a = 0.9 }
-    e.borderColor = { r = br.r, g = br.g, b = br.b, a = 1 }
-    if e.setMaxTextLength then e:setMaxTextLength(32) end
-    if e.setClearButton then e:setClearButton(true) end
-    if placeholder and e.setPlaceholderText then e:setPlaceholderText(placeholder) end
+    local e = U.newEntry(width, height, { maxLen = 32, clear = true, placeholder = placeholder })
     if numbers and e.setOnlyNumbers then e:setOnlyNumbers(true) end
     return e
 end
 
-local function entryText(e)
-    local ok, value = pcall(function() return e:getInternalText() end)
-    if ok and type(value) == "string" then return value end
-    return ""
-end
-
-local function setEntryText(e, str)
-    if not e then return end
-    pcall(function() e:setText(str or "") end)
-end
+local entryText, setEntryText = U.entryText, U.setEntryText
 
 -- One box, two pages (the auction search and the record search): the hint follows the mode.
 local function setPlaceholder(e, str)
@@ -113,17 +96,9 @@ end
 -- script's inventory texture (ScriptManager.instance:FindItem -> getNormalTexture; a script may
 -- ship none). Both are cached per fullType: a catalog reply must not walk the script list again,
 -- and neither call belongs in a per-frame paint.
-local itemNames, itemTextures = {}, {}
+local itemTextures = {}
 
-local function itemName(fullType)
-    local name = itemNames[fullType]
-    if name == nil then
-        local ok, value = pcall(getItemNameFromFullType, fullType)
-        name = (ok and type(value) == "string" and value ~= "") and value or tostring(fullType)
-        itemNames[fullType] = name
-    end
-    return name
-end
+local itemName = C.itemLabel
 
 -- The script's own DisplayName (Item.java:493-495): the untranslated, usually English, name.
 -- Shown next to the localised name (and searched) so players on any language can find "Nails";
@@ -2383,11 +2358,6 @@ function Panel:tradeAllowed()
     return C.nearTerminal()
 end
 
-function Panel:canBuy(row)
-    if self.buyDialog or self.buyPending then return false end
-    if row and row.soldOut then return false end
-    return self:tradeAllowed()
-end
 
 function Panel:onShopRow(row)
     if not row or self.buyDialog or self.buyPending or not self:tradeAllowed() then return end

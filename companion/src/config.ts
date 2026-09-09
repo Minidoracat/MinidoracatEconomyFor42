@@ -3,8 +3,6 @@ import path from "node:path";
 import os from "node:os";
 
 export interface CompanionConfig {
-  zomboidDir: string;
-  serverName: string;
   /** Written by the mod (getFileWriter is rooted at {cachedir}/Lua) */
   economyDir: string;
   /** Global ModData snapshot: durable watermark source (GlobalModData.java:290-299) */
@@ -39,8 +37,6 @@ const zomboidDir = env("ZOMBOID_DIR", path.join(os.homedir(), "Zomboid"));
 const serverName = env("SERVER_NAME", "servertest");
 
 export const config: CompanionConfig = {
-  zomboidDir,
-  serverName,
   economyDir: path.join(zomboidDir, "Lua", "MinidoracatEconomy"),
   modDataBin: path.join(zomboidDir, "Saves", "Multiplayer", serverName, "global_mod_data.bin"),
   playersDb: path.join(zomboidDir, "Saves", "Multiplayer", serverName, "players.db"),

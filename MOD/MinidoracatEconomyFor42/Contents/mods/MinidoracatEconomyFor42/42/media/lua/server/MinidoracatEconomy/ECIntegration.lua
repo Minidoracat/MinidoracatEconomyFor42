@@ -205,9 +205,6 @@ function G.registerSource(spec)
     }
 end
 
-function G.isRegistered(modId)
-    return registry[modId] ~= nil
-end
 
 -- ---------- posting ----------
 

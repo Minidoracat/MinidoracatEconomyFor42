@@ -26,7 +26,6 @@ W.HISTORY_LINES_PER_TICK = 200
 W.HISTORY_MAX_ENTRIES = 200          -- newest entries kept per reply (packet budget ~60 KB)
 W.HISTORY_MAX_JOBS = 8               -- concurrent readers across all players
 
-local md = nil
 local jobs = {}                      -- key (username:command) -> { paths, index, reader, ring, head, count, truncated, player, command, extra }
 
 local playerByUsername = S.onlinePlayer
@@ -295,8 +294,7 @@ end
 -- ---------- lifecycle ----------
 
 local listenerRegistered = false
-function W.init(root)
-    md = root
+function W.init()
     for key, job in pairs(jobs) do
         if job.reader then pcall(function() job.reader:close() end) end
         jobs[key] = nil
