@@ -409,6 +409,13 @@ function C.requestMarketHistory() send("market.history") end
 C.auction = nil
 -- Own auctions: { selling = { view... }, bidding = { view... }, atTerminal, maxAuctions }.
 C.myAuctions = nil
+-- Auction history (auction.history reply): the server filters the daily event files it already
+-- writes -- no ledger of its own -- and answers { history = true, entries = { {kind, auctionId,
+-- listingId, ts, epoch, seq, txId?, item?, qty?, seller?, bidder?, buyer?, previous?, price?,
+-- currency?, rolledBack}, ... } (oldest first, at most 200), total, truncated, query, auctionId?,
+-- requestId?, error? }. `price` is what the auction quoted (the opening bid, one bid, the winning
+-- amount) -- never a wallet delta, so two bids in a row are two amounts and not a double charge.
+C.auctionHistory = nil
 
 -- create/cancel answer with the fresh { selling, bidding } pair; the page-level fields
 -- (atTerminal, maxAuctions) only come with auction.mine, so they are kept.
@@ -453,6 +460,18 @@ handlers["auction.cancel"] = function(args)
     notifyMarket("auction.cancel", args)
 end
 
+-- The newest auction.history this client asked for. A search is typed, so two answers can be in
+-- flight at once: only the newest one may become the snapshot (the page compares the same id
+-- before it repaints). A refusal (busy / server_busy / read_failed / invalid_args) keeps the
+-- snapshot the page is already showing -- an error must never look like an empty result.
+local auctionHistoryId = nil
+
+handlers["auction.history"] = function(args)
+    local stale = auctionHistoryId ~= nil and args.requestId ~= nil and args.requestId ~= auctionHistoryId
+    if not stale and not args.error then C.auctionHistory = args end
+    notifyMarket("auction.history", args)
+end
+
 function C.requestAuctions(opts)
     opts = opts or {}
     send("auction.browse", { page = opts.page, sort = opts.sort, query = opts.query })
@@ -464,6 +483,15 @@ function C.createAuction(itemIds, startPrice, hours, requestId)
 end
 function C.bidAuction(auctionId, amount, requestId) send("auction.bid", { auctionId = auctionId, amount = amount, requestId = requestId }) end
 function C.cancelAuction(auctionId, requestId) send("auction.cancel", { auctionId = auctionId, requestId = requestId }) end
+-- `query` searches the whole visible history (auction id, account, item), `auctionId` pins one
+-- auction and asks for its public timeline instead. Returns the requestId the reply will echo.
+function C.requestAuctionHistory(opts)
+    opts = opts or {}
+    local requestId = opts.requestId or C.newRequestId()
+    auctionHistoryId = requestId
+    send("auction.history", { query = opts.query, auctionId = opts.auctionId, requestId = requestId })
+    return requestId
+end
 
 -- Localised item name (engine call, cached): the notice toast needs it before any UI exists.
 local itemLabels = {}

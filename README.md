@@ -6,7 +6,7 @@ Project Zomboid Build 42 MOD。
 
 ## 開發狀態
 
-目前只建立專案與 MOD 基本骨架，尚未加入遊戲內經濟功能。
+目前為尚未首發的開發版，已有遊戲端經濟功能及 companion 工具；功能變更與驗證狀態見 [CHANGELOG](CHANGELOG.md) 與設計文件。
 
 ## 規劃功能
 

@@ -6,21 +6,11 @@
 --                                         it); never sends a command
 --   instance:resize(w, h) / :refresh() / :dispose() / :setVisible(v)
 --
--- ECPanel owns the window chrome plus the "Admin" tab button and positions this child; this file
--- owns everything below it: eleven sub pages (Player / Dashboard / Currencies / Sources / Shop /
--- Whitelist / Listings / Auctions / Audit / System / Settings, the last one an editor for this
--- mod's sandbox
--- options -- group nav on the left, one control per option on the right, backed by admin.option
--- runtime overrides; Shop is the same shape for the system shop's catalog.json, backed by
--- admin.catalog; Whitelist edits the market's whitelist.json in place -- one switch per item
--- category, allow / deny per item, over a local search of every script item this server knows,
--- backed by admin.whitelist; Listings is a paged, searchable view of every active listing,
--- backed by admin.listings; Auctions is the same card for the live auctions, backed by
--- admin.auctions) and the
--- write dialogs (adjust / freeze / rename / enable / exchange / source caps / option /
--- catalog price / catalog cap / delist / auction cancel). The
--- player page also owns the account search dropdown: a debounced admin.players query whose
--- candidates are drawn by a child panel floating under the search box.
+-- ECPanel owns the window chrome and positions this child. This controller owns admin tab
+-- navigation, permissions, shared command slots, write dialogs and the footer.
+-- ECAdminTransactions owns the complete money-flow page through self.txPage.
+-- ECAdminFilters supplies the filter controls shared with audit and market/auction history.
+-- The remaining business pages stay here; no page registry or generic controller is involved.
 --
 -- Permission gate mirrors the server (ECAdmin.lua gate()): sandbox role *name* lists, read through
 -- the client-only getAccessLevel(). The server re-checks every command; this side only decides
@@ -29,13 +19,13 @@
 -- Transport rules (no framework, ECClient stays untouched):
 --   * replies land in C.handlers["admin.*"] (registered at the bottom of this file) and are routed
 --     to the live instance only;
---   * one in-flight request per command, 500 ms client cooldown per command (the server throttles
---     the same way, ECServer.lua COMMAND_COOLDOWN_MS) and a visible timeout after TIMEOUT_MS;
+--   * one in-flight request per command; the 650 ms client cooldown covers the server's 500 ms
+--     throttle window (ECServer.lua COMMAND_COOLDOWN_MS), with a timeout after TIMEOUT_MS;
 --   * every reply is matched against the request that is still open (username / requestId), so a
 --     late answer cannot land on a different player or a closed dialog.
 --
--- Painting rules: prerender only draws. Table rows and truncation are rebuilt when data arrives,
--- when the filter changes or when the geometry changes -- never per frame.
+-- Rows and text wrapping rebuild on data, filter or geometry changes. The frame callback owns
+-- shared polling, deferred sends and timeouts, and delegates the active transaction page's tick.
 --
 -- Engine references (snapshot 42.20.4-20260826):
 --   getAccessLevel()             LuaManager.java:4435-4436 (client only; "" when unavailable)
@@ -48,14 +38,22 @@
 --   (StringLib.java:760-768), so the local reason length check matches ECAdmin.reasonError.
 
 require "ISUI/ISPanel"
-require "ISUI/ISTextEntryBox"
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
 end
+require "MinidoracatEconomy/ECDatePicker"
+require "MinidoracatEconomy/ECAdminFilters"
+require "MinidoracatEconomy/ECAdminTransactions"
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
+local DatePicker = C.DatePicker
+local Filters, Transactions = C.AdminFilters, C.AdminTransactions
+local filterCreate, filterKinds = Filters.create, Filters.kinds
+local filterLayoutKinds, filterLayoutRow = Filters.layoutKinds, Filters.layoutRow
+local filterDraw, filterOptions, filterEnable = Filters.draw, Filters.options, Filters.enable
+local blurFilterDates = Filters.blurDates
 
 local P = {}
 C.AdminPanel = P
@@ -67,12 +65,18 @@ local color, fill, border, text, textWidth, fitText, textRight, textCentre = U.c
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
 local Button, TableCell = U.Button, U.TableCell
 
-local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Whitelist", "Listings", "Auctions", "Audit", "System", "Settings" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory" }
+-- U.fill scales every fill by the window opacity slider (U.alpha). The money views need one
+-- backdrop that ignores it: their text is read against the numbers, and at 50 % opacity the
+-- selected row's secondary text measured 1.00:1 against the world showing through
+-- (.omc/tmp/colour-audit.json). This paints at full alpha without touching the stored setting.
+local function fillSolid(el, x, y, w, h, token)
+    U.theme:fill(el, x, y, w, h, token, "rect", 1)
+end
+
+local TABS = { "Player", "Dashboard", "Currencies", "Sources", "Shop", "Whitelist", "Listings", "Auctions", "Transactions", "Audit", "System", "Settings" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.receipts", "admin.option", "admin.catalog", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
-local FILTER_KIND_MAX = 12   -- dynamic chips one filter row ever draws (the audit knows 11 actions)
-local FILTER_PER_PAGE = 25   -- rows one client-side page shows (audit lines, market history lines)
 local WL_FILTERS = { "all", "allow", "deny" }   -- state of the row against the file, not a query
 
 local COOLDOWN_MS = 650      -- server window is 500 ms; the margin covers clock jitter (a repeat inside the window is dropped silently -> 8 s timeout)
@@ -82,7 +86,7 @@ local PERM_POLL_MS = 500
 local ICONS_RECHECK_MS = 2500   -- an icon reload reads a few KB per tick; the outcome is asked for after this
 local AUDIT_LIMIT = 500
 local PLAYERS_DEBOUNCE_MS = 250   -- keystrokes are coalesced; the server also throttles per command
-local AUCTION_DEBOUNCE_MS = 600   -- the auction search box asks once the typing stops, never per key
+local AUCTION_DEBOUNCE_MS = 650   -- the auction search box (both modes) asks once the typing stops, never per key; the server drops a repeat inside 500 ms
 local PLAYERS_ROWS_MAX = 8        -- rows the dropdown ever draws, the "type more" line included
 local PLAYERS_MIN_W = 260
 local REASON_MAX = 1000
@@ -189,35 +193,13 @@ local function exchangeLabel(field)
     return tr("Admin_Cur_" .. string.upper(string.sub(field, 1, 1)) .. string.sub(field, 2))
 end
 
-local function errorText(code)
-    if code == nil then code = "unknown" end
-    -- the market's own refusals (an auction that ended, a listing that is gone) already have a
-    -- string on this side: read it before falling back to the bare code
-    local key = tostring(code)
-    return getTextOrNull(T .. "Admin_Error_" .. key) or getTextOrNull(T .. "Market_Error_" .. key)
-        or getText(T .. "Admin_Error_generic", key)
-end
+local errorText = U.adminErrorText
 
-local function currencyDefs()
-    return C.currencies or (C.session and C.session.currencies) or nil
-end
+local currencyDefs = U.currencyDefs
 
-local function currencyDef(id)
-    for _, cur in ipairs(currencyDefs() or {}) do
-        if cur.id == id then return cur end
-    end
-    return nil
-end
+local currencyDef = U.currencyDef
 
-local function currencyName(id)
-    local cur = currencyDef(id)
-    if cur and type(cur.nameOverride) == "string" and cur.nameOverride ~= "" then
-        return cur.nameOverride
-    end
-    local static = EC.CURRENCIES[id]
-    if static then return getText(static.nameKey) end
-    return tostring(id)
-end
+local currencyName = U.currencyName
 
 -- Source display names arrive as { CH = ..., EN = ... }. The language option cannot change
 -- without a restart, so it is read once; getOptionLanguageName is absent on old builds.
@@ -308,41 +290,13 @@ local function parseInt(str)
     return n
 end
 
-local function newEntry(width, height, opts)
-    local e = ISTextEntryBox:new("", 0, 0, width, height)
-    e:initialise()
-    e:instantiate()
-    local bg, br = color("well"), color("border")
-    e.backgroundColor = { r = bg.r, g = bg.g, b = bg.b, a = 0.9 }
-    e.borderColor = { r = br.r, g = br.g, b = br.b, a = 1 }
-    opts = opts or {}
-    if opts.maxLen and e.setMaxTextLength then e:setMaxTextLength(opts.maxLen) end
-    if opts.multiline and e.setMultipleLine then
-        e:setMultipleLine(true)
-        if e.setMaxLines then e:setMaxLines(opts.maxLines or 4) end
-    end
-    if opts.clear and e.setClearButton then e:setClearButton(true) end
-    if opts.placeholder and e.setPlaceholderText then e:setPlaceholderText(opts.placeholder) end
-    return e
-end
+local newEntry = U.newEntry
 
-local function entryText(e)
-    if not e then return "" end
-    local ok, value = pcall(function() return e:getInternalText() end)
-    if ok and type(value) == "string" then return value end
-    return ""
-end
+local entryText = U.entryText
 
-local function setEntryText(e, str)
-    if not e then return end
-    pcall(function() e:setText(str or "") end)
-end
+local setEntryText = U.setEntryText
 
-local function setEntryEditable(e, editable)
-    if not e then return end
-    pcall(function() e:setEditable(editable == true) end)
-    if not editable then pcall(function() e:unfocus() end) end
-end
+local setEntryEditable = U.setEntryEditable
 
 -- Column layout for a TableCell table: spec = { { key, header, sample, flex } , ... }.
 -- Every column gets max(header, sample) + PAD; one flex column absorbs the rest and carries a
@@ -397,7 +351,7 @@ local AUDIT_COLS = nil
 
 local function receiptSpec()
     RECEIPT_COLS = {
-        { header = tr("Wallet_Col_Time"), sample = "00-00 00:00" },
+        { header = tr("Wallet_Col_Time"), sample = U.STAMP_SAMPLE },
         { header = tr("Admin_Col_Currency"), sample = currencyName(EC.CURRENCY_ORDER[1]) },
         { header = tr("Wallet_Col_Amount"), sample = "+999,999", right = true },
         { header = tr("Wallet_Col_Kind"), sample = kindText("admin_adjust") },
@@ -409,7 +363,7 @@ end
 
 local function auditSpec()
     AUDIT_COLS = {
-        { header = tr("Wallet_Col_Time"), sample = "00-00 00:00" },
+        { header = tr("Wallet_Col_Time"), sample = U.STAMP_SAMPLE },
         { header = tr("Admin_Audit_Col_Admin"), sample = "admin0000" },
         { header = tr("Admin_Audit_Col_Action"), sample = tr("Admin_Audit_Action_unfreeze") },
         -- the target is a fullType / a DisplayCategory / a SKU id as often as an account now,
@@ -591,13 +545,7 @@ end
 
 -- Item display name through the engine's own lookup (LuaManager.java:8579-8583), so the admin
 -- reads the same translated name a player sees; an unknown fullType falls back to itself.
-local function itemName(fullType)
-    if type(getItemNameFromFullType) == "function" then
-        local ok, name = pcall(getItemNameFromFullType, fullType)
-        if ok and type(name) == "string" and name ~= "" then return name end
-    end
-    return tostring(fullType or "-")
-end
+local itemName = U.itemName
 
 -- Item icon: the script item's normal texture, cached per fullType (false = asked and missing).
 -- A geometry change rebuilds every row, and ScriptManager lookups are not free.
@@ -643,6 +591,15 @@ local function capValueText(cap)
     return amountText(n)
 end
 
+-- A texture the engine handed out can still be refused by the renderer: ask once, and a refusal
+-- clears the entry's icon so the row simply has none from the next frame on. Shared by every
+-- list row that carries an item icon; the geometry is computed once per rebuild.
+local function paintIcon(cell, e)
+    if not e.icon then return end
+    local ok = pcall(cell.drawTextureScaled, cell, e.icon, PAD, e.iconY, e.iconSize, e.iconSize, 1, 1, 1, 1)
+    if not ok then e.icon = nil end
+end
+
 local CatalogCell = ISPanel:derive("MinidoracatEconomyCatalogCell")
 
 function CatalogCell:render()
@@ -651,11 +608,7 @@ function CatalogCell:render()
     local w, h = self.width, self.height
     if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
     local off = self.list.optionsDisabled == true
-    if e.icon then
-        -- a texture the engine handed out can still be refused by the renderer: ask once
-        local ok = pcall(self.drawTextureScaled, self, e.icon, PAD, e.iconY, e.iconSize, e.iconSize, 1, 1, 1, 1)
-        if not ok then e.icon = nil end
-    end
+    paintIcon(self, e)
     text(self, e.nameText, e.nameX, e.line1Y, e.toggleOn and "text" or "textFaint")
     if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
     text(self, e.metaText, e.metaX, e.line2Y, "textFaint")
@@ -698,11 +651,7 @@ function MarketRowCell:render()
     local w, h = self.width, self.height
     if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
     local off = self.list.optionsDisabled == true
-    if e.icon then
-        -- a texture the engine handed out can still be refused by the renderer: ask once
-        local ok = pcall(self.drawTextureScaled, self, e.icon, PAD, e.iconY, e.iconSize, e.iconSize, 1, 1, 1, 1)
-        if not ok then e.icon = nil end
-    end
+    paintIcon(self, e)
     text(self, e.nameText, e.nameX, e.line1Y, "text")
     if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
     text(self, e.metaText, e.nameX, e.line2Y, "textFaint")
@@ -710,6 +659,13 @@ function MarketRowCell:render()
     local hit = e.chip
     border(self, hit.x, hit.y, hit.w, hit.h, off and "border" or "accent", "pill")
     textCentre(self, e.chipLabel, hit.x + hit.w / 2, hit.y + e.chipTextY, off and "textFaint" or "text")
+    -- the read chip (the auctions page's jump to the record) is never disabled with the writes:
+    -- looking at what happened is allowed whenever the page itself is
+    local read = e.chip2
+    if read then
+        border(self, read.x, read.y, read.w, read.h, "accent", "pill")
+        textCentre(self, e.chip2Label, read.x + read.w / 2, read.y + e.chipTextY, "text")
+    end
 end
 
 -- ---------- upload whitelist page ----------
@@ -786,11 +742,7 @@ function WhitelistCell:render()
     if not e then return end
     if self.index % 2 == 0 then fill(self, 0, 0, self.width, self.height, "card", "rect") end
     local off = self.list.optionsDisabled == true
-    if e.icon then
-        -- a texture the engine handed out can still be refused by the renderer: ask once
-        local ok = pcall(self.drawTextureScaled, self, e.icon, PAD, e.iconY, e.iconSize, e.iconSize, 1, 1, 1, 1)
-        if not ok then e.icon = nil end
-    end
+    paintIcon(self, e)
     if e.labelText then text(self, e.labelText, PAD, e.line1Y, "textFaint") end
     text(self, e.nameText, e.nameX, e.line1Y, "text")
     if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
@@ -868,21 +820,7 @@ end
 -- One history row: "kind / item / xN" over "time / counterparty / reason", the amount on the
 -- right. Every string and width is computed once per rebuild (Admin:historyRow), so the cell
 -- only paints.
-local AdminHistoryCell = ISPanel:derive("MinidoracatEconomyAdminHistoryCell")
-
-function AdminHistoryCell:render()
-    local e = self.entry
-    if not e then return end
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    text(self, e.headText, PAD, e.line1Y, e.rolled and "textFaint" or "text")
-    textRight(self, e.amountLabel, e.amountRight, e.line1Y, e.rolled and "textFaint" or "accent")
-    text(self, e.metaText, PAD, e.line2Y, "textFaint")
-    if e.rolled then
-        U.strike(self, PAD, e.line1Y, e.headW)
-        textRight(self, e.rolledLabel, e.amountRight, e.line2Y, "textFaint")
-    end
-end
+local AdminHistoryCell = U.AdminHistoryCell
 
 -- ---------- write dialog ----------
 
@@ -1019,7 +957,7 @@ function Dialog:updateInfo()
             local used = (type(server.currencies) == "table" and server.currencies[self.currency]) or server
             info[#info + 1] = { text = getText(T .. "Admin_Adjust_Server", amountText(used.add or 0), amountText(used.sub or 0), amountText(server.cap or 0)) }
         end
-        info[#info + 1] = { text = getText(T .. "Admin_Adjust_Snapshot", U.clockText(self.admin.lookupAt or EC.now(), self.admin.offsetMin)), token = "textFaint" }
+        info[#info + 1] = { text = getText(T .. "Admin_Adjust_Snapshot", stampText(self.admin.lookupAt or EC.now(), self.admin.offsetMin)), token = "textFaint" }
     elseif self.mode == "exchange" then
         local def = currencyDef(self.currency)
         local ex = def and def.exchange
@@ -1163,12 +1101,12 @@ function Dialog:layoutInside(maxW, maxH)
             self.confirmButton:setHeight(m.button)
             self.confirmButton:setX(width - PAD - confirmW)
             self.confirmButton:setY(buttonsY)
-            self.admin:setButtonTitle(self.confirmButton, self.confirmLabel, UIFont.Medium)
+            U.setButtonTitle(self.confirmButton, self.confirmLabel, UIFont.Medium)
             self.cancelButton:setWidth(cancelW)
             self.cancelButton:setHeight(m.button)
             self.cancelButton:setX(self.confirmButton.x - 6 - cancelW)
             self.cancelButton:setY(buttonsY)
-            self.admin:setButtonTitle(self.cancelButton, tr("Admin_Cancel"))
+            U.setButtonTitle(self.cancelButton, tr("Admin_Cancel"))
         elseif y + h > buttonsY - m.gap and (r.kind == "info" or r.kind == "warn" or r.kind == "message") then
             r.skip = true
             r.h = 0
@@ -1182,7 +1120,7 @@ function Dialog:layoutInside(maxW, maxH)
                     b:setWidth(math.max(30, math.min(textWidth(b.fullTitle or b.title) + 22, slot)))
                     b:setHeight(h)
                     b:setX(cx); b:setY(y)
-                    self.admin:setButtonTitle(b, b.fullTitle or b.title)
+                    U.setButtonTitle(b, b.fullTitle or b.title)
                     cx = cx + b.width + 4
                 end
             elseif r.kind == "fields" then
@@ -1321,281 +1259,6 @@ function Suggest:onMouseUp(x, y) return true end
 
 local Admin = ISPanel:derive("MinidoracatEconomyAdminPanel")
 
--- ---------- shared filter row (audit page, one player's market history) ----------
---
--- Both pages filter and page entirely on this side (one reply is a few hundred rows at most), so
--- they carry the same widgets over the same state: "all" plus one chip per value the reply
--- actually carried, a from / to civil day pair, one chip per sortable column (clicking the lit one
--- flips its direction) and the two page chips. filterCreate builds them once, filterKinds relabels
--- the dynamic chips when the data moves, filterLayoutKinds / filterLayoutRow put them on screen,
--- filterOptions turns the state into EC.filterPage options and filterDraw paints the labels, the
--- direction marker and the page line. Every one of them is local: nothing here leaves the client,
--- so no chip needs to disable itself while it waits for anything.
---
--- cfg = { label = function(key) -> chip title, sorts = { key, ... }, fields = { key = field },
---         extra = { { key, title } }?, kindLabel = string?, fromLabel, toLabel,
---         onChange = function(panel) }
--- An `extra` chip is a source switch, not one of the data's own values (the audit's "rolled"
--- reads a different set of lines): it takes the kind slot but never becomes a kind filter.
-local ARROW_W, ARROW_H = 7, 4
-
-local function filterCreate(panel, cfg)
-    local f = { kind = "all", sortKey = cfg.sorts[1], desc = true, page = 1, pages = 1, total = 0,
-        label = cfg.label, fields = cfg.fields, kindLabel = cfg.kindLabel,
-        fromLabel = cfg.fromLabel, toLabel = cfg.toLabel, sortLabel = tr("Filter_Sort"),
-        onChange = cfg.onChange, kindButtons = {}, sortButtons = {}, extras = {} }
-    local chipH = math.max(20, fontH.small + 6)
-    local function chip(title, internal, handler, dynamic)
-        local b = Button.create(0, 0, textWidth(title) + 20, chipH, title, panel, handler, "chip")
-        b.internal = internal
-        b.filter = f
-        b.dynamic = dynamic
-        panel:addChild(b)
-        return b
-    end
-    local all = chip(tr("Filter_All"), "all", Admin.onFilterKind, false)
-    all.active = true
-    f.kindButtons[1] = all
-    for _ = 1, FILTER_KIND_MAX do
-        local b = chip("", nil, Admin.onFilterKind, true)
-        b.unused = true
-        f.kindButtons[#f.kindButtons + 1] = b
-    end
-    for _, e in ipairs(cfg.extra or {}) do
-        f.extras[e[1]] = true
-        f.kindButtons[#f.kindButtons + 1] = chip(e[2], e[1], Admin.onFilterKind, false)
-    end
-    for _, key in ipairs(cfg.sorts) do
-        local b = chip(tr("Filter_Sort_" .. key), key, Admin.onFilterSort, false)
-        b.active = key == f.sortKey
-        f.sortButtons[#f.sortButtons + 1] = b
-    end
-    f.prevButton = chip(tr("Market_Prev"), -1, Admin.onFilterPage, false)
-    f.nextButton = chip(tr("Market_Next"), 1, Admin.onFilterPage, false)
-    f.dateW = textWidth(tr("Filter_DateHint")) + 24
-    for _, key in ipairs({ "fromEntry", "toEntry" }) do
-        local e = newEntry(f.dateW, entryH(), { maxLen = 10, clear = true,
-            placeholder = tr("Filter_DateHint") })
-        e.target = panel
-        e.filter = f
-        e.onTextChangeFunction = Admin.onFilterDate
-        panel:addChild(e)
-        f[key] = e
-    end
-    -- the page line is budgeted for its widest form, so a page change never re-flows the row
-    f.pageSample = getText(T .. "Filter_Page", "99", "99") .. "  " .. getText(T .. "Filter_Count", "9999")
-    return f
-end
-
--- The dynamic chips: "all" keeps the first slot, every value the data carried takes the next one
--- and the rest are parked. Returns true when the set moved, so the caller re-lays the row out.
-local function filterKinds(f, values)
-    local sig = table.concat(values, "\1")
-    if sig == f.sig then return false end
-    f.sig = sig
-    local n = 0
-    for _, b in ipairs(f.kindButtons) do
-        if b.dynamic then
-            n = n + 1
-            local key = values[n]
-            b.internal = key
-            b.unused = key == nil
-            b.fullTitle = key and f.label(key) or ""
-            b.title = b.fullTitle
-        end
-    end
-    -- a filter whose chip is gone falls back to everything
-    local live = f.kind == "all"
-    for _, b in ipairs(f.kindButtons) do
-        if not b.unused and b.internal == f.kind then live = true end
-    end
-    if not live then
-        f.kind = "all"
-        f.page = 1
-    end
-    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == f.kind end
-    return true
-end
-
--- One line of kind chips. The slot is budgeted, never natural: a long action name truncates
--- itself instead of pushing the row out of the card. Returns the x just past the last chip.
-local function filterLayoutKinds(f, panel, visible, x, y, w, chipH)
-    local shown = {}
-    for _, b in ipairs(f.kindButtons) do
-        local on = visible and not b.unused
-        b:setVisible(on)
-        if on then shown[#shown + 1] = b end
-    end
-    f.kindLabelX = nil
-    f.kindLabelY = y + math.floor((chipH - fontH.small) / 2)
-    if not visible then return x end
-    local cx = x
-    if f.kindLabel then
-        f.kindLabelX = cx
-        cx = cx + textWidth(f.kindLabel) + 6
-    end
-    local slot = math.floor((x + w - cx) / math.max(1, #shown)) - 4
-    for _, b in ipairs(shown) do
-        b:setWidth(math.max(24, math.min(textWidth(b.fullTitle) + 20, slot)))
-        b:setHeight(chipH)
-        b:setX(cx); b:setY(y)
-        panel:setButtonTitle(b, b.fullTitle)
-        cx = cx + b.width + 4
-    end
-    return cx
-end
-
--- The rest of the row: the two date boxes on the left, the sort chips (each with room for the
--- direction marker) after them, the page line and the two page chips against the right edge.
-local function filterLayoutRow(f, panel, visible, x, y, w, eh, chipH)
-    local band = math.max(eh, chipH)
-    f.rowH = band
-    f.textY = y + math.floor((band - fontH.small) / 2)
-    f.fromEntry:setVisible(visible)
-    f.toEntry:setVisible(visible)
-    f.prevButton:setVisible(visible)
-    f.nextButton:setVisible(visible)
-    for _, b in ipairs(f.sortButtons) do b:setVisible(visible) end
-    if not visible then return end
-    local chipY = y + math.floor((band - chipH) / 2)
-    local entryY = y + math.floor((band - eh) / 2)
-    local right = x + w
-    local nextW = math.max(30, math.min(textWidth(f.nextButton.fullTitle) + 20, math.floor(w * 0.16)))
-    local prevW = math.max(30, math.min(textWidth(f.prevButton.fullTitle) + 20, math.floor(w * 0.16)))
-    f.nextButton:setWidth(nextW); f.nextButton:setHeight(chipH)
-    f.nextButton:setX(math.max(x, right - nextW)); f.nextButton:setY(chipY)
-    panel:setButtonTitle(f.nextButton, f.nextButton.fullTitle)
-    f.prevButton:setWidth(prevW); f.prevButton:setHeight(chipH)
-    f.prevButton:setX(math.max(x, f.nextButton.x - 4 - prevW)); f.prevButton:setY(chipY)
-    panel:setButtonTitle(f.prevButton, f.prevButton.fullTitle)
-    f.pageTextRight = math.max(x, f.prevButton.x - 8)
-    f.pageTextW = math.min(textWidth(f.pageSample), math.floor(w * 0.26))
-    local dateW = math.max(56, math.min(f.dateW, math.floor(w * 0.16)))
-    local cx = x
-    f.fromLabelX = cx
-    cx = cx + textWidth(f.fromLabel) + 4
-    f.fromEntry:setWidth(dateW); f.fromEntry:setHeight(eh)
-    f.fromEntry:setX(cx); f.fromEntry:setY(entryY)
-    cx = cx + dateW + 8
-    f.toLabelX = cx
-    cx = cx + textWidth(f.toLabel) + 4
-    f.toEntry:setWidth(dateW); f.toEntry:setHeight(eh)
-    f.toEntry:setX(cx); f.toEntry:setY(entryY)
-    cx = cx + dateW + 10
-    f.sortLabelX = cx
-    cx = cx + textWidth(f.sortLabel) + 6
-    local budget = math.max(24, f.pageTextRight - f.pageTextW - 6 - cx)
-    local slot = math.max(24, math.floor(budget / math.max(1, #f.sortButtons)) - 4 - ARROW_W)
-    for _, b in ipairs(f.sortButtons) do
-        b:setWidth(math.max(24, math.min(textWidth(b.fullTitle) + 20, slot)))
-        b:setHeight(chipH)
-        b:setX(cx); b:setY(chipY)
-        panel:setButtonTitle(b, b.fullTitle)
-        cx = cx + b.width + ARROW_W + 4
-    end
-end
-
--- Sort direction marker: a 7 x 4 stepped triangle drawn just right of the lit sort chip (the icon
--- set has no chevron_up, and an arrow glyph would not be ASCII). Down = newest / largest first.
-local function drawArrow(el, x, y, down, token)
-    local c = color(token)
-    for i = 0, ARROW_H - 1 do
-        local row = down and (ARROW_H - 1 - i) or i
-        local rw = 1 + row * 2
-        el:drawRect(x + math.floor((ARROW_W - rw) / 2), y + i, rw, 1, c.a, c.r, c.g, c.b)
-    end
-end
-
-local function filterDraw(f, panel)
-    if not f.fromEntry:getIsVisible() then return end
-    if f.kindLabelX then text(panel, f.kindLabel, f.kindLabelX, f.kindLabelY, "textFaint") end
-    text(panel, f.fromLabel, f.fromLabelX, f.textY, "textFaint")
-    text(panel, f.toLabel, f.toLabelX, f.textY, "textFaint")
-    text(panel, f.sortLabel, f.sortLabelX, f.textY, "textFaint")
-    for _, b in ipairs(f.sortButtons) do
-        if b.internal == f.sortKey then
-            drawArrow(panel, b.x + b.width + 2, b.y + math.floor((b.height - ARROW_H) / 2), f.desc,
-                b.enable and "accent" or "textFaint")
-        end
-    end
-    local str = getText(T .. "Filter_Page", tostring(f.page), tostring(f.pages))
-        .. "  " .. getText(T .. "Filter_Count", tostring(f.total))
-    textRight(panel, fitText(str, f.pageTextW), f.pageTextRight, f.textY, "textFaint")
-end
-
--- The state as EC.filterPage options. A malformed date is simply not a bound (the box's
--- placeholder says what it wants); "to" means the end of that day, so the exclusive bound is the
--- next midnight.
-local function filterOptions(f, panel, kindField, timeField)
-    local kinds = nil
-    if f.kind ~= nil and f.kind ~= "all" and not f.extras[f.kind] then kinds = { [f.kind] = true } end
-    local to = EC.parseDay(entryText(f.toEntry), panel.offsetMin)
-    return { kinds = kinds, kindField = kindField, timeField = timeField,
-        fromMs = EC.parseDay(entryText(f.fromEntry), panel.offsetMin),
-        toMs = to and (to + 86400000) or nil,
-        sortKey = f.fields[f.sortKey], desc = f.desc, page = f.page, perPage = FILTER_PER_PAGE }
-end
-
--- Permission / modal gate for the whole row. The page chips also follow the page count, so a
--- one-page result never offers a next page.
-local function filterEnable(f, on)
-    for _, b in ipairs(f.kindButtons) do b:setEnable(on) end
-    for _, b in ipairs(f.sortButtons) do b:setEnable(on) end
-    setEntryEditable(f.fromEntry, on)
-    setEntryEditable(f.toEntry, on)
-    f.prevButton:setEnable(on and f.page > 1)
-    f.nextButton:setEnable(on and f.page < f.pages)
-end
-
--- Every handler ends the same way: the page's own rebuild, then updateEnabled -- the rebuild is
--- what learns the new page count, and the page chips (plus the audit's copy chips, whose line the
--- rebuild just dropped) follow it.
-function Admin:onFilterKind(button)
-    local f = button.filter
-    if f.kind == button.internal then return end
-    f.kind = button.internal
-    f.page = 1
-    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == f.kind end
-    f.onChange(self)
-    self:updateEnabled()
-end
-
--- Clicking the lit chip flips the direction; picking another column starts it at "biggest first".
-function Admin:onFilterSort(button)
-    local f = button.filter
-    if f.sortKey == button.internal then
-        f.desc = not f.desc
-    else
-        f.sortKey = button.internal
-        f.desc = true
-        for _, b in ipairs(f.sortButtons) do b.active = b.internal == f.sortKey end
-    end
-    f.page = 1
-    f.onChange(self)
-    self:updateEnabled()
-end
-
-function Admin:onFilterPage(button)
-    local f = button.filter
-    local page = math.max(1, math.min(f.pages, f.page + button.internal))
-    if page == f.page then return end
-    f.page = page
-    f.onChange(self)
-    self:updateEnabled()
-end
-
-function Admin:onFilterDate(entry)
-    entry.filter.page = 1
-    entry.filter.onChange(self)
-    self:updateEnabled()
-end
-
--- Keeps the untruncated label (fullTitle) and paints the fitted one; layout budgets the width.
-function Admin:setButtonTitle(button, full, font)
-    button.fullTitle = full
-    button:setTitle(fitText(full, math.max(8, button.width - 12), font))
-end
-
 function Admin:createChildren()
     self.subTabButtons = {}
     for _, tab in ipairs(TABS) do
@@ -1688,6 +1351,18 @@ function Admin:createChildren()
     local reload = tr("Admin_Shop_Reload")
     self.shopReloadButton = Button.create(0, 0, textWidth(reload) + 24, 22, reload, self, Admin.onShopReloadClick, "chip")
     self:addChild(self.shopReloadButton)
+    self.shopMasterButton = Button.create(0, 0, 200, 22, getText(T .. "Admin_Shop_Master", tr("Admin_Loading")),
+        self, Admin.onShopMasterClick, "chip")
+    self:addChild(self.shopMasterButton)
+    -- two read-only shortcuts into the money page: what the system sold, what it bought back
+    local salesLabel = tr("Admin_Tx_Sales")
+    self.shopSalesButton = Button.create(0, 0, textWidth(salesLabel) + 22, 22, salesLabel, self, Admin.onShopTxShortcut, "chip")
+    self.shopSalesButton.internal = "shop_buy"    -- a player buying from the system is a sale
+    self:addChild(self.shopSalesButton)
+    local buysLabel = tr("Admin_Tx_Buybacks")
+    self.shopBuysButton = Button.create(0, 0, textWidth(buysLabel) + 22, 22, buysLabel, self, Admin.onShopTxShortcut, "chip")
+    self.shopBuysButton.internal = "shop_sell"    -- the system buying back from a player
+    self:addChild(self.shopBuysButton)
     self.catalogList = U.newTable(CatalogCell, math.max(lineH() * 2 + 12, math.max(20, fontH.small + 6) * 4 + 14))
     local catalogDown = self.catalogList.onMouseDown
     self.catalogList.onMouseDown = function(list, x, y)
@@ -1771,9 +1446,10 @@ function Admin:createChildren()
         onChange = function(panel) panel:rebuildHistory() end,
     })
 
-    -- auctions page: the listings card's shape without the history mode -- a debounced search
-    -- box, the auction list and the two page chips. A row carries one control, so the click needs
-    -- the row-local x and y.
+    -- auctions page: the listings card's shape with two modes -- a debounced search box, the
+    -- live auction list and the two page chips, or the whole server's auction record over the
+    -- shared filter row. A row carries two controls (the record jump and the cancel chip), so
+    -- the click needs the row-local x and y.
     self.aucEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Market_Search") })
     self.aucEntry.target = self
     self.aucEntry.onTextChangeFunction = Admin.onAuctionSearch
@@ -1795,6 +1471,29 @@ function Admin:createChildren()
         self:onAuctionRow(item, self.aucClickX or 0, self.aucClickY or 0)
     end
     self:addChild(self.auctionsList)
+    self.aucActiveButton = Button.create(0, 0, 90, 22, tr("Admin_Auc_Active"), self, Admin.onAuctionMode, "chip")
+    self.aucActiveButton.internal = "active"
+    self.aucActiveButton.active = self.aucMode ~= "history"
+    self:addChild(self.aucActiveButton)
+    self.aucHistoryButton = Button.create(0, 0, 90, 22, tr("Admin_Auc_History"), self, Admin.onAuctionMode, "chip")
+    self.aucHistoryButton.internal = "history"
+    self.aucHistoryButton.active = self.aucMode == "history"
+    self:addChild(self.aucHistoryButton)
+    self.aucHistoryList = U.newTable(AdminHistoryCell, lineH() * 2 + 12)
+    self:addChild(self.aucHistoryList)
+    -- the record's filter row: type / date / sort / page, all of it local to this side. "time"
+    -- sorts on the position the reply gave each line, so newest first is the exact reversal of
+    -- the file order the server read.
+    self.aucF = filterCreate(self, {
+        label = function(kind) return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or tostring(kind) end,
+        kindLabel = tr("Filter_Kind"),
+        sorts = { "time", "amount" }, fields = { time = "ord", amount = "price" },
+        fromLabel = tr("Filter_From"), toLabel = tr("Filter_To"),
+        onChange = function(panel) panel:rebuildAuctionHistory() end,
+    })
+
+    self.txPage = Transactions.create(self, send, isPending, newRequestId)
+    self:addChild(self.txPage)
 
     -- settings page: search box, the option list, the per-group reset button. The group nav is
     -- painted (name plus an override count per row) and its clicks are resolved in onMouseDown.
@@ -1836,6 +1535,7 @@ end
 
 function Admin:onSubTab(button)
     if self.tab == button.internal then return end
+    DatePicker.close(self)
     self.tab = button.internal
     for _, b in ipairs(self.subTabButtons) do b.active = b.internal == self.tab end
     self.message = nil
@@ -2360,6 +2060,20 @@ function Admin:onShopReloadClick()
     self:sendCatalog({ action = "reload" }, nil)
 end
 
+-- The catalog and shop snapshots report the same effective server switch. The shop push is
+-- refreshed immediately on option changes; no second setting or optimistic state lives here.
+function Admin:shopBuybackState()
+    local snap = C.shop or self.catalog
+    if snap and type(snap.buyback) == "table" then return snap.buyback.enabled == true end
+    return nil
+end
+
+function Admin:onShopMasterClick()
+    if not self:writeAllowed() or self.dialog or isPending("admin.option") then return end
+    local enabled = self:shopBuybackState()
+    if enabled ~= nil then self:sendOption("ShopBuybackEnabled", not enabled, nil) end
+end
+
 -- A click inside the catalog list: the row's own hit boxes. Rows carry two control lines, so the
 -- test needs the row-local y as well as the x (both captured in createChildren).
 function Admin:onCatalogRow(item, x, y)
@@ -2601,11 +2315,78 @@ function Admin:requestAuctions()
     return true
 end
 
+-- One read per search over the whole server's auction record. The requestId is what a late
+-- answer is matched against (the same box may be typed in again while an answer is on its way),
+-- and the sent state is recorded here -- never when the answer lands -- so a server that says
+-- "busy" is reported once instead of asked again in a loop. An empty box is a legitimate read:
+-- it means the whole record, not "nothing to ask for".
+function Admin:requestAuctionHistory()
+    local args = { action = "history", requestId = newRequestId() }
+    if self.aucHistId then
+        args.auctionId = self.aucHistId   -- one auction's own timeline, never a text match
+    else
+        args.query = self.aucQuery
+    end
+    if not send("admin.auctions", args) then return false end
+    self.pendingAucHistory = { requestId = args.requestId }
+    self.aucHistRequestId = args.requestId
+    self.aucHistAsked = true
+    self.aucHistSentQuery = self.aucQuery
+    self.aucHistSentId = self.aucHistId
+    self:updateEnabled()
+    return true
+end
+
+-- The card has two modes over the same search box: the live auctions, or the whole server's
+-- auction record (a read -- the record passes the read gate, so a read-only role may look and
+-- search). Entering a mode clears the box and whatever the other mode was holding, and marks
+-- both reads as never asked for: prerender sends the first one on the next frame.
+function Admin:setAuctionMode(mode)
+    self.aucMode = mode
+    self.aucActiveButton.active = mode == "active"
+    self.aucHistoryButton.active = mode == "history"
+    self.message = nil
+    self.aucQuery = nil
+    self.aucQueryAt = nil
+    self.aucHistId = nil
+    self.aucHistory = nil
+    self.aucHistAsked = false
+    self.aucSentPage = nil
+    self.aucPage = 1
+    setEntryText(self.aucEntry, "")
+    if self.aucEntry.setPlaceholderText then
+        pcall(function()
+            self.aucEntry:setPlaceholderText(tr(mode == "history" and "Auction_History_Search" or "Market_Search"))
+        end)
+    end
+end
+
+function Admin:onAuctionMode(button)
+    if self.aucMode == button.internal then return end
+    self:setAuctionMode(button.internal)
+    self:layout()
+end
+
+-- The "record" chip on a live auction row: switch to the record and pin it to that auction by
+-- id, so an item name that happens to contain the same characters cannot add rows of its own.
+function Admin:showAuctionHistory(id)
+    self:setAuctionMode("history")
+    self.aucHistId = tostring(id)
+    setEntryText(self.aucEntry, self.aucHistId)
+    local f = self.aucF
+    f.kind = "all"   -- a type filter left over from the last search must not hide the jump
+    f.page = 1
+    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == "all" end
+    self:layout()
+end
+
 -- A keystroke only arms the clock prerender owns: one command per pause in the typing, never one
--- per key.
+-- per key. Both modes share the box, and typing in it replaces a row's "this auction only" jump
+-- with a plain search.
 function Admin:onAuctionSearch()
     local raw = string.match(entryText(self.aucEntry), "^%s*(.-)%s*$")
     self.aucQuery = raw ~= "" and string.lower(raw) or nil
+    self.aucHistId = nil
     self.aucPage = 1
     self.aucQueryAt = EC.now()
 end
@@ -2620,10 +2401,17 @@ function Admin:onAuctionPage(button)
     self:requestAuctions()
 end
 
--- A click inside the auction list: the row's own cancel chip.
+-- A click inside the auction list: the row's record chip (a read: it works for a read-only role
+-- and while a write is in flight) or its cancel chip.
 function Admin:onAuctionRow(item, x, y)
-    if item == nil or self.auctionsList.optionsDisabled then return end
-    local hit = item.chip
+    if item == nil then return end
+    local hit = item.chip2
+    if hit and x >= hit.x and x < hit.x + hit.w and y >= hit.y and y < hit.y + hit.h then
+        self:showAuctionHistory(item.id)
+        return
+    end
+    if self.auctionsList.optionsDisabled then return end
+    hit = item.chip
     if x >= hit.x and x < hit.x + hit.w and y >= hit.y and y < hit.y + hit.h then
         self:openDialog("auctionCancel", {
             title = getText(T .. "Admin_Auc_CancelTitle", item.plainName),
@@ -2666,6 +2454,25 @@ function Admin:sendWhitelist(args)
     self.pendingWhitelist = { requestId = args.requestId, action = args.action }
     self:updateEnabled()
     return true
+end
+
+function Admin:keyboardTargets()
+    if self.tab ~= "Transactions" or not self:readAllowed() then return {} end
+    return self.txPage:keyboardTargets()
+end
+
+-- The shop page's two shortcuts: the money page filtered to what the system sold, or to what it
+-- bought back. The filter is set before the tab switch, so the page's first read is already the
+-- filtered one instead of a full read followed a frame later by the real one.
+function Admin:showTransactions(group)
+    self.txPage:show(group)
+    for _, b in ipairs(self.subTabButtons) do
+        if b.internal == "Transactions" then self:onSubTab(b) end
+    end
+end
+
+function Admin:onShopTxShortcut(button)
+    self:showTransactions(button.internal)
 end
 
 -- ----- upload whitelist actions -----
@@ -2764,6 +2571,13 @@ function Admin:layoutDialog()
     dlg:setY(math.max(0, math.floor((self.height - dlg.height) / 2)))
 end
 
+-- Every dialog refusal is the same two steps: the message goes on the dialog and the dialog is
+-- laid out again so the line has room. Callers `return self:dialogError(dlg, body)`.
+function Admin:dialogError(dlg, body)
+    dlg.message = { text = body, error = true }
+    self:layoutDialog()
+end
+
 function Admin:closeDialog()
     local dlg = self.dialog
     if not dlg then return end
@@ -2795,26 +2609,18 @@ function Admin:submitDialog(dlg)
     local reasonChars = charCount(reason)
     -- any non-empty reason is accepted; REASON_MAX only guards the one-line JSON files
     if reasonChars < 1 or string.find(reason, "%c") then
-        dlg.message = { text = tr("Admin_Adjust_BadReason"), error = true }
-        self:layoutDialog()
-        return
+        return self:dialogError(dlg, tr("Admin_Adjust_BadReason"))
     elseif reasonChars > REASON_MAX then
-        dlg.message = { text = errorText("reason_too_long"), error = true }
-        self:layoutDialog()
-        return
+        return self:dialogError(dlg, errorText("reason_too_long"))
     end
     if dlg.mode == "adjust" then
         local delta = parseInt(entryText(dlg.boxes.amount))
         if not delta or delta == 0 then
-            dlg.message = { text = tr("Admin_Adjust_BadAmount"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, tr("Admin_Adjust_BadAmount"))
         end
         local maxPerTx = self.lookup and tonumber(self.lookup.maxPerTx)
         if maxPerTx and math.abs(delta) > maxPerTx then
-            dlg.message = { text = errorText("over_max_per_tx"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, errorText("over_max_per_tx"))
         end
         local bal = self.lookup and self.lookup.balances and self.lookup.balances[dlg.currency]
         local rev = bal and tonumber(bal.rev) or 0
@@ -2826,32 +2632,24 @@ function Admin:submitDialog(dlg)
             reversalOfTxId = reversal ~= "" and reversal or nil,
         })
         if not ok then
-            dlg.message = { text = tr("Admin_Throttled"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, tr("Admin_Throttled"))
         end
         self.pendingAdjust = { username = self.lookupUser, currency = dlg.currency, delta = delta, requestId = requestId }
     elseif dlg.mode == "freeze" then
         local ok = send("admin.freeze", { username = self.lookupUser, frozen = dlg.frozenTarget == true, reason = reason })
         if not ok then
-            dlg.message = { text = tr("Admin_Throttled"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, tr("Admin_Throttled"))
         end
         self.pendingFreeze = { username = self.lookupUser, frozen = dlg.frozenTarget == true }
     elseif dlg.mode == "sourceCaps" or dlg.mode == "sourceEnabled" then
         if type(dlg.modId) ~= "string" or dlg.modId == "" then
-            dlg.message = { text = errorText("invalid_args"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, errorText("invalid_args"))
         end
         local payload = { action = "set", modId = dlg.modId, reason = reason }
         if dlg.mode == "sourceCaps" then
             local mint = parseInt(entryText(dlg.boxes.mintCap))
             if not mint or mint < 0 then
-                dlg.message = { text = tr("Admin_Src_BadCap"), error = true }
-                self:layoutDialog()
-                return
+                return self:dialogError(dlg, tr("Admin_Src_BadCap"))
             end
             payload.dailyMintCap = mint
             -- an empty burn field is an explicit "no limit": the server only clears the stored
@@ -2862,9 +2660,7 @@ function Admin:submitDialog(dlg)
             else
                 local burn = parseInt(raw)
                 if not burn or burn < 0 then
-                    dlg.message = { text = tr("Admin_Src_BadCap"), error = true }
-                    self:layoutDialog()
-                    return
+                    return self:dialogError(dlg, tr("Admin_Src_BadCap"))
                 end
                 payload.dailyBurnCap = burn
             end
@@ -2873,23 +2669,17 @@ function Admin:submitDialog(dlg)
         end
         payload.requestId = newRequestId()
         if not send("admin.sources", payload) then
-            dlg.message = { text = tr("Admin_Throttled"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, tr("Admin_Throttled"))
         end
         self.pendingSource = { requestId = payload.requestId, modId = dlg.modId }
     elseif dlg.mode == "delist" then
         if dlg.listingId == nil then
-            dlg.message = { text = errorText("invalid_args"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, errorText("invalid_args"))
         end
         if not self:sendListings({ action = "delist", listingId = dlg.listingId, reason = reason }, dlg) then return end
     elseif dlg.mode == "auctionCancel" then
         if dlg.auctionId == nil then
-            dlg.message = { text = errorText("invalid_args"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, errorText("invalid_args"))
         end
         if not self:sendAuctions({ action = "cancel", auctionId = dlg.auctionId, reason = reason }, dlg) then return end
     else
@@ -2898,9 +2688,7 @@ function Admin:submitDialog(dlg)
             field = "name"
             value = string.match(entryText(dlg.boxes.name), "^%s*(.-)%s*$")
             if #value > NAME_MAX then
-                dlg.message = { text = errorText("invalid_args"), error = true }
-                self:layoutDialog()
-                return
+                return self:dialogError(dlg, errorText("invalid_args"))
             end
         elseif dlg.mode == "enabled" then
             field = "enabled"
@@ -2911,9 +2699,7 @@ function Admin:submitDialog(dlg)
             if raw ~= "" then
                 local n = parseInt(raw)
                 if not n or n < 1000 then
-                    dlg.message = { text = tr("Admin_BalanceMax_BadValue"), error = true }
-                    self:layoutDialog()
-                    return
+                    return self:dialogError(dlg, tr("Admin_BalanceMax_BadValue"))
                 end
                 value = n
             end
@@ -2923,24 +2709,18 @@ function Admin:submitDialog(dlg)
             for _, key in ipairs(EXCHANGE_FIELDS) do
                 local n = parseInt(entryText(dlg.boxes[key]))
                 if not n or n <= 0 then
-                    dlg.message = { text = tr("Admin_Exchange_BadValue"), error = true }
-                    self:layoutDialog()
-                    return
+                    return self:dialogError(dlg, tr("Admin_Exchange_BadValue"))
                 end
                 values[key] = n
             end
             if values.perOrderMin > values.perOrderMax then
-                dlg.message = { text = tr("Admin_Exchange_BadValue"), error = true }
-                self:layoutDialog()
-                return
+                return self:dialogError(dlg, tr("Admin_Exchange_BadValue"))
             end
             value = values
         end
         local ok = send("admin.config", { currency = dlg.currency, field = field, value = value, reason = reason })
         if not ok then
-            dlg.message = { text = tr("Admin_Throttled"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, tr("Admin_Throttled"))
         end
         self.pendingConfig = { currency = dlg.currency, field = field }
     end
@@ -2954,24 +2734,18 @@ end
 function Admin:submitOption(dlg)
     local spec = EC.OPTION_BY_KEY[dlg.optionKey]
     if spec == nil then
-        dlg.message = { text = errorText("unknown_option"), error = true }
-        self:layoutDialog()
-        return
+        return self:dialogError(dlg, errorText("unknown_option"))
     end
     local raw = string.match(entryText(dlg.boxes.value), "^%s*(.-)%s*$")
     local value
     if spec.kind == "list_int" then
         if EC.parseIntList(raw, spec) == nil then
-            dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, dlg.hintText or errorText("invalid_args"))
         end
         value = raw
     elseif spec.kind == "text" then
         if raw == "" or charCount(raw) > OPTION_TEXT_MAX or string.find(raw, "%c") then
-            dlg.message = { text = errorText("invalid_args"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, errorText("invalid_args"))
         end
         value = raw
     else
@@ -2983,9 +2757,7 @@ function Admin:submitOption(dlg)
             if math.abs(steps - math.floor(steps + 0.5)) > 1e-9 then bad = true end
         end
         if bad then
-            dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
-            self:layoutDialog()
-            return
+            return self:dialogError(dlg, dlg.hintText or errorText("invalid_args"))
         end
         value = n
     end
@@ -3005,9 +2777,7 @@ function Admin:submitCatalogValue(dlg)
     end
     local n = parseInt(entryText(dlg.boxes.value))
     if n == nil or n < lo or n > hi then
-        dlg.message = { text = dlg.hintText or errorText("invalid_args"), error = true }
-        self:layoutDialog()
-        return
+        return self:dialogError(dlg, dlg.hintText or errorText("invalid_args"))
     end
     local args = { action = "set", id = dlg.catalogId }
     if mode == "catalogPrice" then args.price = n
@@ -3020,6 +2790,31 @@ function Admin:submitCatalogValue(dlg)
 end
 
 -- ----- replies -----
+
+-- The record read's own reply (admin.auctions{action = "history"}), matched against the request
+-- that is still open: a late answer to a search the admin has already moved on from never lands
+-- on screen. A refusal is a message and nothing else -- the snapshot that is up stays up, so a
+-- busy or unreadable server never reads as "this auction has no record".
+function Admin:onAuctionHistoryReply(args)
+    if args.requestId ~= nil and self.aucHistRequestId ~= nil and args.requestId ~= self.aucHistRequestId then return end
+    self.pendingAucHistory = nil
+    if args.error ~= nil then
+        local body = args.error == "read_failed" and tr("Auction_History_ReadFailed")
+            or errorText(args.error)
+        self.message = { text = body, error = true }
+        return
+    end
+    if type(args.entries) ~= "table" then return end
+    -- the reply is oldest first: every line remembers its place, which is what the "time" sort
+    -- reads -- so the record reverses exactly, two bids inside the same minute included
+    for i, rec in ipairs(args.entries) do
+        if type(rec) == "table" then rec.ord = i end
+    end
+    self.aucHistory = args
+    self.aucHistoryAt = EC.now()
+    self.message = nil
+    self:rebuildAuctionHistory()
+end
 
 function Admin:onReply(kind, args)
     -- the server states the permission level it just enforced; it wins over the local role read
@@ -3168,25 +2963,31 @@ function Admin:onReply(kind, args)
             end
         end
     elseif kind == "auctions" then
-        -- every reply carries the page back, a refusal included, so the page always shows what
-        -- the server actually holds
-        if type(args.items) == "table" then
-            self.auctions = args
-            self.auctionsAt = EC.now()
-            self.aucPage = math.max(1, math.floor(tonumber(args.page) or 1))
-            self.aucSentPage = self.aucPage   -- the server clamps the page; adopt it, never re-ask
-            self:rebuildAuctions()
-        end
-        local req = self.pendingAuctions
-        local mine = req == nil or args.requestId == nil or req.requestId == args.requestId
-        if mine then
-            self.pendingAuctions = nil
-            if not args.ok then
-                local msg = { text = errorText(args.error), error = true }
-                if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
-            elseif req and req.action == "cancel" then
-                self.message = { text = tr("Auction_Cancelled") }
-                self:closeDialog()
+        -- the record read answers on the same command: it names itself (history = true) and
+        -- never carries `items`, so the two shapes never touch each other's state
+        if args.history == true then
+            self:onAuctionHistoryReply(args)
+        else
+            -- every list reply carries the page back, a refusal included, so the page always
+            -- shows what the server actually holds
+            if type(args.items) == "table" then
+                self.auctions = args
+                self.auctionsAt = EC.now()
+                self.aucPage = math.max(1, math.floor(tonumber(args.page) or 1))
+                self.aucSentPage = self.aucPage   -- the server clamps the page; adopt it, never re-ask
+                self:rebuildAuctions()
+            end
+            local req = self.pendingAuctions
+            local mine = req == nil or args.requestId == nil or req.requestId == args.requestId
+            if mine then
+                self.pendingAuctions = nil
+                if not args.ok then
+                    local msg = { text = errorText(args.error), error = true }
+                    if self.dialog then self.dialog.message = msg; self:layoutDialog() else self.message = msg end
+                elseif req and req.action == "cancel" then
+                    self.message = { text = tr("Auction_Cancelled") }
+                    self:closeDialog()
+                end
             end
         end
     elseif kind == "whitelist" then
@@ -3309,6 +3110,8 @@ function Admin:onReply(kind, args)
                 self:rebuildHistory()
             end
         end
+    elseif kind == "transactions" or kind == "transaction" then
+        self.txPage:onReply(kind, args)
     end
     self:updateEnabled()
 end
@@ -3330,8 +3133,16 @@ function Admin:onTimeout(command)
     end
     if command == "admin.catalog" then self.pendingCatalog = nil end
     if command == "admin.listings" then self.pendingListings = nil end
-    if command == "admin.auctions" then self.pendingAuctions = nil end
+    if command == "admin.auctions" then
+        self.pendingAuctions = nil
+        -- the record read is forgotten as well, but its sent state is kept: the 30 s page poll
+        -- (or the refresh chip) is what asks again, so a dead server is not hammered
+        self.pendingAucHistory = nil
+    end
     if command == "admin.whitelist" then self.pendingWhitelist = nil end
+    if command == "admin.transaction" or command == "admin.transactions" then
+        self.txPage:onTimeout(command)
+    end
     if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" or command == "admin.catalog" or command == "admin.listings" or command == "admin.auctions" then
         if self.dialog then
             self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
@@ -3712,14 +3523,23 @@ end
 
 -- Geometry of the right-hand strip of a market row (listings, auctions): identical for every row,
 -- so it is computed once per rebuild and the rows only carry their own strings. The strip is as
--- wide as its content (an amount that fits "1,000,000" plus the action chip) instead of a fixed
--- number, so a large UI font cannot push the digits out of the row.
-function Admin:rowChipGeometry(width, chipH, label)
+-- wide as its content (an amount that fits "1,000,000" plus the action chip, plus the optional
+-- second chip a row offers) instead of a fixed number, so a large UI font cannot push the digits
+-- out of the row. `label2` is the read-only chip (the auctions page's jump to the record): it is
+-- placed left of the action chip and stays live even when the list's writes are disabled.
+function Admin:rowChipGeometry(width, chipH, label, label2)
     local geo = { chipH = chipH, chipTextY = math.floor((chipH - fontH.small) / 2), chipLabel = label }
     geo.chipW = textWidth(label) + 16
     geo.priceW = math.max(60, textWidth("1,000,000") + 8)
     geo.chipX = math.max(40, width - PAD - geo.chipW)
-    geo.priceRight = geo.chipX - 8
+    local leftmost = geo.chipX
+    if label2 then
+        geo.chip2Label = label2
+        geo.chip2W = textWidth(label2) + 16
+        geo.chip2X = math.max(40, geo.chipX - 6 - geo.chip2W)
+        leftmost = geo.chip2X
+    end
+    geo.priceRight = leftmost - 8
     geo.textLimit = math.max(0, geo.priceRight - geo.priceW - PAD)
     return geo
 end
@@ -3737,6 +3557,10 @@ function Admin:marketRow(entry, geo, lh, rowHeight, chipY, name, amount)
         chipLabel = geo.chipLabel,
         chip = { x = geo.chipX, y = chipY, w = geo.chipW, h = geo.chipH },
     }
+    if geo.chip2X then
+        item.chip2Label = geo.chip2Label
+        item.chip2 = { x = geo.chip2X, y = chipY, w = geo.chip2W, h = geo.chipH }
+    end
     item.nameX = PAD + size + 6
     item.textW = math.max(0, geo.textLimit - item.nameX)
     item.nameText = fitText(name, item.textW)
@@ -3812,7 +3636,7 @@ function Admin:rebuildAuctions()
         local list = self.auctionsList
         local width = math.max(120, list.width - 12)   -- 12 = the scrollbar gutter
         local chipH = math.max(20, fontH.small + 6)
-        local geo = self:rowChipGeometry(width, chipH, tr("Admin_Auc_Cancel"))
+        local geo = self:rowChipGeometry(width, chipH, tr("Admin_Auc_Cancel"), tr("Auction_History"))
         local chipY = math.max(3, math.floor((list.rowHeight - chipH) / 2))
         local now = EC.now()
         for _, a in ipairs(snap.items) do
@@ -3821,6 +3645,92 @@ function Admin:rebuildAuctions()
     end
     self.auctionRows = rows
     self.auctionsList:setItems(rows)
+end
+
+-- One auction record line: "kind / item / xN" over "time / auction id / the accounts involved",
+-- the amount right aligned. The amount is what the auction was worth at that moment (the start
+-- price, one bid, the winning bid), never a wallet delta -- so it is never signed and never
+-- doubled into "the bidder paid this twice". A rolled-back line is struck through and labelled,
+-- exactly like the wallet's own receipt rows.
+function Admin:auctionHistoryRow(rec, lh, width)
+    local kind = tostring(rec.kind or "?")
+    local head = getTextOrNull(T .. "Market_Kind_" .. kind) or kind
+    if type(rec.item) == "string" and rec.item ~= "" then
+        head = head .. "  " .. itemName(rec.item)
+        -- an old auction.bid line carries no qty: say nothing rather than invent a lot size
+        local qty = math.floor(tonumber(rec.qty) or 0)
+        if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
+    end
+    local meta = stampText(rec.ts, self.offsetMin)
+    if rec.auctionId ~= nil then
+        meta = meta .. " / " .. getText(T .. "Auction_History_Id", tostring(rec.auctionId))
+    end
+    if type(rec.seller) == "string" and rec.seller ~= "" then
+        meta = meta .. " / " .. getText(T .. "Auction_History_Seller", rec.seller)
+    end
+    if type(rec.bidder) == "string" and rec.bidder ~= "" then
+        meta = meta .. " / " .. getText(T .. "Auction_History_Bidder", rec.bidder)
+    end
+    if type(rec.buyer) == "string" and rec.buyer ~= "" then
+        meta = meta .. " / " .. getText(T .. "Auction_History_Buyer", rec.buyer)
+    end
+    if type(rec.previous) == "string" and rec.previous ~= "" then
+        meta = meta .. " / " .. getText(T .. "Auction_History_Previous", rec.previous)
+    end
+    local rolled = rec.rolledBack == true
+    local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
+    -- a line with no price (a flow-back, a cancel, an old event that never carried one) shows no
+    -- number: a printed 0 would read as "sold for nothing"
+    local price = tonumber(rec.price)
+    local amountLabel = "-"
+    if price then
+        amountLabel = amountText(price)
+        if type(rec.currency) == "string" and rec.currency ~= "" then
+            amountLabel = amountLabel .. " " .. currencyName(rec.currency)
+        end
+    end
+    local right = math.max(60, width - PAD)
+    local headW = math.max(0, right - textWidth(amountLabel) - PAD * 2)
+    local metaW = rolled and math.max(0, headW - textWidth(rolledLabel) - PAD) or headW
+    local item = {
+        line1Y = 5, line2Y = 5 + lh, amountRight = right, amountLabel = amountLabel,
+        rolled = rolled, rolledLabel = rolledLabel,
+        headText = fitText(head, headW), metaText = fitText(meta, metaW),
+    }
+    item.headW = textWidth(item.headText)
+    return item
+end
+
+-- The record the server last sent, turned into one local page over the shared filter row. The
+-- reply is oldest first (the server reads the event files forward) and every entry was tagged
+-- with its position when it landed, so "time, newest first" is exactly the reversal the record
+-- needs -- two bids in the same minute included.
+function Admin:rebuildAuctionHistory()
+    local f = self.aucF
+    local snap = self.aucHistory
+    local src = (snap and type(snap.entries) == "table") and snap.entries or {}
+    local kinds, seenKind = {}, {}
+    for _, rec in ipairs(src) do
+        if type(rec) == "table" then
+            local k = tostring(rec.kind or "?")
+            if not seenKind[k] then
+                seenKind[k] = true
+                kinds[#kinds + 1] = k
+            end
+        end
+    end
+    EC.sortSafe(kinds, function(a, b) return f.label(a) < f.label(b) end)
+    if filterKinds(f, kinds) then self:layoutAuctionFilters() end
+    local picked, page, pages, total = EC.filterPage(src, filterOptions(f, self, "kind", "ts"))
+    f.page, f.pages, f.total = page, pages, total
+    local rows = {}
+    local width = math.max(120, self.aucHistoryList.width - 12)   -- 12 = the scrollbar gutter
+    local lh = lineH()
+    for _, rec in ipairs(picked) do
+        if type(rec) == "table" then rows[#rows + 1] = self:auctionHistoryRow(rec, lh, width) end
+    end
+    self.aucHistoryRows = rows
+    self.aucHistoryList:setItems(rows)
 end
 
 -- One history line: "kind / item / xN" over "time / counterparty / reason", the amount right
@@ -4088,13 +3998,13 @@ function Admin:updateEnabled()
     local canWriteTarget = write and found and not selfTarget and not modal
     self.adjustButton:setEnable(canWriteTarget and not isPending("admin.adjust"))
     self.freezeButton:setEnable(canWriteTarget and not isPending("admin.freeze"))
-    self:setButtonTitle(self.freezeButton, self.lookup and self.lookup.frozen and tr("Admin_Player_Unfreeze") or tr("Admin_Player_Freeze"))
+    U.setButtonTitle(self.freezeButton, self.lookup and self.lookup.frozen and tr("Admin_Player_Unfreeze") or tr("Admin_Player_Freeze"))
 
     local def = currencyDef(self:selectedCurrency())
     local cfgWrite = write and not modal and not isPending("admin.config")
     self.renameButton:setEnable(cfgWrite)
     self.toggleButton:setEnable(cfgWrite)
-    self:setButtonTitle(self.toggleButton, (def == nil or def.enabled ~= false) and tr("Admin_Cur_Disable") or tr("Admin_Cur_Enable"))
+    U.setButtonTitle(self.toggleButton, (def == nil or def.enabled ~= false) and tr("Admin_Cur_Disable") or tr("Admin_Cur_Enable"))
     self.rateButton:setEnable(cfgWrite and def ~= nil and type(def.exchange) == "table")
     self.balanceMaxButton:setEnable(cfgWrite)
     self.iconsButton:setEnable(write and not modal and not isPending("admin.icons") and self.iconsRecheckAt == nil)
@@ -4103,7 +4013,7 @@ function Admin:updateEnabled()
     local srcWrite = write and not modal and not isPending("admin.sources") and src ~= nil
     self.srcCapsButton:setEnable(srcWrite)
     self.srcToggleButton:setEnable(srcWrite)
-    self:setButtonTitle(self.srcToggleButton, (src == nil or src.enabled ~= false) and tr("Admin_Src_Disable") or tr("Admin_Src_Enable"))
+    U.setButtonTitle(self.srcToggleButton, (src == nil or src.enabled ~= false) and tr("Admin_Src_Disable") or tr("Admin_Src_Enable"))
 
     setEntryEditable(self.auditEntry, read and not modal)
     filterEnable(self.auditF, read and not modal)
@@ -4119,6 +4029,13 @@ function Admin:updateEnabled()
     local catWrite = write and not modal and not isPending("admin.catalog")
     self.catalogList.optionsDisabled = not catWrite
     self.shopReloadButton:setEnable(catWrite)
+    local buyback = self:shopBuybackState()
+    U.setButtonTitle(self.shopMasterButton, getText(T .. "Admin_Shop_Master",
+        buyback == nil and tr("Admin_Loading") or tr(buyback and "Admin_On" or "Admin_Off")))
+    self.shopMasterButton:setEnable(write and not modal and not isPending("admin.option") and buyback ~= nil)
+    -- the two money-page shortcuts are reads: they follow read permission, never the catalog write
+    self.shopSalesButton:setEnable(read and not modal)
+    self.shopBuysButton:setEnable(read and not modal)
 
     -- listings page: one in-flight listings command at a time; the page chips follow the
     -- snapshot, and a read-only role browses without ever arming a delist
@@ -4149,6 +4066,13 @@ function Admin:updateEnabled()
     local aucRead = read and not modal and not aucBusy
     self.aucPrevButton:setEnable(aucRead and aucPage > 1)
     self.aucNextButton:setEnable(aucRead and aucPage < aucPages)
+    -- the two mode chips and the record's own filter row are reads: a read-only role switches to
+    -- the record and searches it, it just never arms the cancel chip
+    self.aucActiveButton:setEnable(read and not modal)
+    self.aucHistoryButton:setEnable(read and not modal)
+    filterEnable(self.aucF, read and not modal)
+
+    self.txPage:updateEnabled()
 
     -- whitelist page: one in-flight whitelist command at a time, the reload chip included; a
     -- read-only role browses the file without ever arming a switch
@@ -4182,9 +4106,9 @@ function Admin:layoutAuditFilters()
     local visible = self:readAllowed() and self.tab == "Audit"
     local chipH = math.max(20, fontH.small + 6)
     local x = self.auditEntry.width + PAD
-    g.auditCountX = filterLayoutKinds(self.auditF, self, visible, x, self.auditEntry.y
+    g.auditCountX = filterLayoutKinds(self.auditF, visible, x, self.auditEntry.y
         + math.floor((entryH() - chipH) / 2), math.max(60, self.width - x - PAD), chipH) + PAD
-    filterLayoutRow(self.auditF, self, visible, 0, g.auditFilterY, self.width, entryH(), chipH)
+    filterLayoutRow(self.auditF, visible, 0, g.auditFilterY, self.width, entryH(), chipH)
 end
 
 function Admin:layoutHistoryFilters()
@@ -4193,8 +4117,45 @@ function Admin:layoutHistoryFilters()
     local visible = self:readAllowed() and self.tab == "Listings" and self.lstMode == "history"
     local chipH = math.max(20, fontH.small + 6)
     local w = math.max(60, self.width - PAD * 2)
-    filterLayoutKinds(self.histF, self, visible, PAD, g.histKindY, w, chipH)
-    filterLayoutRow(self.histF, self, visible, PAD, g.histRowY, w, entryH(), chipH)
+    filterLayoutKinds(self.histF, visible, PAD, g.histKindY, w, chipH)
+    filterLayoutRow(self.histF, visible, PAD, g.histRowY, w, entryH(), chipH)
+end
+
+function Admin:layoutAuctionFilters()
+    local g = self.g
+    if g == nil then return end
+    local visible = self:readAllowed() and self.tab == "Auctions" and self.aucMode == "history"
+    local chipH = math.max(20, fontH.small + 6)
+    local w = math.max(60, self.width - PAD * 2)
+    filterLayoutKinds(self.aucF, visible, PAD, g.aucKindY, w, chipH)
+    filterLayoutRow(self.aucF, visible, PAD, g.aucRowY, w, entryH(), chipH)
+end
+
+-- Fair share with redistribution, shared by the currencies and the sources action row: a button
+-- whose natural width is below its share keeps it and what it leaves over goes to the wider ones
+-- (an equal split would truncate the longest label at the minimum window with large fonts).
+-- `items` is {button, natural width} pairs in draw order; the row starts at x and steps by 6.
+local function fairShareButtons(items, visible, x, y, totalW, height)
+    local byNeed = {}
+    for i = 1, #items do byNeed[i] = items[i] end
+    EC.sortSafe(byNeed, function(a, b) return a[2] < b[2] end)
+    local remaining = totalW - 6 * (#items - 1)
+    local width = {}
+    for i, item in ipairs(byNeed) do
+        local share = math.floor(remaining / (#byNeed - i + 1))
+        local bw = math.max(40, math.min(item[2], share))
+        width[item[1]] = bw
+        remaining = remaining - bw
+    end
+    for _, item in ipairs(items) do
+        local b = item[1]
+        b:setVisible(visible)
+        b:setHeight(height)
+        b:setWidth(width[b])
+        b:setX(x); b:setY(y)
+        U.setButtonTitle(b, b.fullTitle)
+        x = x + b.width + 6
+    end
 end
 
 function Admin:layout()
@@ -4212,7 +4173,11 @@ function Admin:layout()
     -- Button rows are budgeted, never natural width: a long translation (or a large UI font)
     -- must truncate its own label instead of pushing a button out of the panel.
     local refreshW = math.min(textWidth(self.refreshButton.fullTitle) + 24, math.floor(w * 0.25))
-    local tabsBudget = math.max(120, w - refreshW - PAD)
+    -- The "updated at" stamp is painted right of this row (render, below) and is a full
+    -- "YYYY-MM-DD HH:MM": its width is part of the budget, so a scaled-up font shrinks the tab
+    -- labels instead of dropping the stamp on top of the last one.
+    local updatedW = textWidth(getText(T .. "Admin_Updated", U.STAMP_SAMPLE)) + PAD
+    local tabsBudget = math.max(120, w - refreshW - updatedW - PAD)
     local natural = 0
     for _, b in ipairs(self.subTabButtons) do natural = natural + textWidth(b.fullTitle) + 28 end
     local scale = natural > tabsBudget and (tabsBudget / natural) or 1
@@ -4223,14 +4188,14 @@ function Admin:layout()
         b:setWidth(math.max(24, bw))
         b:setHeight(sub)
         b:setX(x); b:setY(0)
-        self:setButtonTitle(b, b.fullTitle)
+        U.setButtonTitle(b, b.fullTitle)
         x = x + b.width
     end
     self.refreshButton:setWidth(refreshW)
     self.refreshButton:setHeight(math.max(20, fontH.small + 6))
     self.refreshButton:setX(math.max(x + PAD, w - refreshW))
     self.refreshButton:setY(math.floor((sub - self.refreshButton.height) / 2))
-    self:setButtonTitle(self.refreshButton, self.refreshButton.fullTitle)
+    U.setButtonTitle(self.refreshButton, self.refreshButton.fullTitle)
 
     -- permission is re-read here (layout runs on size / tab / permission changes, never per frame)
     local read = self:readAllowed()
@@ -4245,6 +4210,7 @@ function Admin:layout()
     local shop = read and self.tab == "Shop"
     local listings = read and self.tab == "Listings"
     local auctions = read and self.tab == "Auctions"
+    local tx = read and self.tab == "Transactions"
     local whitelist = read and self.tab == "Whitelist"
     for _, b in ipairs(self.subTabButtons) do b:setVisible(read) end
     self.refreshButton:setVisible(read)
@@ -4259,7 +4225,7 @@ function Admin:layout()
     self.lookupButton:setWidth(math.min(textWidth(self.lookupButton.fullTitle) + 26, math.floor(w * 0.2)))
     self.lookupButton:setHeight(eh)
     self.lookupButton:setX(self.userEntry.width + 6); self.lookupButton:setY(g.queryY)
-    self:setButtonTitle(self.lookupButton, self.lookupButton.fullTitle)
+    U.setButtonTitle(self.lookupButton, self.lookupButton.fullTitle)
     g.statusX = self.lookupButton.x + self.lookupButton.width + PAD
     -- the candidate dropdown hangs directly below the search box, never over it
     g.suggestY = g.queryY + eh
@@ -4270,7 +4236,10 @@ function Admin:layout()
     g.actionY = g.bodyY + g.bodyH - actionH
     g.cardsH = math.max(60, g.actionY - 6 - g.cardsY)
     g.leftW = math.max(150, math.floor((w - PAD * 2) * 0.24))
-    g.midW = math.max(150, math.floor((w - PAD * 2) * 0.26))
+    -- the status card's widest line is the reward-reset stamp: measure it, so a scaled-up UI font
+    -- widens the column instead of cutting "YYYY-MM-DD HH:MM" short
+    g.midW = math.max(150, textWidth(getText(T .. "Admin_Player_NextReset", U.STAMP_SAMPLE)) + PAD * 2,
+        math.floor((w - PAD * 2) * 0.26))
     g.midX = g.leftW + PAD
     g.rightX = g.midX + g.midW + PAD
     g.rightW = math.max(180, w - g.rightX)
@@ -4280,13 +4249,13 @@ function Admin:layout()
     self.adjustButton:setHeight(actionH)
     self.adjustButton:setWidth(math.min(math.max(140, textWidth(self.adjustButton.fullTitle, UIFont.Medium) + 40), math.floor(w * 0.34)))
     self.adjustButton:setX(0); self.adjustButton:setY(g.actionY)
-    self:setButtonTitle(self.adjustButton, self.adjustButton.fullTitle, UIFont.Medium)
+    U.setButtonTitle(self.adjustButton, self.adjustButton.fullTitle, UIFont.Medium)
     self.freezeButton:setVisible(player)
     self.freezeButton:setHeight(actionH)
     local freezeW = math.max(textWidth(tr("Admin_Player_Unfreeze")), textWidth(tr("Admin_Player_Freeze"))) + 30
     self.freezeButton:setWidth(math.min(math.max(120, freezeW), math.floor(w * 0.3)))
     self.freezeButton:setX(self.adjustButton.width + 6); self.freezeButton:setY(g.actionY)
-    self:setButtonTitle(self.freezeButton, self.freezeButton.fullTitle)
+    U.setButtonTitle(self.freezeButton, self.freezeButton.fullTitle)
     g.actionNoteX = self.freezeButton.x + self.freezeButton.width + PAD
 
     -- receipts table inside the right card
@@ -4295,11 +4264,7 @@ function Admin:layout()
     local listY = g.receiptHeaderY + rh
     local listW = math.max(120, g.rightW - 2)
     local listH = math.max(rh, g.cardsY + g.cardsH - listY - 2)
-    self.receiptList:setVisible(player)
-    self.receiptList:setX(g.rightX + 1); self.receiptList:setY(listY)
-    if self.receiptList.width ~= listW or self.receiptList.height ~= listH then
-        self.receiptList:resize(listW, listH)
-    end
+    U.placeList(self.receiptList, player, g.rightX + 1, listY, listW, listH)
     layoutColumns(self.receiptList, receiptSpec(), listW - 12)
     g.receiptBottom = listY + listH
 
@@ -4310,34 +4275,13 @@ function Admin:layout()
     g.cfgRowY = g.bodyY + CARD_TITLE_H + rh
     local cfgBtnY = g.bodyY + g.bodyH - actionH
     g.cfgButtonY = cfgBtnY
-    -- five config buttons share the detail column. Fair share with redistribution: buttons whose
-    -- natural width is below their share keep it, and what they leave over goes to the wider ones
-    -- (an equal fifth would truncate the longest label at the minimum window with large fonts).
+    -- five config buttons share the detail column, fair share with redistribution
     local toggleFull = math.max(textWidth(tr("Admin_Cur_Disable")), textWidth(tr("Admin_Cur_Enable"))) + 30
     local cfgItems = { { self.renameButton, textWidth(self.renameButton.fullTitle) + 30 },
         { self.toggleButton, toggleFull }, { self.rateButton, textWidth(self.rateButton.fullTitle) + 30 },
         { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 },
         { self.iconsButton, textWidth(self.iconsButton.fullTitle) + 30 } }
-    local byNeed = { cfgItems[1], cfgItems[2], cfgItems[3], cfgItems[4], cfgItems[5] }
-    EC.sortSafe(byNeed, function(a, b) return a[2] < b[2] end)
-    local remaining = g.cfgDetailW - 6 * (#cfgItems - 1)
-    local cfgWidth = {}
-    for i, item in ipairs(byNeed) do
-        local share = math.floor(remaining / (#byNeed - i + 1))
-        local bw = math.max(40, math.min(item[2], share))
-        cfgWidth[item[1]] = bw
-        remaining = remaining - bw
-    end
-    local cfgX = g.cfgDetailX
-    for _, item in ipairs(cfgItems) do
-        local b = item[1]
-        b:setVisible(currencies)
-        b:setHeight(actionH)
-        b:setWidth(cfgWidth[b])
-        b:setX(cfgX); b:setY(cfgBtnY)
-        self:setButtonTitle(b, b.fullTitle)
-        cfgX = cfgX + b.width + 6
-    end
+    fairShareButtons(cfgItems, currencies, g.cfgDetailX, cfgBtnY, g.cfgDetailW, actionH)
 
     -- sources page: table left, detail card plus two action buttons right (the currencies page
     -- shape, which a host already knows). Same fair share with redistribution for the buttons.
@@ -4349,26 +4293,7 @@ function Admin:layout()
     local srcToggleFull = math.max(textWidth(tr("Admin_Src_Disable")), textWidth(tr("Admin_Src_Enable"))) + 30
     local srcItems = { { self.srcCapsButton, textWidth(self.srcCapsButton.fullTitle) + 30 },
         { self.srcToggleButton, srcToggleFull } }
-    local srcByNeed = { srcItems[1], srcItems[2] }
-    EC.sortSafe(srcByNeed, function(a, b) return a[2] < b[2] end)
-    local srcRemaining = g.srcDetailW - 6 * (#srcItems - 1)
-    local srcWidth = {}
-    for i, item in ipairs(srcByNeed) do
-        local share = math.floor(srcRemaining / (#srcByNeed - i + 1))
-        local bw = math.max(40, math.min(item[2], share))
-        srcWidth[item[1]] = bw
-        srcRemaining = srcRemaining - bw
-    end
-    local srcX = g.srcDetailX
-    for _, item in ipairs(srcItems) do
-        local b = item[1]
-        b:setVisible(sources)
-        b:setHeight(actionH)
-        b:setWidth(srcWidth[b])
-        b:setX(srcX); b:setY(g.srcButtonY)
-        self:setButtonTitle(b, b.fullTitle)
-        srcX = srcX + b.width + 6
-    end
+    fairShareButtons(srcItems, sources, g.srcDetailX, g.srcButtonY, g.srcDetailW, actionH)
 
     -- audit page: search box plus the action chips on the first row, the dates / sort / page chips
     -- on the second, then the table and the detail strip
@@ -4390,11 +4315,7 @@ function Admin:layout()
     g.auditDetailH = detailH
     g.auditDetailLines = math.floor((detailH - 6) / lh)
     local auditH = math.max(rh, avail - detailH)
-    self.auditList:setVisible(audit)
-    self.auditList:setX(1); self.auditList:setY(auditListY)
-    if self.auditList.width ~= auditW or self.auditList.height ~= auditH then
-        self.auditList:resize(auditW, auditH)
-    end
+    U.placeList(self.auditList, audit, 1, auditListY, auditW, auditH)
     layoutColumns(self.auditList, auditSpec(), auditW - 12)
     g.auditDetailY = auditListY + auditH + 4
     g.auditBottom = g.auditDetailY + detailH
@@ -4404,11 +4325,11 @@ function Admin:layout()
     copyId:setVisible(audit)
     copyId:setWidth(math.min(textWidth(copyId.fullTitle) + 20, copyMax)); copyId:setHeight(copyH)
     copyId:setX(math.max(PAD, w - PAD - copyId.width)); copyId:setY(g.auditDetailY + 2)
-    self:setButtonTitle(copyId, copyId.fullTitle)
+    U.setButtonTitle(copyId, copyId.fullTitle)
     copyName:setVisible(audit)
     copyName:setWidth(math.min(textWidth(copyName.fullTitle) + 20, copyMax)); copyName:setHeight(copyH)
     copyName:setX(math.max(PAD, copyId.x - 6 - copyName.width)); copyName:setY(g.auditDetailY + 2)
-    self:setButtonTitle(copyName, copyName.fullTitle)
+    U.setButtonTitle(copyName, copyName.fullTitle)
     g.auditDetailTextW = math.max(0, copyName.x - PAD * 2)
 
     -- system page: state card left, paths card right. Each path is "label / value / copy": two
@@ -4449,17 +4370,33 @@ function Admin:layout()
     self.shopReloadButton:setHeight(reloadH)
     self.shopReloadButton:setX(math.max(PAD, w - PAD - reloadW))
     self.shopReloadButton:setY(shopTop)
-    self:setButtonTitle(self.shopReloadButton, self.shopReloadButton.fullTitle)
+    U.setButtonTitle(self.shopReloadButton, self.shopReloadButton.fullTitle)
     g.shopHeadY = shopTop + math.floor((reloadH - fontH.small) / 2)
     g.shopNoteY = shopTop + reloadH + 6
-    local shopListY = g.shopNoteY + lh + 4
+    g.shopMasterY = g.shopNoteY + lh + 4
+    local masterW = math.max(textWidth(getText(T .. "Admin_Shop_Master", tr("Admin_On"))),
+        textWidth(getText(T .. "Admin_Shop_Master", tr("Admin_Off"))),
+        textWidth(getText(T .. "Admin_Shop_Master", tr("Admin_Loading")))) + 24
+    self.shopMasterButton:setVisible(shop)
+    self.shopMasterButton:setX(PAD); self.shopMasterButton:setY(g.shopMasterY)
+    self.shopMasterButton:setWidth(masterW); self.shopMasterButton:setHeight(reloadH)
+    -- the two money-page shortcuts ride the right end of the master row; both are reads, so a
+    -- read-only role may take them
+    local buyW = math.min(textWidth(self.shopBuysButton.fullTitle) + 22, math.max(40, math.floor(w * 0.2)))
+    self.shopBuysButton:setVisible(shop)
+    self.shopBuysButton:setWidth(buyW); self.shopBuysButton:setHeight(reloadH)
+    self.shopBuysButton:setX(math.max(PAD, w - PAD - buyW)); self.shopBuysButton:setY(g.shopMasterY)
+    U.setButtonTitle(self.shopBuysButton, self.shopBuysButton.fullTitle)
+    local saleW = math.min(textWidth(self.shopSalesButton.fullTitle) + 22, math.max(40, math.floor(w * 0.2)))
+    self.shopSalesButton:setVisible(shop)
+    self.shopSalesButton:setWidth(saleW); self.shopSalesButton:setHeight(reloadH)
+    self.shopSalesButton:setX(math.max(PAD, self.shopBuysButton.x - 4 - saleW))
+    self.shopSalesButton:setY(g.shopMasterY)
+    U.setButtonTitle(self.shopSalesButton, self.shopSalesButton.fullTitle)
+    local shopListY = g.shopMasterY + reloadH + 6
     local shopW = math.max(160, w - PAD * 2)
     local shopH = math.max(rowH(), g.bodyY + g.bodyH - PAD - shopListY)
-    self.catalogList:setVisible(shop)
-    self.catalogList:setX(PAD); self.catalogList:setY(shopListY)
-    if self.catalogList.width ~= shopW or self.catalogList.height ~= shopH then
-        self.catalogList:resize(shopW, shopH)
-    end
+    U.placeList(self.catalogList, shop, PAD, shopListY, shopW, shopH)
 
     -- whitelist page: the file status row (status left, reload chip right), the two standing
     -- notes, the search row, then the list of category / item rows.
@@ -4470,7 +4407,7 @@ function Admin:layout()
     self.wlReloadButton:setHeight(reloadH)
     self.wlReloadButton:setX(math.max(PAD, w - PAD - wlReloadW))
     self.wlReloadButton:setY(wlTop)
-    self:setButtonTitle(self.wlReloadButton, self.wlReloadButton.fullTitle)
+    U.setButtonTitle(self.wlReloadButton, self.wlReloadButton.fullTitle)
     g.wlHeadY = wlTop + math.floor((reloadH - fontH.small) / 2)
     g.wlNoteY = wlTop + reloadH + 4
     g.wlFixedY = g.wlNoteY + lh
@@ -4487,18 +4424,14 @@ function Admin:layout()
         b:setWidth(math.min(textWidth(b.fullTitle) + 22, math.max(24, math.floor(w * 0.16))))
         b:setHeight(wlChipH)
         b:setX(wlChipX); b:setY(wlChipY)
-        self:setButtonTitle(b, b.fullTitle)
+        U.setButtonTitle(b, b.fullTitle)
         wlChipX = wlChipX + b.width + 4
     end
     g.wlCountX = wlChipX + PAD
     local wlListY = wlEntryY + eh + 6
     local wlListW = math.max(160, w - PAD * 2)
     local wlListH = math.max(rowH(), g.bodyY + g.bodyH - PAD - wlListY)
-    self.whitelistList:setVisible(whitelist)
-    self.whitelistList:setX(PAD); self.whitelistList:setY(wlListY)
-    if self.whitelistList.width ~= wlListW or self.whitelistList.height ~= wlListH then
-        self.whitelistList:resize(wlListW, wlListH)
-    end
+    U.placeList(self.whitelistList, whitelist, PAD, wlListY, wlListW, wlListH)
 
     -- listings page: the listings card carries the search row, the list and the page chips along
     -- its bottom (the whitelist has its own page). In history mode the same card shows one
@@ -4514,7 +4447,7 @@ function Admin:layout()
     self.lstHistoryButton:setWidth(histW); self.lstHistoryButton:setHeight(pageH)
     self.lstHistoryButton:setX(math.max(PAD, w - PAD - histW))
     self.lstHistoryButton:setY(g.lstY + math.floor((CARD_TITLE_H - pageH) / 2))
-    self:setButtonTitle(self.lstHistoryButton, self.lstHistoryButton.fullTitle)
+    U.setButtonTitle(self.lstHistoryButton, self.lstHistoryButton.fullTitle)
     self.lstEntry:setVisible(listings)
     self.lstEntry:setX(PAD); self.lstEntry:setY(lstTop)
     self.lstEntry:setWidth(math.max(120, math.min(240, math.floor(w * 0.28)))); self.lstEntry:setHeight(eh)
@@ -4528,18 +4461,14 @@ function Admin:layout()
     self.lstNextButton:setVisible(paged)
     self.lstNextButton:setWidth(nextW); self.lstNextButton:setHeight(pageH)
     self.lstNextButton:setX(math.max(PAD, w - PAD - nextW)); self.lstNextButton:setY(g.lstPageY)
-    self:setButtonTitle(self.lstNextButton, self.lstNextButton.fullTitle)
+    U.setButtonTitle(self.lstNextButton, self.lstNextButton.fullTitle)
     self.lstPrevButton:setVisible(paged)
     self.lstPrevButton:setWidth(prevW); self.lstPrevButton:setHeight(pageH)
     self.lstPrevButton:setX(math.max(PAD, self.lstNextButton.x - 6 - prevW)); self.lstPrevButton:setY(g.lstPageY)
-    self:setButtonTitle(self.lstPrevButton, self.lstPrevButton.fullTitle)
+    U.setButtonTitle(self.lstPrevButton, self.lstPrevButton.fullTitle)
     local lstW = math.max(160, w - PAD * 2)
     local lstListH = math.max(rh, g.lstPageY - 6 - lstListY)
-    self.listingsList:setVisible(paged)
-    self.listingsList:setX(PAD); self.listingsList:setY(lstListY)
-    if self.listingsList.width ~= lstW or self.listingsList.height ~= lstListH then
-        self.listingsList:resize(lstW, lstListH)
-    end
+    U.placeList(self.listingsList, paged, PAD, lstListY, lstW, lstListH)
     -- history mode: the type chips and the date / sort / page row take the two lines the page
     -- chips own in listings mode, and the list runs to the bottom of the card
     g.histKindY = lstListY
@@ -4547,17 +4476,28 @@ function Admin:layout()
     self:layoutHistoryFilters()
     local histListY = g.histRowY + self.histF.rowH + 6
     local histH = math.max(rh, g.lstY + g.lstH - PAD - histListY)
-    self.historyList:setVisible(history)
-    self.historyList:setX(PAD); self.historyList:setY(histListY)
-    if self.historyList.width ~= lstW or self.historyList.height ~= histH then
-        self.historyList:resize(lstW, histH)
-    end
+    U.placeList(self.historyList, history, PAD, histListY, lstW, histH)
 
-    -- auctions page: the listings card's shape without the history mode -- search row, list, page
-    -- chips along the bottom.
+    -- auctions page: the listings card's shape plus two mode chips in the title row -- the live
+    -- auctions (search row, list, page chips along the bottom) or the whole server's auction
+    -- record (search row, the type / date / sort / page row, the record list to the bottom).
+    local aucHistory = auctions and self.aucMode == "history"
+    local aucPaged = auctions and not aucHistory
     g.aucY = g.bodyY
     g.aucH = math.max(CARD_TITLE_H + eh + rh, g.bodyY + g.bodyH - g.aucY)
     local aucTop = g.aucY + CARD_TITLE_H + 4
+    local aucModeY = g.aucY + math.floor((CARD_TITLE_H - pageH) / 2)
+    local aucHistW = math.min(textWidth(self.aucHistoryButton.fullTitle) + 22, math.max(40, math.floor(w * 0.25)))
+    self.aucHistoryButton:setVisible(auctions)
+    self.aucHistoryButton:setWidth(aucHistW); self.aucHistoryButton:setHeight(pageH)
+    self.aucHistoryButton:setX(math.max(PAD, w - PAD - aucHistW)); self.aucHistoryButton:setY(aucModeY)
+    U.setButtonTitle(self.aucHistoryButton, self.aucHistoryButton.fullTitle)
+    local aucActiveW = math.min(textWidth(self.aucActiveButton.fullTitle) + 22, math.max(40, math.floor(w * 0.25)))
+    self.aucActiveButton:setVisible(auctions)
+    self.aucActiveButton:setWidth(aucActiveW); self.aucActiveButton:setHeight(pageH)
+    self.aucActiveButton:setX(math.max(PAD, self.aucHistoryButton.x - 4 - aucActiveW))
+    self.aucActiveButton:setY(aucModeY)
+    U.setButtonTitle(self.aucActiveButton, self.aucActiveButton.fullTitle)
     self.aucEntry:setVisible(auctions)
     self.aucEntry:setX(PAD); self.aucEntry:setY(aucTop)
     self.aucEntry:setWidth(math.max(120, math.min(240, math.floor(w * 0.28)))); self.aucEntry:setHeight(eh)
@@ -4568,20 +4508,29 @@ function Admin:layout()
     g.aucPageTextY = g.aucPageY + math.floor((pageH - fontH.small) / 2)
     local aucNextW = math.min(textWidth(self.aucNextButton.fullTitle) + 24, math.floor(w * 0.2))
     local aucPrevW = math.min(textWidth(self.aucPrevButton.fullTitle) + 24, math.floor(w * 0.2))
-    self.aucNextButton:setVisible(auctions)
+    self.aucNextButton:setVisible(aucPaged)
     self.aucNextButton:setWidth(aucNextW); self.aucNextButton:setHeight(pageH)
     self.aucNextButton:setX(math.max(PAD, w - PAD - aucNextW)); self.aucNextButton:setY(g.aucPageY)
-    self:setButtonTitle(self.aucNextButton, self.aucNextButton.fullTitle)
-    self.aucPrevButton:setVisible(auctions)
+    U.setButtonTitle(self.aucNextButton, self.aucNextButton.fullTitle)
+    self.aucPrevButton:setVisible(aucPaged)
     self.aucPrevButton:setWidth(aucPrevW); self.aucPrevButton:setHeight(pageH)
     self.aucPrevButton:setX(math.max(PAD, self.aucNextButton.x - 6 - aucPrevW)); self.aucPrevButton:setY(g.aucPageY)
-    self:setButtonTitle(self.aucPrevButton, self.aucPrevButton.fullTitle)
+    U.setButtonTitle(self.aucPrevButton, self.aucPrevButton.fullTitle)
     local aucListH = math.max(rh, g.aucPageY - 6 - aucListY)
-    self.auctionsList:setVisible(auctions)
-    self.auctionsList:setX(PAD); self.auctionsList:setY(aucListY)
-    if self.auctionsList.width ~= lstW or self.auctionsList.height ~= aucListH then
-        self.auctionsList:resize(lstW, aucListH)
-    end
+    U.placeList(self.auctionsList, aucPaged, PAD, aucListY, lstW, aucListH)
+    -- history mode: the type chips and the date / sort / page row take the two lines the page
+    -- chips own in the active list, and the record list runs to the bottom of the card
+    g.aucKindY = aucListY
+    g.aucRowY = g.aucKindY + pageH + 4
+    self:layoutAuctionFilters()
+    local aucHistListY = g.aucRowY + self.aucF.rowH + 6
+    local aucHistH = math.max(rh, g.aucY + g.aucH - PAD - aucHistListY)
+    U.placeList(self.aucHistoryList, aucHistory, PAD, aucHistListY, lstW, aucHistH)
+
+    self.txPage:setX(0)
+    self.txPage:setY(g.bodyY)
+    self.txPage:setVisible(tx)
+    self.txPage:resize(w, g.bodyH)
 
     -- settings page: search row on top, the group nav down the left, the option list plus the
     -- "reset this group" button on the right. The reset row is reserved whether the button is
@@ -4606,21 +4555,18 @@ function Admin:layout()
     self.setResetButton:setHeight(resetH)
     self.setResetButton:setX(g.setContentX + g.setContentW - resetW)
     self.setResetButton:setY(g.setResetY)
-    self:setButtonTitle(self.setResetButton, self.setResetButton.fullTitle)
+    U.setButtonTitle(self.setResetButton, self.setResetButton.fullTitle)
     local setListY = g.setHeadY + fontH.medium + 6
     local setW = math.max(120, g.setContentW)
     local setH = math.max(rowH(), g.setResetY - 6 - setListY)
-    self.settingsList:setVisible(settings)
-    self.settingsList:setX(g.setContentX); self.settingsList:setY(setListY)
-    if self.settingsList.width ~= setW or self.settingsList.height ~= setH then
-        self.settingsList:resize(setW, setH)
-    end
+    U.placeList(self.settingsList, settings, g.setContentX, setListY, setW, setH)
 
     self:rebuildAudit()
     self:rebuildSettings()
     self:rebuildCatalog()
     self:rebuildListings()
     self:rebuildAuctions()
+    self:rebuildAuctionHistory()
     self:rebuildHistory()
     self:rebuildWhitelist()
     if self.lookup then self.receiptList:setItems(self.receiptRows or {}) end
@@ -4681,7 +4627,7 @@ function Admin:drawPlayer()
             or tr("Admin_Player_NotFound")
         local label = tostring(self.lookupUser) .. "  " .. status
         if self.lookup.frozen then label = label .. "  " .. tr("Admin_Player_Frozen") end
-        local stamp = getText(T .. "Admin_Updated", U.clockText(self.lookupAt or 0, self.offsetMin))
+        local stamp = getText(T .. "Admin_Updated", stampText(self.lookupAt or 0, self.offsetMin))
         local stampW = textWidth(stamp)
         text(self, fitText(label, self.width - g.statusX - stampW - PAD), g.statusX, ty, self.lookup.frozen and "warn" or "text")
         textRight(self, stamp, self.width, ty, "textFaint")
@@ -4727,7 +4673,7 @@ function Admin:drawPlayer()
             rewards.claimed and "positive" or "textMuted")
         self:line(getText(T .. "Admin_Player_Playtime", tostring(math.floor((tonumber(rewards.playedMs) or 0) / 60000))), "textMuted")
         if rewards.nextResetMs then
-            self:line(getText(T .. "Admin_Player_NextReset", U.clockText(tonumber(rewards.nextResetMs) or 0, self.offsetMin)), "textFaint")
+            self:line(getText(T .. "Admin_Player_NextReset", stampText(tonumber(rewards.nextResetMs) or 0, self.offsetMin)), "textFaint")
         end
         local done, total = 0, 0
         for _, m in ipairs(rewards.milestoneList or {}) do
@@ -4986,7 +4932,7 @@ function Admin:drawSources()
     end
     self:lineRow(tr("Admin_Src_Name"), sourceName(selected))
     self:lineRow(tr("Admin_Src_RegisteredAt"),
-        selected.registeredAt and U.clockText(tonumber(selected.registeredAt) or 0, self.offsetMin) or "-", "textFaint")
+        selected.registeredAt and stampText(tonumber(selected.registeredAt) or 0, self.offsetMin) or "-", "textFaint")
     self:lineGap()
     local bal = selected.balance or {}
     for _, id in ipairs(EC.CURRENCY_ORDER) do
@@ -5020,6 +4966,10 @@ function Admin:drawShop()
     local rows = self.catalogRows or {}
     local countText = getText(T .. "Admin_Shop_Count", tostring(#rows))
     textRight(self, countText, self.width - PAD, g.shopNoteY, "textFaint")
+    local masterHintX = self.shopMasterButton.x + self.shopMasterButton.width + PAD
+    -- the two money-page shortcuts sit at the right end of the same row: the hint stops there
+    text(self, fitText(tr("Admin_Shop_MasterHint"), math.max(0, self.shopSalesButton.x - PAD - masterHintX)),
+        masterHintX, g.shopMasterY + math.floor((self.shopMasterButton.height - fontH.small) / 2), "textFaint")
     text(self, fitText(tr("Admin_Shop_Note"), math.max(0, self.width - PAD * 3 - textWidth(countText))),
         PAD, g.shopNoteY, "textFaint")
     if #rows == 0 then
@@ -5127,9 +5077,42 @@ function Admin:drawListings()
         math.max(0, self.lstPrevButton.x - PAD * 2)), PAD, g.lstPageTextY, "textFaint")
 end
 
+-- The auctions card in history mode: the same header row, the whole server's auction record
+-- under it (newest first), the type / date / sort / page row instead of the page chips.
+function Admin:drawAuctionHistory()
+    local g = self.g
+    filterDraw(self.aucF, self)
+    local snap = self.aucHistory
+    local rows = self.aucHistoryRows or {}
+    local countText = ""
+    if snap then
+        countText = getText(T .. "Admin_Auc_Count", tostring(math.floor(tonumber(snap.total) or #rows)))
+        textRight(self, countText, self.width - PAD, g.aucHeadY, "textFaint")
+    end
+    -- the truncation warning replaces the standing note: it is the one thing that changes what
+    -- the numbers on screen mean
+    local note = (snap and snap.truncated == true) and tr("Auction_History_Truncated")
+        or tr("Admin_Auc_HistoryNote")
+    text(self, fitText(note, math.max(0, self.width - PAD * 2 - g.aucNoteX - textWidth(countText))),
+        g.aucNoteX, g.aucHeadY, "textFaint")
+    if #rows > 0 then return end
+    -- the record is always being asked for while this mode is open, so "no snapshot yet" reads
+    -- as loading rather than as an empty server
+    local empty = tr("Auction_History_Empty")
+    if snap == nil or isPending("admin.auctions") then
+        empty = tr("Admin_Loading")
+    elseif self.aucF.total == 0 and #(snap.entries or {}) > 0 then
+        empty = tr("Filter_NoMatch")   -- the reply carried lines; the filter row emptied the page
+    end
+    text(self, fitText(empty, math.max(0, self.aucHistoryList.width - PAD * 2)),
+        self.aucHistoryList.x + PAD, self.aucHistoryList.y + 4, "textFaint")
+end
+
 function Admin:drawAuctions()
     local g = self.g
-    card(self, 0, g.aucY, self.width, g.aucH, tr("Admin_Auc_Title"))
+    card(self, 0, g.aucY, self.width, g.aucH,
+        tr(self.aucMode == "history" and "Auction_History_Title" or "Admin_Auc_Title"))
+    if self.aucMode == "history" then return self:drawAuctionHistory() end
     local snap = self.auctions
     local rows = self.auctionRows or {}
     local countText = getText(T .. "Admin_Auc_Count", tostring((snap and snap.total) or 0))
@@ -5154,6 +5137,7 @@ function Admin:drawAuctions()
         math.max(0, self.aucPrevButton.x - PAD * 2)), PAD, g.aucPageTextY, "textFaint")
 end
 
+
 function Admin:drawAudit()
     local g = self.g
     local rh = rowH()
@@ -5161,7 +5145,7 @@ function Admin:drawAudit()
     local filterY = self.auditEntry.y + math.floor((entryH() - fontH.small) / 2)
     local stampW = 0
     if self.auditAt then
-        local stamp = getText(T .. "Admin_Updated", U.clockText(self.auditAt, self.offsetMin))
+        local stamp = getText(T .. "Admin_Updated", stampText(self.auditAt, self.offsetMin))
         stampW = textWidth(stamp) + PAD
         textRight(self, stamp, self.width - PAD, filterY, "textFaint")
     end
@@ -5363,6 +5347,9 @@ function Admin:prerender()
             if not read then
                 self.catalog = nil; self.listings = nil; self.auctions = nil; self.whitelist = nil
                 self.marketHistory = nil; self.histUser = nil; self.histSentUser = nil
+                self.aucHistory = nil; self.aucHistId = nil; self.aucHistAsked = false
+                self.aucHistSentQuery = nil; self.aucHistSentId = nil
+                self.txPage:clear()
             end
             self:layout()   -- hides/shows the page children for the new permission level
         end
@@ -5414,17 +5401,26 @@ function Admin:prerender()
         self:requestListings()
     end
 
-    -- the auction page's search box: one command per pause, and -- once the pause has passed --
-    -- the same re-ask the listings page does when the cooldown refused the request
+    -- the auction page's search box, both modes over the same clock: one command per pause, and
+    -- -- once the pause has passed -- the same re-ask the listings page does when the cooldown
+    -- refused the request. A read that came back refused is *not* re-asked: the sent state was
+    -- recorded when it left, so a busy server is reported once instead of hammered.
     if self.tab == "Auctions" and self.hadRead then
+        local history = self.aucMode == "history"
+        local moved = history
+            and (not self.aucHistAsked or self.aucHistSentQuery ~= self.aucQuery
+                or self.aucHistSentId ~= self.aucHistId)
+            or (not history
+                and (self.aucSentQuery ~= self.aucQuery or self.aucSentPage ~= (self.aucPage or 1)))
         if self.aucQueryAt and now - self.aucQueryAt > AUCTION_DEBOUNCE_MS then
             self.aucQueryAt = nil
-            self:requestAuctions()
-        elseif not self.aucQueryAt
-            and (self.aucSentQuery ~= self.aucQuery or self.aucSentPage ~= (self.aucPage or 1)) then
-            self:requestAuctions()
+            if history then self:requestAuctionHistory() else self:requestAuctions() end
+        elseif not self.aucQueryAt and moved then
+            if history then self:requestAuctionHistory() else self:requestAuctions() end
         end
     end
+
+    if self.tab == "Transactions" and self.hadRead then self.txPage:tick(now) end
 
     -- the account typed in history mode: one command per pause, never one per keystroke
     if self.histQueryAt and now - self.histQueryAt > PLAYERS_DEBOUNCE_MS then
@@ -5444,6 +5440,13 @@ function Admin:prerender()
     if self.tab == "Player" and self.hadRead then self:tickPlayers(now) end
 
     local g = self.g
+    -- The money views are read against the numbers, so their backdrop is painted opaque whatever
+    -- the window opacity slider says: at 50 % the selected row's secondary text measured
+    -- 1.00:1 against the world behind it (.omc/tmp/colour-audit.json). The stored opacity is
+    -- untouched -- the window chrome around this child still honours it.
+    if self.tab == "Transactions" then
+        fillSolid(self, 0, 0, self.width, self.height, "surface")
+    end
     fill(self, 0, 0, self.width, g.subH, "well", "rect")
     if not self.hadRead then
         text(self, tr("Admin_NoPermission"), PAD, g.bodyY, "errorText")
@@ -5453,10 +5456,11 @@ function Admin:prerender()
     local stampAt = ((self.tab == "Dashboard" or self.tab == "System" or self.tab == "Settings") and self.systemAt)
         or (self.tab == "Sources" and self.sourcesAt) or (self.tab == "Shop" and self.catalogAt)
         or (self.tab == "Listings" and (self.lstMode == "history" and self.historyAt or self.listingsAt))
-        or (self.tab == "Auctions" and self.auctionsAt) or nil
+        or (self.tab == "Auctions" and (self.aucMode == "history" and self.aucHistoryAt or self.auctionsAt))
+        or (self.tab == "Transactions" and self.txPage.updatedAt) or nil
     if stampAt then
-        textRight(self, getText(T .. "Admin_Updated", U.clockText(stampAt, self.offsetMin)),
-            self.refreshButton.x - PAD, math.floor((g.subH - fontH.small) / 2), "textFaint")
+        textRight(self, getText(T .. "Admin_Updated", stampText(stampAt, self.offsetMin)),
+            self.refreshButton.x - PAD, math.floor((g.subH - fontH.small) / 2), "textMuted")
     end
     if self.tab == "Player" then
         self:drawPlayer()
@@ -5478,7 +5482,7 @@ function Admin:prerender()
         self:drawAudit()
     elseif self.tab == "Settings" then
         self:drawSettings()
-    else
+    elseif self.tab ~= "Transactions" then
         self:drawSystem()
     end
 
@@ -5571,7 +5575,15 @@ function Admin:refresh()
             self:requestListings()
         end
     elseif self.tab == "Auctions" then
-        self:requestAuctions()
+        if self.aucMode == "history" then
+            -- a read either way: an empty box is the whole server's record, so the poll asks
+            -- for it exactly like the active list. A refusal keeps the snapshot on screen.
+            self:requestAuctionHistory()
+        else
+            self:requestAuctions()
+        end
+    elseif self.tab == "Transactions" then
+        self.txPage:refresh()
     elseif self.tab == "Whitelist" then
         send("admin.whitelist", { action = "status" })
     end
@@ -5585,6 +5597,7 @@ function Admin:setVisible(visible)
         self.permCheckedAt = nil
         self.polledAt = nil
     else
+        for _, f in ipairs({ self.auditF, self.histF, self.aucF }) do blurFilterDates(f) end
         self:closeDialog()
         self:closeSuggest()
         pcall(function() self.userEntry:unfocus() end)
@@ -5594,9 +5607,11 @@ function Admin:setVisible(visible)
         pcall(function() self.aucEntry:unfocus() end)
         pcall(function() self.wlEntry:unfocus() end)
     end
+    self.txPage:setVisible(visible and self.tab == "Transactions" and self:readAllowed())
 end
 
 function Admin:dispose()
+    self.txPage:dispose()
     self:closeDialog()
     self:closeSuggest()
     pcall(function() self.userEntry:unfocus() end)
@@ -5609,6 +5624,8 @@ function Admin:dispose()
     pcall(function() self.auditF.toEntry:unfocus() end)
     pcall(function() self.histF.fromEntry:unfocus() end)
     pcall(function() self.histF.toEntry:unfocus() end)
+    pcall(function() self.aucF.fromEntry:unfocus() end)
+    pcall(function() self.aucF.toEntry:unfocus() end)
     self.lookup = nil
     self.audit = nil
     self.system = nil
@@ -5626,6 +5643,9 @@ function Admin:dispose()
     self.pendingListings = nil
     self.auctions = nil
     self.pendingAuctions = nil
+    self.aucHistory = nil
+    self.pendingAucHistory = nil
+    self.aucHistId = nil
     self.whitelist = nil
     self.pendingWhitelist = nil
     self.wlUniverse = nil
@@ -5652,6 +5672,7 @@ function P.create(owner)
     o.wlFilter = "all"
     o.lstPage = 1
     o.aucPage = 1
+    o.aucMode = "active"
     o.lstMode = "listings"
     o.auditQuery = nil
     o.cfgSelected = EC.CURRENCY_ORDER[1]
@@ -5671,8 +5692,11 @@ end
 for _, command in ipairs(COMMANDS) do
     local kind = string.sub(command, 7)
     C.handlers[command] = function(args)
-        pendingAt[command] = nil
         local inst = P.instance
+        -- A stale page reply must not release the shared slot owned by a newer read.
+        if inst and type(args) == "table" and (kind == "transactions" or kind == "transaction")
+            and not inst.txPage:matchesReply(kind, args) then return end
+        pendingAt[command] = nil
         if inst then inst:onReply(kind, args or {}) end
     end
 end

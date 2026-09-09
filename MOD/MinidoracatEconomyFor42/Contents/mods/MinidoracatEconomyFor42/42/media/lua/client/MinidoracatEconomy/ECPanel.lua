@@ -28,9 +28,13 @@ require "ISUI/ISTextEntryBox"
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
 end
+require "MinidoracatEconomy/ECKeyboard"
+require "MinidoracatEconomy/ECDatePicker"
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
+local DatePicker = C.DatePicker
+local Keys = C.Keyboard
 require "MinidoracatEconomy/ECAdminPanel"
 require "MinidoracatEconomy/ECIconCache"
 
@@ -49,7 +53,8 @@ local CARD_TITLE_H = U.CARD_TITLE_H
 local LEFT_W = 300
 local fontH = U.fontH
 local color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin
-local clockText, stampText, durationText, amountText, signedText, hasBit, kindText, card = U.clockText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card
+local stampText, durationText, amountText, signedText, hasBit, kindText, card = U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card
+local accountName = U.accountName
 local localOffsetMinutes = U.localOffsetMinutes
 local Button, Cell = U.Button, U.StatementCell
 
@@ -96,6 +101,12 @@ end
 local function setEntryText(e, str)
     if not e then return end
     pcall(function() e:setText(str or "") end)
+end
+
+-- One box, two pages (the auction search and the record search): the hint follows the mode.
+local function setPlaceholder(e, str)
+    if not e or not e.setPlaceholderText then return end
+    pcall(function() e:setPlaceholderText(str) end)
 end
 
 -- Item display: the engine name (getItemNameFromFullType, LuaManager.java:8579-8583) and the item
@@ -345,8 +356,8 @@ local function shopRow(it, currency, buybackOpen)
         qtyText = getText(T .. "Shop_QtyPer", tostring(qty)),
         priceText = amountText(it.price), remainText = remainText, remainToken = remainToken,
         buyLabel = getText(T .. "Shop_Buy"),
-        -- buyback (stage G): the chip shows the bid price; it is painted only while the faucet is open
-        bidPrice = tonumber(it.bidPrice) or 0, buyback = it.buyback == true and buybackOpen == true,
+        -- Keep the configured price visible while the server-wide switch pauses buyback.
+        bidPrice = tonumber(it.bidPrice) or 0, buyback = it.buyback == true, buybackOpen = buybackOpen == true,
         buybackCap = tonumber(it.buybackCap) or 0, buybackRemaining = tonumber(it.buybackRemaining),
         sellLabel = getText(T .. "Shop_Sell", amountText(it.bidPrice or 0)),
     }
@@ -385,7 +396,7 @@ function ShopCell:render()
     border(self, cols.buyX, math.floor((h - CHIP_H) / 2), cols.buyW, CHIP_H, off and "border" or "accent", "pill")
     textCentre(self, e.buyLabel, cols.buyX + cols.buyW / 2, ty, off and "textFaint" or "text")
     if e.buyback then
-        local soff = self.list.buyDisabled == true or e.buybackRemaining == 0
+        local soff = not e.buybackOpen or self.list.buyDisabled == true or e.buybackRemaining == 0
         border(self, cols.sellX, math.floor((h - CHIP_H) / 2), cols.sellW, CHIP_H, soff and "border" or "accent", "pill")
         textCentre(self, fitText(e.sellLabel, cols.sellW - 6), cols.sellX + cols.sellW / 2, ty, soff and "textFaint" or "text")
     end
@@ -458,6 +469,13 @@ function ListingCell:render()
     end
     if cols.bidsR then textRight(self, e.bidsText, cols.bidsR, ty, e.bidsToken or "textFaint") end
     textRight(self, e.expiresText, cols.expiresR, ty, e.expiresToken or "textFaint")
+    -- the auction tables carry a second chip left of the action one: it opens this auction's
+    -- record. It is a read, so the terminal gate (list.actionDisabled) never touches it, and it
+    -- is hit-tested against these very numbers (Panel:onAuctionRow reads the same cols).
+    if cols.histX then
+        border(self, cols.histX, math.floor((h - CHIP_H) / 2), cols.histW, CHIP_H, "border", "pill")
+        textCentre(self, cols.histLabel, cols.histX + cols.histW / 2, ty, "textMuted")
+    end
     if e.actionMuted then
         textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, e.actionToken or "textFaint")
         return
@@ -550,6 +568,50 @@ local function historyRow(rec, offsetMin)
     }
 end
 
+-- ---------- auction history ----------
+-- The auction ring (auction.history) is painted by the very same HistoryCell: the kinds the
+-- server can write are a fixed set, so the kind column is measured from them.
+local AUCTION_HISTORY_KINDS = { "auction_created", "auction_bid", "auction_sold", "auction_unsold",
+    "auction_cancelled", "auction_restored" }
+
+-- The accounts an entry names, in the order they matter: who sold it, who bid, who won, and
+-- (on a bid) who was overtaken. Each has a label key of its own.
+local ACCOUNT_KEYS = { { "Seller", "seller" }, { "Bidder", "bidder" }, { "Buyer", "buyer" },
+    { "Previous", "previous" } }
+
+-- One auction-history line. The amount is the auction's own price - the opening bid, one bid,
+-- or what the item went for - and never a wallet delta: two bids in a row are two amounts, not
+-- a charge taken twice, so nothing here is ever painted with a minus sign. An old auction.bid
+-- event carries neither qty nor item; an unknown field is left out instead of invented.
+local function auctionHistoryRow(rec, offsetMin)
+    local kind = tostring(rec.kind or "")
+    local price = tonumber(rec.price)
+    local qty = tonumber(rec.qty)
+    local lot = qty and lotText(math.max(1, math.floor(qty))) or nil
+    local name = (type(rec.item) == "string" and rec.item ~= "") and itemName(rec.item) or "-"
+    local id = tostring(rec.auctionId or rec.listingId or "-")
+    -- the id sits right behind the time: the detail line is fitted to the card, and the id is
+    -- the one thing on it the player may have to read out loud
+    local parts = { stampText(tonumber(rec.ts) or 0, offsetMin), getText(T .. "Auction_History_Id", id) }
+    for _, spec in ipairs(ACCOUNT_KEYS) do
+        local who = rec[spec[2]]
+        if type(who) == "string" and who ~= "" then
+            parts[#parts + 1] = getText(T .. "Auction_History_" .. spec[1], who)
+        end
+    end
+    return {
+        kind = kind,
+        ts = tonumber(rec.ts) or 0,           -- the filter bar pages/sorts on the raw numbers
+        amount = price or 0,
+        kindText = getTextOrNull(T .. "Market_Kind_" .. kind) or kind,
+        kindToken = HISTORY_TOKENS[kind] or "text",
+        nameText = lot and (name .. " " .. lot) or name,
+        amountText = price and amountText(price) or "-",
+        detailText = table.concat(parts, "  "),
+        rolledBack = rec.rolledBack == true,
+    }
+end
+
 local HistoryCell = ISPanel:derive("MinidoracatEconomyMarketHistoryCell")
 
 function HistoryCell:render()
@@ -579,7 +641,6 @@ end
 -- filter is local — the reply is at most a few hundred rows, so nothing here talks to the
 -- server. The owner supplies the kind labeller and the field the amount sort reads.
 local PER_PAGE = 25
-local DATE_W = 100
 local ARROW_W, ARROW_H = 7, 4
 
 -- Sort direction marker next to the active column/chip: a 7x4 stair of drawRect lines, so it
@@ -603,12 +664,14 @@ function FilterBar.new(panel, label, amountField, onChange)
         onChange = onChange, kinds = {}, kindCount = 0, kindButtons = {}, labels = {},
         sortKey = "time", desc = true, page = 1, pages = 1, total = 0 }, FilterBar)
     local entryH = math.max(26, fontH.small + 12)
+    bar.dateW = math.max(textWidth("0000-00-00"), textWidth(getText(T .. "Filter_DateHint"))) + 24
     for _, which in ipairs({ "from", "to" }) do
-        local e = newEntry(DATE_W, entryH, getText(T .. "Filter_DateHint"))
+        local e = newEntry(bar.dateW, entryH, getText(T .. "Filter_DateHint"))
         e.target = bar
         e.onTextChangeFunction = FilterBar.onDate
         panel:addChild(e)
         bar[which .. "Entry"] = e
+        DatePicker.attach(e, panel)
     end
     bar.sortButtons = {}
     for _, key in ipairs({ "time", "amount" }) do
@@ -735,11 +798,12 @@ end
 function FilterBar:layout(x, y, right, visible)
     local labels = {}
     local cx, cy = x, y
-    local ty = math.floor((CHIP_H - fontH.small) / 2)
+    local band = math.max(CHIP_H, self.fromEntry.height)
+    local ty = math.floor((band - fontH.small) / 2)
     local function place(w)
         if cx > x and cx + w > right then
             cx = x
-            cy = cy + CHIP_H + 6
+            cy = cy + band + 6
         end
         local at = cx
         cx = cx + w + 6
@@ -750,24 +814,33 @@ function FilterBar:layout(x, y, right, visible)
         local x = place(textWidth(str))     -- place() may open a new row: read cy after it
         labels[#labels + 1] = { text = str, x = x, y = cy + ty }
     end
+    local function dateAt(entry, key)
+        local label = getText(T .. key)
+        local labelW = textWidth(label)
+        local button = entry.calendarButton
+        local at = place(labelW + 4 + self.dateW + 4 + band)
+        labels[#labels + 1] = { text = label, x = at, y = cy + ty }
+        entry:setVisible(visible)
+        entry:setWidth(self.dateW)
+        entry:setX(at + labelW + 4); entry:setY(cy + math.floor((band - entry.height) / 2))
+        button:setVisible(visible)
+        button:setWidth(band); button:setHeight(band)
+        button:setX(entry.x + self.dateW + 4); button:setY(cy)
+    end
     labelAt("Filter_Kind")
     for _, b in ipairs(self.kindButtons) do
         b:setVisible(visible)
-        b:setX(place(b.width)); b:setY(cy)
+        b:setX(place(b.width)); b:setY(cy + math.floor((band - b.height) / 2))
     end
-    labelAt("Filter_From")
-    self.fromEntry:setVisible(visible)
-    self.fromEntry:setX(place(DATE_W)); self.fromEntry:setY(cy + math.floor((CHIP_H - self.fromEntry.height) / 2))
-    labelAt("Filter_To")
-    self.toEntry:setVisible(visible)
-    self.toEntry:setX(place(DATE_W)); self.toEntry:setY(cy + math.floor((CHIP_H - self.toEntry.height) / 2))
+    dateAt(self.fromEntry, "Filter_From")
+    dateAt(self.toEntry, "Filter_To")
     labelAt("Filter_Sort")
     for _, b in ipairs(self.sortButtons) do
         b:setVisible(visible)
-        b:setX(place(b.width)); b:setY(cy)
+        b:setX(place(b.width)); b:setY(cy + math.floor((band - b.height) / 2))
     end
     self.labels = labels
-    return cy + CHIP_H
+    return cy + band
 end
 
 -- Pager strip under the list: the page counter on the left, the two chips, the row count right.
@@ -1818,19 +1891,22 @@ function Panel:createChildren()
     -- auction page: the same mode bar, one full-width card, and the browse/mine tables built
     -- from the very same ListingCell (their columns drop the seller and add the bid count)
     self.auctionModeButtons = {}
-    for _, mode in ipairs({ "browse", "mine" }) do
-        local title = getText(T .. (mode == "browse" and "Auction_Browse" or "Auction_Mine"), "0", "0")
+    for _, spec in ipairs({ { "browse", "Auction_Browse" }, { "mine", "Auction_Mine" },
+        { "history", "Auction_History" } }) do
+        local title = getText(T .. spec[2], "0", "0")
         local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, Panel.onAuctionMode, "chip")
-        b.internal = mode
-        b.active = mode == self.auctionMode
+        b.internal = spec[1]
+        b.active = spec[1] == self.auctionMode
         self:addChild(b)
         self.auctionModeButtons[#self.auctionModeButtons + 1] = b
-        if mode == "mine" then self.auctionMineButton = b end
+        if spec[1] == "mine" then self.auctionMineButton = b end
     end
     self.auctionEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Market_Search"))
     self.auctionEntry.target = self
     self.auctionEntry.onTextChangeFunction = Panel.onAuctionSearch
     self:addChild(self.auctionEntry)
+    -- the three auction tables carry two chips per row (the action and the record one), so the
+    -- x of the press is remembered the way the shop rows do it
     self.auctionList = U.newTable(ListingCell, itemRowHeight())
     self.auctionList.onSelect = function(_, item) self:onAuctionRow(item, "browse") end
     self:addChild(self.auctionList)
@@ -1840,6 +1916,13 @@ function Panel:createChildren()
     self.auctionBidList = U.newTable(ListingCell, itemRowHeight())
     self.auctionBidList.onSelect = function(_, item) self:onAuctionRow(item, "bidding") end
     self:addChild(self.auctionBidList)
+    for _, list in ipairs({ self.auctionList, self.auctionSellList, self.auctionBidList }) do
+        local down = list.onMouseDown
+        list.onMouseDown = function(l, x, y)
+            self.auctionClickX = x
+            return down(l, x, y)
+        end
+    end
     -- the three tables are always the same width, so they read one column set (Panel:layout
     -- fills the browse table's own; the identity is what keeps them in step)
     self.auctionSellList.cols = self.auctionList.cols
@@ -1848,6 +1931,13 @@ function Panel:createChildren()
         function(panel) return panel.auctionMode == "browse" and not panel.auctionBusy end,
         Panel.onAuctionHeader)
     self:addChild(self.auctionHeader)
+    -- the record page: the same two-line cell and the same client-side filter bar the market
+    -- ring uses, over the snapshot the server filtered for this player (or for one auction)
+    self.auctionHistoryList = U.newTable(HistoryCell, historyRowHeight())
+    self:addChild(self.auctionHistoryList)
+    self.auctionHistoryBar = FilterBar.new(self,
+        function(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end,
+        "amount", Panel.rebuildAuctionHistory)
     for _, spec in ipairs({ { "Refresh", "Market_Refresh", Panel.onAuctionRefresh },
         { "Create", "Auction_Create", Panel.onAuctionCreate },
         { "Prev", "Market_Prev", Panel.onAuctionPage }, { "Next", "Market_Next", Panel.onAuctionPage } }) do
@@ -1917,17 +2007,63 @@ function Panel:showPrefs(show)
     local pop = self.prefsPopover
     if not pop then return end
     pop:setVisible(show == true and not self.isCollapsed)
-    if pop:getIsVisible() then pop:bringToTop() end
+    if pop:getIsVisible() then
+        pop:bringToTop()
+        Keys.clear(self)    -- the popover owns the window: no ring is left behind it
+    end
 end
 
 -- The text boxes that only exist on one page: a hidden one must not keep the keyboard.
 function Panel:unfocusEntries()
     for _, e in ipairs({ self.shopEntry, self.marketEntry, self.auctionEntry,
         self.walletBar.fromEntry, self.walletBar.toEntry,
-        self.historyBar.fromEntry, self.historyBar.toEntry }) do
+        self.historyBar.fromEntry, self.historyBar.toEntry,
+        self.auctionHistoryBar.fromEntry, self.auctionHistoryBar.toEntry }) do
         pcall(function() e:unfocus() end)
     end
 end
+
+-- ----- keyboard -----
+-- The ordered targets ECKeyboard walks (Tab / Shift+Tab). This window owns the two strips of tabs;
+-- the money pages then hand over their own descriptors, so a page that has no keyboard flow of its
+-- own offers exactly what it really has -- its tab -- and never claims more.
+--
+-- nil means "no keyboard right now": while one of this window's own modal dialogs (buy / list /
+-- bid) or the preferences popover is open, its own mouse flow owns the window and a background
+-- hotkey pressing a chip behind it would be a trap.
+function Panel:keyboardTargets()
+    if not self.shown or self.isCollapsed then return nil end
+    if self.buyDialog or self.marketDialog then return nil end
+    if self.prefsPopover and self.prefsPopover:getIsVisible() then return nil end
+    local tabs = {}
+    for _, b in ipairs(self.tabButtons) do
+        if b:getIsVisible() then tabs[#tabs + 1] = b end
+    end
+    local out = { { kind = "group", controls = tabs, label = getText(T .. "Kb_Group_Tabs") } }
+    local admin = self.adminPanel
+    if self.tab ~= "Admin" or not self.adminAccess or admin == nil then return out end
+    if admin.dialog then return nil end     -- the admin page's own modal owns the window as well
+    local subs = {}
+    for _, b in ipairs(admin.subTabButtons or {}) do
+        if b:getIsVisible() then subs[#subs + 1] = b end
+    end
+    if #subs > 0 then
+        out[#out + 1] = { kind = "group", controls = subs, label = getText(T .. "Kb_Group_AdminTabs") }
+    end
+    if admin.keyboardTargets == nil then return out end
+    local ok, list = pcall(admin.keyboardTargets, admin)
+    if ok and type(list) == "table" then
+        for _, desc in ipairs(list) do out[#out + 1] = desc end
+    end
+    return out
+end
+
+-- UIManager offers key events to top-level UI only, and asks isKeyConsumed *after* the handler ran
+-- (UIElement.java:2185-2214): all four hooks go to the one engine, which keeps the ledger.
+function Panel:onKeyPress(key) Keys.onKeyPress(self, key) end
+function Panel:onKeyRepeat(key) Keys.onKeyRepeat(self, key) end
+function Panel:onKeyRelease(key) Keys.onKeyRelease(self, key) end
+function Panel:isKeyConsumed(key) return Keys.isKeyConsumed(self, key) end
 
 -- ----- actions -----
 
@@ -1936,14 +2072,19 @@ function Panel:onTab(button) self:setTab(button.internal) end
 function Panel:setTab(tab)
     if tab == "Admin" and not C.AdminPanel.canRead() then tab = "Wallet" end
     if tab ~= self.tab then
+        DatePicker.close()
         self:closeBuy()
         self:closeMarketDialog()
         self:unfocusEntries()
+        self:cancelAuctionHistory()
         self:showPrefs(false)
     end
     self.tab = tab
     for _, b in ipairs(self.tabButtons) do b.active = b.internal == tab end
     self:layout()
+    -- the page under the ring changed: the tab strips survive it, everything the old page offered
+    -- does not, so the focus is revalidated instead of pointing at a hidden control
+    Keys.invalidate(self)
     if self.shown then self:refresh() end
 end
 
@@ -2029,16 +2170,22 @@ end
 local function normalize(e, offsetMin)
     local amount = tonumber(e.amount or e.delta) or 0
     local cp = e.counterparty
+    local cpClass = type(cp) == "string" and EC.accountClass(cp) or nil
     local desc = "-"
-    if cp and not (string.find(tostring(cp), "^SYSTEM_") or string.find(tostring(cp), "^EXTERNAL_") or string.find(tostring(cp), "^MOD:")) then
-        desc = tostring(cp)
+    if cpClass == "player" then
+        desc = cp
+    elseif cpClass == "discord" then
+        desc = accountName(cp)
     elseif e.sourceMod then
-        -- integration postings (spec 21.3): the mod id plus its own wording when it gave one
-        desc = tostring(e.sourceMod)
+        -- integration postings (spec 21.3): the mod's own account plus its own wording when it gave one
+        desc = accountName("MOD:" .. tostring(e.sourceMod))
         if type(e.reasonText) == "string" and e.reasonText ~= "" then desc = desc .. " - " .. e.reasonText end
     elseif type(e.item) == "string" then
         -- shop purchases carry the item and count (ring and receipt files alike)
         desc = itemName(e.item) .. " x" .. tostring(math.floor(tonumber(e.qty) or 1))
+    elseif cpClass ~= nil then
+        -- the faucet, the burn drain, a Discord deposit: name what moved the money, not a dash
+        desc = accountName(cp)
     end
     local kind = e.kind or e.type
     return {
@@ -2181,7 +2328,9 @@ function Panel:rebuildShop()
     local shop = C.shop
     local query = self.shopQuery
     local rows = {}
+    self.shopHasBuyback = false
     for _, it in ipairs(shop and shop.items or {}) do
+        if it.enabled ~= false and it.buyback == true then self.shopHasBuyback = true end
         if it.enabled ~= false and (self.shopCat == nil or it.category == self.shopCat) then
             local row = shopRow(it, shop.currency, shop.buyback and shop.buyback.enabled == true)
             if query == nil or string.find(string.lower(row.name), query, 1, true)
@@ -2245,7 +2394,7 @@ function Panel:onShopRow(row)
     local cols = self.shopList.cols
     local x = self.shopClickX
     if row.buyback and x and x >= cols.sellX and x < cols.sellX + cols.sellW then
-        if row.buybackRemaining ~= 0 then self:openBuy(row, true) end
+        if row.buybackOpen and row.buybackRemaining ~= 0 then self:openBuy(row, true) end
         return
     end
     if not row.soldOut then self:openBuy(row) end
@@ -2344,7 +2493,7 @@ function Panel:onShop(kind, args)
             for _, it in ipairs(args.items or {}) do
                 if it.id == dlg.row.id and it.enabled ~= false then fresh = shopRow(it, args.currency, args.buyback and args.buyback.enabled == true) end
             end
-            if fresh and (not dlg.sell or fresh.buyback) then
+            if fresh and (not dlg.sell or (fresh.buyback and fresh.buybackOpen)) then
                 dlg.row = fresh
                 self:layoutBuy()
             else
@@ -2919,9 +3068,97 @@ function Panel:requestAuctionBrowse(page)
     self:sendAuctionBrowse()
 end
 
+-- ----- auction history -----
+-- Debounce typing and keep one file read in flight. A newer query waits for that read to finish
+-- instead of receiving busy and discarding the only successful answer. Only the latest queued
+-- query is sent next; explicit server errors remain visible rather than retried in a loop.
+local HISTORY_DEBOUNCE_MS = 650
+
+function Panel:sendAuctionHistory()
+    self.auctionHistoryWanted = nil
+    self.auctionHistoryQueryAt = nil
+    self.auctionHistoryError = nil
+    self.auctionHistorySentAt = EC.now()
+    -- a pinned auction is an exact lookup: the box only holds its id so the player can see it
+    local pinned = self.auctionHistoryId
+    local id = C.requestAuctionHistory({ auctionId = pinned,
+        query = (pinned == nil) and self.auctionHistoryQuery or nil })
+    self.auctionHistorySentId = id
+    self.auctionHistoryPending = { at = self.auctionHistorySentAt }
+end
+
+function Panel:requestAuctionHistory()
+    self.auctionHistoryQueryAt = nil
+    if self.auctionHistoryPending and EC.now() - self.auctionHistoryPending.at > TIMEOUT_MS then
+        self.auctionHistoryPending = nil
+    end
+    if self.auctionHistoryPending
+        or (self.auctionHistorySentAt and EC.now() - self.auctionHistorySentAt < HISTORY_DEBOUNCE_MS) then
+        self.auctionHistoryWanted = true
+        return
+    end
+    self:sendAuctionHistory()
+end
+
+-- Drop queued work when leaving, but remember the real in-flight reader until its reply or
+-- timeout. Reopening must not submit a second job while that reader still owns the command.
+function Panel:cancelAuctionHistory()
+    self.auctionHistoryQueryAt = nil
+    self.auctionHistoryWanted = nil
+end
+
+-- The reply is oldest first (the server appends); the filter bar sorts, filters and pages it
+-- newest first, exactly the way the market ring is paged, and the whole snapshot stays in
+-- auctionHistoryAll so a chip or a date keystroke costs no round trip.
+function Panel:rebuildAuctionHistory()
+    local snap = C.auctionHistory
+    local src = (snap and snap.entries) or {}
+    local rows = {}
+    for i = #src, 1, -1 do
+        rows[#rows + 1] = auctionHistoryRow(src[i], self.offsetMin)
+    end
+    self.auctionHistoryAll = rows
+    local bar = self.auctionHistoryBar
+    if bar:syncKinds(rows) and self.g then self:layout() end
+    local page, pages, total
+    rows, page, pages, total = EC.filterPage(rows, bar:opts("ts"))
+    bar:setPage(page, pages, total)
+    self.auctionHistoryRows = rows
+    self.auctionHistoryList:setItems(rows)
+end
+
+-- Both the mode chips and a row's record chip land here: the mode, its chips, the open dialog
+-- and the tables - never the search box, because the caller owns what the box asks next.
+function Panel:switchAuctionMode(mode)
+    self.auctionMode = mode
+    for _, b in ipairs(self.auctionModeButtons) do b.active = b.internal == mode end
+    self:closeMarketDialog()
+    self:rebuildAuctions()
+    if mode == "history" then self:rebuildAuctionHistory() end
+    self:layout()
+end
+
+-- The record chip of one row: the page switches to the record mode and asks for that auction's
+-- own timeline (a read: no terminal, no dialog and no cancel needed to look at it). The box
+-- shows the pinned id, so the player sees what is pinned and drops it by typing over it.
+function Panel:openAuctionHistory(auctionId)
+    if auctionId == nil then return end
+    self.auctionMode = "history"         -- set first: the box change below routes on the mode
+    self.auctionQuery, self.auctionQueryAt = nil, nil
+    self.auctionHistoryId = tostring(auctionId)
+    self.auctionHistoryQuery = nil
+    setPlaceholder(self.auctionEntry, getText(T .. "Auction_History_Search"))
+    setEntryText(self.auctionEntry, self.auctionHistoryId)
+    self.auctionHistoryQueryAt = nil     -- the box change must not queue a second, unpinned read
+    self:switchAuctionMode("history")
+    self:requestAuctionHistory()
+end
+
 function Panel:requestAuctionMode()
     if self.auctionMode == "mine" then
         C.requestMyAuctions()
+    elseif self.auctionMode == "history" then
+        self:requestAuctionHistory()
     else
         self:requestAuctionBrowse(self.auctionPage)
     end
@@ -2961,13 +3198,18 @@ function Panel:rebuildAuctions()
     self.auctionBidList:setItems(bidding)
 end
 
+-- The search box is shared by the browse and the record pages, so a mode change starts it empty
+-- (and drops whatever the other page had queued): one box may only ever ask one question.
 function Panel:onAuctionMode(button)
     if self.auctionMode == button.internal then return end
-    self.auctionMode = button.internal
-    for _, b in ipairs(self.auctionModeButtons) do b.active = b.internal == self.auctionMode end
-    self:closeMarketDialog()
-    self:rebuildAuctions()
-    self:layout()
+    self.auctionMode = button.internal   -- set first: the box change below routes on the mode
+    self.auctionQuery, self.auctionHistoryQuery, self.auctionHistoryId = nil, nil, nil
+    setPlaceholder(self.auctionEntry, getText(T .. (self.auctionMode == "history"
+        and "Auction_History_Search" or "Market_Search")))
+    setEntryText(self.auctionEntry, "")
+    self.auctionQueryAt, self.auctionHistoryQueryAt = nil, nil
+    self.auctionHistoryWanted = nil
+    self:switchAuctionMode(button.internal)
     self:requestAuctionMode()
 end
 
@@ -2987,7 +3229,18 @@ function Panel:onAuctionHeader(x)
 end
 
 function Panel:onAuctionSearch()
-    local query = string.lower(string.match(entryText(self.auctionEntry), "^%s*(.-)%s*$"))
+    local raw = string.match(entryText(self.auctionEntry), "^%s*(.-)%s*$")
+    if self.auctionMode == "history" then
+        -- the pinned auction stays pinned only while the box still holds its id: the first
+        -- keystroke that changes the text turns the lookup back into a free search
+        if self.auctionHistoryId ~= nil and raw ~= self.auctionHistoryId then
+            self.auctionHistoryId = nil
+        end
+        self.auctionHistoryQuery = raw ~= "" and raw or nil     -- the server matches it, not us
+        self.auctionHistoryQueryAt = EC.now() + HISTORY_DEBOUNCE_MS
+        return
+    end
+    local query = string.lower(raw)
     self.auctionQuery = query ~= "" and query or nil
     self.auctionQueryAt = EC.now() + 600
     self:rebuildAuctions()
@@ -3004,10 +3257,18 @@ function Panel:onAuctionPage(button)
     self:requestAuctionBrowse(page)
 end
 
--- A row was clicked. Browsing and the "bidding on" list open the bid step; an own auction may
--- be pulled back only while nobody has bid on it (the server refuses `has_bids` anyway).
+-- A row was clicked. The record chip is a read, so it answers before any of the trade gates;
+-- browsing and the "bidding on" list then open the bid step, and an own auction may be pulled
+-- back only while nobody has bid on it (the server refuses `has_bids` anyway).
 function Panel:onAuctionRow(row, context)
-    if not row or self.marketDialog or self.marketPending or not self:tradeAllowed() then return end
+    if not row then return end
+    local cols = self.auctionList.cols
+    local x = self.auctionClickX
+    if cols.histX and x ~= nil and x >= cols.histX and x < cols.histX + cols.histW then
+        self:openAuctionHistory(row.id)
+        return
+    end
+    if self.marketDialog or self.marketPending or not self:tradeAllowed() then return end
     if context == "selling" then
         if row.bids == 0 then self:openMarketDialog("acancel", row) end
         return
@@ -3095,6 +3356,32 @@ function Panel:onAuction(kind, args)
         self:updateAuctionInfo()
         self:rebuildAuctions()
         self:layout()   -- the mine counter's own width may have moved
+        return
+    end
+    -- the record page: a read, never a write, so it answers on its own requestId. An answer to
+    -- a question the player has already typed past is dropped (the newer one is still coming),
+    -- a refusal keeps the snapshot on screen instead of pretending the record is empty, and a
+    -- reply that arrives after its own timeout still repairs the page.
+    if kind == "history" then
+        if args.requestId ~= nil and self.auctionHistorySentId ~= nil
+            and args.requestId ~= self.auctionHistorySentId then
+            return
+        end
+        self.auctionHistoryPending = nil
+        if self.auctionHistoryWanted and self.tab == "Auction" and self.auctionMode == "history" then return end
+        if args.error then
+            -- a read has its own refusals: the file that could not be read, and the two "come
+            -- back in a moment" codes the admin pages already word (busy / server_busy)
+            self.auctionHistoryError = (args.error == "read_failed"
+                and getText(T .. "Auction_History_ReadFailed"))
+                or getTextOrNull(T .. "Admin_Error_" .. tostring(args.error))
+                or marketError(args)
+        else
+            self.auctionHistoryError = nil
+            self.auctionHistoryTruncated = args.truncated == true
+            self:rebuildAuctionHistory()
+        end
+        self:layout()   -- the kind chips of the bar (and with them the table) may have moved
         return
     end
     -- a write answer: only the one this page is waiting for
@@ -3244,7 +3531,7 @@ function Panel:layout()
     local inner = listW - 12 -- keep clear of the scrollbar
     local function colW(header, sample) return math.max(textWidth(getText(T .. header)), textWidth(sample)) + PAD * 2 end
     cols.time = PAD
-    cols.kind = cols.time + colW("Wallet_Col_Time", "00-00 00:00")
+    cols.kind = cols.time + colW("Wallet_Col_Time", U.STAMP_SAMPLE)
     cols.desc = cols.kind + colW("Wallet_Col_Kind", kindText("admin_adjust"))
     cols.status = inner - colW("Wallet_Col_Status", getText(T .. "Wallet_RolledBack")) + PAD
     cols.balanceR = cols.status - PAD
@@ -3321,7 +3608,7 @@ function Panel:layout()
     mailCols.claimW = textWidth(getText(T .. "Mail_Claim")) + 22
     mailCols.claimX = math.max(mailCols.name, mailInner - mailCols.claimW - PAD)
     mailCols.timeR = mailCols.claimX - PAD
-    mailCols.nameW = math.max(0, mailCols.timeR - textWidth("00-00 00:00") - PAD - mailCols.name)
+    mailCols.nameW = math.max(0, mailCols.timeR - textWidth(U.STAMP_SAMPLE) - PAD - mailCols.name)
     if self.mailList.width ~= mailListW or self.mailList.height ~= mailListH then
         self.mailList:resize(mailListW, mailListH)
     end
@@ -3394,13 +3681,16 @@ function Panel:layout()
     mktCols.actionX = math.max(mktCols.name, mktInner - mktCols.actionW - PAD)
     mktCols.expiresR = mktCols.actionX - PAD
     mktCols.priceR = math.max(mktCols.name + PAD, mktCols.expiresR
-        - math.max(textWidth(getText(T .. "Market_Col_Expires")), textWidth("00-00 00:00")) - PAD)
-    -- an 8-character sample: the lot column below takes its share out of this one, and a
-    -- longer account name is fitted by the cell anyway
-    mktCols.sellerW = math.max(textWidth(getText(T .. "Market_Col_Seller")), textWidth("mmmmmmmm"))
-    mktCols.sellerX = math.max(mktCols.name, mktCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - mktCols.sellerW)
-    -- the lot column is the narrow one between the name and the seller (a count, never a name)
+        - math.max(textWidth(getText(T .. "Market_Col_Expires")), textWidth(U.STAMP_SAMPLE)) - PAD)
+    -- The lot column is the narrow one between the name and the seller (a count, never a name).
     local qtyW = math.max(textWidth(getText(T .. "Market_Col_Qty")), textWidth("999"))
+    -- Reserve eight characters for the item name before allocating the seller column. The
+    -- seller still needs its header width, so very tight layouts may borrow from that reserve.
+    local sellerRoom = mktCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD
+        - (mktCols.name + qtyW + PAD + textWidth("mmmmmmmm"))
+    mktCols.sellerW = math.max(textWidth(getText(T .. "Market_Col_Seller")),
+        math.min(textWidth("mmmmmmmm"), sellerRoom))
+    mktCols.sellerX = math.max(mktCols.name, mktCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - mktCols.sellerW)
     mktCols.qtyR = math.max(mktCols.name + qtyW, mktCols.sellerX - PAD)
     mktCols.nameW = math.max(0, mktCols.qtyR - qtyW - PAD - mktCols.name)
     if self.marketList.width ~= mktListW or self.marketList.height ~= mktListH then
@@ -3462,10 +3752,13 @@ function Panel:layout()
     end
     -- auction: the same mode bar over one card that always spans the window. Browsing is a
     -- sortable table with the server's pager under it; "my auctions" splits the card into the
-    -- two lists (what the player sells, what they bid on). All three tables read one column
-    -- set (they are the same width), so the numbers below are computed once.
+    -- two lists (what the player sells, what they bid on), and the record page swaps the whole
+    -- table for the two-line history list with its own filter bar. All three item tables read
+    -- one column set (they are the same width), so the numbers below are computed once.
     local isAuction = self.tab == "Auction"
     local aucMine = self.auctionMode == "mine"
+    local aucHistory = self.auctionMode == "history"
+    local aucTable = isAuction and not aucMine and not aucHistory
     local aucBarH = math.max(CHIP_H, self.auctionEntry.height)
     g.auctionBarY = g.contentY
     g.auctionCardY = g.contentY + aucBarH + PAD
@@ -3497,7 +3790,12 @@ function Panel:layout()
         textWidth(getText(T .. "Auction_Leading")), textWidth(getText(T .. "Auction_Outbid")),
         textWidth(getText(T .. "Auction_Ended")), textWidth(getText(T .. "Auction_CancelTitle"))) + 22
     aCols.actionX = math.max(aCols.name, aucListW - 12 - aCols.actionW - PAD)
-    aCols.expiresR = aCols.actionX - PAD
+    -- the record chip lives left of the action one on every auction row (browse and mine alike):
+    -- one column set, so the paint and Panel:onAuctionRow can never disagree about where it is
+    aCols.histLabel = getText(T .. "Auction_History")
+    aCols.histW = textWidth(aCols.histLabel) + 22
+    aCols.histX = math.max(aCols.name, aCols.actionX - 6 - aCols.histW)
+    aCols.expiresR = aCols.histX - PAD
     aCols.bidsR = math.max(aCols.name + PAD, aCols.expiresR - PAD
         - math.max(textWidth(getText(T .. "Auction_Col_Ends")),
             textWidth(getText(T .. "Auction_Ends_In", getText(T .. "Time_HM", "99", "59")))))
@@ -3518,10 +3816,10 @@ function Panel:layout()
     g.auctionHeaderY = g.auctionCardY + CARD_TITLE_H + ROW
     g.auctionListY = g.auctionHeaderY + ROW
     g.auctionFooterY = g.auctionCardY + g.auctionCardH - ROW
-    self.auctionHeader:setVisible(isAuction and not aucMine)
+    self.auctionHeader:setVisible(aucTable)
     self.auctionHeader:setX(g.auctionCardX + 1); self.auctionHeader:setY(g.auctionHeaderY)
     self.auctionHeader:setWidth(aucListW); self.auctionHeader:setHeight(ROW)
-    self.auctionList:setVisible(isAuction and not aucMine)
+    self.auctionList:setVisible(aucTable)
     self.auctionList:setX(g.auctionCardX + 1); self.auctionList:setY(g.auctionListY)
     if self.auctionList.width ~= aucListW or self.auctionList.height ~= math.max(ROW * 2, g.auctionFooterY - g.auctionListY - 2) then
         self.auctionList:resize(aucListW, math.max(ROW * 2, g.auctionFooterY - g.auctionListY - 2))
@@ -3539,9 +3837,32 @@ function Panel:layout()
         spec[1]:setX(g.auctionCardX + 1); spec[1]:setY(spec[2])
         if spec[1].width ~= aucListW or spec[1].height ~= spec[3] then spec[1]:resize(aucListW, spec[3]) end
     end
+    -- the record page: the note line, the filter bar, the two-line list and the bar's own pager
+    -- (the snapshot is paged on the client, exactly like the market ring)
+    local ahist = self.auctionHistoryList
+    ahist:setVisible(isAuction and aucHistory)
+    local ahY = self.auctionHistoryBar:layout(g.auctionCardX + PAD, g.auctionHeaderY,
+        g.auctionCardX + g.auctionCardW - PAD, isAuction and aucHistory) + 6
+    local ahH = math.max(ROW * 2, g.auctionCardY + g.auctionCardH - ahY - PAD - ROW)
+    ahist:setX(g.auctionCardX + 1); ahist:setY(ahY)
+    local ahCols = ahist.cols
+    local ahInner = aucListW - 12
+    local aKindW = 0
+    for _, k in ipairs(AUCTION_HISTORY_KINDS) do
+        aKindW = math.max(aKindW, textWidth(getTextOrNull(T .. "Market_Kind_" .. k) or k))
+    end
+    ahCols.kind = PAD
+    ahCols.name = ahCols.kind + aKindW + PAD
+    ahCols.status = math.max(ahCols.name, ahInner - textWidth(getText(T .. "Wallet_RolledBack")) - PAD)
+    ahCols.amountR = ahCols.status - PAD
+    ahCols.nameW = math.max(0, ahCols.amountR - textWidth("999,999,999") - PAD - ahCols.name)
+    if ahist.width ~= aucListW or ahist.height ~= ahH then ahist:resize(aucListW, ahH) end
+    g.aucHistoryFooterY = ahY + ahH + 2
+    self.auctionHistoryBar:layoutPager(g.auctionCardX + PAD, g.aucHistoryFooterY,
+        g.auctionCardX + g.auctionCardW - PAD, isAuction and aucHistory)
     x = g.auctionCardX + PAD + textWidth(getText(T .. "Market_Page", "99", "99")) + PAD
     for _, b in ipairs({ self.auctionPrevButton, self.auctionNextButton }) do
-        b:setVisible(isAuction and not aucMine)
+        b:setVisible(aucTable)
         b:setX(x); b:setY(g.auctionFooterY + math.floor((ROW - CHIP_H) / 2))
         x = x + b.width + 6
     end
@@ -3735,7 +4056,7 @@ function Panel:drawRewards()
     self.claimButton:setEnable(canClaim)
     ly = self.claimButton.y + self.claimButton.height + PAD
     local remain = math.max(0, (tonumber(st.nextResetMs) or 0) - EC.now())
-    text(self, getText(T .. "Rewards_NextDay", clockText(tonumber(st.nextResetMs) or 0, self.offsetMin), durationText(remain)), x + PAD, ly + 3, "textMuted")
+    text(self, getText(T .. "Rewards_NextDay", stampText(tonumber(st.nextResetMs) or 0, self.offsetMin), durationText(remain)), x + PAD, ly + 3, "textMuted")
     if self.message then
         textRight(self, self.message.text, x + w - PAD, ly + 3, self.message.error and "errorText" or "positive")
     end
@@ -3791,17 +4112,17 @@ function Panel:drawShop()
         return
     end
     local note = getText(T .. "Shop_Note", C.currencyName(shop.currency))
+    local noteToken = "textMuted"
     if shop.buyback and shop.buyback.enabled == true then
-        local any = false
-        for _, it in ipairs(shop.items or {}) do if it.buyback == true and it.enabled ~= false then any = true end end
-        if any then
-            note = note .. "  " .. getText(T .. "Shop_BuybackNote", amountText(shop.buyback.accountRemaining or 0))
+        if self.shopHasBuyback then
+            note = getText(T .. "Shop_BuybackNote", amountText(shop.buyback.accountRemaining or 0)) .. "  " .. note
         else
-            -- the switch is on but no catalog row is marked: say so instead of an empty promise
-            note = note .. "  " .. getText(T .. "Shop_BuybackNone")
+            note = getText(T .. "Shop_BuybackNone")
         end
+    elseif self.shopHasBuyback then
+        note, noteToken = getText(T .. "Shop_BuybackPaused"), "warn"
     end
-    text(self, fitText(note, g.rightW - PAD * 2), g.rightX + PAD, ty, "textMuted")
+    text(self, fitText(note, g.rightW - PAD * 2), g.rightX + PAD, ty, noteToken)
     local cols = self.shopList.cols
     local hx, hy = self.shopList.x, g.shopHeaderY
     fill(self, hx, hy, self.shopList.width, ROW, "well", "rect")
@@ -3904,9 +4225,47 @@ function Panel:drawMarket()
         g.marketCardX + g.marketCardW - PAD, fy, "textMuted")
 end
 
+-- Record page: one card, one note line and the client-paged ring. The note line is the page's
+-- whole state in one place, most urgent first: a refusal (the snapshot underneath stays on
+-- screen - an error is not an empty record), the first read of all, the "only the newest 200"
+-- warning, and otherwise the note that these amounts are bids and not wallet movements. A read
+-- that is still in flight over a snapshot says so on the right, without hiding anything.
+function Panel:drawAuctionHistory()
+    local g = self.g
+    local list = self.auctionHistoryList
+    card(self, g.auctionCardX, g.auctionCardY, g.auctionCardW, g.auctionCardH,
+        getText(T .. "Auction_History_Title"))
+    local ty = g.auctionCardY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
+    local noteW = g.auctionCardW - PAD * 2
+    local pending = self.auctionHistoryPending ~= nil or self.auctionHistoryWanted == true
+    local snap = C.auctionHistory
+    if self.auctionHistoryError then
+        text(self, fitText(self.auctionHistoryError, noteW), g.auctionCardX + PAD, ty, "errorText")
+    elseif not snap then
+        text(self, getText(T .. (pending and "Wallet_Loading" or "Auction_History_Empty")),
+            g.auctionCardX + PAD, ty, "textMuted")
+        return                       -- nothing read yet: no bar, no pager, no empty-filter line
+    elseif self.auctionHistoryTruncated then
+        text(self, fitText(getText(T .. "Auction_History_Truncated"), noteW), g.auctionCardX + PAD, ty, "warn")
+    else
+        text(self, fitText(getText(T .. "Auction_History_Note"), noteW), g.auctionCardX + PAD, ty, "textMuted")
+    end
+    if pending then
+        textRight(self, getText(T .. "Wallet_Loading"), g.auctionCardX + g.auctionCardW - PAD, ty, "textMuted")
+    end
+    self.auctionHistoryBar:draw(self)
+    self.auctionHistoryBar:drawPager(self, g.auctionCardX + PAD)
+    if #list:getItems() == 0 then
+        local all = #(self.auctionHistoryAll or {})
+        text(self, getText(T .. (all > 0 and "Filter_NoMatch" or "Auction_History_Empty")), list.x + PAD,
+            list.y + math.floor((ROW - fontH.small) / 2), "textMuted")
+    end
+end
+
 -- Auction page: one card, the note line (the tax and the listing fee the server quoted), then
 -- either the sortable browse table with its pager or the two "my auctions" sections.
 function Panel:drawAuction()
+    if self.auctionMode == "history" then return self:drawAuctionHistory() end
     local g = self.g
     local info = self.auctionInfo
     local mine = self.auctionMode == "mine"
@@ -4011,6 +4370,23 @@ function Panel:prerender()
     if self.auctionBusy and EC.now() - (self.auctionBusyAt or 0) > BROWSE_TIMEOUT_MS then
         self.auctionBusy = nil
     end
+    -- the record page: the typed query goes out once the player stops, a read the throttle
+    -- window would have eaten goes out as soon as it may, and a read that never came back gives
+    -- the page an error instead of a spinner that never ends (the next read repairs it)
+    if self.auctionHistoryQueryAt and EC.now() >= self.auctionHistoryQueryAt
+        and self.tab == "Auction" and self.auctionMode == "history" then
+        self:requestAuctionHistory()
+    end
+    if self.auctionHistoryWanted and not self.auctionHistoryPending
+        and self.tab == "Auction" and self.auctionMode == "history"
+        and EC.now() - (self.auctionHistorySentAt or 0) >= HISTORY_DEBOUNCE_MS then
+        self:sendAuctionHistory()
+    end
+    if self.auctionHistoryPending and EC.now() - self.auctionHistoryPending.at > TIMEOUT_MS then
+        self.auctionHistoryPending = nil
+        self.auctionHistoryWanted = nil
+        self.auctionHistoryError = shopError("timeout")
+    end
     local w = self:getWidth()
     local h = self:getHeight()
     local th = self:titleBarHeight()
@@ -4112,6 +4488,9 @@ function Panel:render()
         self:clearStencilRect()
     end
     U.Skin.border(self, 0, 0, w, h, color("border"))
+    -- last, and after the stencil was cleared: the children were rendered between prerender and
+    -- this call (UIElement.java:1626-1634), so the ring is painted over the control it marks
+    Keys.render(self)
 end
 
 function Panel:close()
@@ -4124,9 +4503,12 @@ function Panel:setVisible(visible)
     if not visible then self:showPrefs(false) end
     if self.adminPanel and not visible then self.adminPanel:setVisible(false) end
     if not visible then
+        DatePicker.close()
         self:closeBuy()
         self:closeMarketDialog()
         self:unfocusEntries()
+        self:cancelAuctionHistory()   -- a closed window asks the server for nothing
+        Keys.clear(self)              -- no ring waiting behind a closed window
     end
     if visible then
         self.offsetMin = localOffsetMinutes()
@@ -4175,6 +4557,9 @@ function Panel.create()
     o.auctionSort = "ending"    -- the auctions closest to their end are the ones that matter
     o.auctionPage = 1
     o:initialise()
+    -- UIManager offers key events to top-level UI that asked for them (UIManager.java:1435-1466);
+    -- without this the window's four key hooks are never called
+    o:setWantKeyEvents(true)
     o:addToUIManager()
     for _, b in ipairs(o.periodButtons) do b.active = b.internal == o.period end
     o:setVisible(false)
@@ -4232,6 +4617,7 @@ Events.OnKeyPressed.Add(onKeyPressed)
 -- Reset per world (UIManager elements survive a return to the main menu; a new session must
 -- rebuild against the new server state).
 local function onGameStart()
+    DatePicker.close()
     if P.window then
         if P.window.adminPanel then P.window.adminPanel:dispose() end
         P.window:removeFromUIManager()

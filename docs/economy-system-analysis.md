@@ -705,12 +705,16 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 **進度（2026-09-08，離線 harness 537 條）**：**server ✓**（`ECAuction.lua`）：`auction.create{itemIds,startPrice,hours}`（同市場的三階段 list-out；`pendingOuts[id].kind="auction"`；刊登費以起標價計）、`auction.bid{auctionId,amount}`（≥ max(起標, 最高×(1+`AuctionMinIncrementPercent`))；賣家拒絕；同 bidder 只保留差額；被超過者**同一 tick** 釋回）、`auction.cancel`（僅零出價）、`admin.auctions{list|cancel}`（釋回最高出價＋退回賣家信箱＋稽核）、每分鐘 sweep：結算（得標者 reserved → 賣家 −稅 → `SYSTEM_BURN`，快照進得標者信箱並就地 claim）或流標退回；`restoreFromPending` 接在 `Mk.restoreFromPending` 之後處理回滾重建；停機政策依上段（`Au.applyDowntime(now, heartbeatTs)`：ignored／extended／cancelled，`Au.init` 首次 sweep 前套一次）。**保留款以帳本 posting `bucket="reserved"` 實作**（同錢包 −X available／+X reserved 一筆 tx；守恆不變；`wallet.reserved` 就是我目前所有出價的總額），不是系統託管帳戶。拍賣佔信箱格、算入 `Mk.hasListing`；沙盒 `AuctionMinHours`／`AuctionMaxHours`／`AuctionMaxPerPlayer`／`AuctionMinIncrementPercent`（group `auction`）。**client ✓**：玩家「拍賣」分頁（瀏覽／我的拍賣；表頭排序限 server 支援的物品／目前出價／出價數／結標四欄；出價對話框預填最低出價、只保留差額；建立走共用選物器→起標價＋時長膠囊＋刊登費；無出價可取消）與管理「拍賣」子分頁（進行中、搜尋、取消需原因）。harness 情境三十二覆蓋 §13 的「新出價超越最高價」「賣家自出價／連續加價」「拍賣到期前重啟」「空服到期結算」與停機三段。
 
+**紀錄入口（2026-09-08 補充）**：玩家「拍賣 → 紀錄」查自己的參與紀錄，每場旁的「紀錄」可用 exact `auctionId` 查看整場公開出價時間線；管理「拍賣 → 全部紀錄」查全服並搜尋拍賣 ID／帳號／物品。server `auction.history{query?,auctionId?,requestId?}` 與 `admin.auctions{action="history",…}` 共用 `Au.history`，讀上月 1 日到今天的 `events-YYYYMMDD.json`（最多 62 個路徑），不另建帳本或補造舊資料。只投影六種公開 `auction_*` 紀錄，排除 postings／餘額／管理原因；不指定 ID 時玩家只看 seller／bidder／buyer／previous 與自己相符的行，管理路徑仍受 read gate。`W.tail` 在最新 200 筆限制前過濾，回覆含 `total`／`truncated`；client 每頁 25，出價金額不是錢包增減、舊事件缺欄位不捏造。慢查詢同時僅一筆讀取、保留最新排隊條件；錯誤不清既有快照，切模式不再送排隊查詢。
+
 ### 階段 G：系統收購（mint）
 
 - `bidPrice`、canonical 白名單、同 tick 銷毀原物、帳號／全服／SKU 分層 gross mint cap、faucet kill switch、轉換環路稽核；
 - 上線前先有儀表板觀測售出與費稅的 burn 量。
 
 **進度（2026-09-08，離線 harness 537 條）**：**server ✓／client ✓**。目錄列多 `bidPrice`（`0 ≤ bid < price`）、`buyback` 旗標（開啟需 `bid ≥ 1`，「未開放用 flag 不用 0」）、`buybackCap`（份／日，全服 SKU 層，0 不限）；面板寫回前整列 `validateSku`。**canonical 定義**：`Codec.isCanonical(item, fullType)`＝與 `instanceItem(fullType)` 全新物品的快照比對 condition／uses／repaired／readPages／食物狀態／流體／無自訂名（忽略 `age` 與 `modData`：原版會在一般物品上寫 `customName`、`Food.updateAge` 會動 age）；`shop.candidates{id}` 回背包頂層 canonical 件的 id。`shop.sell{id,itemIds,revision}`：整數份（`#itemIds % qty == 0`）、三層 gross cap（SKU 份數／`ShopBuybackPerAccountDaily` 幣／`ShopBuybackServerDaily` 幣，燒毀不回補、不足整筆拒絕：`buyback_cap_sku|account|server{remaining}`）、`balance_cap` 預檢、同市場三階段 list-out（`pendingOuts[id].kind="buyback"`）→ 銷毀 → `SYSTEM_MINT → 玩家`（kind `shop_sell`）。**回滾**：`Mk.hasListing(id, pend)` 對 buyback 以 `not isRolledBack(pend.epoch, pend.seq)` 判定「世界側已發生」（row 6 移除殘留物、row 5 清 pending、row 4 `Shop.restoreFromPending` 重付，餘額上限擋住時改以快照走信箱退件，義務必收斂）。**kill switch** `ShopBuybackEnabled`（預設 false，`buyback_disabled` 立即生效）。**儀表板**：`L.onCommitted` 增量寫 `rollups[day].mint/burn/buyback`（市場幣；每筆 `SYSTEM_MINT` 流出／`SYSTEM_BURN` 流入），`admin.system.issued.{today,week,month}` 加總、`admin.system.buyback{enabled,mintedToday,serverCap,accountCap}`。**轉換環路稽核（stale 即停收）未做**：目前 catalog 只有一種貨幣、無 SKU 間兌換鏈，環路（買 A 賣 B 套利）只能靠 `bid < price` 的單 SKU 價差；多幣別或社群幣 catalog 上線時再補。harness 情境三十三；stub `scn-shop-sell`／`scn-admin-shop` 6b。
+
+**收購狀態（2026-09-08 補充）**：總開關仍是既有 `ShopBuybackEnabled` runtime option（Global ModData），每個商品收購價／開關仍在 `catalog.json`；未存檔就異常結束時，兩者可能回復到不同時間點，不自動開啟總開關。管理商店頁直接操作同一 `admin.option`，不另存副本；玩家頁保留已設定商品的出售價，但總開關停用時灰掉並明示原因。`ECConfig.setOption` 的 shop 群組變更（含 reset）立即 `Shop.pushAll()`，不依賴換頁或快照過期。
 
 ### 階段 H：Discord 存入（v1 只進不出）
 
@@ -1058,6 +1062,7 @@ EconomyConfig.currencies = {
 | 刊登 | 全服刊登與拍賣清單、篩選；移除刊登（物品進賣家信箱）、取消拍賣（退款）；市場黑名單（禁止刊登／出價／購買，含到期） | 玩家檢舉工作流 v2 |
 | 終端（ATM／交易站） | 登錄清單（座標、類型、啟用狀態、最後使用）；停用／解除登錄（不動世界物件）；交易站電台頻率與廣播開關 | 傳送到終端不做（用原版管理指令） |
 | 貨幣設定 | 名稱覆寫、圖示狀態（預設／已上傳、同步進度）、啟用／停用、**存入比率與上限**（`rateIn`、單筆下上限、每人每日、全服每日；改動即 `rateVersion` +1 並顯示「Watchcord 將於下次建單採用」）；獎勵與費稅參數的 runtime 覆寫（sandbox 是啟動預設，覆寫寫 ModData 並帶 audit） | 新增幣別在 MOD 內（需翻譯與預設圖），不在面板 |
+| 金流 | 全服 `tx.committed` 一筆交易一列，來源／幣別／日期／關鍵字搜尋；商店「銷售紀錄」「收購紀錄」直接進同一頁帶篩選。詳情顯示每個帳戶分錄、可用／保留款、前後餘額與原因；回滾筆明確標示。僅 read gate，沒有寫入或刪除紀錄操作 | 跨期總報表與匯出仍交 Watchcord／companion，不另建帳本 |
 | 稽核 | 管理員操作環（時間、管理員、動作、對象、幣別、金額、原因），篩選；每筆同時進事件檔 | 完整歷史與搜尋：Watchcord |
 | 系統 | seq／epoch、上次存檔時間、inbox 待處理、tombstone 數、ModData 估計大小、companion 心跳（companion 定期寫 `inbox/heartbeat.json`）；**資料目錄**區塊：事件檔、收據檔、稽核檔、inbox、icons、`whitelist.json` 的伺服器端絕對路徑、估計大小、最舊檔月份，每項一顆「複製路徑」（`Clipboard.setClipboard`）與清理提醒 | 遊戲內刪檔不做（Lua 無刪檔 API；由服主或 companion 清理） |
 | 整合 | 已註冊的其他 MOD 來源：額度與今日已用、啟用／停用、7／30 天 mint／burn／呼叫／被拒統計、該來源最近 50 筆（§21.5） | — |
@@ -1077,7 +1082,13 @@ EconomyConfig.currencies = {
 
 - 即時值（餘額、刊登、站點、設定）：Global ModData。
 - 短期歷史（最近收據、稽核環、每日彙總）：Global ModData 的**有界**環與彙總（§20）。
-- 完整歷史、匯出、跨期報表：Watchcord（完整帳本副本）與 companion `GET /ledger`；遊戲內不重造。
+- **全服金流（2026-09-08 實作）**：`admin.transactions` 分批讀既有 `events-YYYYMMDD.json` 的 `tx.committed`，不依賴 companion、不搬資料、不讀稽核環冒充交易。預設上月 1 日 UTC 至明日 UTC；可自訂最多 62 天的半開區間 `fromMs ≤ ts < toMs`，client 的日期框依玩家本地日期換算。server 先套來源、幣別與關鍵字，再保留最新 200 筆匹配；超過會提示縮小範圍，本機排序／分頁不宣稱是完整報表。
+- **分錄詳情**：`admin.transaction` 以交易 ID 精確查同一事件檔；摘要只帶帳戶與每幣別正向分錄總額，稱為「流動額」而非營收。跨幣不相加、平衡交易不顯示成淨額零、出價的保留款也算異動；原因與完整分錄按需載入，可捲動閱讀。`readOnlyRoles` 可查、一般玩家不可查。
+- **讀取與等待邊界**：金融查詢遇非空壞 JSON、損壞交易 header／posting 或既存檔開啟失敗，一律回 `read_failed`，UI 保留上次結果且明說失敗。每種 reader 同時只有一筆，快速改條件只送最新一筆；過期回覆不得釋放另一筆正在讀取的指令等待槽。
+- **日期介面（2026-09-08）**：玩家錢包／市場紀錄／拍賣紀錄與管理稽核／市場紀錄／拍賣紀錄／金流共 14 個日期欄位，均保留文字輸入並提供共用日曆。支援月份及年份切換、今天、清除、方向鍵、Enter 選取、Esc／點外面關閉；父視窗關閉、收合、切頁或欄位停用也會收起。有效手輸入失焦時正規化為 `YYYY-MM-DD`，無效日不進位。絕對日期時間統一為 `YYYY-MM-DD HH:MM`、純日期為 `YYYY-MM-DD`；相對倒數與 UTC 儲存鍵／檔名不變，不需修改 UIFor42。
+- **帳戶名稱與分類（2026-09-08）**：`SYSTEM_MINT`／`SYSTEM_BURN`／`SYSTEM_ADJUST` 分別顯示系統發行／系統回收／管理調整；模組與 Discord 帳戶顯示可讀名稱，分錄保留原始帳戶鍵，玩家名不翻譯。內建原因碼顯示譯名＋原碼，自填原因與沒有已知譯名的碼原樣保留。金流新增 `accountClass` 篩選：`player/mint/burn/adjust/mod/discord/system`，缺省／`all` 不篩選；任一相關帳戶符合就保留整筆交易，再與來源、幣別、日期、搜尋取交集，全部在 200 筆限制之前執行。這是帳戶類別而非資金方向：選系統回收仍顯示整筆市場交易的異動額，不是只顯示成交稅。原始識別碼與帳本檔案不變。
+- **金流閱讀流程（2026-09-09）**：清單與完整明細各自使用完整頁面。說明、長中文與識別碼放在可捲動文字區，顯示用硬換行與複製用原文分開；不足高度時，篩選條件以獨立區域開啟並可返回結果。查帳內容維持實色背景；鍵盤導航使用既有控制項與明確焦點，不改 UIFor42。
+- **金流分頁所有權（2026-09-09）**：`ECAdminTransactions.lua` 是獨立 `ISPanel`，自行持有查詢／明細狀態、控制項、版面、繪製與鍵盤目標。`ECAdminPanel` 只保留 `txPage` 組合欄位，負責分頁導航、權限、共用送出／等待／逾時與頁尾訊息；舊回覆由子頁比對 requestId 後，父層才釋放共用指令槽。`ECAdminFilters.lua` 共用既有篩選列；文字控制項、列表幾何與歷史列繪製統一由 `ECWidgets.lua` 提供。沒有通用分頁框架或舊金流欄位轉接別名，其餘業務頁維持原有所有權。
 
 ### 19.5 餘額異常偵測與一鍵修復（2026-09-06 決策）
 

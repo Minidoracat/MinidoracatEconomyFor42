@@ -57,24 +57,34 @@ end
 --
 -- Reads one or more NDJSON files a batch per tick and replies with the newest MAX entries, each
 -- annotated with rolledBack (S.isRolledBack on the line's epoch/seq). Shared by wallet.history
--- (receipt files) and admin.auditFile (audit files): one job per player per command.
+-- (receipt files), admin.auditFile (audit files) and auction.history / admin.transactions /
+-- admin.transaction (the daily events files): one job per player per command.
+--
+-- An optional `projector(entry) -> record | nil` filters and reshapes every line before it enters
+-- the ring, so the 200-entry bound applies to the matches and not to the raw lines (a search for
+-- an old auction is not pushed out by newer unrelated events). A read that breaks halfway replies
+-- error=read_failed: a truncated list must never be handed over as a complete one.
 
 local function finishJob(key, job)
     jobs[key] = nil
     if job.reader then pcall(function() job.reader:close() end) end
-    local entries = {}
-    local n = job.count
-    local start = n < W.HISTORY_MAX_ENTRIES and 1 or job.head
-    local size = math.min(n, W.HISTORY_MAX_ENTRIES)
-    for i = 0, size - 1 do
-        entries[#entries + 1] = job.ring[(start - 1 + i) % size + 1]
-    end
     local p = job.player
-    if p then
-        local reply = { entries = entries, truncated = job.truncated, total = n }
-        for k, v in pairs(job.extra) do reply[k] = v end
-        S.reply(p, job.command, reply)
+    if not p then return end
+    local reply
+    if job.failed then
+        reply = { entries = {}, total = 0, truncated = false, error = "read_failed" }
+    else
+        local entries = {}
+        local n = job.count
+        local start = n < W.HISTORY_MAX_ENTRIES and 1 or job.head
+        local size = math.min(n, W.HISTORY_MAX_ENTRIES)
+        for i = 0, size - 1 do
+            entries[#entries + 1] = job.ring[(start - 1 + i) % size + 1]
+        end
+        reply = { entries = entries, truncated = job.truncated, total = n }
     end
+    for k, v in pairs(job.extra) do reply[k] = v end
+    S.reply(p, job.command, reply)
 end
 
 local function pushEntry(job, entry)
@@ -92,11 +102,15 @@ end
 local function openNext(job)
     while job.index < #job.paths do
         job.index = job.index + 1
-        local reader = getFileReader(job.paths[job.index], false)
+        local path = job.paths[job.index]
+        local reader = getFileReader(path, false)
         if reader then
             job.reader = reader
             return true
         end
+        -- getFileReader catches IOException in Java and returns nil even for an existing file
+        -- (LuaManager.java:5949-5960); cacheFileExists uses the same Lua cache root (:5541-5549).
+        if cacheFileExists(path) then error("could not open history file: " .. path) end
     end
     job.reader = nil
     return false
@@ -111,12 +125,17 @@ local function stepJob(key, job)
                 finishJob(key, job)
                 return
             end
-        elseif line ~= "" then
+        elseif string.find(line, "%S") then
             local entry = EC.jsonDecode(line)
             if type(entry) == "table" then
                 local epoch = entry.txId and EC.parseId(entry.txId) or entry.epoch
                 entry.rolledBack = S.isRolledBack(epoch, entry.seq)
-                pushEntry(job, entry)
+                local record, done = entry, false
+                if job.projector then record, done = job.projector(entry) end
+                if record then pushEntry(job, record) end
+                if done then finishJob(key, job); return end
+            elseif job.strictJson then
+                error("invalid history JSON: " .. job.paths[job.index])
             end
         end
     end
@@ -127,26 +146,35 @@ function W.onTick()
         local ok, err = pcall(stepJob, key, job)
         if not ok then
             EC.log("file job " .. key .. " failed: " .. tostring(err))
+            job.failed = true
             finishJob(key, job)
         end
     end
 end
 
 -- Starts a job for `player`: the newest entries of `paths` (read in order) are replied through
--- `command` merged with `extra`. Refuses with error=busy (same player+command still reading) or
--- server_busy (too many readers); missing files simply contribute nothing.
-function W.tail(player, command, paths, extra)
+-- `command` merged with `extra`, optionally filtered through `projector`. Refuses with error=busy
+-- (same player+command still reading), server_busy (too many readers) or read_failed (the first
+-- file could not be opened); missing files simply contribute nothing.
+-- A projector may also return true as its second result to finish an exact single-record lookup.
+-- strictJson fails on malformed non-empty rows; financial queries cannot silently skip them.
+function W.tail(player, command, paths, extra, projector, strictJson)
     local key = player:getUsername() .. ":" .. command
     local function refuse(code)
-        local reply = { entries = {}, error = code }
+        local reply = { entries = {}, total = 0, truncated = false, error = code }
         for k, v in pairs(extra) do reply[k] = v end
         S.reply(player, command, reply)
     end
     if jobs[key] then return refuse("busy") end
     if EC.countKeys(jobs) >= W.HISTORY_MAX_JOBS then return refuse("server_busy") end
     local job = { paths = paths, index = 0, reader = nil, ring = {}, head = 1, count = 0, truncated = false,
-        player = player, command = command, extra = extra }
-    if not openNext(job) then
+        player = player, command = command, extra = extra, projector = projector, strictJson = strictJson == true }
+    local ok, opened = pcall(openNext, job)
+    if not ok then
+        EC.log("file job " .. key .. " could not be opened: " .. tostring(opened))
+        return refuse("read_failed")
+    end
+    if not opened then
         local reply = { entries = {}, total = 0, truncated = false }
         for k, v in pairs(extra) do reply[k] = v end
         S.reply(player, command, reply)
@@ -171,6 +199,50 @@ function W.marketPaths(username, months)
         paths[#paths + 1] = X.ROOT .. "/market/" .. EC.safeName(username) .. "/" .. m .. ".json"
     end
     return paths
+end
+
+-- Daily events file paths, oldest first (a day with no file contributes nothing, so the ring
+-- keeps the newest matches). Without a range this is the shared default window: the first day of
+-- the previous UTC month through today, at most 62 paths (reached only when both months have 31
+-- days and today is the 31st). With a range it is every UTC day covering fromMs .. toMs-1; the
+-- caller bounds the span first (the admin endpoints refuse more than 62 days).
+-- Server-built from timestamps: no client string ever reaches a path.
+function W.eventPaths(ms, fromMs, toMs)
+    local keys = {}
+    if fromMs and toMs then
+        for day = math.floor(fromMs / 86400000), math.floor((toMs - 1) / 86400000) do
+            keys[#keys + 1] = EC.dayKey(day * 86400000)
+        end
+    else
+        local _, _, d = EC.utcDate(ms)
+        local prev, cur = EC.monthKey(ms - d * 86400000), EC.monthKey(ms)
+        local newest = {}
+        for i = 0, 61 do
+            local t = ms - i * 86400000
+            local key = EC.monthKey(t)
+            if key ~= cur and key ~= prev then break end
+            newest[#newest + 1] = EC.dayKey(t)
+        end
+        for i = #newest, 1, -1 do keys[#keys + 1] = newest[i] end
+    end
+    local paths = {}
+    for i = 1, #keys do paths[i] = X.ROOT .. "/events-" .. keys[i] .. ".json" end
+    return paths
+end
+
+-- Lower-cased display name of a fullType, for the query haystack of a tailed file (ScriptManager
+-- as in Au.create; an unknown type contributes nothing). Cached: the same few types repeat across
+-- a whole file. Shared by the auction history and the admin transactions view.
+local itemNames = {}
+function W.itemNameLower(fullType)
+    if type(fullType) ~= "string" or fullType == "" then return "" end
+    local cached = itemNames[fullType]
+    if cached ~= nil then return cached end
+    local name = nil
+    pcall(function() name = ScriptManager.instance:FindItem(fullType):getDisplayName() end)
+    name = type(name) == "string" and string.lower(name) or ""
+    itemNames[fullType] = name
+    return name
 end
 
 -- Previous and current UTC month keys (the "recent" window spans a month boundary).

@@ -113,7 +113,7 @@ end
 
 -- ---------- one order ----------
 
--- Returns "deposited" | "failed" | "skipped" (already tombstoned) with the failure reason.
+-- Returns "deposited" | "failed" | "skipped".
 function Ex.process(order, orderId)
     if md.exchange.tombstones[orderId] then return "skipped" end
     local function fail(reason, extra)

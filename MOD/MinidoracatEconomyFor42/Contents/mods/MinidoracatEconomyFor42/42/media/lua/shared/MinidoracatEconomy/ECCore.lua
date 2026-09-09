@@ -116,7 +116,14 @@ function EC.parseId(id)
     return epoch, seq
 end
 
--- Stable insertion sort (family rule: no table.sort under Kahlua, see verify_mod check 6).
+-- Gregorian month length shared by typed dates and the client calendar; month is 1..12.
+function EC.daysInMonth(year, month)
+    if month == 2 then
+        return year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0) and 29 or 28
+    end
+    return (month == 4 or month == 6 or month == 9 or month == 11) and 30 or 31
+end
+
 -- "YYYY-MM-DD" (or "YYYY/MM/DD") -> start of that civil day in ms, for a clock that is
 -- offsetMinutes ahead of UTC (the client passes its localOffsetMinutes); nil when malformed.
 -- Days-from-civil (Howard Hinnant), so no os.time / time zone of the JVM is involved.
@@ -125,7 +132,7 @@ function EC.parseDay(text, offsetMinutes)
     local y, m, d = string.match(text, "^%s*(%d%d%d%d)[-/](%d%d?)[-/](%d%d?)%s*$")
     if not y then return nil end
     y, m, d = tonumber(y), tonumber(m), tonumber(d)
-    if m < 1 or m > 12 or d < 1 or d > 31 then return nil end
+    if m < 1 or m > 12 or d < 1 or d > EC.daysInMonth(y, m) then return nil end
     if m <= 2 then y = y - 1 end
     local era = math.floor(y / 400)
     local yoe = y - era * 400
@@ -176,6 +183,7 @@ function EC.filterPage(list, opts)
     return out, page, pages, total
 end
 
+-- Stable insertion sort avoids Kahlua's recursive table.sort (guarded by verify_mod.py).
 -- `less(a, b)` must return true only when a sorts strictly before b.
 function EC.sortSafe(list, less)
     for i = 2, #list do
@@ -430,6 +438,32 @@ function EC.safeName(name)
     return (string.gsub(tostring(name), "[^A-Za-z0-9_%-]", function(ch)
         return string.format("_x%04x_", string.byte(ch))
     end))
+end
+
+-- ---------- account classes (shared: admin money view filter + panel labels) ----------
+--
+-- The ledger's account namespace is flat; its only structure is the prefix set the server keeps
+-- in ECLedger.SYSTEM_PREFIXES ("SYSTEM_", "EXTERNAL_", "MOD:"). One class per account name,
+-- derived from the name alone so client and server agree without a round trip.
+--
+-- Case-sensitive, exactly like L.isSystemAccount: "system_mint" is a player who picked that
+-- name, not the faucet. Exact names win over the prefixes, so "SYSTEM_MINT_extra" is a system
+-- account of unknown purpose and never counted as minting. An unmapped SYSTEM_/EXTERNAL_
+-- account lands in "system" instead of disappearing, the same way txGroup keeps unknown kinds.
+-- ACCOUNT_CLASSES is the wire vocabulary (ids only, never a translated name) in display order.
+EC.ACCOUNT_CLASSES = { "player", "mint", "burn", "adjust", "mod", "discord", "system" }
+
+function EC.accountClass(account)
+    if type(account) ~= "string" or account == "" then return nil end
+    if account == "SYSTEM_MINT" then return "mint" end
+    if account == "SYSTEM_BURN" then return "burn" end
+    if account == "SYSTEM_ADJUST" then return "adjust" end
+    if string.sub(account, 1, 4) == "MOD:" then return "mod" end
+    if string.sub(account, 1, 17) == "EXTERNAL_DISCORD_" then return "discord" end
+    if string.sub(account, 1, 7) == "SYSTEM_" or string.sub(account, 1, 9) == "EXTERNAL_" then
+        return "system"
+    end
+    return "player"
 end
 
 -- Sandbox options of this mod: one schema shared by the server (validation of runtime overrides,

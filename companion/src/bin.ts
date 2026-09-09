@@ -63,7 +63,7 @@ function readValue(r: Reader, type: number): LuaValue {
 function readTable(r: Reader): LuaTable {
   const count = r.int32();
   if (count < 0) throw new RangeError(`negative table count at ${r.pos}`);
-  const out: LuaTable = {};
+  const out: LuaTable = Object.create(null);
   for (let i = 0; i < count; i++) {
     const key = readValue(r, r.byte());
     const value = readValue(r, r.byte());

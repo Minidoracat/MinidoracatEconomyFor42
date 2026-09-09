@@ -23,11 +23,20 @@ test("bin: round-trips the engine layout and yields the economy watermark", () =
   const buf = encodeGlobalModData(226, tables);
   const parsed = parseGlobalModData(buf);
   assert.equal(parsed.worldVersion, 226);
-  assert.deepEqual(parsed.tables.get("OtherMod"), { a: 1, list: { 1: "x", 2: "y" }, flag: true });
+  assert.equal(JSON.stringify(parsed.tables.get("OtherMod")), JSON.stringify(tables.get("OtherMod")));
   assert.deepEqual(economyWatermark(parsed, "MinidoracatEconomy"), { epoch: "1788700279858", seq: 42, realmId: "realm-1" });
   assert.equal(economyWatermark(parsed, "Missing"), null);
   assert.throws(() => parseGlobalModData(buf.subarray(0, buf.length - 5)), RangeError);
   assert.throws(() => parseGlobalModData(Buffer.from([0, 0, 0, 10, 0, 0, 0, 0])), RangeError);
+});
+
+test("bin: prototype-shaped keys remain data and cannot forge a savepoint", () => {
+  const data: LuaTable = Object.create(null);
+  data["__proto__"] = { meta: { epoch: "forged", seq: 1 } };
+  data["constructor"] = "preserved";
+  const parsed = parseGlobalModData(encodeGlobalModData(226, new Map([["MinidoracatEconomy", data]])));
+  assert.equal(economyWatermark(parsed, "MinidoracatEconomy"), null);
+  assert.equal(JSON.stringify(parsed.tables.get("MinidoracatEconomy")), JSON.stringify(data));
 });
 
 function writeLines(dir: string, name: string, lines: string[], eol = "\r\n"): void {

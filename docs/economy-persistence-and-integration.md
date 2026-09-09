@@ -344,3 +344,4 @@ Watchcord 已有 Discord 每日簽到與 streak。遊戲內簽到不重複這套
 - Watchcord 原始碼（`packages/db/src/schema/{ledger,economy,steam,checkins}.ts`、`docs/runbook.md`）。
 - 正式服與 Discord 系統主機唯讀探查（2026-09-02）。
 - OpenAI Codex 對抗式審查（2026-09-02）：SteamID 精度、durable commit、守恆帳本、Discord 狀態機閉合等發現已納入本文件與主分析 §16。
+

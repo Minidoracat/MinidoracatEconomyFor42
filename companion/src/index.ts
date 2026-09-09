@@ -28,13 +28,16 @@ function pollModData(force = false): void {
   try {
     st = fs.statSync(config.modDataBin);
   } catch (err) {
-    if (errorCode(err) !== "ENOENT") wm.error = errorMessage(err);
+    wm.error = errorCode(err) === "ENOENT" ? "snapshot_missing" : errorMessage(err);
     return;
   }
-  if (st.mtimeMs === wm.mtime) return;                 // already parsed this version
+  if (st.mtimeMs === wm.mtime && st.size === wm.sizeBytes && wm.error === null) return;
   if (!force && st.mtimeMs !== wm.seenMtime) { wm.seenMtime = st.mtimeMs; return; }   // let the copy settle
   try {
-    const parsed = parseGlobalModData(fs.readFileSync(config.modDataBin));
+    const bytes = fs.readFileSync(config.modDataBin);
+    const after = fs.statSync(config.modDataBin);
+    if (after.size !== st.size || after.mtimeMs !== st.mtimeMs || bytes.length !== st.size) throw new Error("snapshot_changed");
+    const parsed = parseGlobalModData(bytes);
     const mark = economyWatermark(parsed, config.modDataTag);
     wm.mtime = st.mtimeMs;
     wm.parsedAt = Date.now();
@@ -70,23 +73,35 @@ log.info(`ingested ${first} events on start (${store.events.length} in memory)`)
 pollModData(true);
 accounts.refresh();
 
-setInterval(() => {
+const pollTimer = setInterval(() => {
   try { store.poll(); } catch (err) { log.error(`poll failed: ${errorMessage(err)}`); }
   try { pollModData(); } catch (err) { log.error(`moddata poll failed: ${errorMessage(err)}`); }
   // inbox files whose outcome is durable are done: delete them so Lua stops seeing them
   try { orders.sweep(); } catch (err) { log.error(`inbox sweep failed: ${errorMessage(err)}`); }
 }, config.pollMs).unref();
-setInterval(() => accounts.refresh(), config.accountsRefreshMs).unref();
+const accountsTimer = setInterval(() => accounts.refresh(), config.accountsRefreshMs).unref();
 
 const server = createServer({ config, store, accounts, watermark: () => wm, orders, log });
 server.listen(config.port, config.bind, () => {
   log.info(`listening on http://${config.bind}:${config.port}`);
 });
 
+let stopping = false;
 function shutdown(): void {
+  if (stopping) return;
+  stopping = true;
   log.info("shutting down");
+  clearInterval(pollTimer);
+  clearInterval(accountsTimer);
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 2000).unref();
+  try {
+    store.saveCheckpoint();
+    orders.saveIndex();
+    setTimeout(() => process.exit(0), 2000).unref();
+  } catch (err) {
+    log.error(`shutdown failed: ${errorMessage(err)}`);
+    process.exit(1);
+  }
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

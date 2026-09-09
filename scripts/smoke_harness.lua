@@ -20,7 +20,7 @@
 - 不得用「無條件記錄的 command stub」製造假綠：假 sendServerCommand 只記錄，斷言要看內容
 ]]
 
-local MEDIA = "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
+local MEDIA = os.getenv("EC_LUA_ROOT") or "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
 
 -- ===== 假的 PZ 全域 =====
 local nowMs = 5000000            -- 起始要夠大：節流邏輯常寫 now - last < interval
@@ -102,6 +102,7 @@ function getFileReader(path, createIfNull)
         close = function() end,
     }
 end
+function cacheFileExists(path) return files[path] ~= nil end
 -- 假目錄列舉：listFilesInZomboidLuaDirectory(dir) 回該目錄直屬檔名（不含子目錄、不遞迴；LuaManager.java:6057-6068）
 function listFilesInZomboidLuaDirectory(dir)
     local names, prefix = {}, dir .. "/"
@@ -357,7 +358,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 567     -- 家族慣例：條數守門，防整段被註解仍全綠
+local EXPECTED_ASSERTIONS = 619
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1978,6 +1979,13 @@ io.write("scenario 27b: filterPage / parseDay\n")
 ;(function()
 check(EC.parseDay("2026-09-07", 0) == 1788739200000 and EC.parseDay("2026/9/7", 480) == 1788739200000 - 480 * 60000, "parseDay gives the civil day start in ms, shifted by the clock offset")
 check(EC.parseDay("2026-13-01", 0) == nil and EC.parseDay("nope", 0) == nil and EC.parseDay(nil, 0) == nil, "malformed dates are nil")
+check(EC.parseDay("2026-02-29", 0) == nil and EC.parseDay("2024-02-30", 0) == nil,
+    "invalid February dates never roll into March")
+check(EC.parseDay("2026-04-31", 0) == nil and EC.parseDay("2026-04-30", 0) ~= nil,
+    "short months reject day 31 while retaining their last day")
+check(EC.parseDay("2100-02-29", 0) == nil and EC.parseDay("2000-02-29", 0) ==
+    EC.parseDay("2000-03-01", 0) - 86400000,
+    "leap days follow the Gregorian century rule")
 local rows = {}
 for i = 1, 60 do rows[i] = { kind = (i % 3 == 0) and "sold" or "listed", ts = 1788739200000 + i * 3600000, price = (i * 7) % 50, name = "n" .. (61 - i) } end
 local page, p, pages, total = EC.filterPage(rows, { perPage = 25, page = 3 })
@@ -2939,6 +2947,402 @@ SandboxVars.MinidoracatEconomy.CatPerOrderMax = nil
 SandboxVars.MinidoracatEconomy.CatPerAccountDaily = nil
 SandboxVars.MinidoracatEconomy.CatServerDaily = nil
 onlinePlayers = {}
+end)()
+
+-- ===== 情境三十五：收購總開關同步與拍賣紀錄 =====
+io.write("scenario 35: buyback state and auction history\n")
+;(function()
+    local Shop, Cfg = S.Shop, S.Config
+    modDataStore[EC.MODDATA_KEY] = nil
+    files, sentCommands = {}, {}
+    nowMs = 1788825600000 -- 2026-09-08 00:00 UTC
+    fire("OnServerStarted")
+    local boss = fakePlayer("history-admin"); boss.role = "admin"
+    local seller = fakePlayer("history-seller")
+    local bidder = fakePlayer("history-bidder")
+    local reader = fakePlayer("history-reader"); reader.role = "moderator"
+    onlinePlayers = { seller, boss }
+    local function cmd(who, name, args)
+        nowMs = nowMs + 700
+        sentCommands = {}
+        fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args or {})
+        local reply = lastSent(name)
+        return reply and reply.args
+    end
+    local function pushedTo(who)
+        for _, rec in ipairs(sentCommands) do
+            if rec.command == "shop.list" and rec.player == who then return rec.args end
+        end
+    end
+    Shop.update("axe", { bidPrice = 60, buyback = true }, boss:getUsername())
+    local enabled = cmd(boss, "admin.option", { key = "ShopBuybackEnabled", value = true, requestId = "master-on" })
+    local pushed = pushedTo(seller)
+    check(enabled and enabled.ok and pushed and pushed.buyback.enabled == true,
+        "changing the master switch pushes a sellable shop snapshot to an already-open shop")
+    local disabled = cmd(boss, "admin.option", { key = "ShopBuybackEnabled", value = false, requestId = "master-off" })
+    pushed = pushedTo(seller)
+    check(disabled and disabled.ok and pushed and pushed.buyback.enabled == false and Shop.sku("axe").buyback == true,
+        "closing the master switch pushes paused state without erasing the item's buyback configuration")
+    local denied = cmd(seller, "admin.option", { key = "ShopBuybackEnabled", value = true, requestId = "master-spoof" })
+    check(denied and denied.error == "forbidden" and not Shop.buybackEnabled(), "a player cannot bypass the master switch")
+    Cfg.setOption("ShopBuybackEnabled", nil, boss:getUsername())
+
+    -- Existing event files, including records predating the history UI; no second journal.
+    local root = S.modData()
+    root.meta.history[#root.meta.history + 1] = { epoch = "history-crash", loadedSeq = 0 }
+    local function event(id, kind, fields)
+        local e = { type = "auction." .. kind, epoch = "history-crash", seq = 1,
+            auctionId = id, ts = nowMs, seller = "history-seller", item = "Base.Axe" }
+        for k, v in pairs(fields or {}) do e[k] = v end
+        return EC.jsonEncode(e)
+    end
+    files[X.ROOT .. "/events-20260801.json"] = { opens = 0, lines = {
+        event("older-auction", "bid", { bidder = "NeedleAccount", amount = 17 }),
+    } }
+    local currentPath = X.ROOT .. "/events-20260908.json"
+    files[currentPath] = { opens = 0, lines = {
+        event("auction-1", "created", { startPrice = 10, qty = 1 }),
+        event("auction-1", "bid", { bidder = "history-bidder", amount = 10, private = "must-not-leak" }),
+        event("auction-1", "bid", { bidder = "other-bidder", amount = 11, previous = "history-bidder", previousAmount = 10 }),
+    } }
+    for i = 1, 220 do
+        files[currentPath].lines[#files[currentPath].lines + 1] =
+            event("unrelated-" .. i, "bid", { seller = "unrelated-seller", bidder = "unrelated-bidder", amount = i })
+    end
+    local function history(who, command, args)
+        cmd(who, command, args)
+        for _ = 1, 20 do fire("OnTickEvenPaused") end
+        local reply = lastSent(command)
+        return reply and reply.args
+    end
+    local own = history(seller, "auction.history", {})
+    check(own and not own.error and #own.entries == 4 and own.entries[1].auctionId == "older-auction",
+        "a seller sees every bid on their auctions, including the first day of last month")
+    local his = history(bidder, "auction.history", { username = "unrelated-seller" })
+    check(his and #his.entries == 2 and his.entries[1].bidder == "history-bidder"
+        and his.entries[2].bidder == "other-bidder",
+        "own history includes being outbid and ignores a client-supplied username")
+    local timeline = history(bidder, "auction.history", { auctionId = "auction-1", requestId = "history-exact" })
+    check(timeline and #timeline.entries == 3 and timeline.entries[2].price == 10 and timeline.entries[3].price == 11
+        and timeline.auctionId == "auction-1" and timeline.requestId == "history-exact",
+        "one auction's public timeline preserves both bid amounts and echoes the exact request")
+    check(timeline and timeline.entries[2].private == nil and timeline.entries[2].postings == nil
+        and timeline.entries[2].rolledBack == true, "public history strips private fields and flags rolled-back bids")
+    local adminDenied = history(bidder, "admin.auctions", { action = "history" })
+    check(adminDenied and adminDenied.error == "forbidden", "global auction history still requires the admin read gate")
+    local global = history(reader, "admin.auctions", { action = "history" })
+    check(global and not global.error and global.truncated == true and #global.entries == 200
+        and global.total == 224, "a read-only moderator can search global history with an explicit 200-match limit")
+    local match = history(reader, "admin.auctions", { action = "history", query = "NeedleAccount" })
+    check(match and #match.entries == 1 and match.entries[1].auctionId == "older-auction" and not match.truncated,
+        "search happens before the tail limit so newer unrelated records do not hide an old matching bid")
+    local invalid = history(reader, "admin.auctions", { action = "history", query = string.rep("x", 129) })
+    check(invalid and invalid.error == "invalid_args", "oversized history searches fail closed")
+    local readonly = history(reader, "admin.auctions", { action = "cancel", auctionId = "auction-1", reason = "no" })
+    check(readonly and readonly.error == "forbidden", "adding read-only history does not enable moderator cancellation")
+
+    local originalReader = getFileReader
+    getFileReader = function(path, create)
+        if path == currentPath then
+            return { readLine = function() error("read failed") end, close = function() end }
+        end
+        return originalReader(path, create)
+    end
+    local broken = history(seller, "auction.history", { auctionId = "auction-1" })
+    check(broken and broken.error == "read_failed", "file I/O failure is reported rather than disguised as empty history")
+    getFileReader = function(path, create)
+        if path == currentPath then return nil end
+        return originalReader(path, create)
+    end
+    broken = history(seller, "auction.history", {})
+    check(broken and broken.error == "read_failed" and #broken.entries == 0,
+        "an existing later file that returns a nil reader invalidates the earlier partial matches")
+    getFileReader = function(path, create)
+        if path == X.ROOT .. "/events-20260801.json" then return nil end
+        return originalReader(path, create)
+    end
+    broken = history(seller, "auction.history", {})
+    check(broken and broken.error == "read_failed" and #broken.entries == 0,
+        "an existing first file that cannot be opened reports an error, not empty history")
+    getFileReader = originalReader
+    onlinePlayers = {}
+end)()
+
+-- ===== 情境三十六：全服金流（只讀原帳本，不重算業務事件） =====
+io.write("scenario 36: administrator transaction ledger\n")
+;(function()
+    modDataStore[EC.MODDATA_KEY] = nil
+    files, sentCommands = {}, {}
+    nowMs = 1788825600000
+    fire("OnServerStarted")
+    local admin = fakePlayer("ledger-admin"); admin.role = "admin"
+    local reader = fakePlayer("ledger-reader"); reader.role = "moderator"
+    local buyer = fakePlayer("ledger-buyer")
+    onlinePlayers = { admin, reader, buyer }
+    worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+    local function cmd(who, name, args)
+        nowMs = nowMs + 700
+        sentCommands = {}
+        fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args or {})
+        for _ = 1, 20 do fire("OnTickEvenPaused") end
+        local reply = lastSent(name)
+        return reply and reply.args
+    end
+    cmd(admin, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+    L.credit("ledger-buyer", "survivor", 1000, "SYSTEM_MINT", { requestId = "ledger-seed", reasonCode = "seed" })
+    local purchase = S.Shop.buy(buyer, { id = "bandage", count = 2, revision = S.Shop.revision(), requestId = "ledger-purchase" })
+    S.Config.setOption("ShopBuybackEnabled", true, admin:getUsername())
+    S.Shop.update("bandage", { bidPrice = 5, buyback = true }, admin:getUsername())
+    local buyback = S.Shop.sell(buyer, { id = "bandage", itemIds = { buyer.inventory.items[1].id },
+        revision = S.Shop.revision(), requestId = "ledger-buyback" })
+    local trade = L.post({
+        kind = "market_buy", requestId = "ledger-market", reasonCode = "market_buy", actor = "ledger-buyer",
+        payload = { item = "Base.Axe", qty = 1, listingId = "listing-ledger", tax = 5 },
+        postings = {
+            { account = "ledger-buyer", currency = "survivor", amount = -100 },
+            { account = "ledger-seller", currency = "survivor", amount = 95 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 5 },
+        },
+    })
+    local reserve = L.post({
+        kind = "auction_bid", requestId = "ledger-reserve", reasonCode = "auction_bid", actor = "ledger-buyer",
+        payload = { item = "Base.Axe", qty = 1, auctionId = "auction-ledger", bid = 50 },
+        postings = {
+            { account = "ledger-buyer", currency = "survivor", amount = -50 },
+            { account = "ledger-buyer", currency = "survivor", amount = 50, bucket = "reserved" },
+        },
+    })
+    local integration = L.post({
+        kind = "mod", requestId = "ledger-integration", reasonCode = "subscription", reasonText = "needle-reason",
+        actor = "IntegrationExample",
+        payload = { sourceMod = "IntegrationExample", ref = { type = "subscription", id = "needle-ref" },
+            meta = { secret = "not-returned" } },
+        postings = {
+            { account = "ledger-buyer", currency = "survivor", amount = -7 },
+            { account = "MOD:IntegrationExample", currency = "survivor", amount = 7 },
+            { account = "ledger-buyer", currency = "cat", amount = 3 },
+            { account = "MOD:IntegrationExample", currency = "cat", amount = -3 },
+        },
+    })
+    local fullReason = string.rep("測試原因", 200)
+    local adjustment = L.credit("ledger-buyer", "survivor", 9, "SYSTEM_ADJUST",
+        { kind = "admin_adjust", requestId = "ledger-adjust", reasonCode = "admin_adjust", actor = "ledger-admin", reasonText = fullReason })
+    L.credit("ledger-buyer", "survivor", 30, "SYSTEM_MINT",
+        { kind = "checkin", requestId = "ledger-reward", reasonCode = "daily_checkin" })
+    local deposit = L.credit("ledger-buyer", "cat", 10, "EXTERNAL_DISCORD_cat",
+        { kind = "exchange_deposit", requestId = "ledger-discord", reasonCode = "exchange_deposit", payload = { orderId = "deposit-ledger" } })
+    for i = 1, 221 do
+        L.credit("unrelated-account", "survivor", 1, "SYSTEM_MINT", { requestId = "ledger-noise-" .. i, reasonCode = "seed" })
+    end
+    for _ = 1, 20 do fire("OnTickEvenPaused") end
+    local balancesBefore = EC.jsonEncode(S.modData().wallets)
+
+    local sales = cmd(reader, "admin.transactions", { group = "shop_buy" })
+    check(purchase.ok and sales and not sales.error and #sales.entries == 1 and sales.entries[1].txId == purchase.txId
+        and sales.entries[1].amounts.survivor == 24 and sales.entries[1].qty == 2,
+        "shop sales use one committed transaction, not the business event or both receipt copies")
+    local buys = cmd(reader, "admin.transactions", { group = "shop_sell" })
+    check(buyback.ok and buys and #buys.entries == 1 and buys.entries[1].txId == buyback.txId
+        and buys.entries[1].amounts.survivor == 5, "system buybacks appear separately from shop sales")
+    local market = cmd(reader, "admin.transactions", { group = "market" })
+    check(trade.ok and market and #market.entries == 1 and market.entries[1].amounts.survivor == 100
+        and market.entries[1].postingCount == 3, "a seller payment plus tax is one 100-coin movement, not 195 or zero")
+    local auction = cmd(reader, "admin.transactions", { group = "auction" })
+    check(reserve.ok and auction and #auction.entries == 1 and auction.entries[1].amounts.survivor == 50,
+        "a reserve movement remains visible instead of disappearing into the zero-sum ledger")
+    local detail = cmd(reader, "admin.transaction", { txId = reserve.txId })
+    local posting = detail and detail.entries and detail.entries[1] and detail.entries[1].postings
+    check(posting and #posting == 2 and posting[1].bucket == "available" and posting[1].amount == -50
+        and posting[1].availableBefore - posting[1].availableAfter == 50
+        and posting[2].bucket == "reserved" and posting[2].amount == 50
+        and posting[2].reservedAfter - posting[2].reservedBefore == 50,
+        "details preserve signed postings and both available/reserved before-after balances")
+    local multi = cmd(reader, "admin.transactions", { currency = "cat", group = "mod" })
+    check(integration.ok and multi and #multi.entries == 1 and multi.entries[1].amounts.cat == 3
+        and multi.entries[1].amounts.survivor == 7,
+        "a currency filter selects the whole transaction without adding or dropping other currencies")
+    detail = cmd(reader, "admin.transaction", { txId = integration.txId })
+    local rec = detail and detail.entries and detail.entries[1]
+    check(rec and #rec.postings == 4 and rec.reasonText == "needle-reason" and rec.ref.id == "needle-ref"
+        and rec.meta == nil and rec.payload == nil, "detail exposes the full postings and relevant reference, not arbitrary integration metadata")
+    check(multi and multi.entries[1].postings == nil and multi.entries[1].reasonText == nil,
+        "list responses carry bounded summaries rather than hundreds of full posting sets")
+    local all = cmd(reader, "admin.transactions", {})
+    check(all and not all.error and all.truncated and all.total == 230 and #all.entries == 200,
+        "global history exposes a matching total and retains the latest 200 financial transactions")
+    local query = cmd(reader, "admin.transactions", { query = "NEEDLE-REF" })
+    check(query and #query.entries == 1 and query.entries[1].txId == integration.txId and not query.truncated,
+        "searching old references happens before the 200-entry bound, not after unrelated newer rows")
+    local rewards = cmd(reader, "admin.transactions", { group = "rewards" })
+    local adjustments = cmd(reader, "admin.transactions", { group = "admin" })
+    local deposits = cmd(reader, "admin.transactions", { group = "exchange" })
+    check(rewards and #rewards.entries == 1 and adjustments and #adjustments.entries == 1
+        and deposits and #deposits.entries == 1, "rewards, adjustments and Discord deposits share the same global ledger")
+    detail = cmd(reader, "admin.transaction", { txId = adjustment.txId })
+    check(detail and detail.entries[1].reasonText == fullReason,
+        "a long Unicode adjustment reason is not cut in the middle of an encoded character")
+
+    local oldEpoch = "1700000000000"
+    S.modData().meta.history[#S.modData().meta.history + 1] = { epoch = oldEpoch, loadedSeq = 0 }
+    local oldTs = EC.parseDay("2026-06-01", 0)
+    files[X.ROOT .. "/events-20260601.json"] = { opens = 0, lines = { EC.jsonEncode({
+        type = "tx.committed", txId = oldEpoch .. ":1", epoch = oldEpoch, seq = 1, ts = oldTs,
+        kind = "shop_buy", requestId = "historical-purchase", reasonCode = "shop_buy",
+        postings = { { account = "historical-buyer", currency = "survivor", amount = -9 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 9 } },
+    }) } }
+    local historical = cmd(reader, "admin.transactions", { fromMs = oldTs, toMs = oldTs + 86400000 })
+    check(historical and #historical.entries == 1 and historical.entries[1].rolledBack,
+        "an explicit past date range can read older files and still flags rolled-back transactions")
+    local laterPath = X.ROOT .. "/events-20260602.json"
+    files[laterPath] = { opens = 0, lines = {} }
+    local originalReader = getFileReader
+    getFileReader = function(path, create)
+        if path == laterPath then return nil end
+        return originalReader(path, create)
+    end
+    detail = cmd(reader, "admin.transaction", { txId = oldEpoch .. ":1", fromMs = oldTs, toMs = oldTs + 2 * 86400000 })
+    check(detail and not detail.error and #detail.entries == 1,
+        "an exact transaction lookup finishes once found and does not depend on unrelated later files")
+    getFileReader = originalReader
+    local deniedList = cmd(buyer, "admin.transactions", {})
+    local deniedDetail = cmd(buyer, "admin.transaction", { txId = integration.txId })
+    check(deniedList and deniedList.error == "forbidden" and deniedDetail and deniedDetail.error == "forbidden",
+        "ordinary players cannot read either global summaries or another account's posting details")
+    local invalidRange = cmd(reader, "admin.transactions", { fromMs = oldTs, toMs = oldTs + 63 * 86400000 })
+    local invalidCurrency = cmd(reader, "admin.transactions", { currency = "not-registered" })
+    local invalidQuery = cmd(reader, "admin.transactions", { query = string.rep("x", 129) })
+    check(invalidRange and invalidRange.error == "invalid_range" and invalidCurrency and invalidCurrency.error
+        and invalidQuery and invalidQuery.error == "invalid_args", "range, currency and search bounds are enforced by the server")
+    local unsafeTime = cmd(reader, "admin.transactions", { fromMs = 1e24, toMs = 1e24 + 1e9 })
+    check(unsafeTime and unsafeTime.error == "invalid_args",
+        "timestamps beyond exact integer precision are rejected before the daily-file loop")
+    local noMatch = cmd(reader, "admin.transactions", { query = ".*" })
+    check(noMatch and not noMatch.error and #noMatch.entries == 0, "free text search is literal, not a Lua pattern")
+    check(EC.jsonEncode(S.modData().wallets) == balancesBefore and L.conservation("survivor") == 0 and L.conservation("cat") == 0,
+        "listing and expanding global transactions never changes wallets or conservation")
+
+    -- 帳戶分類篩選（accountClass）：分類由帳戶名推導，與來源 group 正交
+    check(EC.accountClass(nil) == nil and EC.accountClass("") == nil and EC.accountClass(12) == nil
+        and EC.accountClass("MOD:") == "mod" and EC.accountClass("MOD") == "player"
+        and EC.accountClass("EXTERNAL_DISCORD_") == "discord" and EC.accountClass("EXTERNAL_STEAM_1") == "system",
+        "missing account names stay unknown and only complete reserved prefixes are classified")
+    local escrow = L.post({
+        kind = "other_escrow", requestId = "ledger-escrow", reasonCode = "escrow_hold", actor = "ledger-buyer",
+        postings = {
+            { account = "ledger-buyer", currency = "survivor", amount = -11 },
+            { account = "SYSTEM_ESCROW", currency = "survivor", amount = 11 },
+        },
+    })
+    local lookalike = L.post({
+        kind = "other_lookalike", requestId = "ledger-lookalike", reasonCode = "escrow_hold", actor = "ledger-buyer",
+        postings = {
+            { account = "ledger-buyer", currency = "cat", amount = -4 },
+            { account = "SYSTEM_MINT_extra", currency = "cat", amount = 4 },
+        },
+    })
+    local lowercase = L.post({
+        kind = "other_lowercase", requestId = "ledger-lowercase", reasonCode = "escrow_hold", actor = "ledger-buyer",
+        postings = {
+            { account = "ledger-buyer", currency = "survivor", amount = -2 },
+            { account = "system_mint", currency = "survivor", amount = 2 },
+        },
+    })
+    local sweep = L.post({
+        kind = "other_sweep", requestId = "ledger-sweep", reasonCode = "escrow_hold",
+        postings = {
+            { account = "SYSTEM_MINT", currency = "survivor", amount = -6 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 6 },
+        },
+    })
+    check(escrow.ok and lookalike.ok and lowercase.ok and sweep.ok, "the account-class fixtures commit through the normal ledger")
+    for _ = 1, 20 do fire("OnTickEvenPaused") end
+
+    local mintRows = cmd(reader, "admin.transactions", { accountClass = "mint" })
+    local burnRows = cmd(reader, "admin.transactions", { accountClass = "burn" })
+    check(mintRows and not mintRows.error and mintRows.total == 225 and #mintRows.entries == 200 and mintRows.truncated
+        and burnRows and burnRows.total == 3 and #burnRows.entries == 3 and not burnRows.truncated
+        and burnRows.entries[1].txId == purchase.txId and burnRows.entries[3].txId == sweep.txId,
+        "the class filter runs before the 200-row bound: the oldest burn survives 221 newer unrelated mints")
+    local adjustRows = cmd(reader, "admin.transactions", { accountClass = "adjust" })
+    local discordRows = cmd(reader, "admin.transactions", { accountClass = "discord" })
+    check(adjustRows and adjustRows.total == 1 and adjustRows.entries[1].txId == adjustment.txId
+        and adjustRows.accountClass == "adjust"
+        and discordRows and discordRows.total == 1 and discordRows.entries[1].txId == deposit.txId
+        and discordRows.accountClass == "discord",
+        "SYSTEM_ADJUST and EXTERNAL_DISCORD_<currency> are separate classes and each reply echoes the one asked for")
+    local modRows = cmd(reader, "admin.transactions", { accountClass = "mod" })
+    check(modRows and modRows.total == 1 and modRows.entries[1].txId == integration.txId
+        and modRows.entries[1].postingCount == 4 and modRows.entries[1].amounts.survivor == 7
+        and modRows.entries[1].amounts.cat == 3,
+        "matching one account keeps the whole transaction: all four postings and both currencies stay")
+    local systemRows = cmd(reader, "admin.transactions", { accountClass = "system" })
+    local lookalikeMint = cmd(reader, "admin.transactions", { accountClass = "mint", query = "ledger-lookalike" })
+    check(systemRows and systemRows.total == 2 and systemRows.entries[1].txId == escrow.txId
+        and systemRows.entries[2].txId == lookalike.txId
+        and lookalikeMint and not lookalikeMint.error and #lookalikeMint.entries == 0,
+        "an unknown SYSTEM_ account is its own class and SYSTEM_MINT_extra is never folded into the faucet")
+    local lowerMint = cmd(reader, "admin.transactions", { accountClass = "mint", query = "ledger-lowercase" })
+    local lowerPlayer = cmd(reader, "admin.transactions", { accountClass = "player", query = "ledger-lowercase" })
+    check(lowerMint and not lowerMint.error and #lowerMint.entries == 0
+        and lowerPlayer and lowerPlayer.total == 1 and lowerPlayer.entries[1].txId == lowercase.txId,
+        "classes are case-sensitive: a player who named himself system_mint is not the faucet")
+    local narrowed = cmd(reader, "admin.transactions", { accountClass = "mint", group = "rewards", currency = "survivor" })
+    local wrongCurrency = cmd(reader, "admin.transactions", { accountClass = "mint", group = "rewards", currency = "cat" })
+    local wrongGroup = cmd(reader, "admin.transactions", { accountClass = "discord", group = "rewards" })
+    check(narrowed and narrowed.total == 1 and narrowed.entries[1].amounts.survivor == 30
+        and wrongCurrency and not wrongCurrency.error and #wrongCurrency.entries == 0
+        and wrongGroup and not wrongGroup.error and #wrongGroup.entries == 0,
+        "class, group and currency intersect instead of widening one another")
+    local players = cmd(reader, "admin.transactions", { accountClass = "player" })
+    local everything = cmd(reader, "admin.transactions", {})
+    local explicitAll = cmd(reader, "admin.transactions", { accountClass = "all" })
+    check(players and players.total == 233 and everything and everything.total == 234
+        and everything.accountClass == "all" and explicitAll and explicitAll.total == 234
+        and explicitAll.accountClass == "all",
+        "the system-to-system sweep is the one row with no player account; omitting the filter still means every class")
+    local badClass = cmd(reader, "admin.transactions", { accountClass = "faucet" })
+    local numberClass = cmd(reader, "admin.transactions", { accountClass = 3 })
+    local translatedClass = cmd(reader, "admin.transactions", { accountClass = "系統鑄幣" })
+    local emptyClass = cmd(reader, "admin.transactions", { accountClass = "" })
+    check(badClass and badClass.error == "invalid_args" and badClass.accountClass == "all" and #badClass.entries == 0
+        and numberClass and numberClass.error == "invalid_args"
+        and translatedClass and translatedClass.error == "invalid_args"
+        and emptyClass and emptyClass.error == "invalid_args",
+        "an unknown, non-string or translated class is refused instead of quietly listing every account")
+    local deniedClass = cmd(buyer, "admin.transactions", { accountClass = "mint" })
+    check(deniedClass and deniedClass.error == "forbidden" and deniedClass.entries == nil,
+        "the class filter sits behind the same read gate and leaks no rows to an ordinary player")
+    local currentFile = files[X.eventsPath(nowMs)]
+    currentFile.lines[#currentFile.lines + 1] = EC.jsonEncode({
+        type = "tx.committed", txId = S.modData().meta.epoch .. ":99999", ts = nowMs, kind = "shop_buy",
+        postings = { { account = "ledger-buyer", currency = "survivor", amount = "invalid" },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 5 } },
+    })
+    local corrupt = cmd(reader, "admin.transactions", { group = "shop_buy" })
+    check(corrupt and corrupt.error == "read_failed" and #corrupt.entries == 0,
+        "a corrupt posting fails the read rather than showing an incomplete amount as a valid transaction")
+    currentFile.lines[#currentFile.lines] = '{"type":"tx.committed","txId":'
+    corrupt = cmd(reader, "admin.transactions", {})
+    check(corrupt and corrupt.error == "read_failed" and #corrupt.entries == 0,
+        "a truncated JSON event makes the financial read fail instead of hiding a transaction")
+    currentFile.lines[#currentFile.lines] = EC.jsonEncode({
+        type = "tx.committed", txId = S.modData().meta.epoch .. ":99999", ts = "invalid", kind = "shop_buy",
+        postings = { { account = "ledger-buyer", currency = "survivor", amount = -5 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 5 } },
+    })
+    corrupt = cmd(reader, "admin.transaction", { txId = S.modData().meta.epoch .. ":99999" })
+    check(corrupt and corrupt.error == "read_failed",
+        "a found transaction with a broken timestamp is not reported as transaction not found")
+    currentFile.lines[#currentFile.lines] = EC.jsonEncode({
+        type = "tx.committed", ts = nowMs, kind = "shop_buy",
+        postings = { { account = "ledger-buyer", currency = "survivor", amount = -5 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 5 } },
+    })
+    corrupt = cmd(reader, "admin.transaction", { txId = S.modData().meta.epoch .. ":88888" })
+    check(corrupt and corrupt.error == "read_failed",
+        "a transaction with missing identity cannot be silently skipped by an exact lookup")
+    onlinePlayers = {}
 end)()
 
 io.write("\n")

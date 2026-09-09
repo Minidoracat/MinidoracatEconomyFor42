@@ -14,6 +14,11 @@
 --   admin.audit   {limit}                         read   ModData audit ring, newest first
 --   admin.system  {}                              read   seq/epoch, sizes, heartbeat, paths, supply,
 --                                                        7/30-day issuance, top holders
+--   admin.transactions {query,group,accountClass,  read   server-wide money view: one committed
+--                       currency,fromMs,toMs,             transaction per row from the daily events
+--                       requestId}                        files (tx.committed only, <= 62 days)
+--   admin.transaction  {txId,fromMs,toMs,          read   the postings of one transaction (bucket +
+--                       requestId}                        balance chain, reason text)
 --
 -- Every reply is `<command>` with { ok, error } (+ payload); `forbidden` when the gate fails.
 --
@@ -87,6 +92,10 @@ A.REASON_MAX = 1000                -- one JSON line in the event / audit files; 
 A.REQUEST_ID_MAX = 64
 A.TOP_HOLDERS = 5
 A.DAILY_VERSION = 2               -- md.adminDaily shape: per currency add/sub buckets
+A.TX_QUERY_CHARS = 128            -- transactions search box (bytes, as the client sends them)
+A.TX_ID_CHARS = 96
+A.TX_RANGE_MAX_MS = 62 * 86400000 -- at most 62 daily events files per query
+A.TX_POSTINGS_MAX = 200           -- packet bound for one transaction's postings (real ones: <= 8)
 
 local md = nil
 local recentAdjusts = {}          -- admin -> { ms, ... } (rate limit, in-memory)
@@ -127,11 +136,11 @@ function A.canRead(player)
     return A.isAdmin(player) or EC.roleSet(EC.sandbox("ReadOnlyRoles", "moderator"))[A.roleName(player)] == true
 end
 
-local function gate(player, command, write)
+local function gate(player, command, write, requestId)
     local allowed = write and A.isAdmin(player) or (not write and A.canRead(player))
     if not allowed then
         EC.log("admin command " .. command .. " refused for " .. tostring(player:getUsername()) .. " role=" .. A.roleName(player))
-        S.reply(player, command, { ok = false, error = "forbidden" })
+        S.reply(player, command, { ok = false, error = "forbidden", requestId = requestId })
     end
     return allowed
 end
@@ -835,12 +844,18 @@ S.handlers["admin.listings"] = function(player, args)
     S.reply(player, "admin.listings", res)
 end
 
--- admin.auctions {action=list|cancel, auctionId?, reason?, requestId}: every active auction (read
--- gate); cancel releases the highest bid and returns the items to the seller (write gate, audited).
+-- admin.auctions {action=list|cancel|history, auctionId?, reason?, query?, requestId}: every active
+-- auction (read gate); cancel releases the highest bid and returns the items to the seller (write
+-- gate, audited); history is the server-wide public record (read gate, ECAuction.history - same
+-- reply shape as the player's auction.history, marked history=true, no active-auction snapshot).
 S.handlers["admin.auctions"] = function(player, args)
     local Au = S.Auction
     local action = type(args) == "table" and args.action or "list"
     if not gate(player, "admin.auctions", action == "cancel") then return end
+    if action == "history" then
+        Au.history(player, args, { write = A.isAdmin(player) })
+        return
+    end
     local res = { ok = true }
     if action == "cancel" then
         local reason = type(args.reason) == "string" and args.reason or ""
@@ -904,6 +919,307 @@ S.handlers["admin.auditFile"] = function(player, args)
     local paths = {}
     for _, m in ipairs(months) do paths[#paths + 1] = X.ROOT .. "/audit/" .. m .. ".json" end
     W.tail(player, "admin.auditFile", paths, { months = months, perms = { read = true, write = A.isAdmin(player) } })
+end
+
+-- ---------- server-wide money view (admin.transactions / admin.transaction) ----------
+--
+-- One committed transaction is one row. The only source is the tx.committed line of the daily
+-- events files: the business events of the same trade (auction.bid, market.sold, ...) and the
+-- per-player receipt lines describe the *same* money from another angle, so folding them in
+-- would list one purchase two or three times. Nothing is recomputed into a second ledger and no
+-- revenue is inferred: `amounts` is the gross movement of the postings, which includes money
+-- moving between the available and reserved buckets of one wallet.
+--
+-- Both commands are read-gated (a read-only moderator may look, a player may not) and reply
+-- through W.tail, so a broken read is error=read_failed and never an empty success.
+
+local DAY_MS = 86400000
+
+local function dayStart(ms) return math.floor(ms / DAY_MS) * DAY_MS end
+
+local function textOf(v) return type(v) == "string" and v or "" end
+
+-- A posting amount: a finite non-zero integer inside the ledger's own bound. A value that is not
+-- one is not money, and must never be read as 0 (that would turn a corrupt line into a balanced
+-- row the panel presents as fact).
+local function isAmount(v)
+    return isFiniteInt(v) and v ~= 0 and math.abs(v) <= L.MAX_ABS_AMOUNT
+end
+
+-- A balance-chain number: 0 is legitimate here, absent stays absent (old lines carry no chain).
+local function chainOf(v)
+    if isFiniteInt(v) then return v end
+    return nil
+end
+
+-- Default window: the first day of the previous UTC month 00:00 through tomorrow 00:00. At most
+-- 62 days (both months with 31 days, today the 31st), so it always fits TX_RANGE_MAX_MS.
+local function defaultRange(ms)
+    local today = dayStart(ms)
+    local _, _, d = EC.utcDate(ms)
+    local lastOfPrev = today - d * DAY_MS
+    local _, _, pd = EC.utcDate(lastOfPrev)
+    return lastOfPrev - (pd - 1) * DAY_MS, today + DAY_MS
+end
+
+-- fromMs inclusive / toMs exclusive, both optional. A single bound anchors the other so the
+-- window is always a bounded number of daily files. Returns from, to or nil, nil, error code.
+local function txRange(args)
+    local from, to = args.fromMs, args.toMs
+    if from ~= nil and (not isFiniteInt(from) or from < 0 or from > 9007199254740991) then return nil, nil, "invalid_args" end
+    if to ~= nil and (not isFiniteInt(to) or to < 0 or to > 9007199254740991) then return nil, nil, "invalid_args" end
+    if from == nil and to == nil then
+        from, to = defaultRange(EC.now())
+    elseif to == nil then
+        to = dayStart(EC.now()) + DAY_MS
+    elseif from == nil then
+        from = to - A.TX_RANGE_MAX_MS
+        if from < 0 then from = 0 end
+    end
+    if from >= to or to - from > A.TX_RANGE_MAX_MS then return nil, nil, "invalid_range" end
+    return from, to, nil
+end
+
+A.TX_GROUPS = {
+    all = true, shop_buy = true, shop_sell = true, market = true, auction = true,
+    rewards = true, admin = true, mod = true, exchange = true, other = true,
+}
+
+-- tx.kind -> the group the panel filters on. An unmapped kind lands in "other" instead of
+-- disappearing: a row whose source this build does not know is still a row of the ledger.
+local function txGroup(kind)
+    if kind == "shop_buy" or kind == "shop_sell" then return kind end
+    if kind == "checkin" or kind == "milestone" then return "rewards" end
+    if kind == "mod" then return "mod" end
+    local prefix = type(kind) == "string" and string.match(kind, "^(%a+)_") or nil
+    if prefix == "market" or prefix == "auction" or prefix == "admin" or prefix == "exchange" then
+        return prefix
+    end
+    return "other"
+end
+
+-- The account-class filter accepts the shared vocabulary plus "all" (= no filter). A translated
+-- label must never arrive here: the wire carries class ids only.
+A.TX_ACCOUNT_CLASSES = {}
+for _, c in ipairs(EC.ACCOUNT_CLASSES) do A.TX_ACCOUNT_CLASSES[c] = true end
+
+-- A row is one whole transaction, so a class matches when *any* account it touches is of that
+-- class; the other side stays in the row (hiding it would misreport where the money went).
+local function txHasClass(accounts, class)
+    for _, account in ipairs(accounts) do
+        if EC.accountClass(account) == class then return true end
+    end
+    return false
+end
+
+-- Invalid event headers are read errors, not non-matching transactions.
+local function txHeader(rec)
+    if type(rec.type) ~= "string" then error("invalid financial event header") end
+    if rec.type ~= "tx.committed" then return false end
+    if type(rec.txId) ~= "string" or rec.txId == "" or not isFiniteInt(rec.ts) then
+        error("invalid transaction identity or timestamp")
+    end
+    return true
+end
+
+-- One events line -> the summary row, or nil when the line is not a committed transaction.
+-- Every field is picked by name: the raw payload (arbitrary keys from an integrating mod, meta
+-- blobs) never reaches a client. No long reasonText and no postings here - 200 of those would
+-- not fit one reply; admin.transaction carries them for the single row the admin opens.
+local function txSummary(rec)
+    if not txHeader(rec) then return nil end
+    local payload = type(rec.payload) == "table" and rec.payload or {}
+    local accounts, seen, amounts, count = {}, {}, {}, 0
+    local postings = rec.postings
+    if type(postings) ~= "table" or #postings == 0 or #postings > A.TX_POSTINGS_MAX then
+        error("invalid transaction postings: " .. rec.txId)
+    end
+    for _, p in ipairs(postings) do
+        if type(p) ~= "table" or type(p.account) ~= "string" or p.account == ""
+            or type(p.currency) ~= "string" or p.currency == "" or not isAmount(p.amount)
+            or (p.bucket ~= nil and p.bucket ~= "available" and p.bucket ~= "reserved") then
+            error("invalid transaction posting: " .. rec.txId)
+        end
+        count = count + 1
+        if not seen[p.account] then
+            seen[p.account] = true
+            accounts[#accounts + 1] = p.account
+        end
+        -- Sum the positive side separately for each currency, including reserve movements.
+        if p.amount > 0 then amounts[p.currency] = (amounts[p.currency] or 0) + p.amount end
+    end
+    return {
+        txId = rec.txId,
+        epoch = type(rec.epoch) == "string" and rec.epoch or nil,
+        seq = isFiniteInt(rec.seq) and rec.seq or nil,
+        ts = rec.ts,
+        kind = type(rec.kind) == "string" and rec.kind or nil,
+        group = txGroup(rec.kind),
+        actor = type(rec.actor) == "string" and rec.actor or nil,
+        requestId = type(rec.requestId) == "string" and rec.requestId or nil,
+        reasonCode = type(rec.reasonCode) == "string" and rec.reasonCode or nil,
+        item = type(payload.item) == "string" and payload.item
+            or (type(payload.fullType) == "string" and payload.fullType or nil),
+        qty = isFiniteInt(payload.qty) and payload.qty or nil,
+        sku = type(payload.sku) == "string" and payload.sku or nil,
+        sourceMod = type(payload.sourceMod) == "string" and payload.sourceMod or nil,
+        accounts = accounts, amounts = amounts, postingCount = count,
+        rolledBack = rec.rolledBack == true,
+    }
+end
+
+-- Plain case-insensitive search over the identifiers an admin has in hand, built once per line
+-- and only when there is a query at all.
+local function txMatches(rec, out, query)
+    local payload = type(rec.payload) == "table" and rec.payload or {}
+    local ref = type(payload.ref) == "table" and payload.ref or {}
+    local hay = out.txId .. " " .. textOf(out.kind) .. " " .. textOf(out.actor)
+        .. " " .. textOf(out.requestId) .. " " .. textOf(out.reasonCode)
+        .. " " .. textOf(rec.reasonText) .. " " .. textOf(out.item) .. " " .. textOf(payload.fullType)
+        .. " " .. textOf(out.sku) .. " " .. textOf(out.sourceMod) .. " " .. textOf(ref.id)
+        .. " " .. textOf(payload.auctionId) .. " " .. textOf(payload.listingId)
+        .. " " .. textOf(payload.orderId)
+    for _, account in ipairs(out.accounts) do hay = hay .. " " .. account end
+    if string.find(string.lower(hay), query, 1, true) then return true end
+    return string.find(W.itemNameLower(out.item), query, 1, true) ~= nil
+end
+
+-- The summary plus what only one row can afford: the full reason text and the postings with
+-- their bucket and balance chain. Named payload fields only, and no `meta` blob.
+local function txDetail(rec, out)
+    out.reasonText = type(rec.reasonText) == "string" and rec.reasonText or nil
+    local payload = type(rec.payload) == "table" and rec.payload or {}
+    local ref = type(payload.ref) == "table" and payload.ref or nil
+    if ref and (type(ref.type) == "string" or type(ref.id) == "string") then
+        out.ref = {
+            type = type(ref.type) == "string" and ref.type or nil,
+            id = type(ref.id) == "string" and ref.id or nil,
+        }
+    end
+    out.auctionId = type(payload.auctionId) == "string" and payload.auctionId or nil
+    out.listingId = type(payload.listingId) == "string" and payload.listingId or nil
+    out.orderId = type(payload.orderId) == "string" and payload.orderId or nil
+    local raw = rec.postings -- already validated by txSummary; never silently omit a posting
+    local list = {}
+    for _, p in ipairs(raw) do
+        list[#list + 1] = {
+            account = p.account, currency = p.currency, amount = p.amount,
+            bucket = p.bucket == "reserved" and "reserved" or "available",
+            availableBefore = chainOf(p.availableBefore), availableAfter = chainOf(p.availableAfter),
+            reservedBefore = chainOf(p.reservedBefore), reservedAfter = chainOf(p.reservedAfter),
+        }
+    end
+    out.postings = list
+    return out
+end
+
+-- Shared argument validation of both commands: requestId (echoed so a late reply cannot be
+-- mistaken for the current one) and the date window. `extra` is filled in place with what the
+-- reply must carry back.
+local function txCommon(args, extra)
+    if args.requestId ~= nil then
+        if type(args.requestId) ~= "string" or args.requestId == ""
+            or #args.requestId > A.TX_ID_CHARS or string.find(args.requestId, "%c") then
+            return nil, nil, "invalid_args"
+        end
+        extra.requestId = args.requestId
+    end
+    local from, to, err = txRange(args)
+    if err then return nil, nil, err end
+    extra.fromMs, extra.toMs = from, to
+    return from, to, nil
+end
+
+-- admin.transactions {query?, group?, accountClass?, currency?, fromMs?, toMs?, requestId?}
+-- (read gate): the newest MAX_ENTRIES *matching* transactions of the window, oldest first. The
+-- filters run inside the tail projector, so the 200-row bound applies to the matches: searching
+-- for one account does not lose it behind newer unrelated transactions. `currency` narrows which
+-- transactions are listed, never which currencies a listed transaction reports; `accountClass`
+-- narrows which transactions are listed, never which accounts a listed transaction reports.
+-- Every filter is echoed back (also on failure) so a late reply cannot be read as the current one.
+S.handlers["admin.transactions"] = function(player, args)
+    if not gate(player, "admin.transactions", false) then return end
+    args = type(args) == "table" and args or {}
+    local extra = { query = "", group = "all", accountClass = "all", perms = { read = true, write = A.isAdmin(player) } }
+    local function fail(code)
+        local reply = { entries = {}, total = 0, truncated = false, error = code }
+        for k, v in pairs(extra) do reply[k] = v end
+        S.reply(player, "admin.transactions", reply)
+    end
+
+    local from, to, err = txCommon(args, extra)
+    if err then return fail(err) end
+    local query = nil
+    if args.query ~= nil then
+        if type(args.query) ~= "string" then return fail("invalid_args") end
+        local trimmed = (string.gsub(args.query, "^%s*(.-)%s*$", "%1"))
+        if #trimmed > A.TX_QUERY_CHARS then return fail("invalid_args") end
+        extra.query = trimmed
+        if trimmed ~= "" then query = string.lower(trimmed) end
+    end
+    if args.group ~= nil then
+        if type(args.group) ~= "string" or not A.TX_GROUPS[args.group] then return fail("invalid_args") end
+        extra.group = args.group
+    end
+    local accountClass = nil
+    if args.accountClass ~= nil and args.accountClass ~= "all" then
+        if type(args.accountClass) ~= "string" or not A.TX_ACCOUNT_CLASSES[args.accountClass] then
+            return fail("invalid_args")
+        end
+        accountClass = args.accountClass
+        extra.accountClass = args.accountClass
+    end
+    local currency = nil
+    if args.currency ~= nil and args.currency ~= "" then
+        if type(args.currency) ~= "string" or not EC.CURRENCIES[args.currency] then return fail("invalid_args") end
+        currency = args.currency
+        extra.currency = args.currency
+    end
+
+    local group = extra.group
+    W.tail(player, "admin.transactions", W.eventPaths(EC.now(), from, to), extra, function(rec)
+        local out = txSummary(rec)
+        if not out then return nil end
+        -- the daily files are whole UTC days; the window may start and end inside one
+        if out.ts < from or out.ts >= to then return nil end
+        if group ~= "all" and out.group ~= group then return nil end
+        if accountClass and not txHasClass(out.accounts, accountClass) then return nil end
+        if currency and out.amounts[currency] == nil then return nil end
+        if query and not txMatches(rec, out, query) then return nil end
+        return out
+    end, true)
+end
+
+-- admin.transaction {txId, fromMs?, toMs?, requestId?} (read gate): the postings of one
+-- transaction, looked up in the same window (the panel passes the range of the list it selected
+-- from). At most one row: the events file holds one tx.committed per transaction, and a repeated
+-- line must not double the analysis of a single trade. An unknown id is an empty entry list, not
+-- an error - it is a fact about the window, not a failed read.
+S.handlers["admin.transaction"] = function(player, args)
+    if not gate(player, "admin.transaction", false) then return end
+    args = type(args) == "table" and args or {}
+    local extra = { txId = "", perms = { read = true, write = A.isAdmin(player) } }
+    local function fail(code)
+        local reply = { entries = {}, total = 0, truncated = false, error = code }
+        for k, v in pairs(extra) do reply[k] = v end
+        S.reply(player, "admin.transaction", reply)
+    end
+    local from, to, err = txCommon(args, extra)
+    if err then return fail(err) end
+    local txId = args.txId
+    if type(txId) ~= "string" or txId == "" or #txId > A.TX_ID_CHARS
+        or not string.match(txId, "^[%w:%.%-_]+$") then
+        return fail("invalid_args")
+    end
+    extra.txId = txId
+
+    W.tail(player, "admin.transaction", W.eventPaths(EC.now(), from, to), extra, function(rec)
+        if not txHeader(rec) then return nil end
+        if rec.txId ~= txId then return nil end
+        local out = txSummary(rec)
+        if not out or out.ts < from or out.ts >= to then return nil end
+        return txDetail(rec, out), true
+    end, true)
 end
 
 function A.init(root)

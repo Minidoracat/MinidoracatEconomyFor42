@@ -15,6 +15,9 @@
 if not MinidoracatEconomy or not MinidoracatEconomy.Market then
     require "MinidoracatEconomy/ECMarket"
 end
+if not MinidoracatEconomy or not MinidoracatEconomy.Wallet then
+    require "MinidoracatEconomy/ECWallet"
+end
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
 local L = EC and EC.Ledger
@@ -23,7 +26,8 @@ local T = EC and EC.Terminal
 local M = EC and EC.Mailbox
 local Mk = EC and EC.Market
 local Codec = EC and EC.Codec
-if not S or not S.AUTHORITY or not L or not X or not T or not M or not Mk or not Codec then
+local W = EC and EC.Wallet
+if not S or not S.AUTHORITY or not L or not X or not T or not M or not Mk or not Codec or not W then
     return
 end
 
@@ -375,7 +379,7 @@ function Au.bid(player, args)
     a.bids = (a.bids or 0) + 1
     a.bidders = a.bidders or {}
     a.bidders[username] = true
-    X.emit("auction.bid", { auctionId = a.id, bidder = username, amount = amount, previous = previous and previous.bidder or nil, previousAmount = previous and previous.amount or nil, seller = a.seller, item = a.item, txId = res.txId })
+    X.emit("auction.bid", { auctionId = a.id, bidder = username, amount = amount, previous = previous and previous.bidder or nil, previousAmount = previous and previous.amount or nil, seller = a.seller, item = a.item, qty = a.qty, currency = cur, txId = res.txId })
     X.market(username, { kind = "auction_bid", listingId = a.id, item = a.item, qty = a.qty, price = amount, currency = cur, other = a.seller, txId = res.txId })
     if previous and not same then
         X.market(previous.bidder, { kind = "auction_outbid", listingId = a.id, item = a.item, qty = a.qty, price = previous.amount, currency = cur, other = username })
@@ -391,7 +395,8 @@ end
 local function returnToSeller(a, reasonKind, extra)
     remove(a.id)
     local entry = M.add(a.seller, { kind = "return", item = a.item, qty = a.qty or 1, txId = nil, price = a.startPrice, snapshot = a.snapshot, listingId = a.id })
-    X.emit("auction." .. reasonKind, { auctionId = a.id, seller = a.seller, item = a.item, qty = a.qty, startPrice = a.startPrice, mailId = entry.id })
+    X.emit("auction." .. reasonKind, { auctionId = a.id, seller = a.seller, item = a.item, qty = a.qty, startPrice = a.startPrice,
+        currency = currency(), bidder = a.highest and a.highest.bidder or nil, mailId = entry.id })
     local line = { kind = "auction_" .. reasonKind, listingId = a.id, item = a.item, qty = a.qty, price = a.startPrice, mailId = entry.id }
     for k, v in pairs(extra or {}) do line[k] = v end
     X.market(a.seller, line)
@@ -498,6 +503,7 @@ function Au.restoreFromPending(username, id, pend)
     end)
     add(a)
     X.market(username, { kind = "auction_restored", listingId = id, item = a.item, qty = a.qty, price = a.startPrice })
+    X.emit("auction.restored", { auctionId = id, seller = username, item = a.item, qty = a.qty, startPrice = a.startPrice, currency = currency(), expiresAt = a.expiresAt })
     return true
 end
 
@@ -539,6 +545,106 @@ function Au.applyDowntime(now, lastBeat)
     return "extended", downtime
 end
 
+-- ---------- history (the public record) ----------
+--
+-- No second ledger and no new file: the record is the auction.* lines ECExport already writes to
+-- events-YYYYMMDD.json. They are read through W.tail (a batch of lines per tick, the newest 200
+-- matches per reply) and projected to the public whitelist below - nothing else of a line leaves
+-- the server (no postings, no balances, no admin reason). `price` is a start price, one bid or the
+-- hammer price: it is not a wallet delta, so a raise must never be read as a second charge.
+
+Au.HISTORY_QUERY_CHARS = 128
+Au.HISTORY_ID_CHARS = 96
+Au.HISTORY_KINDS = { created = true, bid = true, sold = true, unsold = true, cancelled = true, restored = true }
+
+-- One events line -> the public entry of the shared contract, or nil when the line is not an
+-- auction record (tx.committed, audit, auction.downtime, ...).
+local function historyRecord(rec)
+    local kind = type(rec.type) == "string" and string.match(rec.type, "^auction%.(.+)$") or nil
+    if not kind or not Au.HISTORY_KINDS[kind] then return nil end
+    if type(rec.auctionId) ~= "string" then return nil end
+    local price = rec.price
+    if price == nil then price = rec.amount end        -- auction.bid carries the bid as `amount`
+    if price == nil then price = rec.startPrice end    -- created / unsold / cancelled / restored
+    return {
+        kind = "auction_" .. kind,
+        auctionId = rec.auctionId,
+        listingId = rec.auctionId,                     -- the history rows key on listingId already
+        ts = type(rec.ts) == "number" and rec.ts or nil,
+        epoch = type(rec.epoch) == "string" and rec.epoch or nil,
+        seq = type(rec.seq) == "number" and rec.seq or nil,
+        txId = type(rec.txId) == "string" and rec.txId or nil,
+        item = type(rec.item) == "string" and rec.item or nil,
+        qty = type(rec.qty) == "number" and rec.qty or nil,        -- older bid lines carry none
+        seller = type(rec.seller) == "string" and rec.seller or nil,
+        bidder = type(rec.bidder) == "string" and rec.bidder or nil,
+        buyer = type(rec.buyer) == "string" and rec.buyer or nil,
+        previous = type(rec.previous) == "string" and rec.previous or nil,
+        price = type(price) == "number" and price or nil,
+        currency = type(rec.currency) == "string" and rec.currency or nil,   -- older lines: unknown
+        rolledBack = rec.rolledBack == true,
+    }
+end
+
+local function involves(out, username)
+    return out.seller == username or out.bidder == username or out.buyer == username or out.previous == username
+end
+
+local function matchesQuery(out, query)
+    local hay = string.lower(out.auctionId .. " " .. tostring(out.seller or "") .. " " .. tostring(out.bidder or "")
+        .. " " .. tostring(out.buyer or "") .. " " .. tostring(out.previous or "") .. " " .. tostring(out.item or ""))
+    if string.find(hay, query, 1, true) then return true end
+    return string.find(W.itemNameLower(out.item), query, 1, true) ~= nil
+end
+
+-- auction.history {query?, auctionId?, requestId?}, and admin.auctions action="history" with the
+-- same reply shape. Without auctionId a player sees only the auctions they took part in (seller,
+-- bidder, buyer or outbid); with one they see that auction's whole public timeline, which
+-- auction.browse already shows live. `admin` = { write = bool } grants the server-wide view and is
+-- only ever passed by the gated admin handler.
+function Au.history(player, args, admin)
+    local command = admin and "admin.auctions" or "auction.history"
+    local username = player:getUsername()
+    args = type(args) == "table" and args or {}
+    local extra = { history = true, query = "" }
+    if admin then extra.perms = { read = true, write = admin.write == true } end
+    local function fail()
+        local reply = { entries = {}, total = 0, truncated = false, error = "invalid_args" }
+        for k, v in pairs(extra) do reply[k] = v end
+        S.reply(player, command, reply)
+    end
+    if args.requestId ~= nil then
+        if type(args.requestId) ~= "string" or args.requestId == "" or #args.requestId > Au.HISTORY_ID_CHARS then return fail() end
+        extra.requestId = args.requestId
+    end
+    local query = nil
+    if args.query ~= nil then
+        if type(args.query) ~= "string" then return fail() end
+        local trimmed = (string.gsub(args.query, "^%s*(.-)%s*$", "%1"))
+        if #trimmed > Au.HISTORY_QUERY_CHARS then return fail() end
+        extra.query = trimmed
+        if trimmed ~= "" then query = string.lower(trimmed) end
+    end
+    local auctionId = nil
+    if args.auctionId ~= nil then
+        if type(args.auctionId) ~= "string" or args.auctionId == "" or #args.auctionId > Au.HISTORY_ID_CHARS
+            or not string.match(args.auctionId, "^[%w:%.%-_]+$") then return fail() end
+        auctionId = args.auctionId
+        extra.auctionId = auctionId
+    end
+    W.tail(player, command, W.eventPaths(EC.now()), extra, function(rec)
+        local out = historyRecord(rec)
+        if not out then return nil end
+        if auctionId then
+            if out.auctionId ~= auctionId then return nil end
+        elseif not admin and not involves(out, username) then
+            return nil
+        end
+        if query and not matchesQuery(out, query) then return nil end
+        return out
+    end)
+end
+
 -- ---------- commands ----------
 
 S.handlers["auction.browse"] = function(player, args)
@@ -573,6 +679,10 @@ S.handlers["auction.cancel"] = function(player, args)
     res.mine = Au.mine(player:getUsername())
     res.unclaimed = M.unclaimed(player:getUsername())
     S.reply(player, "auction.cancel", res)
+end
+
+S.handlers["auction.history"] = function(player, args)
+    Au.history(player, args, nil)
 end
 
 function Au.init(root)

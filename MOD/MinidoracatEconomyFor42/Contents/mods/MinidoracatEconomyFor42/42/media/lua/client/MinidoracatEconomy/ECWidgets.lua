@@ -11,6 +11,7 @@
 
 require "ISUI/ISButton"
 require "ISUI/ISPanel"
+require "ISUI/ISTextEntryBox"
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Client then
     require "MinidoracatEconomy/ECClient"
@@ -51,7 +52,7 @@ local MOD_COLORS = {
     track = { r = 1, g = 1, b = 1, a = 0.10 },
 }
 
-local color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2
+local color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, dateText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2
 
 U.framework = nil   -- MinidoracatUI.v1 facade (set by U.init)
 U.Skin = nil
@@ -92,6 +93,86 @@ function U.init()
     fontH.small = getTextManager():getFontHeight(UIFont.Small)
     fontH.medium = getTextManager():getFontHeight(UIFont.Medium)
     return ui
+end
+
+-- Shared by the admin controller and its transaction page.
+function U.adminErrorText(code)
+    local key = tostring(code == nil and "unknown" or code)
+    return getTextOrNull(T .. "Admin_Error_" .. key) or getTextOrNull(T .. "Market_Error_" .. key)
+        or getText(T .. "Admin_Error_generic", key)
+end
+
+function U.currencyDefs()
+    return C.currencies or (C.session and C.session.currencies) or nil
+end
+
+function U.currencyDef(id)
+    for _, cur in ipairs(U.currencyDefs() or {}) do
+        if cur.id == id then return cur end
+    end
+    return nil
+end
+
+function U.currencyName(id)
+    local cur = U.currencyDef(id)
+    if cur and type(cur.nameOverride) == "string" and cur.nameOverride ~= "" then return cur.nameOverride end
+    local static = EC.CURRENCIES[id]
+    if static then return getText(static.nameKey) end
+    return tostring(id)
+end
+
+function U.itemName(fullType)
+    if type(getItemNameFromFullType) == "function" then
+        local ok, name = pcall(getItemNameFromFullType, fullType)
+        if ok and type(name) == "string" and name ~= "" then return name end
+    end
+    return tostring(fullType or "-")
+end
+
+function U.newEntry(width, height, opts)
+    local e = ISTextEntryBox:new("", 0, 0, width, height)
+    e:initialise()
+    e:instantiate()
+    local bg, br = color("well"), color("border")
+    e.backgroundColor = { r = bg.r, g = bg.g, b = bg.b, a = 0.9 }
+    e.borderColor = { r = br.r, g = br.g, b = br.b, a = 1 }
+    opts = opts or {}
+    if opts.maxLen and e.setMaxTextLength then e:setMaxTextLength(opts.maxLen) end
+    if opts.multiline and e.setMultipleLine then
+        e:setMultipleLine(true)
+        if e.setMaxLines then e:setMaxLines(opts.maxLines or 4) end
+    end
+    if opts.clear and e.setClearButton then e:setClearButton(true) end
+    if opts.placeholder and e.setPlaceholderText then e:setPlaceholderText(opts.placeholder) end
+    return e
+end
+
+function U.entryText(entry)
+    if not entry then return "" end
+    local ok, value = pcall(function() return entry:getInternalText() end)
+    if ok and type(value) == "string" then return value end
+    return ""
+end
+
+function U.setEntryText(entry, value)
+    if entry then pcall(function() entry:setText(value or "") end) end
+end
+
+function U.setEntryEditable(entry, editable)
+    if not entry then return end
+    pcall(function() entry:setEditable(editable == true) end)
+    if not editable then pcall(function() entry:unfocus() end) end
+end
+
+function U.setButtonTitle(button, full, font)
+    button.fullTitle = full
+    button:setTitle(fitText(full, math.max(8, button.width - 12), font))
+end
+
+function U.placeList(list, visible, x, y, width, height)
+    list:setVisible(visible)
+    list:setX(x); list:setY(y)
+    if list.width ~= width or list.height ~= height then list:resize(width, height) end
 end
 
 function U.color(token) return U.theme.colors[token] end
@@ -209,16 +290,37 @@ end
 
 function U.pad2(n) return n < 10 and ("0" .. n) or tostring(n) end
 
+-- Shared four-digit year padding for timestamps and calendar labels.
+function U.pad4(y)
+    if y >= 1000 then return tostring(y) end
+    if y >= 100 then return "0" .. y end
+    if y >= 10 then return "00" .. y end
+    if y >= 0 then return "000" .. y end
+    return tostring(y)
+end
+local pad4 = U.pad4
+
+-- Fixed timestamp columns reserve room for a full four-digit year and hours/minutes.
+U.STAMP_SAMPLE = "0000-00-00 00:00"
+
 function U.clockText(ms, offsetMin)
-    local minutes = math.floor(((ms + offsetMin * 60000) % 86400000) / 60000)
+    if type(ms) ~= "number" then return "?" end
+    local minutes = math.floor((ms + (tonumber(offsetMin) or 0) * 60000) / 60000)
+    minutes = minutes - math.floor(minutes / 1440) * 1440
     return pad2(math.floor(minutes / 60)) .. ":" .. pad2(minutes % 60)
 end
 
-function U.stampText(ms, offsetMin)   -- "MM-DD HH:MM"
+-- "YYYY-MM-DD": the civil day that instant falls on for a clock offsetMin ahead of UTC, so a
+-- row near midnight reads as the player's own day (the storage keys stay UTC, EC.dayKey).
+function U.dateText(ms, offsetMin)
     if type(ms) ~= "number" then return "?" end
-    local shifted = ms + offsetMin * 60000
-    local _, mo, d = EC.utcDate(shifted)
-    return pad2(mo) .. "-" .. pad2(d) .. " " .. clockText(ms, offsetMin)
+    local y, mo, d = EC.utcDate(ms + (tonumber(offsetMin) or 0) * 60000)
+    return pad4(y) .. "-" .. pad2(mo) .. "-" .. pad2(d)
+end
+
+function U.stampText(ms, offsetMin)   -- "YYYY-MM-DD HH:MM"
+    if type(ms) ~= "number" then return "?" end
+    return dateText(ms, offsetMin) .. " " .. clockText(ms, offsetMin)
 end
 
 function U.durationText(ms)
@@ -251,7 +353,63 @@ function U.kindText(kind)
     return getTextOrNull(T .. "Kind_" .. tostring(kind)) or getText(T .. "Kind_other")
 end
 
-color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2 = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin, U.clockText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.pad2
+-- ---------- account / reason labels ----------
+--
+-- The ledger's account namespace is flat and its internal accounts are raw keys (SYSTEM_MINT,
+-- MOD:<modId>, EXTERNAL_DISCORD_<currency>). A player account is the username itself and is
+-- never translated; everything else reads as words, with the raw key kept wherever an admin
+-- reconciles against the event files (withId).
+local ACCOUNT_KEY = { SYSTEM_MINT = "Account_mint", SYSTEM_BURN = "Account_burn", SYSTEM_ADJUST = "Account_adjust" }
+local MOD_PREFIX_LEN = #"MOD:"
+local DISCORD_PREFIX_LEN = #"EXTERNAL_DISCORD_"
+
+function U.accountName(account, withId)
+    if type(account) ~= "string" or account == "" then return "-" end
+    local cls = EC.accountClass(account)
+    if cls == "player" then return account end
+    local name
+    local key = ACCOUNT_KEY[account]
+    if key then
+        name = getText(T .. key)
+    elseif cls == "mod" then
+        name = getText(T .. "Account_mod", string.sub(account, MOD_PREFIX_LEN + 1))
+    elseif cls == "discord" then
+        name = getText(T .. "Account_discord", C.currencyName(string.sub(account, DISCORD_PREFIX_LEN + 1)))
+    else
+        -- an unmapped SYSTEM_/EXTERNAL_ account: say it is one and show which
+        name = getText(T .. "Account_system", account)
+    end
+    if withId and not string.find(name, account, 1, true) then
+        name = name .. " (" .. account .. ")"
+    end
+    return name
+end
+
+-- One short word per account class (EC.ACCOUNT_CLASSES); nil / "all" is the "every account"
+-- option of a filter row.
+function U.accountClassName(cls)
+    if type(cls) ~= "string" or cls == "" or cls == "all" then
+        return getText(T .. "Admin_Tx_Class_all")
+    end
+    return getTextOrNull(T .. "Admin_Tx_Class_" .. cls) or cls
+end
+
+-- Reason of a transaction. Free text the caller wrote (an admin's adjustment reason, a mod's own
+-- wording) is shown exactly as written; a bare code we know reads as words with the code kept
+-- beside it, so a search over the raw code still matches what the eye sees. Codes without a
+-- known label stay unchanged, including custom integration codes. nil when neither is supplied.
+local REASON_KEY = { daily_checkin = "Kind_checkin", survival_milestone = "Kind_milestone" }
+
+function U.reasonText(code, written)
+    if type(written) == "string" and written ~= "" then return written end
+    if type(code) ~= "string" or code == "" then return nil end
+    local name = getTextOrNull(T .. (REASON_KEY[code] or ("Kind_" .. code)))
+        or getTextOrNull(T .. "Reason_" .. code)
+    if not name then return code end
+    return name .. " (" .. code .. ")"
+end
+
+color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, dateText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2 = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin, U.clockText, U.dateText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.pad2
 
 -- ---------- skinned button (tab / chip / primary) ----------
 
@@ -268,7 +426,27 @@ function Button.create(x, y, w, h, title, target, onClick, style)
     return o
 end
 
-function Button:prerender() end
+-- Vanilla runs the tooltip pass from ISButton:prerender (:176); this class replaced that pass, so
+-- it is re-run here for the two cases a label alone cannot answer:
+--   * a manual tooltip (the calendar glyph, an icon chip) — shown exactly as the owner set it
+--   * a title the owner fitted to its column (`title ~= fullTitle`) — the full label is offered
+--     instead of being lost with the cut characters. `autoTooltip` marks ours, so a manual one is
+--     never overwritten and the auto one is dropped again once the button gets its full width.
+-- ISButton:updateTooltip (ISButton.lua:316-346) only builds the ISToolTip while the mouse (or a
+-- joypad focus) is over the button, so an unhovered button costs one comparison per frame.
+function Button:prerender()
+    local full = self.fullTitle
+    if full ~= nil and full ~= "" and self.title ~= full then
+        if self.tooltip == nil or self.autoTooltip then
+            self.tooltip = full
+            self.autoTooltip = true
+        end
+    elseif self.autoTooltip then
+        self.tooltip = nil
+        self.autoTooltip = nil
+    end
+    if self.tooltip or self.tooltipUI then self:updateTooltip() end
+end
 
 function Button:render()
     local w, h = self.width, self.height
@@ -328,6 +506,52 @@ function Button:render()
     else
         textCentre(self, self.title, w / 2, ty, textToken, font)
     end
+end
+
+-- ---------- keyboard focus painter ----------
+-- One ring for the whole mod (ECKeyboard paints it on the window, after the children had their
+-- render pass, so it is never covered by the control it marks).
+--
+-- The ring lives *outside* the control: FOCUS_GAP px of untouched control edge, then FOCUS_W px of
+-- ring. An opaque surface halo keeps it distinct even over bright scenes with faded chrome.
+-- Neither the halo nor the ring follows U.alpha.
+U.FOCUS_GAP = 2
+U.FOCUS_W = 2
+
+function U.drawFocus(el, x, y, w, h, token)
+    local c = color(token or "accent")
+    local o = U.FOCUS_GAP + U.FOCUS_W
+    local rx, ry = x - o, y - o
+    local rw, rh = w + o * 2, h + o * 2
+    if rw <= 0 or rh <= 0 then return end
+    local bg = color("surface")
+    for i = 1, U.FOCUS_W do
+        el:drawRectBorder(rx - i, ry - i, rw + i * 2, rh + i * 2, 1, bg.r, bg.g, bg.b)
+    end
+    for i = 0, U.FOCUS_W - 1 do
+        el:drawRectBorder(rx + i, ry + i, rw - i * 2, rh - i * 2, c.a, c.r, c.g, c.b)
+    end
+end
+
+-- Caption under the ring: the whole label of a control whose own paint cannot carry it (an icon
+-- chip, a title the owner had to cut). Placed under the ring, flipped above when the ring sits at
+-- the bottom edge of `el`, and always inside el's width so it can never be clipped away.
+function U.drawFocusCaption(el, x, y, w, h, caption)
+    if type(caption) ~= "string" or caption == "" then return end
+    local o = U.FOCUS_GAP + U.FOCUS_W
+    local tw = textWidth(caption)
+    local bw = tw + 10
+    local bh = fontH.small + 6
+    local bx = x + math.floor((w - bw) / 2)
+    local by = y + h + o + 2
+    if by + bh > el.height then by = y - o - 2 - bh end
+    if by < 0 then by = 0 end
+    if bx + bw > el.width then bx = el.width - bw end
+    if bx < 0 then bx = 0 end
+    local bg, bd = color("surface"), color("accent")
+    el:drawRect(bx, by, bw, bh, 1, bg.r, bg.g, bg.b)
+    el:drawRectBorder(bx, by, bw, bh, bd.a, bd.r, bd.g, bd.b)
+    text(el, caption, bx + 5, by + 3, "text")
 end
 
 -- ---------- statement cell (VirtualList) ----------
@@ -391,6 +615,25 @@ function TableCell:render()
         end
     end
     if e.muted then strike(self, cols[1].x, ty, w - cols[1].x - PAD) end
+end
+
+-- Two-line administrative history rows; the transaction page adds its selection band.
+-- textMuted preserves readable secondary text on selected rows; amountToken may override the accent.
+local AdminHistoryCell = ISPanel:derive("MinidoracatEconomyAdminHistoryCell")
+U.AdminHistoryCell = AdminHistoryCell
+
+function AdminHistoryCell:render()
+    local e = self.entry
+    if not e then return end
+    local w, h = self.width, self.height
+    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
+    text(self, e.headText, PAD, e.line1Y, e.rolled and "textMuted" or "text")
+    textRight(self, e.amountLabel, e.amountRight, e.line1Y, e.rolled and "textMuted" or (e.amountToken or "accent"))
+    text(self, e.metaText, PAD, e.line2Y, "textMuted")
+    if e.rolled then
+        U.strike(self, PAD, e.line1Y, e.headW)
+        textRight(self, e.rolledLabel, e.amountRight, e.line2Y, "textMuted")
+    end
 end
 
 -- VirtualList factory shared by every table: rows are plain item tables, cells bind by reference.

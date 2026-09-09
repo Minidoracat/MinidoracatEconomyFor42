@@ -186,8 +186,9 @@ function C.setOption(key, value, actor, reason)
     if before == normalised then return true end
     md.config.options[key] = normalised
     changed("options", key, before, normalised, actor, reason)
-    -- ECRewards loads after this module: resolve it at call time
+    -- These modules load later; publish the changed effective state, not just the options table.
     if spec.group == "rewards" and S.Rewards then S.Rewards.pushAll() end
+    if spec.group == "shop" and S.Shop then S.Shop.pushAll() end
     return true
 end
 
