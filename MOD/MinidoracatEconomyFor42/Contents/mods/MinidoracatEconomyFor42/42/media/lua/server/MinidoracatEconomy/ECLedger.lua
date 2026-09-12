@@ -29,6 +29,16 @@ L.IDEMPOTENCY_MAX = 2000        -- LRU, spec 20
 L.MAX_ABS_AMOUNT = 1000000000000
 L.DEFAULT_BALANCE_MAX = 10000000   -- spec 18 caps.balanceMax default
 L.SYSTEM_PREFIXES = { "SYSTEM_", "EXTERNAL_", "MOD:" }
+L.BATCH_MAX = 100               -- item ids one operation may name (Shop.ITEMS_PER_BUY_MAX)
+L.REQUEST_KEY_MAX = 128         -- the whole namespaced key a transaction is stored under
+
+-- Every caller builds "<what>:<account>:<client id>" and hands that to the ledger, so the
+-- length that matters is the whole key, not the client's part of it. Callers check it before
+-- they move anything: a key the window cannot store must never end in a completed operation
+-- with no idempotency record (report CORE-M2).
+function L.validRequestKey(key)
+    return type(key) == "string" and key ~= "" and #key <= L.REQUEST_KEY_MAX
+end
 
 -- Account kinds
 function L.isSystemAccount(account)
@@ -73,6 +83,76 @@ function L.currency(id)
         marketUnit = static.marketUnit,
         balanceMax = type(override.balanceMax) == "number" and override.balanceMax or EC.sandbox("BalanceMax", L.DEFAULT_BALANCE_MAX),
     }
+end
+
+-- ---------- trade currency records (spec contract 12 / 13) ----------
+--
+-- A stored trade record (listing, auction, pending list-out, mailbox entry, buyback receipt)
+-- names the currency its money moved in. A record that names one this server knows is that
+-- currency; one that names something unknown is never guessed.
+--
+-- The absence of a currency is only evidence where the absence itself can be trusted. In the
+-- server's own Global ModData a record with no currency and no schema mark was written by the
+-- single-currency build, so it normalises to L.LEGACY_CURRENCY. A player save is not that: the
+-- client can edit or delete fields in it, so a missing currency there proves nothing and a
+-- missing schema mark is not a licence to read the record as legacy. Those fail closed and the
+-- caller holds them (Main is coordinating what stronger evidence a player-side pending can
+-- carry; until then nothing is paid out on a guess).
+L.TRADE_SCHEMA = 2
+L.LEGACY_CURRENCY = "survivor"
+L.TRUST_SERVER = "server"      -- record lives in server-owned Global ModData
+L.TRUST_PLAYER = "player"      -- record lives in a save the client can edit (the default)
+
+function L.isCurrency(id)
+    return type(id) == "string" and EC.CURRENCIES[id] ~= nil
+end
+
+-- The currency of a stored record, or nil when it cannot be proved. `trust` must be
+-- L.TRUST_SERVER for the legacy reading to apply at all.
+function L.recordCurrency(rec, trust)
+    if type(rec) ~= "table" then return nil end
+    if rec.currency ~= nil then
+        if L.isCurrency(rec.currency) then return rec.currency end
+        return nil
+    end
+    if trust ~= L.TRUST_SERVER then return nil end
+    if rec.tradeSchema ~= nil then return nil end
+    return L.LEGACY_CURRENCY
+end
+
+-- Read boundary (world load, login, restore): normalise in place and mark the record, so the
+-- next read never takes a new record for a legacy one. Returns the currency, or nil when the
+-- caller has to hold the record instead.
+function L.normalizeRecord(rec, trust)
+    local id = L.recordCurrency(rec, trust)
+    if id == nil then return nil end
+    rec.currency, rec.tradeSchema = id, L.TRADE_SCHEMA
+    return id
+end
+
+-- The exact name of the batch of item ids an operation moves: "<count>:<ids, ascending>". The
+-- same physical selection in any order gives the same string and two different selections can
+-- never give the same one - this is money-side identity, so it is compared, not hashed.
+-- It goes into idemMeta, so a requestId reused for a different batch is a request_conflict
+-- instead of being answered with the first batch's result (spec contract 12).
+-- `max` is the caller's own cap (<= 100 ids); the shape is checked before anything is sorted,
+-- so an unvalidated table can never be walked as one.
+function L.batchKey(ids, max)
+    if type(ids) ~= "table" then return nil end
+    local limit = tonumber(max)
+    if limit == nil or limit < 1 or limit > L.BATCH_MAX then return nil end
+    local n = #ids
+    if n < 1 or n > limit or EC.countKeys(ids) ~= n then return nil end
+    for i = 1, n do
+        local id = ids[i]
+        if type(id) ~= "number" or id ~= math.floor(id) or id < -2147483648 or id > 2147483647 then return nil end
+    end
+    local copy = {}
+    for i = 1, n do copy[i] = ids[i] end
+    EC.sortSafe(copy, function(a, b) return a < b end)
+    local parts = {}
+    for i = 1, n do parts[i] = string.format("%d", copy[i]) end
+    return tostring(n) .. ":" .. table.concat(parts, ",")
 end
 
 local function wallet(account, currency, create)
@@ -141,6 +221,28 @@ function L.priorResult(requestId)
     return { ok = prior.ok, txId = prior.txId, seq = prior.seq, error = prior.error, meta = meta }
 end
 
+-- An operation that moved no money still has to answer a resend exactly like one that did: a
+-- listing whose fee percent is 0 is a legal configuration, not a reason to forget what the
+-- request was. Such an operation records its result in this very ring - no zero-amount
+-- transaction is invented, no second registry exists - under the same requestId a paid one
+-- would have used, with the operation's own id and the same meta the paid path puts in
+-- idemMeta. A resend is then answered by L.priorResult, and a reused id carrying a different
+-- order is a conflict, on both paths alike.
+-- Call it only after the operation is committed, and only when L.priorResult said nothing:
+-- returns false when this requestId is already recorded (the caller must not overwrite it).
+function L.noteOperation(requestId, operationId, meta)
+    if type(requestId) ~= "string" or requestId == "" or #requestId > 128 then return false end
+    if type(operationId) ~= "string" or operationId == "" then return false end
+    if idemGet(requestId) then return false end
+    local copy
+    if meta then
+        copy = {}
+        for k, v in pairs(meta) do copy[k] = v end
+    end
+    idemPut(requestId, { ok = true, txId = operationId, seq = md.meta.seq, meta = copy })
+    return true
+end
+
 -- ---------- receipts ring (per player account) ----------
 
 local function pushReceipt(account, entry)
@@ -173,6 +275,33 @@ end
 
 -- ---------- validation ----------
 
+-- Wallets whose postings in this tx are exactly the release of their own reservation: -X on
+-- the reserved bucket and +X on the available one, nothing else. That is a bucket move, not new
+-- money - the wallet total does not change - so the two fuses that exist to stop money being
+-- created (a disabled currency, the balance cap) do not apply to its available leg. Everything
+-- else, including "the reservation is not there", still does (spec contract 11).
+local function releaseWallets(tx)
+    local moves = {}
+    for _, p in ipairs(tx.postings) do
+        if type(p) == "table" and type(p.account) == "string" and type(p.currency) == "string"
+            and type(p.amount) == "number" then
+            local key = p.account .. "\1" .. p.currency
+            local m = moves[key]
+            if not m then
+                m = { available = 0, reserved = 0, n = 0 }
+                moves[key] = m
+            end
+            if p.bucket == "reserved" then m.reserved = m.reserved + p.amount else m.available = m.available + p.amount end
+            m.n = m.n + 1
+        end
+    end
+    local out = {}
+    for key, m in pairs(moves) do
+        if m.n == 2 and m.reserved < 0 and m.available == -m.reserved then out[key] = true end
+    end
+    return out
+end
+
 -- Returns nil on success, otherwise an error code string.
 local function validate(tx)
     if type(tx) ~= "table" or type(tx.postings) ~= "table" or #tx.postings == 0 then
@@ -186,6 +315,7 @@ local function validate(tx)
 
     local sums = {}
     local seen = {}
+    local release = releaseWallets(tx)
     for _, p in ipairs(tx.postings) do
         if type(p) ~= "table" or not isValidAccount(p.account) or not isInteger(p.amount) or p.amount == 0 then
             return "invalid_args"
@@ -202,7 +332,9 @@ local function validate(tx)
         seen[key] = true
         sums[p.currency] = (sums[p.currency] or 0) + p.amount
         if not L.isSystemAccount(p.account) then
-            if not cur.enabled and p.amount > 0 then return "currency_disabled" end
+            -- the exact release of this wallet's own reservation only moves buckets
+            local moving = bucket == "available" and release[p.account .. "\1" .. p.currency] == true
+            if not cur.enabled and p.amount > 0 and not moving then return "currency_disabled" end
             if L.isFrozen(p.account) and not tx.allowFrozen then return "account_frozen" end
             local w = wallet(p.account, p.currency, false)
             if bucket == "reserved" then
@@ -211,7 +343,9 @@ local function validate(tx)
             else
                 local available = w and w.available or 0
                 if available + p.amount < 0 then return "insufficient_funds" end
-                if available + p.amount > cur.balanceMax then return "balance_cap" end
+                -- the cap gates new money only: a balance already above a lowered cap must
+                -- still be able to pay, and a release must still be able to come home
+                if p.amount > 0 and not moving and available + p.amount > cur.balanceMax then return "balance_cap" end
             end
             if p.expectedRev ~= nil and (w and w.rev or 0) ~= p.expectedRev then return "revision_mismatch" end
         end

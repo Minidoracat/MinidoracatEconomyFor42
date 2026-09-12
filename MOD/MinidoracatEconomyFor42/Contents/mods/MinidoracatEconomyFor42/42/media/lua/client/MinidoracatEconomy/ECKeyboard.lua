@@ -1,9 +1,10 @@
--- MinidoracatEconomyFor42 -- keyboard navigation for the Economy Center window.
+-- MinidoracatEconomyFor42 -- keyboard navigation for the mod's windows.
 --
--- One engine per session, no dispatcher of its own anywhere else: the window forwards the four
--- native key hooks here, this file walks an ordered list of *descriptors* the window builds
--- (Panel:keyboardTargets -> the main tabs, the admin sub tabs, then Admin:keyboardTargets), paints
--- the focus ring, and eats every key it acted on so nothing leaks into the game bindings.
+-- One engine per session, no dispatcher of its own anywhere else: a window forwards the four native
+-- key hooks here, this file walks an ordered list of *descriptors* that window builds, paints the
+-- focus ring, and eats every key it acted on so nothing leaks into the game bindings. Two windows
+-- may be up at once (the Economy Center -> its main tabs, and the administration window -> the
+-- admin sub tabs then Admin:keyboardTargets); the ring belongs to exactly one of them at a time.
 --
 -- Descriptor (the owner of a page builds them; nothing here is hard-coded per page):
 --   { kind = "group",  controls = { button, ... }, label = string }  -- arrows walk, Enter presses
@@ -16,6 +17,9 @@
 --   focusable = false     never hand this control the engine's text focus (a selectable but
 --                         non-editable box would swallow every key -- see the read-only trap)
 --   copyAll = button      Ctrl+C over this target presses that chip instead of copying here
+-- One optional method on the *root* (never on a descriptor):
+--   root:onEscape() -> true   an overlay the root owns closed on this Escape; the ring is left
+--                             alone and the key is claimed for that root only
 --
 -- Tab / Shift+Tab walk descriptors; arrows move inside a group. Enter activates a control;
 -- Space activates buttons/groups, not an entry that has finished typing. Escape gives the
@@ -113,11 +117,14 @@ local function startHold(key)
 end
 
 -- ---------- focus state ----------
--- The Economy Center window is a singleton (C.Panel.window), so one focus is enough: the root that
--- owns it, which descriptor, which control inside it. `native` is set while an editable text box
--- holds the engine's own text focus, `ring` is false when the focus was moved for the mouse.
+-- Two roots can be on screen at once (the Economy Center and the administration window), but only
+-- one of them holds the ring: this is that root, which descriptor of its list, and which control
+-- inside it. A key offered to the other root never moves it (see ownsFocus), and neither does the
+-- other root's render pass (see nativeRoot). `native` is set while an editable text box holds the
+-- engine's own text focus, `ring` is false when the focus was moved for the mouse.
 
 K.root = nil
+K.activeRoot = nil
 local st = { index = 0, sub = 0, control = nil, kind = nil, label = nil, native = nil, ring = true }
 
 -- Modifiers, read the one way that still works while a text box types: the global isShiftKeyDown /
@@ -153,6 +160,11 @@ local function ctrlDown()
     local raw = rawDown(Keyboard.KEY_LCONTROL, Keyboard.KEY_RCONTROL)
     if raw ~= nil then return raw end
     return gatedDown(isCtrlKeyDown)
+end
+
+-- Use the same ungated modifier path for mouse selection and keyboard navigation.
+function K.modifiers()
+    return ctrlDown(), shiftDown()
 end
 
 -- Visible, enabled, still attached: a control that lost its page, its right or its window is not a
@@ -225,7 +237,10 @@ end
 -- Native text events and held-state UI events use two independent queues.
 -- Compare their Java identities only: KeyEventQueue itself is not exposed to Lua.
 -- GameKeyboard.java:189-192, Keyboard.java:257-270, KeyboardStateCache.java:18-27.
-local wasOurs, handoff, firstQueue, rootPressKey = false, false, nil, nil
+-- `nativeRoot` is the root whose box holds that focus: Core.currentTextEntryBox is one per game, so
+-- this bookkeeping is global, and with two roots rendering every frame only its owner may reset it
+-- (the other one's render would otherwise re-drain the queue under the box being typed into).
+local wasOurs, handoff, firstQueue, rootPressKey, nativeRoot = false, false, nil, nil, nil
 local function beginHandoff()
     if handoff then return end
     handoff, firstQueue = true, nil
@@ -369,6 +384,7 @@ local function adopt(root, box)
         if desc.kind == "entry" and desc.control == box and desc.focusable ~= false then
             releaseFocus()      -- an older ring may still hold a combo popup, or another box open
             K.root = root
+            K.activeRoot = root
             st.index, st.sub, st.control = i, 1, box
             remember(desc)
             st.ring = true
@@ -395,7 +411,7 @@ function K.entryKey(root, box, key)
         -- would only leave a hold behind that no release ever closes.
         K.eat(key)
     elseif key == k.KEY_ESCAPE then
-        K.clear(root)
+        if not (root.onEscape and root:onEscape()) then K.clear(root) end
     end
 end
 
@@ -415,11 +431,21 @@ end
 
 local function land(root, list, index, fromEnd)
     local desc = list[index]
+    -- Reveal only the next field, then apply the normal visibility and focus guards.
+    if type(desc) == "table" then
+        local owner, control = desc.scrollOwner, desc.control
+        if usable(owner) and type(owner.scrollTo) == "function"
+            and type(control) == "table" and control.parent == owner
+            and control.javaObject ~= nil and control.enable ~= false and control.disabled ~= true then
+            owner:scrollTo(control)
+        end
+    end
     local subs = items(desc)
     if #subs == 0 then return false end
     local sub = 1
     if fromEnd then sub = #subs end
     K.root = root
+    K.activeRoot = root
     st.index, st.sub, st.control = index, sub, subs[sub]
     remember(desc)
     if st.kind == "entry" then focusEntry(root, st.control) end
@@ -472,6 +498,7 @@ end
 
 local function listKey(root, key)
     local list = st.control
+    if list.ecKey and list:ecKey(key) then return true end
     local k = Keyboard
     local rows = list.items
     local count = 0
@@ -646,6 +673,7 @@ function K.focusControl(control, showRing)
             if c == control then
                 releaseFocus()
                 K.root = root
+                K.activeRoot = root
                 st.index, st.sub, st.control = i, j, control
                 remember(desc)
                 st.ring = showRing ~= false
@@ -668,9 +696,12 @@ function K.focused()
     return st.control
 end
 
--- The target list changed (a view switched, a right was lost, a chip vanished): keep the focus where
--- it still makes sense, move it to the descriptor's first reachable control when the exact one is
--- gone, and drop it entirely when the descriptor itself went away.
+function K.isKeyboardFocused(control)
+    return control ~= nil and st.control == control and (st.ring == true or rootPressKey ~= nil)
+end
+
+-- Keep the actual control when dynamic descriptor groups move. Only choose a replacement
+-- after the focused control is no longer reachable anywhere in the current target list.
 function K.invalidate(window)
     local root = K.root
     if root == nil then return end
@@ -683,14 +714,27 @@ function K.invalidate(window)
     if st.native ~= nil and not usable(st.native) then unfocusNative() end
     local desc = list[st.index]
     local subs = items(desc)
+    local found = 0
+    for i, c in ipairs(subs) do
+        if c == st.control then found = i end
+    end
+    if found == 0 and st.control ~= nil then
+        for index, candidate in ipairs(list) do
+            if index ~= st.index then
+                for sub, control in ipairs(items(candidate)) do
+                    if control == st.control then
+                        st.index, st.sub = index, sub
+                        remember(candidate)
+                        return
+                    end
+                end
+            end
+        end
+    end
     if #subs == 0 then
         forget()
         K.step(root, 1)
         return
-    end
-    local found = 0
-    for i, c in ipairs(subs) do
-        if c == st.control then found = i end
     end
     if found == 0 then
         found = st.sub
@@ -704,14 +748,46 @@ function K.invalidate(window)
     if changed and st.kind == "entry" then focusEntry(root, st.control) end
 end
 
+-- Cold path: mouse focus may not have reached an entry callback or even a render yet.
+-- Only descendants of the window losing focus are touched, never another mod's text box.
+function K.blurInputs(root)
+    if root.getInternalText and root.isFocused and root:isFocused() then root:unfocus() end
+    if root.childrenInOrder then
+        for _, child in ipairs(root.childrenInOrder) do K.blurInputs(child) end
+    end
+end
+
 -- The window hid, collapsed, switched tab, lost the admin right: no ring is left behind and no text
 -- box keeps the engine's keyboard.
 function K.clear(root)
     if root ~= nil and K.root ~= nil and root ~= K.root then return end
+    local owner = root or K.root or K.activeRoot or nativeRoot
+    if owner then K.blurInputs(owner) end
     releaseFocus()
+    if root == nil or nativeRoot == root then
+        nativeRoot, handoff, firstQueue, wasOurs = nil, false, nil, false
+    end
+    if root == nil then K.activeRoot = nil end
     K.root = nil
     forget()
     st.ring = true
+end
+
+-- UIElement.onMouseDown calls onFocus before dispatching to any child (UIElement.java:1056-1065).
+-- Opening a window uses the same path, so the window brought forward owns the next Tab.
+function K.onFocus(root)
+    root:bringToTop()
+    if K.activeRoot ~= root then K.clear() end
+    K.activeRoot = root
+    st.ring = false
+end
+
+-- Keep the last visible root alive until the activation key's release is consumed.
+-- A release skipped by native text input is observed from GameKeyboard's sampled down state.
+function K.close(root)
+    if root.ecCloseKey ~= nil then return end
+    if rootPressKey ~= nil and K.root == root then root.ecCloseKey = rootPressKey
+    else root:setVisible(false) end
 end
 
 -- ---------- key hooks (the window forwards all four) ----------
@@ -729,9 +805,30 @@ local function validate(root)
     if not usable(st.control) then K.invalidate(root) end
 end
 
+-- An overlay the root itself owns (an item picker, an unsaved-changes prompt) answers Escape before
+-- the ring does, and only the root the engine handed the key to is asked: one window can never
+-- close the popup of the other. The root says whether it really closed something.
+local function escapeOverlay(root)
+    if type(root) ~= "table" or root.onEscape == nil then return false end
+    local ok, closed = pcall(root.onEscape, root)
+    return ok and closed == true
+end
+
+-- The ring belongs to one root. The engine offers a key to the front window first and stops at the
+-- first consumer (UIManager.java:1435-1466), so a background root only ever sees what the focused
+-- one left alone -- Tab included, which would otherwise pull the ring out of a window that is busy
+-- with a modal. It may start a ring of its own only while no other *ready* root holds one.
+local function ownsInput(root)
+    if not ready(K.activeRoot) then K.activeRoot = root end
+    return K.activeRoot == root
+end
+
 local function handle(root, key)
     local k = Keyboard
-    if key == k.KEY_TAB then return K.step(root, shiftDown() and -1 or 1) end
+    if key == k.KEY_ESCAPE and escapeOverlay(root) then return true end
+    if key == k.KEY_TAB then
+        return K.step(root, shiftDown() and -1 or 1) or (root.isModal and root:isModal()) or false
+    end
     if st.control == nil or K.root ~= root then return false end
     local taken = false
     if st.kind == "combo" then taken = comboKey(root, key)
@@ -760,14 +857,14 @@ local function handle(root, key)
 end
 
 function K.onKeyPress(root, key)
+    if not ready(root) or not ownsInput(root) then return end
     startHold(key)
-    if not ready(root) then return end
     if st.native ~= nil and nativeFocused(st.native) then return end
     validate(root)
     rootPressKey = key
     local handled = handle(root, key)
     rootPressKey = nil
-    if handled then K.eat(key) end
+    if handled then st.ring = true; K.eat(key) end
 end
 
 -- A held arrow keeps walking; a hold we did not take at the press is never taken later, and one we
@@ -786,6 +883,7 @@ end
 
 function K.onKeyRepeat(root, key)
     if eaten[key] == nil then return end
+    if not ownsInput(root) then return end
     if not repeatable(key) then return end
     if not ready(root) then return end
     if st.native ~= nil and nativeFocused(st.native) then return end
@@ -795,6 +893,10 @@ end
 
 function K.onKeyRelease(root, key)
     K.release(key)
+    if root.ecCloseKey == key then
+        root.ecCloseKey = nil
+        root:setVisible(false)
+    end
 end
 
 function K.isKeyConsumed(root, key)
@@ -822,17 +924,27 @@ end
 -- targets of what is on screen get their hooks (see observe): the mouse can focus a box at any
 -- frame, and from then on the engine talks to that box only.
 function K.render(el)
+    if el.ecCloseKey ~= nil and not GameKeyboard.isKeyDownRaw(el.ecCloseKey) then
+        el.ecCloseKey = nil
+        el:setVisible(false)
+        return
+    end
     local ours = ready(el) and observe(el, targets(el)) or nil
     if ours then
+        nativeRoot = el
         if not wasOurs then beginHandoff() end
         if not drainHandoff() then
             if st.native == ours then unfocusNative() else ours:unfocus() end
             ours = nil
+            nativeRoot = nil
         end
-    else
+        wasOurs = ours ~= nil
+    elseif nativeRoot == el or not ready(nativeRoot) then
+        -- the box that held the keyboard was this root's (or its window is gone): nobody is typing
+        nativeRoot = nil
         handoff, firstQueue = false, nil
+        wasOurs = false
     end
-    wasOurs = ours ~= nil
     if st.triggerHold and not rawDown(st.triggerHold) then st.triggerHold = nil end
     if K.root ~= el then return end
     local c = st.control

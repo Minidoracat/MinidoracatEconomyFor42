@@ -257,12 +257,16 @@ Bshop 公開頁提及 Money／Silver／Gold／StockCertificate 的固定兌值�
 
 #### 生存里程碑
 
-- 里程碑以 **account-season** 為範圍：每個帳號在同一季（wipe 週期）內每個里程碑只領一次；例如第 1、3、7、14、30 個生存日，實際門檻由設定決定。
-- 達標時由 server 自動發放，不要求玩家另外按領取。
-- 角色死亡後新角色重新累計生存時數，但已領過的里程碑不再重發；避免反覆建角農早期里程碑。
-- 同一帳號、同一里程碑只允許一個 ledger correlation ID：`survival:<accountKey>:<season>:<milestone>`。
-- 每日簽到的「有效遊玩時間」用 server 壁鐘計算的連線時間（登入時記 `getTimestampMs()`），不用 `hoursSurvived`（它隨遊戲時間倍率累加，不是實際遊玩時間）。
-- 生存時數以 server 端 `IsoPlayer.getHoursSurvived()` 為準（`IsoPlayer.java:7837-7839`，server 對在線玩家累加 `GameTime.java:532-538`）；新角色用 `OnNewGame`（`CreatePlayerPacket.java:296-300`）重置累計，死亡用 `OnCharacterDeath`（`IsoGameCharacter.java:4866-4867`；`OnPlayerDeath` 在 dedicated 不觸發，`IsoPlayer.java:6556-6574`）；引擎沒有 character UUID，改用 account-season 範圍後不需要 character key。
+- **2026-09-12 定案**：里程碑以 account-season 為領獎範圍，但門檻改用「本季單命生存」；每個帳號每季每門檻只領一次，死亡不重發，換季從零計時、不帶入角色前季生存天數。
+- 生存排行榜取每帳號本季最長單命，死亡後保留最佳，不加總多條命；以整數遊戲分鐘比較，同分同名次，完整排序後分頁。可選當季或已封存季，財富榜仍是即時分幣資產。
+- `ECSeasons` 唯一持有季 metadata、歷史與 claim 的生存欄位；季 ID 用 `S.newId()` 的 epoch:seq，顯示季號另存，不能重用數字季號當帳本識別。里程碑請求鍵仍為 `survival:<accountKey>:<seasonId>:<milestone>`，已領 bitmask 是持久防重。
+- 生存來源只認 live server 玩家：`getHoursSurvived()`（`IsoPlayer.java:7838-7843`）與 `getPlayerNum()`（`:966-974`）。按 slot 保存季內 baseline，以該角色時數減 baseline 計算；跨實例用 `min(base,hours)`，避免較舊玩家存檔被誤當新命而帶入前季時數。`OnNewGame` 不是生存重置來源；死亡只為已追蹤同實例收尾一次，普通 dead tick 不計。server 原生 hours 迴圈沒有死亡過濾（`GameTime.java:534-540`），不能直接當生存榜。
+- 初次導入開始追蹤但不重發既有已領里程碑；舊當季 claim 映射至唯一季 ID，保留 bitmask，生存從首次 live 觀測起算並標 partial，沒有紀錄的舊季不推測補榜。
+- `SeasonDays` 是 0–3650 的現實天數，0 為手動；管理寫入需 `RolesWrite`。`Cfg.setOption` 呼叫 `Se.applyDuration`，立即以本季原 `startedAt` 重算 `durationDays/endsAt`，不改季 ID、number、玩家 baseline、已領 bitmask 或 history；0 清除期限。新期限或原期限已到時拒絕並恢復原 override，不用設定寫入暗中換季。啟動時亦依有效設定對齊 current metadata，已到期仍交給原 deadline pipeline。手動 `admin.seasons{action=start,expectedSeason,requestId,reason}` 與自動到期走同一 rotation；CAS／持久操作識別防重，舊季只封存一次，不自動刪歷史。
+- 停服跨截止：保留舊季原期限及實際結束時刻，重新執行後只輪替一次，新季自當下起算，不補造空季。季與歷史仍隨 Global ModData 世界存檔，不宣稱已落盤；角色與世界存檔不同步、死亡事件缺席造成的未觀測尾段不猜測補入。
+- 每日在線獎勵仍使用現實連線時間，與生存／季資料分離；生存讀取失敗明示 `survivalError`，不冒充零或拖成每日簽到無回覆。公開榜不傳管理人、原因、凍結狀態、其他帳務或 live baseline。
+- 即時改期沿用 `seasons.changed` 與逐玩家 `rewards.state` 推播；普通玩家與管理員同時採用，不另加輪詢。提交後通知失敗回 `warning=publication_failed`，不回滾已生效期限或假報乾淨成功；raw／effective 同值仍驗 module 與完整 state。
+- 獎勵頁以現實日／時／分呈現季期，生存進度保留遊戲日／時／分。季推播及普通 state 不解除 checkin pending；`ECClient` 必須先配對本次實際送出 `rewards.checkin` 的 requestId，才採用其 state 與通知頁面。無獎勵 state 時閱讀區回到頂端，避免短錯誤沿用舊捲動而消失。
 
 #### 殭屍與活動獎勵
 
@@ -1047,15 +1051,17 @@ EconomyConfig.currencies = {
 
 ### 19.1 權限
 
-- client 端以 `getAccessLevel()`（`LuaManager.java:4435-4436`）決定是否顯示「管理」分頁；**每個管理 command 在 server 以 `player:getRole():getName()` 對照 config 的角色名清單重驗**，client 顯示不是授權。不用 `hasCapability` 當管理員閘門：A13 實測 moderator 的 `Capability.AddItem=true`、`SaveWorld=false`，而 B42 角色與能力可由服主編輯（`Roles.save()`），能力集合不是穩定的權限等級。
-- 兩級：`moderator` 以上唯讀（查帳、儀表板、稽核、看玩家餘額與收據）；`admin` 可寫（調整、移除、設定、終端登錄）。角色名清單在 config 可改（`adminRoles = {"admin"}`、`readOnlyRoles = {"moderator"}`），預設如上。B42 內建等級：`banned/user/priority/observer/gm/moderator/admin`。
+- **一般經濟權限**：client 讀 `getAccessLevel()`（`LuaManager.java:4435-4436`）與伺服器推送的設定決定入口；每個管理 command 仍由 server 以 `player:getRole():getName()` 精確比對 `AdminRoles`／`ReadOnlyRoles`。預設分別為 `admin`／`moderator`，不是「位階以上」判定；不以 `AddItem` 等能力代替一般經濟寫入授權。
+- **管理限制（2026-09-12 修訂）**：調帳三項上限與三份角色清單改為 `manageOnly`；`admin.option` 每次要求原生 `Capability.RolesWrite`（原生角色編輯入口 `ISRolesList.lua:20,110`；`RolesEditPacket.java:19`）。此能力提供面板唯讀救援入口及上述六項設定權，不自動授予調帳等一般經濟寫入權。
+- **原生角色選擇器**：`getRoles()`（`LuaManager.java:3359-3365`）列出本服內建與自訂角色，依 position 降冪、同位階依名稱排序。runtime 以精確名稱陣列保存；沙盒仍用分號分隔字串，兩者都保留大小寫與名稱內空白。空陣列表示不授權任何人；未知、重複或非 dense array 拒絕，讀取失敗不假造預設清單。UI 保留失效角色供明確移除。
+- **自行調帳**：另需角色同時命中 `AdminRoles` 與 `AdminSelfAdjustRoles`；後者預設空集合。登入 `hello.ack` 與 config 廣播同步生效設定；同名角色的局部授權變動只使對應 server veto 失效，未提供的新判決不會清掉其他拒絕。失權取消尚未送出的編輯並關閉相關 popup；server 仍對新請求重驗。
 
 ### 19.2 功能分級
 
 | 子分頁 | v1 | v2／不做 |
 |---|---|---|
 | 玩家 | 依 username 查詢；帳戶摘要（各幣別可用／保留、**本季累計**收支——來自 `stats`，不從短收據推算）；最近收據環（見 §20，每筆標 live／durable）與「更多歷史」（server 分批讀該帳號的收據檔，回滾筆標「已回滾」）；刊登數、信箱待領數、里程碑與簽到狀態、最後上線；按鈕「調整餘額」「凍結帳號」「查看刊登」「市場黑名單」 | 30 天分來源統計與跨期報表：Watchcord（它有全部事件）；跨帳號搜（依 SteamID）走 companion |
-| 調整餘額 | 選幣別、±金額、必填原因（10–200 字）、前後餘額確認、`expectedRevision`（錢包版本；不符即拒絕重讀）、單筆與每日上限、`admin.adjust` posting（`reversalOfTxId` 選填）；不可造成負餘額、不可動保留款 | 超額雙管理員核可 v2（v1 超額直接拒絕）；批次調整不做 |
+| 調整餘額 | 選幣別、±金額、必填非空原因（最多 1,000 字）、前後餘額確認、`expectedRev`（錢包版本；不符即拒絕重讀）、單筆與每日上限、`admin.adjust` posting（`reversalOfTxId` 選填）；自身帳戶另需明確授權，不可造成負餘額、不可動保留款 | 超額雙管理員核可 v2（v1 超額直接拒絕）；批次調整不做 |
 | 凍結 | 帳號級 `frozen`（拒絕該帳號所有新交易，保留既有義務：拍賣結算、信箱領取照常）；全服級「暫停新交易」開關（維護、疑似漏洞時用）；兩者皆寫 audit 與事件 | — |
 | 案件 | 三類自動開案：(a) 交付失敗與三方對帳可疑（`listing.sold` 後快照仍 active／買家缺件）；(b) **餘額異常**（收據鏈斷裂、ModData 餘額 ≠ 鏈上最後 `after`、負餘額、reserved 異常；§19.5）；(c) 全域守恆不為 0。每件顯示證據，(b) 有「修復」按鈕，管理員標記處置結果 | 案件與 Watchcord 票務對接 v2 |
 | 儀表板 | 今日／7 天／30 天：發行、銷毀、市場成交、費稅銷毀（每幣別）；總供給；`EXTERNAL_DISCORD_<currency>` 負債；前 10 持有者；發行來源長條 | 趨勢圖、匯出：Watchcord 端 |
@@ -1070,8 +1076,8 @@ EconomyConfig.currencies = {
 
 ### 19.3 調整餘額的最小安全規則
 
-1. 原因必填 10–200 字；金額為非零整數；目標帳號必須存在且不是操作者自己；幣別必須啟用（停用幣只允許扣款）；帶 `expectedRevision`，錢包版本不符即拒絕（避免與玩家同時交易時算錯前後餘額）。
-2. 每幣別單筆上限（預設 5,000）；每位管理員每日**加、減各自**上限（預設各 10,000，不互抵）；全服每日管理調整總額另有上限（預設各 50,000）；每分鐘 ≤ 10 筆。上限只能在沙盒改（`Economy_AdminAdjustMaxPerTx`＝5,000、`Economy_AdminAdjustDailyPerAdmin`＝10,000、`Economy_AdminAdjustServerDaily`＝50,000、`Economy_AdminReasonMinChars`＝10），面板不提供、也不做 runtime 覆寫——這是限制管理員的設定，屬服主層級（2026-09-06 主持人定案）；B42 管理員的「沙盒設定」可線上改、server 每次讀取，是否即時生效在階段 B 實測。
+1. 原因必填非空白文字、最多 1,000 字；金額為非零整數；目標帳號必須存在，自身帳戶另需 `AdminSelfAdjustRoles` 授權（仍須一般寫入權），不能凍結自己。幣別必須啟用（停用幣只允許扣款）；帶 `expectedRev`，錢包版本不符即拒絕。
+2. 每幣別單筆上限（預設 5,000）；每位管理員每日**加、減各自**上限（預設各 10,000，不互抵）；全服每日管理調整總額另有上限（預設各 50,000）；每分鐘 ≤ 10 筆。`AdminAdjustMaxPerTx`／`AdminAdjustDailyPerAdmin`／`AdminAdjustServerDaily` 保留沙盒預設，2026-09-12 起可由原生角色管理者在面板 runtime 覆寫，不再鎖為檔案限定。每筆含自行調帳均套用相同上限、版本核對與稽核；覆寫沿用 Global ModData 的世界存檔耐久性。
 3. 不可使目標餘額為負；不可動保留款；不可調整 `EXTERNAL_*`／`SYSTEM_*` 帳戶。
 4. 每筆產生 `admin.adjust` 事件（adminKey、target、currency、delta、reason、requestId、`expectedRevision`、`reversalOfTxId`）；Watchcord 輪詢到即推 Discord 管理頻道通知——管理員帳號被盜時，外部告警是最有效的防線（Watchcord 已有 `admin_alerts`／`discord_outbox`）。
 5. **分權**：遊戲內「調整餘額」與 Watchcord 端「退回積分」由不同角色執行；退回積分必須綁原訂單 `orderId`，且同一訂單的累計退回不得超過該訂單實扣金額。

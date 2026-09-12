@@ -39,10 +39,18 @@ EC.CURRENCIES = {
         id = "cat", sortOrder = 2,
         nameKey = "IGUI_MinidoracatEconomy_Currency_cat",
         iconDefault = "media/ui/MinidoracatEconomy/currency_cat.png",
-        marketUnit = false, directTransfer = false,
+        marketUnit = true, directTransfer = false,
     },
 }
 EC.CURRENCY_ORDER = { "survivor", "cat" }
+
+-- Shop buyback daily caps: one option key pair per currency, so the currency page and the shop
+-- read the same truth (ECConfig.buybackCaps -> Cfg.currency(id).buybackCaps). A cap of 0 means
+-- this currency does not buy anything back; it never means unlimited.
+EC.BUYBACK_OPTIONS = {
+    survivor = { account = "ShopBuybackPerAccountDaily", server = "ShopBuybackServerDaily" },
+    cat = { account = "ShopCatBuybackPerAccountDaily", server = "ShopCatBuybackServerDaily" },
+}
 
 -- Terminals (stage C thin slice, spec 12 stage C / 17.1): the mod's own terminal tiles (the ATM
 -- and the catgirl android, four facings each, MinidoracatEconomy_tiles.tiles) plus the vanilla
@@ -221,19 +229,77 @@ end
 function EC.sandbox(key, default)
     if EC.optionOverride then
         local v = EC.optionOverride(key)
-        if v ~= nil and type(v) == type(default) then return v end
+        if v ~= nil then
+            if type(v) == type(default) then return v end
+            -- One exception, by design: a role list is stored as an array of exact role names,
+            -- while the sandbox half of the same key is one ';'-separated string - the two halves
+            -- of that key have different types. Every other key keeps the strict type guard.
+            local spec = EC.OPTION_BY_KEY and EC.OPTION_BY_KEY[key]
+            if spec ~= nil and spec.kind == "roles" and type(v) == "table" then return v end
+        end
     end
     return EC.sandboxDefault(key, default)
 end
 
--- "admin;moderator" -> { admin = true, moderator = true } (sandbox strings cannot contain commas:
--- ScriptParser splits on them, pitfalls.md "Sandbox 選項").
-function EC.roleSet(str)
+-- Role names -> set, for an exact-name membership test. Two shapes reach this:
+--   * the sandbox file half, "admin;gm" (commas are impossible there, ScriptParser splits on
+--     them - pitfalls.md "Sandbox 選項"): split on ';' only, trimmed at both ends;
+--   * the runtime override half (admin.option): an array of exact role names.
+-- Nothing is lower-cased and nothing is split on whitespace: role lookup is case sensitive
+-- (Roles.java:302-305) and a host-made role may contain spaces, so "Admin" and "admin" are two
+-- different roles and must never authorise each other.
+function EC.roleSet(value)
     local set = {}
-    for name in string.gmatch(tostring(str or ""), "[^;%s]+") do
-        set[string.lower(name)] = true
+    if type(value) == "table" then
+        for i = 1, #value do
+            local name = value[i]
+            if type(name) == "string" and name ~= "" then set[name] = true end
+        end
+        return set
+    end
+    for part in string.gmatch(tostring(value or ""), "[^;]+") do
+        local name = (string.gsub(part, "^%s*(.-)%s*$", "%1"))
+        if name ~= "" then set[name] = true end
     end
     return set
+end
+
+-- Every role this server actually has, highest rank first: { name = <exact>, position = n }.
+-- getRoles (LuaManager.java:3359-3365 -> Roles.getRoles) answers on the dedicated server as well
+-- as on the client and includes the host's custom roles; the order follows vanilla's own role
+-- list (ISRolesList.lua:74-79, position descending) with the name as tie-break so it is stable.
+-- An unavailable API or a failed read returns nil, never a fabricated list of default roles.
+function EC.roleChoices()
+    local out = {}
+    local ok = pcall(function()
+        local roles = getRoles()
+        for i = 0, roles:size() - 1 do
+            local role = roles:get(i)
+            local name = role:getName()
+            if type(name) == "string" and name ~= "" then
+                out[#out + 1] = { name = name, position = tonumber(role:getPosition()) or 0 }
+            end
+        end
+    end)
+    if not ok then return nil end
+    EC.sortSafe(out, function(a, b)
+        if a.position ~= b.position then return a.position > b.position end
+        return a.name < b.name
+    end)
+    return out
+end
+
+-- May this player change the options that decide who the economy's admins are? Only the native
+-- role-editing capability says yes: Capability.RolesWrite is the gate on vanilla's own role
+-- editor (ISRolesList.lua:20/110, RolesEditPacket.java:19), answered by Role.hasCapability
+-- (Role.java:185-191). Deliberately not one of this mod's own role lists - the list this guards
+-- could then be re-pointed by the very people it limits - and deliberately not "may see the
+-- panel": moderator holds SandboxOptions without RolesWrite (Roles.java:448-461). Fails closed
+-- when the API or the capability is missing.
+function EC.canManageSettings(player)
+    if player == nil then return false end
+    local ok, cap = pcall(function() return player:getRole():hasCapability(Capability.RolesWrite) end)
+    return ok and cap == true
 end
 
 -- ---------- time ----------
@@ -337,6 +403,14 @@ end
 
 local decodeValue
 
+local function unicodeChar(code)
+    -- Kahlua strings are UTF-16 (StringLib.java:760-768); the offline Lua runtime uses UTF-8.
+    if utf8 and utf8.char then return utf8.char(code) end
+    if code < 65536 then return string.char(code) end
+    code = code - 65536
+    return string.char(55296 + math.floor(code / 1024), 56320 + code % 1024)
+end
+
 local function decodeString(s, pos)
     -- pos is at the opening quote
     local out = {}
@@ -355,15 +429,28 @@ local function decodeString(s, pos)
             elseif e == "f" then out[#out + 1] = "\f"
             elseif e == "u" then
                 local hex = string.sub(s, i + 2, i + 5)
+                if not string.match(hex, "^%x%x%x%x$") then return nil, i end
                 local code = tonumber(hex, 16)
-                if not code or #hex ~= 4 then return nil, i end
-                out[#out + 1] = string.char(code < 256 and code or 63)   -- non-Latin-1 escapes become '?'
+                if code >= 55296 and code <= 56319 then
+                    local lowHex = string.sub(s, i + 8, i + 11)
+                    if string.sub(s, i + 6, i + 7) ~= "\\u" or not string.match(lowHex, "^%x%x%x%x$") then return nil, i end
+                    local low = tonumber(lowHex, 16)
+                    if low < 56320 or low > 57343 then return nil, i end
+                    code = 65536 + (code - 55296) * 1024 + low - 56320
+                    i = i + 6
+                elseif code >= 56320 and code <= 57343 then
+                    return nil, i
+                end
+                out[#out + 1] = unicodeChar(code)
                 i = i + 4
-            else
+            elseif e == '"' or e == "\\" or e == "/" then
                 out[#out + 1] = e
+            else
+                return nil, i
             end
             i = i + 2
         else
+            if string.byte(c) < 32 then return nil, i end
             out[#out + 1] = c
             i = i + 1
         end
@@ -468,25 +555,36 @@ end
 
 -- Sandbox options of this mod: one schema shared by the server (validation of runtime overrides,
 -- `admin.option`) and the admin panel's settings page (controls, grouping, formatting).
---   kind     bool | int | number | list_int | text
+--   kind     bool | int | number | list_int | text | roles
 --   min/max/step  numeric bounds (ints) / step of the +- buttons
 --   unit     coin | minutes | hour | tz | roles | days   (presentation only)
---   locked   true = server file only: the caps that limit admins and the role lists must not be
---            raised from inside the panel by the very people they limit (spec 19.3 decision 11)
+--   locked   true = server file only, never editable in-game (no option needs this today)
+--   manageOnly  true = the option decides who this mod's admins are or how far they may reach,
+--            so changing it needs the native role-editing capability (EC.canManageSettings),
+--            not the economy write role it hands out: the people a limit applies to must not be
+--            the people who raise it (spec 19.3 decision 11, re-decided in favour of an in-game
+--            path for whoever already owns the server's roles)
+--   kind "roles" values are an array of exact native role names at runtime and a ';'-separated
+--            string in the sandbox file (EC.roleSet reads both, EC.roleChoices offers the names)
 --   currency values live in config.currencies (ECConfig) and are edited through the currency page
 EC.OPTIONS = {
-    { key = "CheckinAmount", group = "rewards", kind = "int", min = 0, max = 1000000, step = 10, default = 30, unit = "coin" },
+    { key = "CheckinAmount", group = "rewards", kind = "int", min = 0, max = 1000000, step = 10, default = 30, unit = "coin", zeroOff = true },
     { key = "CheckinMinPlaytimeMinutes", group = "rewards", kind = "int", min = 0, max = 1440, step = 5, default = 15, unit = "minutes" },
     { key = "CheckinServerDailyCap", group = "rewards", kind = "int", min = 0, max = 100000000, step = 1000, default = 0, unit = "coin", zeroUnlimited = true },
+    { key = "CheckinDailyLimit", group = "rewards", kind = "int", min = 1, max = 24, step = 1, default = 1 },
+    { key = "CheckinIntervalMinutes", group = "rewards", kind = "int", min = 1, max = 1440, step = 5, default = 60, unit = "minutes" },
     { key = "RewardDayResetHour", group = "rewards", kind = "int", min = 0, max = 23, step = 1, default = 0, unit = "hour" },
     { key = "RewardTimezoneUTC", group = "rewards", kind = "number", min = -12, max = 14, step = 0.5, default = 8, unit = "tz" },
     { key = "MilestoneDays", group = "rewards", kind = "list_int", min = 1, max = 3650, maxItems = 16, default = "1;3;7;14;30", unit = "days" },
     { key = "MilestoneAmounts", group = "rewards", kind = "list_int", min = 0, max = 1000000, maxItems = 16, default = "100;150;250;400;1000", unit = "coin" },
-    { key = "AdminRoles", group = "admin", kind = "text", default = "admin", unit = "roles", locked = true },
-    { key = "ReadOnlyRoles", group = "admin", kind = "text", default = "moderator", unit = "roles", locked = true },
-    { key = "AdminAdjustMaxPerTx", group = "admin", kind = "int", min = 1, max = 100000000, default = 5000, unit = "coin", locked = true },
-    { key = "AdminAdjustDailyPerAdmin", group = "admin", kind = "int", min = 1, max = 100000000, default = 10000, unit = "coin", locked = true },
-    { key = "AdminAdjustServerDaily", group = "admin", kind = "int", min = 1, max = 100000000, default = 50000, unit = "coin", locked = true },
+    { key = "SeasonDays", group = "seasons", kind = "int", min = 0, max = 3650, step = 1, default = 0, unit = "days", manageOnly = true, zeroOff = true },
+    { key = "AdminRoles", group = "admin", kind = "roles", default = "admin", unit = "roles", manageOnly = true },
+    { key = "ReadOnlyRoles", group = "admin", kind = "roles", default = "moderator", unit = "roles", manageOnly = true },
+    -- empty by default: holding the write role is never on its own a licence to pay yourself
+    { key = "AdminSelfAdjustRoles", group = "admin", kind = "roles", default = "", unit = "roles", manageOnly = true },
+    { key = "AdminAdjustMaxPerTx", group = "admin", kind = "int", min = 1, max = 10000000, default = 5000, unit = "coin", manageOnly = true },
+    { key = "AdminAdjustDailyPerAdmin", group = "admin", kind = "int", min = 1, max = 100000000, default = 10000, unit = "coin", manageOnly = true },
+    { key = "AdminAdjustServerDaily", group = "admin", kind = "int", min = 1, max = 1000000000, default = 50000, unit = "coin", manageOnly = true },
     { key = "BalanceMax", group = "currency", kind = "int", min = 1000, max = 1000000000, step = 100000, default = 10000000, unit = "coin", page = "Currencies" },
     { key = "CatRatePointsPerCoin", group = "currency", kind = "int", min = 1, max = 1000000, default = 1, page = "Currencies" },
     { key = "CatPerOrderMin", group = "currency", kind = "int", min = 1, max = 1000000, default = 10, page = "Currencies" },
@@ -494,9 +592,13 @@ EC.OPTIONS = {
     { key = "CatPerAccountDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 5000, page = "Currencies" },
     { key = "CatServerDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 50000, page = "Currencies" },
     { key = "RemoteReadOnly", group = "general", kind = "bool", default = true },
+    { key = "LeaderboardEnabled", group = "general", kind = "bool", default = true },
+    { key = "LeaderboardShowAmounts", group = "general", kind = "bool", default = false },
     { key = "ShopBuybackEnabled", group = "shop", kind = "bool", default = false },
-    { key = "ShopBuybackPerAccountDaily", group = "shop", kind = "int", min = 1, max = 100000000, step = 100, default = 500, unit = "coin" },
-    { key = "ShopBuybackServerDaily", group = "shop", kind = "int", min = 1, max = 100000000, step = 1000, default = 20000, unit = "coin" },
+    { key = "ShopBuybackPerAccountDaily", group = "shop", kind = "int", min = 0, max = 100000000, step = 100, default = 500, unit = "coin", zeroOff = true },
+    { key = "ShopBuybackServerDaily", group = "shop", kind = "int", min = 0, max = 100000000, step = 1000, default = 20000, unit = "coin", zeroOff = true },
+    { key = "ShopCatBuybackPerAccountDaily", group = "shop", kind = "int", min = 0, max = 100000000, step = 100, default = 0, unit = "coin", zeroOff = true },
+    { key = "ShopCatBuybackServerDaily", group = "shop", kind = "int", min = 0, max = 100000000, step = 1000, default = 0, unit = "coin", zeroOff = true },
     { key = "MarketListingFeePercent", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 2, unit = "percent" },
     { key = "MarketSalesTaxPercent", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 5, unit = "percent" },
     { key = "MarketListingDays", group = "market", kind = "int", min = 1, max = 30, step = 1, default = 7, unit = "days" },
@@ -513,7 +615,7 @@ EC.OPTIONS = {
     { key = "RadioRange", group = "radio", kind = "int", min = 0, max = 5000, step = 50, default = 500, unit = "tiles", zeroUnlimited = true },
     { key = "RadioLanguage", group = "radio", kind = "text", default = "auto", unit = "lang" },
 }
-EC.OPTION_GROUPS = { "rewards", "admin", "currency", "shop", "market", "auction", "radio", "general" }
+EC.OPTION_GROUPS = { "rewards", "seasons", "admin", "currency", "shop", "market", "auction", "radio", "general" }
 EC.OPTION_BY_KEY = {}
 for _, o in ipairs(EC.OPTIONS) do EC.OPTION_BY_KEY[o.key] = o end
 

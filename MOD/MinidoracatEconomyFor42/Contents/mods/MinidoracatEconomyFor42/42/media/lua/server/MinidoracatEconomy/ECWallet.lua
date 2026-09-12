@@ -38,6 +38,10 @@ function W.balances(username)
     return out
 end
 
+-- The receipt ring as the pages read it: the whole usable summary of the line (what moved, for
+-- what, and the balance chain around it). A field the ring never carried stays nil - an unknown
+-- balance is not 0, and the panel must be able to tell "no reserve movement" from "not recorded"
+-- (the ledger writes reservedAfter only, so reservedBefore is unknown on every current line).
 function W.state(username)
     local receipts = L.receipts(username)
     local list = {}
@@ -45,7 +49,10 @@ function W.state(username)
         local epoch = r.txId and EC.parseId(r.txId) or nil
         list[i] = {
             txId = r.txId, seq = r.seq, ts = r.ts, kind = r.kind, currency = r.currency, amount = r.amount,
-            before = r.before, after = r.after, counterparty = r.counterparty,
+            before = r.before, after = r.after,
+            reservedBefore = r.reservedBefore, reservedAfter = r.reservedAfter,
+            counterparty = r.counterparty,
+            item = r.item, qty = r.qty, reasonText = r.reasonText, sourceMod = r.sourceMod,
             rolledBack = S.isRolledBack(epoch, r.seq),
         }
     end
@@ -63,12 +70,30 @@ end
 -- the ring, so the 200-entry bound applies to the matches and not to the raw lines (a search for
 -- an old auction is not pushed out by newer unrelated events). A read that breaks halfway replies
 -- error=read_failed: a truncated list must never be handed over as a complete one.
+--
+-- Read-your-writes: every job first waits for the export fence taken when the query started
+-- (X.readFence / X.fenceStatus). The client's own successful operation is enqueued for the file
+-- before its reply leaves the server, so reading before that watermark reached disk would answer
+-- with the state *before* the operation - and for the very first record of a month it would open
+-- no file at all and report an empty success. The fence is a watermark, not a flush: the export
+-- keeps its 50-lines-per-tick budget and later lines never extend an existing fence.
+
+-- The reply of a finished job. An internal reader (the recovery proof journal) passes
+-- `onComplete` and takes the whole reply itself: raw evidence is never sent to a client, and the
+-- refusals below take the same route, so one caller never has to handle two kinds of outcome.
+local function deliver(job, reply)
+    if job.onComplete then
+        local ok, err = pcall(job.onComplete, reply)
+        if not ok then EC.log("file job callback failed: " .. tostring(err)) end
+        return
+    end
+    if job.player then S.reply(job.player, job.command, reply) end
+end
 
 local function finishJob(key, job)
     jobs[key] = nil
     if job.reader then pcall(function() job.reader:close() end) end
-    local p = job.player
-    if not p then return end
+    if not job.player then return end
     local reply
     if job.failed then
         reply = { entries = {}, total = 0, truncated = false, error = "read_failed" }
@@ -82,8 +107,12 @@ local function finishJob(key, job)
         end
         reply = { entries = entries, truncated = job.truncated, total = n }
     end
-    for k, v in pairs(job.extra) do reply[k] = v end
-    S.reply(p, job.command, reply)
+    -- On a broken read the verdict is read_failed; the echoed criteria must not overwrite it
+    -- (a projector that reports its own outcome through `extra` cannot mask a failed read).
+    for k, v in pairs(job.extra) do
+        if not (job.failed and k == "error") then reply[k] = v end
+    end
+    deliver(job, reply)
 end
 
 local function pushEntry(job, entry)
@@ -115,7 +144,25 @@ local function openNext(job)
     return false
 end
 
+-- Waits for the fence, then opens the first readable path; false while the fence is still behind.
+local function startJob(key, job)
+    local ready, err = X.fenceStatus(job.fence)
+    if err then error("history fence failed: " .. tostring(err)) end
+    if not ready then return false end
+    job.opened = true
+    if not openNext(job) then
+        finishJob(key, job)          -- fence reached, no such file: an honest empty answer
+        return false
+    end
+    return true
+end
+
+-- One batch: bounded by W.HISTORY_LINES_PER_TICK and, for an internal reader that asked for one,
+-- by a byte budget as well (whichever runs out first). A journal line carries a whole replay, so
+-- a line count alone is not a bound on the work a tick does - the decode is the cost.
 local function stepJob(key, job)
+    if not job.opened and not startJob(key, job) then return end
+    local bytes = 0
     for _ = 1, W.HISTORY_LINES_PER_TICK do
         local line = job.reader and job.reader:readLine() or nil
         if line == nil then
@@ -125,6 +172,7 @@ local function stepJob(key, job)
                 return
             end
         elseif string.find(line, "%S") then
+            bytes = bytes + #line
             local entry = EC.jsonDecode(line)
             if type(entry) == "table" then
                 local epoch = entry.txId and EC.parseId(entry.txId) or entry.epoch
@@ -136,6 +184,7 @@ local function stepJob(key, job)
             elseif job.strictJson then
                 error("invalid history JSON: " .. job.paths[job.index])
             end
+            if job.bytesPerTick and bytes >= job.bytesPerTick then return end
         end
     end
 end
@@ -152,34 +201,59 @@ function W.onTick()
 end
 
 -- Starts a job for `player`: the newest entries of `paths` (read in order) are replied through
--- `command` merged with `extra`, optionally filtered through `projector`. Refuses with error=busy
--- (same player+command still reading), server_busy (too many readers) or read_failed (the first
--- file could not be opened); missing files simply contribute nothing.
--- A projector may also return true as its second result to finish an exact single-record lookup.
+-- `command` merged with `extra`, optionally filtered through `projector`. Refuses at once with
+-- error=busy (same player+command still reading) or server_busy (too many readers); a file that
+-- cannot be opened once the fence is reached replies error=read_failed, a file that does not
+-- exist simply contributes nothing.
+-- A projector may also return true as its second result to finish an exact single-record lookup,
+-- and may report its own outcome by writing `extra.error` (a broken read still wins).
 -- strictJson fails on malformed non-empty rows; financial queries cannot silently skip them.
-function W.tail(player, command, paths, extra, projector, strictJson)
+--
+-- `options` is internal only (the recovery proof journal; no client command passes one) and
+-- every existing six-argument caller keeps its exact behaviour:
+--   onComplete(reply)  the whole outcome - finish, refuse and read failure - goes to this
+--                      callback and nothing is sent to the player. Server-only evidence is read
+--                      through this door and never leaves as a reply.
+--   bytesPerTick       an extra per-tick budget on top of the line count. There is deliberately
+--                      no row pre-filter: a caller that skips a row it did not parse cannot say
+--                      the row was intact, and for a financial read that is the whole question.
+function W.tail(player, command, paths, extra, projector, strictJson, options)
     local key = player:getUsername() .. ":" .. command
+    local onComplete = type(options) == "table" and options.onComplete or nil
     local function refuse(code)
         local reply = { entries = {}, total = 0, truncated = false, error = code }
-        for k, v in pairs(extra) do reply[k] = v end
+        for k, v in pairs(extra) do
+            if k ~= "error" then reply[k] = v end
+        end
+        if onComplete then
+            local ok, err = pcall(onComplete, reply)
+            if not ok then EC.log("file job callback failed: " .. tostring(err)) end
+            return
+        end
         S.reply(player, command, reply)
     end
     if jobs[key] then return refuse("busy") end
     if EC.countKeys(jobs) >= W.HISTORY_MAX_JOBS then return refuse("server_busy") end
-    local job = { paths = paths, index = 0, reader = nil, ring = {}, head = 1, count = 0, truncated = false,
-        player = player, command = command, extra = extra, projector = projector, strictJson = strictJson == true }
-    local ok, opened = pcall(openNext, job)
-    if not ok then
-        EC.log("file job " .. key .. " could not be opened: " .. tostring(opened))
-        return refuse("read_failed")
-    end
-    if not opened then
-        local reply = { entries = {}, total = 0, truncated = false }
-        for k, v in pairs(extra) do reply[k] = v end
-        S.reply(player, command, reply)
-        return
-    end
-    jobs[key] = job
+    -- The watermark of these paths as of now: everything the caller's own operation already
+    -- enqueued is read, nothing waits for lines written after the query started.
+    jobs[key] = {
+        paths = paths, index = 0, reader = nil, ring = {}, head = 1, count = 0, truncated = false,
+        player = player, command = command, extra = extra, projector = projector,
+        strictJson = strictJson == true, fence = X.readFence(paths), opened = false,
+        onComplete = onComplete,
+        bytesPerTick = type(options) == "table" and tonumber(options.bytesPerTick) or nil,
+    }
+end
+
+-- Is there room for this read right now? An internal FIFO asks before it starts one, so a busy
+-- pool means "wait", not a refusal that comes back through the callback and is answered with
+-- another attempt in the same tick.
+function W.canStartRead(player, command)
+    if player == nil or type(command) ~= "string" then return false end
+    local ok, username = pcall(function() return player:getUsername() end)
+    if not ok or type(username) ~= "string" then return false end
+    if jobs[username .. ":" .. command] then return false end
+    return EC.countKeys(jobs) < W.HISTORY_MAX_JOBS
 end
 
 -- Receipt file paths for a username: the given months in order (a missing file contributes nothing).
@@ -246,7 +320,8 @@ end
 
 -- Previous and current UTC month keys (the "recent" window spans a month boundary).
 function W.recentMonths(ms)
-    local prev = EC.monthKey(ms - 30 * 86400000)
+    local _, _, day = EC.utcDate(ms)
+    local prev = EC.monthKey(ms - day * 86400000)
     local cur = EC.monthKey(ms)
     if prev == cur then return { cur } end
     return { prev, cur }
@@ -254,17 +329,21 @@ end
 
 -- month: "YYYYMM" or "recent" (previous + current month, newest last); a month with no file
 -- gives an empty reply.
-function W.requestHistory(player, month)
+function W.requestHistory(player, month, requestId)
+    if requestId ~= nil and (type(requestId) ~= "string" or requestId == "" or #requestId > 96 or string.find(requestId, "%c")) then
+        S.reply(player, "wallet.history", { month = tostring(month), entries = {}, error = "invalid_args" })
+        return
+    end
     local months
     if month == "recent" then
         months = W.recentMonths(EC.now())
     elseif type(month) == "string" and string.match(month, "^%d%d%d%d%d%d$") then
         months = { month }
     else
-        S.reply(player, "wallet.history", { month = tostring(month), entries = {}, error = "invalid_args" })
+        S.reply(player, "wallet.history", { month = tostring(month), requestId = requestId, entries = {}, error = "invalid_args" })
         return
     end
-    W.tail(player, "wallet.history", W.receiptPaths(player:getUsername(), months), { month = month })
+    W.tail(player, "wallet.history", W.receiptPaths(player:getUsername(), months), { month = month, requestId = requestId })
 end
 
 -- ---------- push on change ----------
@@ -306,11 +385,13 @@ function W.init()
 end
 
 S.handlers["wallet.state"] = function(player, args)
-    S.reply(player, "wallet.state", W.state(player:getUsername()))
+    local res = W.state(player:getUsername())
+    res.requestId = type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil
+    S.reply(player, "wallet.state", res)
 end
 
 S.handlers["wallet.history"] = function(player, args)
-    W.requestHistory(player, args.month)
+    W.requestHistory(player, args.month, args.requestId)
 end
 
 S.Wallet = W

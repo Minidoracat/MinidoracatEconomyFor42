@@ -12,11 +12,32 @@ option MinidoracatEconomy.RemoteReadOnly
     translation = MinidoracatEconomy_RemoteReadOnly,
 }
 
+/* Public holdings leaderboard (read-only board in the player panel). Enabled shows the board at
+   all; ShowAmounts additionally reveals other players' amounts (a player always sees their own).
+   Ranks are per currency, total holdings, offline players included. */
+option MinidoracatEconomy.LeaderboardEnabled
+{
+    type = boolean,
+    default = true,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_LeaderboardEnabled,
+}
+
+option MinidoracatEconomy.LeaderboardShowAmounts
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_LeaderboardShowAmounts,
+}
+
+/* 0 stops the daily check-in completely (no coins, nothing to claim); survival milestones below
+   are unaffected. Ranges here match the runtime option schema (ECCore EC.OPTIONS). */
 option MinidoracatEconomy.CheckinAmount
 {
     type = integer,
-    min = 1,
-    max = 100000,
+    min = 0,
+    max = 1000000,
     default = 30,
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_CheckinAmount,
@@ -26,7 +47,7 @@ option MinidoracatEconomy.CheckinMinPlaytimeMinutes
 {
     type = integer,
     min = 0,
-    max = 600,
+    max = 1440,
     default = 15,
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_CheckinMinPlaytimeMinutes,
@@ -36,10 +57,30 @@ option MinidoracatEconomy.CheckinServerDailyCap
 {
     type = integer,
     min = 0,
-    max = 10000000,
+    max = 100000000,
     default = 0,
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_CheckinServerDailyCap,
+}
+
+option MinidoracatEconomy.CheckinDailyLimit
+{
+    type = integer,
+    min = 1,
+    max = 24,
+    default = 1,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CheckinDailyLimit,
+}
+
+option MinidoracatEconomy.CheckinIntervalMinutes
+{
+    type = integer,
+    min = 1,
+    max = 1440,
+    default = 60,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_CheckinIntervalMinutes,
 }
 
 option MinidoracatEconomy.RewardDayResetHour
@@ -104,8 +145,8 @@ option MinidoracatEconomy.BalanceMax
     translation = MinidoracatEconomy_BalanceMax,
 }
 
-/* Role-name lists (server re-verifies every admin command against these; capabilities are not
-   a stable permission level in B42, stage A13). Separate several names with ';'. */
+/* Boot role-name lists are case-sensitive and separated by ';'.
+   The admin panel selects exact native role names and stores runtime lists without delimiters. */
 option MinidoracatEconomy.AdminRoles
 {
     type = string,
@@ -120,6 +161,16 @@ option MinidoracatEconomy.ReadOnlyRoles
     default = moderator,
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_ReadOnlyRoles,
+}
+
+/* Self-adjustment is opt-in and still requires ordinary economy write access.
+   Empty string is a valid custom string default (CustomStringSandboxOption.java:13-19). */
+option MinidoracatEconomy.AdminSelfAdjustRoles
+{
+    type = string,
+    default = ,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_AdminSelfAdjustRoles,
 }
 
 /* Discord points -> Cat Coin deposit (v1 in-only). Boot defaults only: admins override at runtime
@@ -175,8 +226,8 @@ option MinidoracatEconomy.CatServerDaily
 }
 
 /* Survival milestones: ';'-separated lists (no commas: ScriptParser splits on them), same length,
-   positive integers. Days are in-game days survived by the current character; each milestone is
-   paid once per account per season. */
+   positive integers. Days are in-game survival within the current season and a single life;
+   each milestone is paid once per account per season. */
 option MinidoracatEconomy.MilestoneDays
 {
     type = string,
@@ -191,6 +242,17 @@ option MinidoracatEconomy.MilestoneAmounts
     default = 100;150;250;400;1000,
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_MilestoneAmounts,
+}
+
+/* Real-time season length, applied to the current season from its original start. */
+option MinidoracatEconomy.SeasonDays
+{
+    type = integer,
+    min = 0,
+    max = 3650,
+    default = 0,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_SeasonDays,
 }
 
 option MinidoracatEconomy.MarketListingFeePercent
@@ -352,7 +414,7 @@ option MinidoracatEconomy.ShopBuybackEnabled
 option MinidoracatEconomy.ShopBuybackPerAccountDaily
 {
     type = integer,
-    min = 1,
+    min = 0,
     max = 100000000,
     default = 500,
     page = MinidoracatEconomy,
@@ -362,9 +424,31 @@ option MinidoracatEconomy.ShopBuybackPerAccountDaily
 option MinidoracatEconomy.ShopBuybackServerDaily
 {
     type = integer,
-    min = 1,
+    min = 0,
     max = 100000000,
     default = 20000,
     page = MinidoracatEconomy,
     translation = MinidoracatEconomy_ShopBuybackServerDaily,
+}
+
+/* Cat Coin buyback caps. Both default to 0, which stops the shop from buying anything back for
+   Cat Coin at all (0 is off, never unlimited); raise both to open it. */
+option MinidoracatEconomy.ShopCatBuybackPerAccountDaily
+{
+    type = integer,
+    min = 0,
+    max = 100000000,
+    default = 0,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_ShopCatBuybackPerAccountDaily,
+}
+
+option MinidoracatEconomy.ShopCatBuybackServerDaily
+{
+    type = integer,
+    min = 0,
+    max = 100000000,
+    default = 0,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_ShopCatBuybackServerDaily,
 }

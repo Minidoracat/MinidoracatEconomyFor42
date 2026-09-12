@@ -5,5 +5,10 @@
   "UI_MinidoracatEconomy_ToastSeconds": "通知显示秒数",
   "UI_MinidoracatEconomy_ToastSeconds_tooltip": "经济中心的右上角通知（售出、下架、领取…）停留几秒",
   "UI_MinidoracatEconomy_PanelOpacity": "窗口不透明度（%%）",
-  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "经济中心窗口底色的不透明度；窗口标题列的拉条也可调"
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "经济中心窗口底色的不透明度；可在侧栏「设置」调整",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "经济中心：导览只显示图标",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "勾选＝左侧导览收合成窄图标列，取消＝图标加文本。窗口标题列的收合钮改的是同一个设置，两个窗口各自记住。",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "管理窗口：导览只显示图标",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "勾选＝管理窗口左侧导览收合成窄图标列，把宽度让给表格；取消＝图标加文本。标题列的收合钮改的是同一个设置。",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "设置已在本次游戏套用，但无法写入 ModOptions.ini；请检查设置档的写入权限。"
 }

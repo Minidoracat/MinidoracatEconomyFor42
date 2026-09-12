@@ -29,6 +29,25 @@ export interface AccountSource {
   stats(): Record<string, unknown>;
 }
 
+/** One line of {economyDir}/durable.json: the watermark Lua may trust during this uptime. */
+export interface DurableRecord {
+  realmId: string;
+  epoch: string;
+  seq: number;
+  /** Unix ms of the write. */
+  ts: number;
+}
+
+/** A parsed watermark that is not on disk yet (waiting for a stable snapshot, or a failed write). */
+export interface PendingPublish {
+  realmId: string;
+  epoch: string;
+  seq: number;
+  /** mtime/size of the .bin the watermark came from; the write only happens while they still match. */
+  mtime: number;
+  size: number;
+}
+
 /** Live view of the .bin watermark poller (index.ts owns the state). */
 export interface WatermarkState {
   durable: Watermark | null;
@@ -36,6 +55,12 @@ export interface WatermarkState {
   parsedAt: number | null;
   error: string | null;
   sizeBytes: number | null;
+  /** Last record written to {economyDir}/durable.json; absent on a stub, null until one is published. */
+  published?: DurableRecord | null;
+  /** Watermark parsed but not on disk yet (unsettled snapshot, or a write that failed and is retried). */
+  pending?: PendingPublish | null;
+  /** Why the last publish attempt did not land; null when the file is up to date. */
+  publishError?: string | null;
 }
 
 export interface ServerDeps {
@@ -90,6 +115,7 @@ export function createServer({ config, store, accounts, watermark, orders, log =
         events: store.stats(),
         durable: wm.durable,
         modData: { mtime: wm.mtime, parsedAt: wm.parsedAt, error: wm.error, sizeBytes: wm.sizeBytes },
+        publish: { published: wm.published ?? null, pending: wm.pending ?? null, error: wm.publishError ?? null },
         accounts: accounts.stats(),
         orders: orders?.stats() ?? null,
       });

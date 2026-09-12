@@ -5,5 +5,10 @@
   "UI_MinidoracatEconomy_ToastSeconds": "Notification duration (seconds)",
   "UI_MinidoracatEconomy_ToastSeconds_tooltip": "How long economy notifications (sales, delists, claims...) stay on screen",
   "UI_MinidoracatEconomy_PanelOpacity": "Window opacity (%%)",
-  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Opacity of the economy window background; the slider in the window title row changes the same value"
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Opacity of the economy window background; adjust it from Settings in the sidebar",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Economy Center: icon-only navigation",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Checked: the left navigation folds into a narrow icon rail. Unchecked: icons with words. The window's own toggle writes this same setting, and each window remembers its own.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Admin window: icon-only navigation",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Checked: the admin window's left navigation folds into a narrow icon rail and gives the width back to the tables. Unchecked: icons with words. The title-bar toggle writes this same setting.",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Settings applied for this session, but saving ModOptions.ini failed. Check its write permissions."
 }

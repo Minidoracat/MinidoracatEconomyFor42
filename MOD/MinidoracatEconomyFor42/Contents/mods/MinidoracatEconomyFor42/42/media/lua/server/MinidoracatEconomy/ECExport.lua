@@ -41,6 +41,23 @@ local queueIndex = {}                 -- path -> entry
 local queuedLines = 0
 local lastHeartbeat = 0
 local writerWarned = {}
+local failedPaths = {}
+local publicViews, adminViews, ownerViews = {}, {}, {}
+local viewsDirty = false
+
+function X.changed(scope, username)
+    local target
+    if username then
+        target = ownerViews[username]
+        if not target then target = {}; ownerViews[username] = target end
+    elseif scope == "transactions" or scope == "audit" or scope == "players" then
+        target = adminViews
+    else
+        target = publicViews
+    end
+    target[scope] = true
+    viewsDirty = true
+end
 
 local function eventsPath(ms)
     return X.ROOT .. sep .. "events-" .. EC.dayKey(ms) .. ".json"
@@ -63,27 +80,58 @@ end
 X.eventsPath = eventsPath
 X.receiptsPath = receiptsPath
 X.auditPath = auditPath
+X.marketPath = marketPath
 
 -- ---------- queue ----------
 
 function X.enqueue(path, line)
     local entry = queueIndex[path]
     if not entry then
-        entry = { path = path, lines = {} }
+        entry = { path = path, lines = {}, enqueued = 0, handled = 0 }
         queueIndex[path] = entry
         queue[#queue + 1] = entry
     end
     entry.lines[#entry.lines + 1] = line
+    entry.enqueued = entry.enqueued + 1
     queuedLines = queuedLines + 1
     if queuedLines > X.MAX_QUEUE_LINES then
         -- Drop from the oldest file entry; log once per overflow episode.
         local oldest = queue[1]
         if oldest and #oldest.lines > 0 then
             table.remove(oldest.lines, 1)
+            oldest.handled = oldest.handled + 1
+            oldest.failed = true
+            failedPaths[oldest.path] = true
             queuedLines = queuedLines - 1
             EC.log("export queue overflow, dropped a line for " .. oldest.path)
+            if #oldest.lines == 0 then
+                table.remove(queue, 1)
+                queueIndex[oldest.path] = nil
+            end
         end
     end
+end
+
+-- Capture only writes already queued for this read. Later arrivals never extend its wait.
+-- The entry references survive queue removal; no copy of queued JSON strings is needed.
+function X.readFence(paths)
+    local fence = {}
+    for _, path in ipairs(paths) do
+        if failedPaths[path] then fence.failed = true end
+        local entry = queueIndex[path]
+        if entry then fence[#fence + 1] = { entry = entry, target = entry.enqueued } end
+    end
+    return fence
+end
+
+function X.fenceStatus(fence)
+    if fence.failed then return false, "read_failed" end
+    local ready = true
+    for _, item in ipairs(fence) do
+        if item.entry.failed then return false, "read_failed" end
+        if item.entry.handled < item.target then ready = false end
+    end
+    return ready
 end
 
 function X.queuedLines()
@@ -99,38 +147,49 @@ local function openWriter(path, append)
     return w
 end
 
--- Writes up to `budget` lines (default MAX_LINES_PER_TICK) across the queued files, oldest file
--- first. One open/close per file per flush. Returns the number of lines written.
+-- The tick budget is shared by all paths. A partial path rotates to the back so a continuous
+-- event stream cannot starve a receipt/history read waiting behind it.
 function X.flush(budget)
     budget = budget or X.MAX_LINES_PER_TICK
-    local written = 0
-    while #queue > 0 and written < budget do
-        local entry = queue[1]
+    local processed, written = 0, 0
+    while #queue > 0 and processed < budget do
+        local entry = table.remove(queue, 1)
         local n = #entry.lines
-        local take = math.min(n, budget - written)
+        local take = math.min(n, budget - processed)
         if take > 0 then
-            local w = openWriter(entry.path, true)
-            if w then
-                for i = 1, take do
-                    w:writeln(entry.lines[i])
-                end
-                w:close()
-            end
-            -- Whether or not the writer opened, drop the lines: a failing target must not wedge
-            -- the queue (the failure is logged once per path).
-            if take == n then
-                entry.lines = {}
+            local writer
+            local called, success = pcall(function()
+                writer = openWriter(entry.path, true)
+                if not writer then return false end
+                for i = 1, take do writer:writeln(entry.lines[i]) end
+                writer:close()
+                writer = nil
+                return true
+            end)
+            if writer then pcall(function() writer:close() end) end
+            if called and success == true then
+                written = written + take
             else
-                local rest = {}
-                for i = take + 1, n do rest[#rest + 1] = entry.lines[i] end
-                entry.lines = rest
+                entry.failed = true
+                failedPaths[entry.path] = true
+                if not writerWarned[entry.path] then
+                    writerWarned[entry.path] = true
+                    EC.log("export write failed for " .. entry.path .. ": " .. tostring(success))
+                end
             end
+            -- Keep the existing no-replay policy after a writer failure: an append may have
+            -- partially reached disk. Mark reads failed instead of replaying uncertain rows.
+            local rest = {}
+            for i = take + 1, n do rest[#rest + 1] = entry.lines[i] end
+            entry.lines = rest
+            entry.handled = entry.handled + take
             queuedLines = queuedLines - take
-            written = written + take
+            processed = processed + take
         end
         if #entry.lines == 0 then
-            table.remove(queue, 1)
             queueIndex[entry.path] = nil
+        else
+            queue[#queue + 1] = entry
         end
     end
     return written
@@ -152,6 +211,13 @@ function X.emit(type_, fields)
         for k, v in pairs(fields) do rec[k] = v end
     end
     X.enqueue(eventsPath(ms), EC.jsonEncode(rec))
+    if string.sub(type_, 1, 7) == "market." then
+        X.changed("market")
+    elseif string.sub(type_, 1, 8) == "auction." then
+        X.changed("auction")
+    elseif type_ == "mail.claimed" and type(rec.username) == "string" then
+        X.changed("mail", rec.username)
+    end
     return rec
 end
 
@@ -163,6 +229,21 @@ function X.market(account, fields)
     rec.seq = md.meta.seq
     for k, v in pairs(fields or {}) do rec[k] = v end
     X.enqueue(marketPath(account, ms), EC.jsonEncode(rec))
+    X.changed("market", account)
+    X.changed("mail", account)
+end
+
+local function auditPart(value)
+    if type(value) == "number" then return string.format("%.0f", value) end
+    return type(value) == "string" and value or ""
+end
+
+function X.auditKey(rec)
+    if type(rec.auditId) == "string" and rec.auditId ~= "" then return rec.auditId end
+    return "legacy:" .. EC.jsonEncode({
+        auditPart(rec.epoch), auditPart(rec.seq), auditPart(rec.ts), auditPart(rec.action),
+        auditPart(rec.admin), auditPart(rec.target), auditPart(rec.field),
+    })
 end
 
 -- Full record goes to the audit + events files; a trimmed copy lands in the bounded ModData ring
@@ -170,19 +251,24 @@ end
 function X.audit(fields)
     local ms = EC.now()
     local rec = baseRecord("audit", ms)
-    rec.seq = md.meta.seq
     for k, v in pairs(fields or {}) do rec[k] = v end
+    rec.auditId = S.newId()
+    rec.seq = md.meta.seq
     X.enqueue(auditPath(ms), EC.jsonEncode(rec))
     X.enqueue(eventsPath(ms), EC.jsonEncode(rec))
     local ring = md.audit
     local short = {}
     for k, v in pairs(rec) do short[k] = v end
+    short.reasonTruncated = type(short.reason) == "string" and #short.reason > X.AUDIT_REASON_CHARS
     if type(short.reason) == "string" and #short.reason > X.AUDIT_REASON_CHARS then
         short.reason = string.sub(short.reason, 1, X.AUDIT_REASON_CHARS)
     end
     ring.items[ring.head] = short
     ring.head = ring.head % X.AUDIT_RING + 1
     if ring.count < X.AUDIT_RING then ring.count = ring.count + 1 end
+    X.changed("audit")
+    X.changed("players")
+    if rec.action == "whitelist" then X.changed("whitelist"); X.changed("market") end
 end
 
 -- Copy of a ring entry: the reply must never share a table with Global ModData, so nested values
@@ -216,6 +302,12 @@ function X.auditEntries(limit)
         if type(e) == "table" then
             local copy = copyValue(e, 1)
             copy.rolledBack = S.isRolledBack(e.epoch, e.seq)
+            copy.key = X.auditKey(e)
+            local ts = e.ts
+            if type(ts) == "number" and ts == ts and ts ~= math.huge and ts ~= -math.huge and ts == math.floor(ts) then
+                copy.month = EC.monthKey(ts)
+            end
+            copy.source, copy.full = "ring", false
             out[#out + 1] = copy
         end
         idx = idx - 1
@@ -247,8 +339,12 @@ local function onCommitted(ev)
     rec.payload = ev.payload
     rec.postings = ev.postings
     X.enqueue(eventsPath(ev.ts), EC.jsonEncode(rec))
+    X.changed("transactions")
+    X.changed("players")
+    if ev.kind == "shop_sell" then X.changed("shop") end
     for _, p in ipairs(ev.postings) do
         if not L.isSystemAccount(p.account) then
+            X.changed("wallet", p.account)
             X.enqueue(receiptsPath(p.account, ev.ts), EC.jsonEncode({
                 epoch = md.meta.epoch, seq = ev.seq, ts = ev.ts, txId = ev.txId, type = ev.kind,
                 reasonCode = ev.reasonCode, currency = p.currency, delta = p.amount,
@@ -300,6 +396,8 @@ function X.init(root)
         ring.capacity = X.AUDIT_RING
     end
     queue, queueIndex, queuedLines = {}, {}, 0
+    failedPaths, writerWarned = {}, {}
+    publicViews, adminViews, ownerViews, viewsDirty = {}, {}, {}, false
     if not listenerRegistered then
         L.onCommitted(onCommitted)
         listenerRegistered = true
@@ -333,6 +431,14 @@ function X.onTick()
     end
     if ms - lastHeartbeat >= X.HEARTBEAT_INTERVAL_MS then
         X.heartbeat(ms)
+    end
+    if viewsDirty and X.onViewsChanged then
+        local sent, err = pcall(X.onViewsChanged, publicViews, adminViews, ownerViews)
+        if sent then
+            publicViews, adminViews, ownerViews, viewsDirty = {}, {}, {}, false
+        else
+            EC.log("view invalidation failed: " .. tostring(err))
+        end
     end
 end
 

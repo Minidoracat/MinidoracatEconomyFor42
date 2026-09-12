@@ -34,9 +34,11 @@ local function roleName(player)
     return ok and type(role) == "string" and role or ""
 end
 
--- Same rule as ECAdmin.isAdmin (that module loads later) plus the engine capability check A11 used.
+-- Same rule as ECAdmin.isAdmin (that module loads later) plus the engine capability check A11
+-- used. The role name is matched exactly, like everywhere else: role lookup is case sensitive
+-- (Roles.java:302-305), so a lower-cased comparison would let "Admin" pass an "admin" list.
 local function isAdmin(player)
-    if not EC.roleSet(EC.sandbox("AdminRoles", "admin"))[string.lower(roleName(player))] then return false end
+    if not EC.roleSet(EC.sandbox("AdminRoles", "admin"))[roleName(player)] then return false end
     local ok, cap = pcall(function() return player:getRole():hasCapability(Capability.AddItem) end)
     return ok and cap == true
 end

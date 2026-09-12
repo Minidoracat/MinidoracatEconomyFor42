@@ -76,8 +76,10 @@ local function changed(id, field, before, after, actor, reason)
 end
 
 -- Runtime option overrides (settings page): config.options[key] wins over the sandbox file for
--- every EC.sandbox() read on the server. Locked options (admin caps, role lists) are never
--- stored here; the Cat* exchange keys are routed to the currency's exchange block instead.
+-- every EC.sandbox() read on the server. The Cat* exchange keys are routed to the currency's
+-- exchange block instead. A `manageOnly` option (admin roles, admin caps) is stored here like
+-- any other; what guards it is the native role capability checked in ECAdmin's admin.option
+-- handler, not this layer.
 local function optionOverride(key)
     local opts = md and md.config and md.config.options
     if not opts then return nil end
@@ -120,20 +122,28 @@ function C.optionValue(spec)
     return EC.sandbox(spec.key, spec.default)
 end
 
--- Settings page snapshot: key -> { value (effective), default (sandbox file / code), override }.
+-- Settings page snapshot: key -> { value (effective), default (sandbox file / code), override,
+-- locked, manageOnly }.
 function C.options()
     local out = {}
     for _, spec in ipairs(EC.OPTIONS) do
         local ex = EXCHANGE_BY_KEY[spec.key]
         local default = EC.sandboxDefault(spec.key, spec.default)
         local value = C.optionValue(spec)
+        -- role lists are arrays: hand out a copy, so no reply carries a live ModData table
+        if spec.kind == "roles" and type(value) == "table" then
+            local names = {}
+            for i = 1, #value do names[i] = value[i] end
+            value = names
+        end
         local override
         if ex then
             override = value ~= default
         else
             override = md.config.options[spec.key] ~= nil
         end
-        out[spec.key] = { value = value, default = default, override = override, locked = spec.locked == true }
+        out[spec.key] = { value = value, default = default, override = override,
+            locked = spec.locked == true, manageOnly = spec.manageOnly == true }
     end
     return out
 end
@@ -158,6 +168,35 @@ local function validateOption(spec, value)
     elseif kind == "text" then
         if type(value) ~= "string" or value == "" or #value > 200 or string.find(value, "%c") then return nil, "invalid_args" end
         return value
+    elseif kind == "roles" then
+        -- A dense array of exact native role names, checked against this server's own role list.
+        -- Everything doubtful is refused outright rather than repaired: a name silently dropped
+        -- from AdminRoles is a lockout, and one silently kept is a privilege grant. An empty
+        -- array is a valid answer and means "nobody", which is why it is not treated as absent.
+        if type(value) ~= "table" then return nil, "invalid_roles" end
+        local n = #value
+        -- holes and non-numeric keys: a sparse list would authorise a set nobody chose
+        if EC.countKeys(value) ~= n then return nil, "invalid_roles" end
+        if n > 255 then return nil, "invalid_roles" end       -- Roles.addRole caps the server at 255
+        local out = {}
+        if n == 0 then return out end
+        local known = EC.roleChoices()
+        if known == nil then return nil, "roles_unavailable" end
+        local exists = {}
+        for _, r in ipairs(known) do exists[r.name] = true end
+        local seen = {}
+        for i = 1, n do
+            local name = value[i]
+            if type(name) ~= "string" or name == "" or #name > 200 or string.find(name, "%c") then
+                return nil, "invalid_roles"
+            end
+            if seen[name] then return nil, "invalid_roles" end
+            -- exact name: a role that differs only in case is a different role, not a match
+            if not exists[name] then return nil, "unknown_role" end
+            seen[name] = true
+            out[i] = name
+        end
+        return out
     end
     return nil, "invalid_args"
 end
@@ -183,13 +222,58 @@ function C.setOption(key, value, actor, reason)
         normalised = ok
     end
     local before = md.config.options[key]
-    if before == normalised then return true end
+    if spec.group == "seasons" and (not S.Seasons or type(S.Seasons.applyDuration) ~= "function") then
+        return false, "not_ready"
+    end
+    if before == normalised then
+        if spec.group == "seasons" then return S.Seasons.applyDuration() end
+        return true
+    end
     md.config.options[key] = normalised
-    changed("options", key, before, normalised, actor, reason)
+    local warning = nil
+    -- The running season follows SeasonDays live (ECSeasons.applyDuration recomputes its
+    -- deadline from its own start and hands every online client the new state). It is asked
+    -- after the override is stored, so what it publishes is the length this page just wrote;
+    -- a refusal (a deadline already in the past, unreadable season data) puts the stored
+    -- override back exactly as it was, so nothing is announced and nothing is half applied.
+    if spec.group == "seasons" then
+        local seasonOk, seasonErr, pubWarning = S.Seasons.applyDuration()
+        if not seasonOk then
+            md.config.options[key] = before
+            return false, seasonErr
+        end
+        warning = pubWarning
+    end
+    if spec.group == "seasons" then
+        local published, err = pcall(changed, "options", key, before, normalised, actor, reason)
+        if not published then
+            warning = "publication_failed"
+            EC.log("season setting applied; config publication failed: " .. tostring(err))
+        end
+    else
+        changed("options", key, before, normalised, actor, reason)
+    end
     -- These modules load later; publish the changed effective state, not just the options table.
     if spec.group == "rewards" and S.Rewards then S.Rewards.pushAll() end
     if spec.group == "shop" and S.Shop then S.Shop.pushAll() end
-    return true
+    -- The public board's two rules ride along in the `config` broadcast above (options table);
+    -- the board itself is never pushed -- a server-wide ranking must stay a pull per request.
+    return true, nil, warning
+end
+
+-- Buyback daily caps of one currency, in that currency. The numbers are plain options
+-- (EC.BUYBACK_OPTIONS), so the currency page edits them through admin.option like any other
+-- setting and the shop reads exactly what the page shows. A cap of 0 stops buyback for this
+-- currency; it is never "unlimited". Unknown currency -> nil (no cap table invented).
+function C.buybackCaps(id)
+    local keys = EC.BUYBACK_OPTIONS[id]
+    if not keys then return nil end
+    local account = EC.OPTION_BY_KEY[keys.account]
+    local server = EC.OPTION_BY_KEY[keys.server]
+    return {
+        account = account and C.optionValue(account) or 0,
+        server = server and C.optionValue(server) or 0,
+    }
 end
 
 -- Merged view used by the ledger, the client snapshot and the companion projection.
@@ -211,6 +295,7 @@ function C.currency(id)
         balanceMax = type(e.balanceMax) == "number" and e.balanceMax or EC.sandbox("BalanceMax", C.DEFAULT_BALANCE_MAX),
         balanceMaxOverride = type(e.balanceMax) == "number" and e.balanceMax or nil,
         exchange = e.exchange,
+        buybackCaps = C.buybackCaps(id),
     }
 end
 

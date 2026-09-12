@@ -195,8 +195,10 @@ function Codec.update(args, actor)
         if after then lists.categories[#lists.categories + 1] = cat end
     elseif args.fullType ~= nil then
         local ft, mode = args.fullType, args.mode
+        if type(ft) ~= "string" or ft == "" or #ft > 128 or string.find(ft, "%c") then return false, "invalid_args" end
         if mode ~= "allow" and mode ~= "exclude" and mode ~= "inherit" then return false, "invalid_args" end
-        if not itemExists(ft) then return false, "unknown_item" end
+        -- Removing a stored rule must still work after its providing mod was uninstalled.
+        if mode ~= "inherit" and not itemExists(ft) then return false, "unknown_item" end
         target, field = ft, "type"
         before = wl.excludeTypes[ft] and "exclude" or (wl.types[ft] and "allow" or "inherit")
         after = mode

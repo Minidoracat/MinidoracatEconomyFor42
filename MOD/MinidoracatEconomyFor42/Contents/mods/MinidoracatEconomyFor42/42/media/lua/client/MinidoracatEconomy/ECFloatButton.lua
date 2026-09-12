@@ -1,6 +1,7 @@
 -- MinidoracatEconomyFor42 — floating entry button (client), thin wrapper over
 -- MinidoracatUI.v1.FloatButton (capability probe; no framework -> no button, the hotkey still works).
--- Position persists through ISLayoutManager (layout.ini).
+-- Position persists through ISLayoutManager (layout.ini): saved the moment a drag is released,
+-- and re-applied per resolution when the screen size changes.
 
 require "ISUI/ISLayoutManager"
 
@@ -22,6 +23,11 @@ local TEXT = { r = 1, g = 0.85, b = 0.4, a = 1 }
 local BADGE = 18                                          -- pending-mail bubble, top right corner
 local BADGE_FILL = { r = 0.85, g = 0.2, b = 0.2, a = 1 }  -- the vanilla "unread" red
 local BADGE_RIM = { r = 1, g = 1, b = 1, a = 1 }
+
+-- Default slot: right edge, one button below the NoticeBoard one. Shared by the first build and
+-- by "this resolution has no record yet", so a new screen lands where a fresh install would.
+local function defaultX() return getCore():getScreenWidth() - SIZE - RIGHT_MARGIN end
+local function defaultY() return math.floor(getCore():getScreenHeight() / 2 + SIZE) end
 
 local function framework()
     local ui = MinidoracatUI and MinidoracatUI.v1
@@ -79,18 +85,28 @@ function F.tooltip()
     return getText("IGUI_MinidoracatEconomy_Float_Tooltip")
 end
 
+-- Reject non-finite saved coordinates; the widget clamps finite out-of-bounds values.
+local function coord(value)
+    local number = tonumber(value)
+    if number and number == number and number ~= math.huge and number ~= -math.huge then
+        return number
+    end
+    return nil
+end
+
 -- ISLayoutManager calls funcs.RestoreLayout(target, name, layout) / funcs.SaveLayout(target, ...)
 -- on the table passed to RegisterWindow (ISLayoutManager.lua:6-13, 99-113), so these live on F.
+-- Coordinates only: visibility is this mod's own policy (MP-client gate, hotkey, panel state), and
+-- a layout restore that re-showed the button would undo whatever the player just hid.
 function F.RestoreLayout(button, name, layout)
-    local x, y = tonumber(layout.x), tonumber(layout.y)
+    local x, y = coord(layout.x), coord(layout.y)
     if x and y then button:setPosition(x, y) end
-    button:setVisible(true)
 end
 
 function F.SaveLayout(button, name, layout)
     layout.x = button:getX()
     layout.y = button:getY()
-    layout.visible = "true"
+    layout.visible = nil -- visibility belongs to the consumer, not the saved layout
 end
 
 function F.ensure()
@@ -103,20 +119,30 @@ function F.ensure()
     local theme = ui.Theme.create()
     local button = ui.FloatButton.new({
         size = SIZE,
-        x = getCore():getScreenWidth() - SIZE - RIGHT_MARGIN,
-        y = math.floor(getCore():getScreenHeight() / 2 + SIZE), -- below the NoticeBoard button slot
+        x = defaultX(),
+        y = defaultY(),
         colors = { surface = theme.colors.surface, hover = theme.colors.hover, border = theme.colors.border },
         drawContent = drawContent,
         onClick = function() C.Panel.toggle() end,
         getTooltip = F.tooltip,
+        -- Save the layout only; do not broadcast the OnPostSave event to other listeners.
+        onMoved = ISLayoutManager.OnPostSave,
     })
     local ok, tex = pcall(getTexture, ICON_PATH)
     button.icon = (ok and tex) or nil
 
     F.instance = button
-    ISLayoutManager.RegisterWindow(LAYOUT_NAME, F, button)
+    ISLayoutManager.RegisterWindow(LAYOUT_NAME, F, button) -- TryRestore runs inside
     button:setVisible(true)
     return button
+end
+
+-- Core.java:2242-2262 updates dimensions before this event. Restore without showing or writing.
+function F.onResolutionChange()
+    local button = F.instance
+    if not button then return end
+    button:setPosition(defaultX(), defaultY()) -- fallback when this resolution has no record
+    ISLayoutManager.TryRestore(LAYOUT_NAME)
 end
 
 local function onGameStart()
@@ -124,5 +150,9 @@ local function onGameStart()
     F.ensure()
 end
 Events.OnGameStart.Add(onGameStart)
+Events.OnCreatePlayer.Add(function(playerNum)
+    if playerNum == 0 then onGameStart() end
+end)
+Events.OnResolutionChange.Add(F.onResolutionChange)
 
 return F

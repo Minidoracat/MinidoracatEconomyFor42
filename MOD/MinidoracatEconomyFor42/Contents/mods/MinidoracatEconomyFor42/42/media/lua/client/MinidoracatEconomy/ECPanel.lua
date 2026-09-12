@@ -1,1757 +1,101 @@
--- MinidoracatEconomyFor42 — Economy Center window (client). Stage D: Wallet / Rewards / Shop /
--- Market / Mailbox tabs (Admin stays in ECAdminPanel).
---
--- Layout follows docs/design-proposals/images/05b-wallet-rewards.png and 20-wallet-statement.png:
--- skinned title bar, status line, balance strip, tab bar, two-column cards. Everything is painted
--- through MinidoracatUIFor42 v1 (Theme/Skin rounded surfaces, VirtualList statement, Icons) —
--- the framework is a hard dependency (mod.info require=), so without it the window simply does
--- not open (logged), the family fail-soft rule: never a half-drawn window.
---
--- Window chrome = vanilla ISCollapsableWindow (drag, close/pin/collapse buttons, resize widget,
--- ISLayoutManager persistence) with prerender/render overridden the same way NBPanel and the
--- Cleaner picker do (rounded fill instead of Panel_TitleBar.png).
---
--- Engine references (snapshot 42.20.4-20260826):
---   getHourMinute()        LuaManager.java:8996-8998 -> getHourMinuteJava :1569-1576
---                          (Calendar.getInstance() = local zone) -> local UTC offset for timestamps
---   getTextOrNull(key)     LuaManager.java:8558-8560
---   IsoGameCharacter.getHoursSurvived (client copy, display only; the server grants milestones)
---   UIElement anchors      UIElement.java:1411-1430 (children shift with the parent size; every
---                          child here is positioned explicitly in layout(), anchors stay default)
-
+-- Economy Center window: lifecycle, controls, request state and cross-page coordination.
+-- Rendering, reusable controls, filters, trade dialogs and preferences live in ECPanel* modules.
+-- C.Panel remains the public entry used by the floating button and terminal menu.
 require "ISUI/ISCollapsableWindow"
-require "ISUI/ISButton"
 require "ISUI/ISLayoutManager"
-require "ISUI/ISPanel"
-require "ISUI/ISTextEntryBox"
-
-if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
-    require "MinidoracatEconomy/ECWidgets"
-end
+require "MinidoracatEconomy/ECWidgets"
 require "MinidoracatEconomy/ECKeyboard"
 require "MinidoracatEconomy/ECDatePicker"
+require "MinidoracatEconomy/ECNavigation"
+require "MinidoracatEconomy/ECAdminPanel"
+require "MinidoracatEconomy/ECAdminWindow"
+require "MinidoracatEconomy/ECIconCache"
+require "MinidoracatEconomy/ECPanelWidgets"
+require "MinidoracatEconomy/ECRowActions"
+require "MinidoracatEconomy/ECReadGate"
+require "MinidoracatEconomy/ECPanelFilters"
+require "MinidoracatEconomy/ECPanelDialogs"
+require "MinidoracatEconomy/ECPanelPreferences"
+require "MinidoracatEconomy/ECPanelLayout"
+require "MinidoracatEconomy/ECDetailWindow"
+require "MinidoracatEconomy/ECPlayerPicker"
+require "MinidoracatEconomy/ECLeaderboard"
+
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
-local DatePicker = C.DatePicker
-local Keys = C.Keyboard
-require "MinidoracatEconomy/ECAdminPanel"
-require "MinidoracatEconomy/ECIconCache"
-
+local DatePicker, Keys, Nav = C.DatePicker, C.Keyboard, C.Navigation
+local W, FilterBar, R, ReadGate = C.PanelWidgets, C.PanelFilters, C.RowActions, C.ReadGate
+local Dialogs, Preferences, Layout = C.PanelDialogs, C.PanelPreferences, C.PanelLayout
+-- The one floating record window of the session: every read-only row of every page is spelled
+-- out in it (ECDetailWindow), so no page keeps a preview band that eats its own table.
+local Detail = C.DetailWindow
+-- The one candidate box of the session, shared with the admin window: the market and the auction
+-- browse pages each host one over the public market.sellers read.
+local PlayerPicker = C.PlayerPicker
+-- The public leaderboard is a page of its own module: this window is already at the debug
+-- compiler's local ceiling, and a board that reads one public command needs none of its state.
+local Leaderboard = C.Leaderboard
 local P = {}
 C.Panel = P
 
 local LAYOUT_NAME = "MinidoracatEconomyPanel"
-local MIN_WIDTH, MIN_HEIGHT = 1000, 560
-local PAD, ROW, CHIP_H, COIN, COIN_SMALL, T = U.PAD, U.ROW, U.CHIP_H, U.COIN, U.COIN_SMALL, U.T
-local STATUS_H = 24
-local STRIP_H = 60
-local COIN_STRIP = 36            -- the balance strip is the one place the icon is the hero
-local TAB_H = 36
-local TAB_W = 140
-local CARD_TITLE_H = U.CARD_TITLE_H
-local LEFT_W = 300
+local MIN_WIDTH, MIN_HEIGHT = Layout.MIN_WIDTH, Layout.MIN_HEIGHT
+local PAD, ROW, CHIP_H, T = U.PAD, U.ROW, U.CHIP_H, U.T
 local fontH = U.fontH
-local color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin
-local stampText, durationText, amountText, signedText, hasBit, kindText, card = U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card
-local accountName = U.accountName
-local localOffsetMinutes = U.localOffsetMinutes
-local Button, Cell = U.Button, U.StatementCell
-
-
--- ---------- shop / mailbox pieces ----------
-
-local TIMEOUT_MS = 8000            -- one write in flight per page, same window as the admin dialog
-local SHOP_POLL_MS = 30000         -- a catalog snapshot older than this is asked for again
-local ITEM_ICON = 32
-
--- Two text lines plus the item icon; the font scale decides, not a constant (fontH is filled by
--- U.init, so this is a function and not a load-time number).
-local function itemRowHeight()
-    return math.max(math.floor(ROW * 1.6), fontH.small * 2 + 16)
-end
-
--- Picker tile (the backpack grid): a 48px icon over one fitted name line, the way the vanilla
--- inventory paints an item. 72x88 at the default font, taller when the player scales the UI font.
-local TILE_ICON = 48
-local function tileSize()
-    return 72, math.max(88, TILE_ICON + fontH.small + 26)
-end
-
-local function newEntry(width, height, placeholder, numbers)
-    local e = U.newEntry(width, height, { maxLen = 32, clear = true, placeholder = placeholder })
-    if numbers and e.setOnlyNumbers then e:setOnlyNumbers(true) end
-    return e
-end
-
-local entryText, setEntryText = U.entryText, U.setEntryText
-
--- One box, two pages (the auction search and the record search): the hint follows the mode.
-local function setPlaceholder(e, str)
-    if not e or not e.setPlaceholderText then return end
-    pcall(function() e:setPlaceholderText(str) end)
-end
-
--- Item display: the engine name (getItemNameFromFullType, LuaManager.java:8579-8583) and the item
--- script's inventory texture (ScriptManager.instance:FindItem -> getNormalTexture; a script may
--- ship none). Both are cached per fullType: a catalog reply must not walk the script list again,
--- and neither call belongs in a per-frame paint.
-local itemTextures = {}
-
+local color, fill, text, textWidth = U.color, U.fill, U.text, U.textWidth
+local stampText, durationText, amountText, signedText, hasBit, kindText = U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText
+local accountName, localOffsetMinutes, Button = U.accountName, U.localOffsetMinutes, U.Button
+local entryText, setEntryText, itemTexture = U.entryText, U.setEntryText, U.itemTexture
 local itemName = C.itemLabel
-
--- The script's own DisplayName (Item.java:493-495): the untranslated, usually English, name.
--- Shown next to the localised name (and searched) so players on any language can find "Nails";
--- nil when it is the same string as the localised name or the script is unknown.
-local itemBaseNames = {}
-local function itemBaseName(fullType)
-    local base = itemBaseNames[fullType]
-    if base == nil then
-        base = false
-        local ok, script = pcall(function() return ScriptManager.instance:FindItem(fullType) end)
-        if ok and script then
-            local okName, value = pcall(function() return script:getDisplayName() end)
-            if okName and type(value) == "string" and value ~= "" then base = value end
-        end
-        itemBaseNames[fullType] = base
-    end
-    if not base or base == itemName(fullType) then return nil end
-    return base
-end
-
-local function itemTexture(fullType)
-    local tex = itemTextures[fullType]
-    if tex == nil then
-        tex = false
-        local ok, script = pcall(function() return ScriptManager.instance:FindItem(fullType) end)
-        if ok and script then
-            local okTex, value = pcall(function() return script:getNormalTexture() end)
-            if okTex and value then tex = value end
-        end
-        itemTextures[fullType] = tex
-    end
-    return tex or nil
-end
-
-local function drawIcon(el, tex, x, y, size)
-    if tex then el:drawTextureScaled(tex, x, y, size, size, 1, 1, 1, 1) end
-end
-
--- shop.buy and mail.claim share one error key space (Shop_Error_<code>, timeout included)
-local function shopError(code)
-    if code == nil then code = "unknown" end
-    return getTextOrNull(T .. "Shop_Error_" .. tostring(code)) or getText(T .. "Rewards_Error_generic", tostring(code))
-end
-
--- market.* answers stack their own code space on top of the shop one: a listing error
--- (Market_Error_*), a whitelist refusal the picker also paints per row (Market_Reason_*),
--- then the shared codes (not_at_terminal, account_frozen, insufficient_funds, timeout...).
--- Takes the whole reply, not just the code: price_range/bid_too_low/hours_range carry bounds.
-local function marketError(args)
-    local code = tostring((args and args.error) or "unknown")
-    if code == "price_range" then
-        return getText(T .. "Market_Error_price_range",
-            amountText(args.min), amountText(args.max))
-    end
-    if code == "bid_too_low" then
-        return getText(T .. "Market_Error_bid_too_low", amountText(args.min))
-    end
-    if code == "hours_range" then
-        return getText(T .. "Market_Error_hours_range", tostring(args.min), tostring(args.max))
-    end
-    return getTextOrNull(T .. "Market_Error_" .. code) or getTextOrNull(T .. "Market_Reason_" .. code)
-        or getTextOrNull(T .. "Shop_Error_" .. code) or getText(T .. "Rewards_Error_generic", code)
-end
-
--- Second row line: whatever of condition / uses / fluid the server sent for this item.
-local function listingStatus(it)
-    local parts = {}
-    local cond = tonumber(it.condition)
-    if cond then parts[#parts + 1] = getText(T .. "Market_Condition", tostring(cond)) end
-    local uses = tonumber(it.uses)
-    if uses then parts[#parts + 1] = getText(T .. "Market_Uses", tostring(uses)) end
-    if type(it.fluid) == "string" and it.fluid ~= "" then
-        parts[#parts + 1] = getText(T .. "Market_Fluid", it.fluid, tostring(tonumber(it.fluidAmount) or 0))
-    end
-    if #parts == 0 then return nil end
-    return table.concat(parts, " / ")
-end
-
--- Percentages the server quotes are applied the way the server applies them (round up, and a
--- listing fee is never zero unless the fee itself is switched off).
-local function ceilPercent(value, percent)
-    if percent <= 0 or value <= 0 then return 0 end
-    return math.ceil(value * percent / 100)
-end
-
-local function listingFee(price, feePercent)
-    if feePercent <= 0 or price <= 0 then return 0 end
-    return math.max(1, ceilPercent(price, feePercent))
-end
-
--- One market row (browse page or own listings). `mine` is the page, `own` the seller test: the
--- browse page shows the player their own listing (so they see their price next to the others)
--- but offers Market_Own instead of a buy chip.
--- A lot of N identical items is one listing: `Market_Lot` is appended to the painted name
--- (`nameText`), never to `name` — the search and the toasts want the bare item name.
-local function lotText(qty)
-    if qty <= 1 then return nil end
-    return getText(T .. "Market_Lot", tostring(qty))
-end
-
-local function listingRow(it, currency, username, offsetMin, mine)
-    local price = tonumber(it.price) or 0
-    local name = itemName(it.item)
-    local alt = it.name
-    if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
-    local seller = tostring(it.seller or "")
-    local own = mine or (username ~= nil and seller == username)
-    -- a listing runs for days: only the last day is worth counting down, before that the date
-    -- says more than "168 hours"
-    local expires = tonumber(it.expiresAt)
-    local expiresText = "-"
-    if expires then
-        local left = expires - EC.now()
-        expiresText = left > 86400000 and stampText(expires, offsetMin) or durationText(left)
-    end
-    local qty = math.max(1, math.floor(tonumber(it.qty) or 1))
-    local lot = lotText(qty)
-    return {
-        id = it.id, item = it.item, seller = seller, price = price, currency = currency, qty = qty,
-        name = name, nameText = lot and (name .. " " .. lot) or name,
-        altName = alt, texture = itemTexture(it.item),
-        statusText = listingStatus(it), priceText = amountText(price), expiresText = expiresText,
-        own = own, mine = mine, actionMuted = own and not mine,
-        actionLabel = mine and getText(T .. "Market_Cancel")
-            or (own and getText(T .. "Market_Own") or getText(T .. "Market_Buy")),
-    }
-end
-
--- One auction row, painted by the very same ListingCell as a market listing. An auction runs
--- for hours, so the "ends" column is always a countdown; the current bid replaces the price
--- (an auction without a bid quotes its opening price instead) and the bid count is a column of
--- its own. That extra column costs the seller column: the seller shares the second line with
--- the condition/uses/fluid text, the way the buy dialog already names it.
--- `context` picks the action column: "browse" | "selling" | "bidding".
-local function auctionRow(it, currency, context)
-    local start = tonumber(it.startPrice) or 0
-    local bid = tonumber(it.bid)
-    local bids = math.max(0, math.floor(tonumber(it.bids) or 0))
-    local name = itemName(it.item)
-    local alt = it.name
-    if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
-    local seller = tostring(it.seller or "")
-    local left = (tonumber(it.expiresAt) or 0) - EC.now()
-    local ended = left <= 0
-    local qty = math.max(1, math.floor(tonumber(it.qty) or 1))
-    local lot = lotText(qty)
-    local mine, leading = it.mine == true, it.leading == true
-    local status = listingStatus(it)
-    local sub = status
-    if context ~= "selling" then
-        sub = getText(T .. "Market_BuyFrom", seller)
-        if status then sub = sub .. " - " .. status end
-    end
-    -- the action column: a chip the player may press, or the state of this auction for them
-    local canBid, muted, label, token, off = false, true, nil, "textFaint", false
-    if context == "selling" then
-        muted, label, off = false, getText(T .. "Auction_CancelTitle"), bids > 0
-    elseif context == "bidding" then
-        canBid = not ended
-        label = leading and getText(T .. "Auction_Leading") or getText(T .. "Auction_Outbid")
-        token = leading and "positive" or "warn"
-    elseif mine then
-        label = getText(T .. "Auction_Own")
-    elseif ended then
-        label, token = getText(T .. "Auction_Ended"), "warn"
-    elseif leading then
-        label, token = getText(T .. "Auction_Leading"), "positive"
-    else
-        canBid, muted, label = true, false, getText(T .. "Auction_Bid")
-    end
-    return {
-        id = it.id, item = it.item, seller = seller, qty = qty, currency = currency,
-        price = bid or start, startPrice = start, bid = bid, bids = bids,
-        minNext = math.max(1, math.floor(tonumber(it.minNext) or start)),
-        mine = mine, leading = leading, ended = ended, canBid = canBid,
-        name = name, nameText = lot and (name .. " " .. lot) or name,
-        altName = alt, texture = itemTexture(it.item), statusText = sub,
-        priceText = bid and amountText(bid) or getText(T .. "Auction_StartsAt", amountText(start)),
-        bidsText = bids > 0 and tostring(bids) or getText(T .. "Auction_NoBids"),
-        bidsToken = bids > 0 and "accent" or "textFaint",
-        expiresText = ended and getText(T .. "Auction_Ended")
-            or getText(T .. "Auction_Ends_In", durationText(left)),
-        expiresToken = ended and "warn" or "textFaint",
-        actionMuted = muted, actionLabel = label, actionToken = token, actionOff = off,
-    }
-end
-
--- One backpack candidate. The tile itself only has room for the name, so everything else the
--- player may want (the script name, the condition/uses line, and the server's refusal when the
--- item may not be listed) is joined once here for the picker's status line.
-local function candidateRow(it)
-    local ok = it.ok == true
-    local name = itemName(it.item)
-    local alt = itemBaseName(it.item)
-    local status = listingStatus(it)
-    local reason = nil
-    if not ok then reason = marketError({ error = it.reason }) end
-    -- the server merges same-state stacks into one row: itemIds is the whole lot
-    local ids = type(it.itemIds) == "table" and it.itemIds or { it.itemId }
-    local count = math.max(1, math.floor(tonumber(it.count) or #ids))
-    local lot = lotText(count)
-    local detail = alt and (name .. " (" .. alt .. ")") or name
-    if lot then detail = lot .. " " .. detail end
-    if status then detail = detail .. " - " .. status end
-    if reason then detail = detail .. " - " .. reason end
-    return {
-        itemId = it.itemId, itemIds = ids, count = count, item = it.item, ok = ok,
-        name = name, altName = alt, texture = itemTexture(it.item),
-        qtyText = lot, detailText = detail,
-    }
-end
-
--- One catalog row: every string the cell paints is built here (they change with the snapshot,
--- never per frame), `remaining` keeps the raw number the buy dialog clamps its count with.
-local function shopRow(it, currency, buybackOpen)
-    local cap = tonumber(it.dailyCap) or 0
-    local remaining = tonumber(it.remaining)
-    local remainText, remainToken, soldOut = getText(T .. "Shop_Unlimited"), "textMuted", false
-    if cap > 0 then
-        local left = remaining or cap
-        soldOut = left <= 0
-        remainText = soldOut and getText(T .. "Shop_SoldOut") or (tostring(left) .. " / " .. tostring(cap))
-        remainToken = soldOut and "warn" or "text"
-    end
-    local qty = tonumber(it.qty) or 1
-    return {
-        id = it.id, item = it.item, qty = qty, price = tonumber(it.price) or 0,
-        dailyCap = cap, remaining = remaining, soldOut = soldOut, currency = currency,
-        name = itemName(it.item), altName = itemBaseName(it.item), texture = itemTexture(it.item),
-        qtyText = getText(T .. "Shop_QtyPer", tostring(qty)),
-        priceText = amountText(it.price), remainText = remainText, remainToken = remainToken,
-        buyLabel = getText(T .. "Shop_Buy"),
-        -- Keep the configured price visible while the server-wide switch pauses buyback.
-        bidPrice = tonumber(it.bidPrice) or 0, buyback = it.buyback == true, buybackOpen = buybackOpen == true,
-        buybackCap = tonumber(it.buybackCap) or 0, buybackRemaining = tonumber(it.buybackRemaining),
-        sellLabel = getText(T .. "Shop_Sell", amountText(it.bidPrice or 0)),
-    }
-end
-
--- Shop row: icon + name over "N per lot", the unit price, today's remaining share, the buy chip.
--- Column edges come from Panel:layout (list.cols) and `list.buyDisabled` greys every chip while
--- the write gate is closed (frozen account, or no terminal within reach).
-local ShopCell = ISPanel:derive("MinidoracatEconomyShopCell")
-
-function ShopCell:render()
-    local e = self.entry
-    if not e then return end
-    local cols = self.list.cols
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
-    drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
-    local half = math.floor(h / 2)
-    local nameText = fitText(e.name, cols.nameW)
-    text(self, nameText, cols.name, half - fontH.small - 2, "text")
-    if e.altName then
-        local altX = cols.name + textWidth(nameText) + 8
-        local altW = cols.name + cols.nameW - altX
-        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
-    end
-    text(self, e.qtyText, cols.name, half + 2, "textFaint")
-    local ty = math.floor((h - fontH.small) / 2)
-    textRight(self, e.priceText, cols.priceR, ty, "accent")
-    local coinX = cols.priceR - textWidth(e.priceText) - COIN_SMALL - 4
-    if coinX > cols.name + cols.nameW then
-        drawCoin(self, e.currency, coinX, math.floor((h - COIN_SMALL) / 2), COIN_SMALL)
-    end
-    textRight(self, e.remainText, cols.remainR, ty, e.remainToken)
-    local off = self.list.buyDisabled == true or e.soldOut
-    border(self, cols.buyX, math.floor((h - CHIP_H) / 2), cols.buyW, CHIP_H, off and "border" or "accent", "pill")
-    textCentre(self, e.buyLabel, cols.buyX + cols.buyW / 2, ty, off and "textFaint" or "text")
-    if e.buyback then
-        local soff = not e.buybackOpen or self.list.buyDisabled == true or e.buybackRemaining == 0
-        border(self, cols.sellX, math.floor((h - CHIP_H) / 2), cols.sellW, CHIP_H, soff and "border" or "accent", "pill")
-        textCentre(self, fitText(e.sellLabel, cols.sellW - 6), cols.sellX + cols.sellW / 2, ty, soff and "textFaint" or "text")
-    end
-end
-
--- Mailbox row: icon + name x count over its source, the timestamp, the claim chip.
-local MailCell = ISPanel:derive("MinidoracatEconomyMailCell")
-
-function MailCell:render()
-    local e = self.entry
-    if not e then return end
-    local cols = self.list.cols
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
-    drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
-    local half = math.floor(h / 2)
-    local nameText = fitText(e.nameText, cols.nameW)
-    text(self, nameText, cols.name, half - fontH.small - 2, "text")
-    if e.altName then
-        local altX = cols.name + textWidth(nameText) + 8
-        local altW = cols.name + cols.nameW - altX
-        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
-    end
-    text(self, e.fromText, cols.name, half + 2, "textFaint")
-    local ty = math.floor((h - fontH.small) / 2)
-    textRight(self, e.timeText, cols.timeR, ty, "textFaint")
-    local off = self.list.claimDisabled == true
-    border(self, cols.claimX, math.floor((h - CHIP_H) / 2), cols.claimW, CHIP_H, off and "border" or "accent", "pill")
-    textCentre(self, e.claimLabel, cols.claimX + cols.claimW / 2, ty, off and "textFaint" or "text")
-end
-
--- Market row: icon + name over the condition/uses/fluid line, the seller, the price, what is
--- left of the listing window, and the buy/cancel chip. `list.actionDisabled` closes every chip
--- at once (frozen, no terminal in reach, a write in flight); an own listing on the browse page
--- paints Market_Own as plain grey text — there is no chip to press at all.
--- The auction tables share the cell: their `cols` drops the qty/seller columns (both live in
--- the name block) and adds the bid-count one, so every column here is painted only when the
--- owning table asked for it.
-local ListingCell = ISPanel:derive("MinidoracatEconomyListingCell")
-
-function ListingCell:render()
-    local e = self.entry
-    if not e then return end
-    local cols = self.list.cols
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
-    drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
-    local half = math.floor(h / 2)
-    local nameText = fitText(e.nameText, cols.nameW)
-    text(self, nameText, cols.name, half - fontH.small - 2, "text")
-    if e.altName then
-        local altX = cols.name + textWidth(nameText) + 8
-        local altW = cols.name + cols.nameW - altX
-        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
-    end
-    if e.statusText then text(self, fitText(e.statusText, cols.nameW), cols.name, half + 2, "textFaint") end
-    local ty = math.floor((h - fontH.small) / 2)
-    local rightOfName = cols.name + cols.nameW
-    if cols.qtyR then textRight(self, tostring(e.qty), cols.qtyR, ty, e.qty > 1 and "accent" or "textFaint") end
-    if cols.sellerX then
-        text(self, fitText(e.seller, cols.sellerW), cols.sellerX, ty, "textMuted")
-        rightOfName = cols.sellerX + cols.sellerW
-    end
-    textRight(self, e.priceText, cols.priceR, ty, "accent")
-    local coinX = cols.priceR - textWidth(e.priceText) - COIN_SMALL - 4
-    if coinX > rightOfName then
-        drawCoin(self, e.currency, coinX, math.floor((h - COIN_SMALL) / 2), COIN_SMALL)
-    end
-    if cols.bidsR then textRight(self, e.bidsText, cols.bidsR, ty, e.bidsToken or "textFaint") end
-    textRight(self, e.expiresText, cols.expiresR, ty, e.expiresToken or "textFaint")
-    -- the auction tables carry a second chip left of the action one: it opens this auction's
-    -- record. It is a read, so the terminal gate (list.actionDisabled) never touches it, and it
-    -- is hit-tested against these very numbers (Panel:onAuctionRow reads the same cols).
-    if cols.histX then
-        border(self, cols.histX, math.floor((h - CHIP_H) / 2), cols.histW, CHIP_H, "border", "pill")
-        textCentre(self, cols.histLabel, cols.histX + cols.histW / 2, ty, "textMuted")
-    end
-    if e.actionMuted then
-        textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, e.actionToken or "textFaint")
-        return
-    end
-    local off = self.list.actionDisabled == true or e.actionOff == true
-    border(self, cols.actionX, math.floor((h - CHIP_H) / 2), cols.actionW, CHIP_H, off and "border" or "accent", "pill")
-    textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, off and "textFaint" or "text")
-end
-
--- Picker strip (list dialog): the picker is a grid, but VirtualList is a one-column list, so one
--- list row carries a whole strip of tiles (entry = the array of candidates on this line) and
--- paints them itself. Hit testing reads the same cols.tileW, so the click and the paint can never
--- disagree; hover comes from the list (cols.tileW + list.hoverIndex/hoverCol, resolved once per
--- frame by the dialog) instead of the cell's own mouse, which only knows the whole strip.
-local CandidateCell = ISPanel:derive("MinidoracatEconomyCandidateCell")
-
-function CandidateCell:render()
-    local tiles = self.entry
-    if not tiles then return end
-    local Skin = U.Skin
-    local cols = self.list.cols
-    local tw, th = cols.tileW, cols.tileH
-    local hoverCol = self.list.hoverIndex == self.index and self.list.hoverCol or nil
-    for i = 1, #tiles do
-        local e = tiles[i]
-        local x = (i - 1) * tw
-        local alpha = e.ok and 1 or 0.4
-        local iconX = x + math.floor((tw - TILE_ICON) / 2)
-        Skin.fill(self, x + 2, 2, tw - 4, th - 4, color("card"), "round", alpha)
-        if e.ok and hoverCol == i then
-            Skin.fill(self, x + 2, 2, tw - 4, th - 4, color("hover"), "round", 1)
-        end
-        if e.texture then
-            self:drawTextureScaled(e.texture, iconX, 6, TILE_ICON, TILE_ICON, alpha, 1, 1, 1)
-        else
-            Skin.border(self, iconX, 6, TILE_ICON, TILE_ICON, color("border"), "round", alpha)
-        end
-        -- the refusal dot owns the far corner; the lot count sits to its left
-        local rightX = x + tw - 4
-        if not e.ok then
-            Skin.dot(self, x + tw - 12, 5, 7, color("negative"))
-            rightX = x + tw - 14
-        end
-        if e.qtyText then textRight(self, e.qtyText, rightX, 4, e.ok and "accent" or "textFaint") end
-        local label = fitText(e.name, tw - 8)
-        textCentre(self, label, x + tw / 2, 6 + TILE_ICON + 6, e.ok and "text" or "textFaint")
-    end
-end
-
--- ---------- market history ----------
--- The player's own market ring (market.history): two lines per row, so the row height follows
--- the font the way itemRowHeight does.
-local function historyLine() return fontH.small + 8 end
-local function historyRowHeight() return historyLine() * 2 + 8 end
-
-local HISTORY_KINDS = { "listed", "sold", "bought", "cancelled", "expired", "delisted", "restored",
-    "auction_created", "auction_bid", "auction_outbid", "auction_sold", "auction_won",
-    "auction_unsold", "auction_cancelled", "auction_restored" }
-local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "warn", expired = "warn",
-    auction_sold = "positive", auction_won = "positive", auction_outbid = "warn",
-    auction_unsold = "warn", auction_cancelled = "warn", auction_created = "textFaint" }
-
--- One history line. The amount is what the record moved for this player: a sale nets the tax
--- off, money leaving the account (a purchase, a bid the auction now holds, the price the
--- winner paid) is negative, and everything else is the price as it stood.
-local function historyRow(rec, offsetMin)
-    local kind = tostring(rec.kind or "")
-    local qty = math.max(1, math.floor(tonumber(rec.qty) or 1))
-    local price = tonumber(rec.price) or 0
-    local amount = price
-    if kind == "sold" or kind == "auction_sold" then amount = price - (tonumber(rec.tax) or 0)
-    elseif kind == "bought" or kind == "auction_bid" or kind == "auction_won" then amount = -price end
-    local name = itemName(rec.item)
-    local lot = lotText(qty)
-    local parts = { stampText(tonumber(rec.ts) or 0, offsetMin) }
-    if type(rec.other) == "string" and rec.other ~= "" then
-        parts[#parts + 1] = getText(T .. "Market_History_Other", rec.other)
-    end
-    if type(rec.reason) == "string" and rec.reason ~= "" then parts[#parts + 1] = rec.reason end
-    return {
-        kind = kind,
-        ts = tonumber(rec.ts) or 0,           -- the filter bar pages/sorts on the raw numbers
-        amount = amount,
-        kindText = getTextOrNull(T .. "Market_Kind_" .. kind) or kind,
-        kindToken = HISTORY_TOKENS[kind] or "text",
-        nameText = lot and (name .. " " .. lot) or name,
-        amountText = amountText(amount),
-        detailText = table.concat(parts, "  "),
-        rolledBack = rec.rolledBack == true,
-    }
-end
-
--- ---------- auction history ----------
--- The auction ring (auction.history) is painted by the very same HistoryCell: the kinds the
--- server can write are a fixed set, so the kind column is measured from them.
-local AUCTION_HISTORY_KINDS = { "auction_created", "auction_bid", "auction_sold", "auction_unsold",
-    "auction_cancelled", "auction_restored" }
-
--- The accounts an entry names, in the order they matter: who sold it, who bid, who won, and
--- (on a bid) who was overtaken. Each has a label key of its own.
-local ACCOUNT_KEYS = { { "Seller", "seller" }, { "Bidder", "bidder" }, { "Buyer", "buyer" },
-    { "Previous", "previous" } }
-
--- One auction-history line. The amount is the auction's own price - the opening bid, one bid,
--- or what the item went for - and never a wallet delta: two bids in a row are two amounts, not
--- a charge taken twice, so nothing here is ever painted with a minus sign. An old auction.bid
--- event carries neither qty nor item; an unknown field is left out instead of invented.
-local function auctionHistoryRow(rec, offsetMin)
-    local kind = tostring(rec.kind or "")
-    local price = tonumber(rec.price)
-    local qty = tonumber(rec.qty)
-    local lot = qty and lotText(math.max(1, math.floor(qty))) or nil
-    local name = (type(rec.item) == "string" and rec.item ~= "") and itemName(rec.item) or "-"
-    local id = tostring(rec.auctionId or rec.listingId or "-")
-    -- the id sits right behind the time: the detail line is fitted to the card, and the id is
-    -- the one thing on it the player may have to read out loud
-    local parts = { stampText(tonumber(rec.ts) or 0, offsetMin), getText(T .. "Auction_History_Id", id) }
-    for _, spec in ipairs(ACCOUNT_KEYS) do
-        local who = rec[spec[2]]
-        if type(who) == "string" and who ~= "" then
-            parts[#parts + 1] = getText(T .. "Auction_History_" .. spec[1], who)
-        end
-    end
-    return {
-        kind = kind,
-        ts = tonumber(rec.ts) or 0,           -- the filter bar pages/sorts on the raw numbers
-        amount = price or 0,
-        kindText = getTextOrNull(T .. "Market_Kind_" .. kind) or kind,
-        kindToken = HISTORY_TOKENS[kind] or "text",
-        nameText = lot and (name .. " " .. lot) or name,
-        amountText = price and amountText(price) or "-",
-        detailText = table.concat(parts, "  "),
-        rolledBack = rec.rolledBack == true,
-    }
-end
-
-local HistoryCell = ISPanel:derive("MinidoracatEconomyMarketHistoryCell")
-
-function HistoryCell:render()
-    local e = self.entry
-    if not e then return end
-    local cols = self.list.cols
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
-    local line = historyLine()
-    local top = math.max(0, math.floor((h - line * 2) / 2))
-    local muted = e.rolledBack
-    text(self, e.kindText, cols.kind, top, muted and "textFaint" or e.kindToken)
-    text(self, fitText(e.nameText, cols.nameW), cols.name, top, muted and "textFaint" or "text")
-    textRight(self, e.amountText, cols.amountR, top, muted and "textFaint" or "accent")
-    if muted then
-        text(self, getText(T .. "Wallet_RolledBack"), cols.status, top, "textFaint")
-        strike(self, cols.kind, top, cols.amountR - cols.kind)
-    end
-    text(self, fitText(e.detailText, w - cols.kind - PAD), cols.kind, top + line, "textFaint")
-end
-
--- ---------- filter bar (market history + wallet statement) ----------
--- The two client-paged lists (the market ring and the wallet statement) get the same toolbar:
--- kind chips (multi-select; "all" clears the set), a from/to day pair, a time/amount sort pair
--- (a second click on the active chip flips the direction) and a pager under the list. Every
--- filter is local — the reply is at most a few hundred rows, so nothing here talks to the
--- server. The owner supplies the kind labeller and the field the amount sort reads.
-local PER_PAGE = 25
-local ARROW_W, ARROW_H = 7, 4
-
--- Sort direction marker next to the active column/chip: a 7x4 stair of drawRect lines, so it
--- needs no asset (Icons ships chevron_down but no chevron_up).
-local function drawArrow(el, x, y, up, token)
-    local c = color(token or "accent")
-    for i = 0, ARROW_H - 1 do
-        local w = up and (i * 2 + 1) or (ARROW_W - i * 2)
-        el:drawRect(x + math.floor((ARROW_W - w) / 2), y + i, w, 1, c.a * U.alpha, c.r, c.g, c.b)
-    end
-end
-
-local FilterBar = {}
-FilterBar.__index = FilterBar
-
--- `label(kind)` names a kind chip, `amountField` is the row field the amount sort reads, and
--- `onChange(panel)` rebuilds the owner's rows. Chips/entries are children of the window (the
--- layout places them in window coordinates), so the bar only remembers them.
-function FilterBar.new(panel, label, amountField, onChange)
-    local bar = setmetatable({ panel = panel, label = label, amountField = amountField,
-        onChange = onChange, kinds = {}, kindCount = 0, kindButtons = {}, labels = {},
-        sortKey = "time", desc = true, page = 1, pages = 1, total = 0 }, FilterBar)
-    local entryH = math.max(26, fontH.small + 12)
-    bar.dateW = math.max(textWidth("0000-00-00"), textWidth(getText(T .. "Filter_DateHint"))) + 24
-    for _, which in ipairs({ "from", "to" }) do
-        local e = newEntry(bar.dateW, entryH, getText(T .. "Filter_DateHint"))
-        e.target = bar
-        e.onTextChangeFunction = FilterBar.onDate
-        panel:addChild(e)
-        bar[which .. "Entry"] = e
-        DatePicker.attach(e, panel)
-    end
-    bar.sortButtons = {}
-    for _, key in ipairs({ "time", "amount" }) do
-        local title = getText(T .. "Filter_Sort_" .. key)
-        local b = Button.create(0, 0, textWidth(title) + 22 + ARROW_W + 4, CHIP_H, title, bar, FilterBar.onSort, "chip")
-        b.internal = key
-        b.active = key == bar.sortKey
-        panel:addChild(b)
-        bar.sortButtons[#bar.sortButtons + 1] = b
-    end
-    for _, spec in ipairs({ { "Prev", -1 }, { "Next", 1 } }) do
-        local title = getText(T .. "Market_" .. spec[1])
-        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, bar, FilterBar.onPage, "chip")
-        b.internal = spec[2]
-        panel:addChild(b)
-        bar[string.lower(spec[1]) .. "Button"] = b
-    end
-    return bar
-end
-
-function FilterBar:changed()
-    self.page = 1
-    self.onChange(self.panel)
-end
-
-function FilterBar:onDate() self:changed() end
-
-function FilterBar:onKind(button)
-    local kind = button.internal
-    if kind == "" then
-        self.kinds, self.kindCount = {}, 0
-    elseif self.kinds[kind] then
-        self.kinds[kind] = nil
-        self.kindCount = self.kindCount - 1
-    else
-        self.kinds[kind] = true
-        self.kindCount = self.kindCount + 1
-    end
-    for _, b in ipairs(self.kindButtons) do
-        b.active = b.internal == "" and self.kindCount == 0 or self.kinds[b.internal] == true
-    end
-    self:changed()
-end
-
-function FilterBar:onSort(button)
-    if self.sortKey == button.internal then
-        self.desc = not self.desc
-    else
-        self.sortKey = button.internal
-        self.desc = true          -- newest / largest first, both ways round
-    end
-    for _, b in ipairs(self.sortButtons) do b.active = b.internal == self.sortKey end
-    self:changed()
-end
-
-function FilterBar:onPage(button)
-    local page = self.page + button.internal
-    if page < 1 or page > self.pages then return end
-    self.page = page
-    self.onChange(self.panel)
-end
-
--- The chips are the kinds the reply actually carries (plus "all"), the rule the shop/market
--- category chips follow. Rebuilt only when that set changes; the caller re-runs layout.
-function FilterBar:syncKinds(rows)
-    local seen, order, sig = {}, { "" }, ""
-    for _, e in ipairs(rows) do
-        local kind = e.kind
-        if type(kind) == "string" and kind ~= "" and not seen[kind] then
-            seen[kind] = true
-            order[#order + 1] = kind
-            sig = sig .. kind .. ","
-        end
-    end
-    -- a kind that left the data must not stay selected (its chip is gone). The stale keys are
-    -- collected first: Kahlua is not promised to survive a delete mid-traversal.
-    local stale = {}
-    for kind in pairs(self.kinds) do
-        if not seen[kind] then stale[#stale + 1] = kind end
-    end
-    for _, kind in ipairs(stale) do
-        self.kinds[kind] = nil
-        self.kindCount = self.kindCount - 1
-    end
-    if sig == self.kindSig then return false end
-    self.kindSig = sig
-    for _, b in ipairs(self.kindButtons) do
-        b:setVisible(false)
-        self.panel:removeChild(b)
-    end
-    self.kindButtons = {}
-    for _, kind in ipairs(order) do
-        local title = kind == "" and getText(T .. "Filter_All") or self.label(kind)
-        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, FilterBar.onKind, "chip")
-        b.internal = kind
-        b.active = kind == "" and self.kindCount == 0 or self.kinds[kind] == true
-        self.panel:addChild(b)
-        self.kindButtons[#self.kindButtons + 1] = b
-    end
-    return true
-end
-
--- EC.filterPage options for the current filter state. A malformed date is "no bound" (the
--- player is still typing); "to" is the end of that day, so the day itself is included.
-function FilterBar:opts(timeField)
-    local offset = self.panel.offsetMin or 0
-    local from = EC.parseDay(entryText(self.fromEntry), offset)
-    local to = EC.parseDay(entryText(self.toEntry), offset)
-    return {
-        kinds = self.kindCount > 0 and self.kinds or nil,
-        fromMs = from, toMs = to and (to + 86400000) or nil,
-        timeField = timeField or "ts",
-        sortKey = self.sortKey == "amount" and self.amountField or (timeField or "ts"),
-        desc = self.desc, page = self.page, perPage = PER_PAGE,
-    }
-end
-
-function FilterBar:setPage(page, pages, total)
-    self.page, self.pages, self.total = page, pages, total
-end
-
--- One wrapped row of widgets between x and right; returns the y under the last row. Wrapping
--- (the shop's chip rule) is what keeps the bar inside the card at every font scale.
-function FilterBar:layout(x, y, right, visible)
-    local labels = {}
-    local cx, cy = x, y
-    local band = math.max(CHIP_H, self.fromEntry.height)
-    local ty = math.floor((band - fontH.small) / 2)
-    local function place(w)
-        if cx > x and cx + w > right then
-            cx = x
-            cy = cy + band + 6
-        end
-        local at = cx
-        cx = cx + w + 6
-        return at
-    end
-    local function labelAt(key)
-        local str = getText(T .. key)
-        local x = place(textWidth(str))     -- place() may open a new row: read cy after it
-        labels[#labels + 1] = { text = str, x = x, y = cy + ty }
-    end
-    local function dateAt(entry, key)
-        local label = getText(T .. key)
-        local labelW = textWidth(label)
-        local button = entry.calendarButton
-        local at = place(labelW + 4 + self.dateW + 4 + band)
-        labels[#labels + 1] = { text = label, x = at, y = cy + ty }
-        entry:setVisible(visible)
-        entry:setWidth(self.dateW)
-        entry:setX(at + labelW + 4); entry:setY(cy + math.floor((band - entry.height) / 2))
-        button:setVisible(visible)
-        button:setWidth(band); button:setHeight(band)
-        button:setX(entry.x + self.dateW + 4); button:setY(cy)
-    end
-    labelAt("Filter_Kind")
-    for _, b in ipairs(self.kindButtons) do
-        b:setVisible(visible)
-        b:setX(place(b.width)); b:setY(cy + math.floor((band - b.height) / 2))
-    end
-    dateAt(self.fromEntry, "Filter_From")
-    dateAt(self.toEntry, "Filter_To")
-    labelAt("Filter_Sort")
-    for _, b in ipairs(self.sortButtons) do
-        b:setVisible(visible)
-        b:setX(place(b.width)); b:setY(cy + math.floor((band - b.height) / 2))
-    end
-    self.labels = labels
-    return cy + band
-end
-
--- Pager strip under the list: the page counter on the left, the two chips, the row count right.
-function FilterBar:layoutPager(x, y, right, visible)
-    local cx = x + textWidth(getText(T .. "Filter_Page", "99", "99")) + PAD
-    self.pagerY = y
-    self.pagerRight = right
-    for _, b in ipairs({ self.prevButton, self.nextButton }) do
-        b:setVisible(visible)
-        b:setX(cx); b:setY(y + math.floor((ROW - CHIP_H) / 2))
-        cx = cx + b.width + 6
-    end
-end
-
-function FilterBar:draw(el)
-    for _, l in ipairs(self.labels) do text(el, l.text, l.x, l.y, "textMuted") end
-    for _, b in ipairs(self.sortButtons) do
-        if b.active then
-            drawArrow(el, b.x + b.width - ARROW_W - 8, b.y + math.floor((CHIP_H - ARROW_H) / 2), not self.desc)
-        end
-    end
-end
-
-function FilterBar:drawPager(el, x)
-    local ty = self.pagerY + math.floor((ROW - fontH.small) / 2)
-    text(el, getText(T .. "Filter_Page", tostring(self.page), tostring(self.pages)), x, ty, "textMuted")
-    textRight(el, getText(T .. "Filter_Count", tostring(self.total)), self.pagerRight, ty, "textMuted")
-    self.prevButton:setEnable(self.page > 1)
-    self.nextButton:setEnable(self.page < self.pages)
-end
-
--- Count bubble on the top-right corner of a tab button (the Mail tab): a red circle through the
--- framework's dot texture, widened into a pill from two digits on. The float button paints the
--- same shape without the toolkit (U.init has not run before the first window opens).
-local BADGE_FILL = { r = 0.85, g = 0.2, b = 0.2, a = 1 }
-local BADGE_RIM = { r = 1, g = 1, b = 1, a = 1 }
-local function drawBadge(el, rightX, y, n)
-    local label = n > 99 and "99+" or tostring(n)
-    local size = math.max(18, fontH.small + 6)
-    local w = math.max(size, textWidth(label) + 8)
-    local x = rightX - w
-    if w <= size then
-        U.Skin.dot(el, x, y, size, BADGE_FILL, BADGE_RIM)
-    else
-        U.Skin.fill(el, x, y, w, size, BADGE_FILL, "pill")
-        U.Skin.border(el, x, y, w, size, BADGE_RIM, "pill")
-    end
-    el:drawTextCentre(label, x + w / 2, y + math.floor((size - fontH.small) / 2), 1, 1, 1, 1, UIFont.Small)
-end
-
--- ---------- sortable table header ----------
--- A server-sorted page needs the header to be a control, not a caption: one transparent panel
--- over the header row, hit-tested against the same column numbers the cells paint with. The
--- market table and the auction table each own one instance; the panel fields it reads (the hit
--- list, the current sort, whether clicks are live) come from the instance, so one class serves
--- both without either page knowing about the other.
-
--- "price_desc" -> "price", true. The default time sort is newest first and its ascending twin
--- is a server key of its own ("time_asc"), so no column ever resolves to an ascending "time".
-local function sortParts(sort)
-    local key = tostring(sort or "")
-    local base = string.match(key, "^(.*)_desc$")
-    if base then return base, true end
-    return key, false
-end
-
-local MarketHeader = ISPanel:derive("MinidoracatEconomyMarketHeader")
-
-function MarketHeader:render()
-    local panel = self.panel
-    local w, h = self.width, self.height
-    fill(self, 0, 0, w, h, "well", "rect")
-    local ty = math.floor((h - fontH.small) / 2)
-    local ay = ty + math.floor((fontH.small - ARROW_H) / 2)
-    local sortKey, desc = sortParts(panel[self.sortField])
-    local live = self.isLive(panel)
-    for _, c in ipairs(panel[self.hitsField] or {}) do
-        local active = c.key == sortKey
-        local token = active and "accent" or (live and "textMuted" or "textFaint")
-        local room = c.w - (active and (ARROW_W + 4) or 0)
-        local label = fitText(c.title, room)
-        if c.right then
-            local rx = c.x + c.w
-            if active then
-                drawArrow(self, rx - ARROW_W, ay, not desc, token)
-                rx = rx - ARROW_W - 4
-            end
-            textRight(self, label, rx, ty, token)
-        else
-            text(self, label, c.x, ty, token)
-            if active then drawArrow(self, c.x + textWidth(label) + 4, ay, not desc, token) end
-        end
-    end
-end
-
-function MarketHeader:onMouseDown(x)
-    self.onHit(self.panel, x)
-    return true
-end
-
-local function newHeader(panel, sortField, hitsField, isLive, onHit)
-    local h = ISPanel:new(0, 0, 100, ROW)
-    setmetatable(h, MarketHeader)
-    h.background = false
-    h.panel = panel
-    h.sortField, h.hitsField, h.isLive, h.onHit = sortField, hitsField, isLive, onHit
-    h:initialise()
-    return h
-end
-
--- ---------- preference sliders ----------
--- Skin.slider is a stateless painter, so the drag lives here: the press remembers where it
--- landed inside the track and onMouseMove walks that x with the engine's deltas (ISUIElement
--- hands over dx/dy, not a point). One class, two specs: the title-row chrome opacity and the
--- toast seconds in the preference popover. spec = { min, max, get(), set(v, dragging), flush() }.
-local OPACITY_W = 120
--- 5 % per chip, the step the ModOptions slider uses too; the bounds are ECOptions' own
-local OPACITY_STEP = 5
-local OPACITY_MIN = (EC.Options and EC.Options.OPACITY_MIN) or 30
-local OPACITY_MAX = (EC.Options and EC.Options.OPACITY_MAX) or 100
-local OPACITY_SPAN = OPACITY_MAX - OPACITY_MIN
-
-local function opacityPercent()
-    local O = EC.Options
-    local v = (O and O.panelOpacity) and O.panelOpacity() or 1
-    v = math.floor((tonumber(v) or 1) * 100 + 0.5)
-    if v < OPACITY_MIN then v = OPACITY_MIN elseif v > OPACITY_MAX then v = OPACITY_MAX end
-    return v
-end
-
-local function setOpacityPercent(v, dragging)
-    if v < OPACITY_MIN then v = OPACITY_MIN elseif v > OPACITY_MAX then v = OPACITY_MAX end
-    local O = EC.Options
-    if O and O.setPanelOpacity then O.setPanelOpacity(v, dragging == true) else U.setAlpha(v / 100) end
-end
-
-local function optionsFlush()
-    if EC.Options and EC.Options.flush then EC.Options.flush() end   -- one ini write per drag
-end
-
-local OPACITY_SPEC = { min = OPACITY_MIN, max = OPACITY_MAX, get = opacityPercent, set = setOpacityPercent, flush = optionsFlush }
-
-local function toastSeconds()
-    local O = EC.Options
-    if O and O.toastSeconds then return O.toastSeconds() end
-    return 5
-end
-
-local TOAST_SPEC = {
-    min = (EC.Options and EC.Options.TOAST_MIN) or 2, max = (EC.Options and EC.Options.TOAST_MAX) or 10,
-    get = toastSeconds,
-    set = function(v, dragging)
-        if EC.Options and EC.Options.setToastSeconds then EC.Options.setToastSeconds(v, dragging == true) end
-    end,
-    flush = optionsFlush,
-}
-
-local PrefSlider = ISPanel:derive("MinidoracatEconomyPrefSlider")
-
-function PrefSlider:valueAt(x)
-    local ratio = x / math.max(1, self.width - 1)
-    if ratio < 0 then ratio = 0 elseif ratio > 1 then ratio = 1 end
-    local s = self.spec
-    return s.min + math.floor(ratio * (s.max - s.min) + 0.5)
-end
-
-function PrefSlider:onMouseDown(x)
-    self.dragging = true
-    self.dragX = x
-    self.spec.set(self:valueAt(x), true)
-    return true
-end
-
-function PrefSlider:onMouseMove(dx)
-    if not self.dragging then return end
-    self.dragX = (self.dragX or 0) + (tonumber(dx) or 0)
-    self.spec.set(self:valueAt(self.dragX), true)
-end
-PrefSlider.onMouseMoveOutside = PrefSlider.onMouseMove   -- the pointer leaves the track mid-drag
-
-function PrefSlider:onMouseUp()
-    if self.dragging then self.spec.flush() end
-    self.dragging = false
-    return true
-end
-PrefSlider.onMouseUpOutside = PrefSlider.onMouseUp
-
-function PrefSlider:render()
-    local s = self.spec
-    U.Skin.slider(self, 0, 0, self.width, self.height, (s.get() - s.min) / math.max(1, s.max - s.min),
-        { track = color("track"), fill = color("gold"), knob = color("text"), border = color("border") }, U.alpha)
-end
-
-local function newPrefSlider(width, height, spec)
-    local s = ISPanel:new(0, 0, width, height)
-    setmetatable(s, PrefSlider)
-    s.background = false
-    s.spec = spec
-    s:initialise()
-    return s
-end
-
--- ---------- window chrome buttons ----------
--- The vanilla title buttons (Button_Close / Button_Pin / Button_Collapse textures) restyled
--- with the framework's line icons: the button keeps its click, only the paint changes. Without
--- the icon capability the vanilla textures stay.
-local CHROME_ICON = 16
-local function iconButton(btn, name)
-    local Icons = U.framework and U.framework.Icons
-    if not (Icons and Icons.get and Icons.get(name)) then return end
-    btn.image = nil
-    btn.iconName = name
-    btn.render = function(b)
-        local hot = b:isMouseOver()
-        Icons.draw(b, b.iconName, math.floor((b.width - CHROME_ICON) / 2), math.floor((b.height - CHROME_ICON) / 2),
-            CHROME_ICON, color(hot and "text" or "textMuted"), 1)
-    end
-end
-
--- ---------- preference popover ----------
--- A small panel under the title-row gear: the preferences that are the player's own (kept by
--- ECOptions in ModOptions.ini). Opens/closes with the gear, closes with the tab and the window.
-local PREFS_W = 300
-local PrefsPopover = ISPanel:derive("MinidoracatEconomyPrefsPopover")
-
-function PrefsPopover:createChildren()
-    local lineH = fontH.small + 8
-    self.toastSlider = newPrefSlider(PREFS_W - PAD * 2 - textWidth("10 s") - 8, lineH, TOAST_SPEC)
-    self:addChild(self.toastSlider)
-    self.toastY = PAD + fontH.medium + PAD + fontH.small + 4
-    self.toastSlider:setX(PAD)
-    self.toastSlider:setY(self.toastY)
-    self.noteY = self.toastY + lineH + PAD
-    self:setHeight(self.noteY + fontH.small + PAD)
-end
-
-function PrefsPopover:prerender()
-    local w, h = self.width, self.height
-    fill(self, 0, 0, w, h, "surface")
-    U.Skin.border(self, 0, 0, w, h, color("border"))
-    text(self, getText(T .. "Prefs_Title"), PAD, PAD, "text", UIFont.Medium)
-    local y = PAD + fontH.medium + PAD
-    text(self, fitText(getText("UI_MinidoracatEconomy_ToastSeconds"), w - PAD * 2), PAD, y - 2, "textMuted")
-    textRight(self, getText(T .. "Prefs_Seconds", tostring(toastSeconds())), w - PAD, self.toastY + math.floor((self.toastSlider.height - fontH.small) / 2), "text")
-    text(self, fitText(getText(T .. "Prefs_ModOptionsNote"), w - PAD * 2), PAD, self.noteY, "textFaint")
-end
-
-function PrefsPopover:onMouseDown() return true end   -- clicks inside never fall through to the window
-function PrefsPopover:onMouseUp() return true end
-
--- ---------- buy dialog ----------
--- Same shape as the admin write dialog (ECAdminPanel Dialog): a panel added to the window,
--- centred over the content area, swallowing the clicks of the page underneath. It never scrolls,
--- so the rows are simply stacked from the font height.
-local BuyDialog = ISPanel:derive("MinidoracatEconomyBuyDialog")
-
-function BuyDialog:createChildren()
-    local step = math.max(CHIP_H, fontH.medium + 8)
-    self.minusButton = Button.create(0, 0, step + 6, step, "-", self, BuyDialog.onStep, "chip")
-    self.minusButton.internal = -1
-    self:addChild(self.minusButton)
-    self.plusButton = Button.create(0, 0, step + 6, step, "+", self, BuyDialog.onStep, "chip")
-    self.plusButton.internal = 1
-    self:addChild(self.plusButton)
-    local buy = getText(T .. (self.sell and "Shop_SellConfirm" or "Shop_Buy"))
-    local bh = math.max(28, fontH.medium + 10)
-    self.confirmButton = Button.create(0, 0, math.max(120, textWidth(buy, UIFont.Medium) + 40), bh, buy, self, BuyDialog.onConfirm, "primary")
-    self.confirmButton.font = UIFont.Medium
-    self:addChild(self.confirmButton)
-    local cancel = getText(T .. "Admin_Cancel")
-    self.cancelButton = Button.create(0, 0, textWidth(cancel) + 30, bh, cancel, self, BuyDialog.onCancel, "chip")
-    self:addChild(self.cancelButton)
-end
-
--- Lots per purchase: the server cap, and never more than today's remaining share. Selling: whole
--- SKU units the backpack holds, within every remaining cap the server reported (units for the
--- SKU, coins for the account and the server); 0 when there is nothing to sell.
-function BuyDialog:maxCount()
-    local max = math.max(1, tonumber(C.shop and C.shop.countMax) or 1)
-    local row = self.row
-    if self.sell then
-        local c = self.cand
-        if not c then return 0 end
-        local unitQty = math.max(1, math.floor(tonumber(c.unitQty) or 1))
-        local units = math.floor((tonumber(c.count) or 0) / unitQty)
-        local bb = c.buyback or {}
-        local bid = math.max(1, math.floor(tonumber(c.bidPrice) or row.bidPrice or 1))
-        if bb.skuRemaining ~= nil then units = math.min(units, math.floor(tonumber(bb.skuRemaining) or 0)) end
-        if bb.accountRemaining ~= nil then units = math.min(units, math.floor((tonumber(bb.accountRemaining) or 0) / bid)) end
-        if bb.serverRemaining ~= nil then units = math.min(units, math.floor((tonumber(bb.serverRemaining) or 0) / bid)) end
-        return math.max(0, math.min(max, units))
-    end
-    if row.dailyCap > 0 and row.remaining then max = math.min(max, math.max(1, row.remaining)) end
-    return max
-end
-
-function BuyDialog:total()
-    if self.sell then return self.count * math.floor(tonumber(self.cand and self.cand.bidPrice) or self.row.bidPrice or 0) end
-    return self.count * self.row.price
-end
-
-function BuyDialog:available()
-    local bal = C.wallet and C.wallet.balances and C.wallet.balances[self.row.currency]
-    return bal and tonumber(bal.available) or 0
-end
-
-function BuyDialog:onStep(button)
-    self.count = math.max(1, math.min(self:maxCount(), self.count + button.internal))
-    self.message = nil
-end
-
-function BuyDialog:onCancel() self.panel:closeBuy() end
-function BuyDialog:onConfirm()
-    if self.sell then self.panel:submitSell(self) else self.panel:submitBuy(self) end
-end
-
-function BuyDialog:layoutInside(maxW)
-    local line = fontH.small + 8
-    local step = self.minusButton.height
-    local w = math.max(340, math.min(maxW, 440))
-    local y = PAD
-    self.titleY = y; y = y + fontH.medium + PAD
-    self.itemY = y; y = y + math.max(ITEM_ICON, line * 2) + PAD
-    self.countY = y; y = y + math.max(step, line) + 6
-    self.totalY = y; y = y + line
-    self.afterY = y; y = y + line + 6
-    if self.sell then self.roomY = y; y = y + line * 2 + 4 end
-    -- the error line is always reserved: an answer from the server must not make the dialog
-    -- (and with it the confirm button under the cursor) jump
-    self.messageY = y; y = y + line + 6
-    self.buttonY = y
-    self:setWidth(w)
-    self:setHeight(y + self.confirmButton.height + PAD)
-    self.numW = math.max(34, textWidth("99", UIFont.Medium) + 16)
-    self.plusButton:setX(w - PAD - self.plusButton.width)
-    self.plusButton:setY(self.countY)
-    self.numX = self.plusButton.x - self.numW
-    self.minusButton:setX(self.numX - self.minusButton.width)
-    self.minusButton:setY(self.countY)
-    self.confirmButton:setX(w - PAD - self.confirmButton.width)
-    self.confirmButton:setY(self.buttonY)
-    self.cancelButton:setX(self.confirmButton.x - 8 - self.cancelButton.width)
-    self.cancelButton:setY(self.buttonY)
-end
-
-function BuyDialog:prerender()
-    local row = self.row
-    local w, h = self.width, self.height
-    local sell = self.sell == true
-    fill(self, 0, 0, w, h, "surface")
-    border(self, 0, 0, w, h, "accent")
-    text(self, fitText(getText(T .. (sell and "Shop_SellTitle" or "Shop_BuyTitle"), row.name), w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
-    drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
-    local tx = PAD + ITEM_ICON + PAD
-    text(self, fitText(row.name, w - tx - PAD), tx, self.itemY, "text")
-    local c = self.cand
-    if sell then
-        -- what the backpack holds, in the server's words (only canonical copies count)
-        local have
-        if not c then have = getText(T .. "Wallet_Loading")
-        elseif (tonumber(c.count) or 0) < 1 then have = getText(T .. "Shop_SellNone")
-        else have = getText(T .. "Shop_SellHave", tostring(math.floor(tonumber(c.count) or 0)), tostring(math.floor(tonumber(c.unitQty) or 1)), amountText(c.bidPrice)) end
-        text(self, fitText(have, w - tx - PAD), tx, self.itemY + fontH.small + 4, (c and (tonumber(c.count) or 0) < 1) and "warn" or "textFaint")
-    else
-        text(self, row.qtyText, tx, self.itemY + fontH.small + 4, "textFaint")
-    end
-    local max = self:maxCount()
-    if self.count > max then self.count = max end
-    if sell and self.count < 1 and max >= 1 then self.count = 1 end
-    local stepH = self.minusButton.height
-    text(self, getText(T .. (sell and "Shop_SellUnits" or "Shop_Count")), PAD, self.countY + math.floor((stepH - fontH.small) / 2), "textMuted")
-    textCentre(self, tostring(self.count), self.numX + self.numW / 2, self.countY + math.floor((stepH - fontH.medium) / 2), "text", UIFont.Medium)
-    local total = self:total()
-    local after = sell and (self:available() + total) or (self:available() - total)
-    local totalText = amountText(total)
-    text(self, getText(T .. (sell and "Shop_SellTotal" or "Shop_Total")), PAD, self.totalY, "textMuted")
-    textRight(self, totalText, w - PAD, self.totalY, sell and "positive" or "accent")
-    drawCoin(self, row.currency, w - PAD - textWidth(totalText) - COIN_SMALL - 4, self.totalY + math.floor((fontH.small - COIN_SMALL) / 2), COIN_SMALL)
-    text(self, getText(T .. "Shop_AfterBalance"), PAD, self.afterY, "textMuted")
-    textRight(self, amountText(after), w - PAD, self.afterY, after < 0 and "warn" or "text")
-    if sell and c and type(c.buyback) == "table" then
-        local bb = c.buyback
-        text(self, fitText(getText(T .. "Shop_SellRoom", amountText(bb.accountRemaining or 0), amountText(bb.serverRemaining or 0)), w - PAD * 2), PAD, self.roomY, "textFaint")
-        if bb.skuRemaining ~= nil then
-            text(self, fitText(getText(T .. "Shop_SellRoomSku", tostring(math.floor(tonumber(bb.skuRemaining) or 0))), w - PAD * 2), PAD, self.roomY + fontH.small + 4, "textFaint")
-        end
-    end
-    if self.message then text(self, fitText(self.message, w - PAD * 2), PAD, self.messageY, "errorText") end
-    local pending = self.panel.buyPending ~= nil
-    self.minusButton:setEnable(self.count > 1 and not pending)
-    self.plusButton:setEnable(self.count < max and not pending)
-    local ok = sell and (max >= 1 and self.count >= 1) or (not sell and after >= 0)
-    self.confirmButton:setEnable(ok and not pending and self.panel:tradeAllowed())
-end
-
-function BuyDialog:render() end
-
--- the page underneath must not be operable while the dialog is open
-function BuyDialog:onMouseDown() return true end
-function BuyDialog:onMouseUp() return true end
-function BuyDialog:onMouseMove() return true end
-
--- ---------- market / auction dialog ----------
--- Same shape as BuyDialog (a child panel centred over the content, swallowing the page's
--- clicks), with every step of both trade pages on one panel: the purchase, the cancel
--- confirmation, the backpack picker and the pricing step the picker hands over to (the picker
--- switches its own content instead of stacking a second dialog on top of itself), plus the
--- auction bid, the auction create step the same picker hands over to, and its cancel.
-local MarketDialog = ISPanel:derive("MinidoracatEconomyMarketDialog")
-
--- The durations offered when the sandbox range allows them; a range that holds none of them
--- (a server that only permits 10..30 h, say, still keeps 12 and 24) falls back to its bounds.
-local HOUR_PRESETS = { 6, 12, 24, 48, 72 }
-local HOUR_DEFAULT = 24
-
-local function hourChoices(minH, maxH)
-    local out = {}
-    for _, hrs in ipairs(HOUR_PRESETS) do
-        if hrs >= minH and hrs <= maxH then out[#out + 1] = hrs end
-    end
-    if #out == 0 then
-        out[1] = minH
-        if maxH > minH then out[2] = maxH end
-    end
-    return out
-end
-
--- the auction steps confirm through Panel:submitAuction, the market ones through submitMarket
-local AUCTION_MODES = { bid = true, auction = true, acancel = true }
-
-local function confirmLabel(mode)
-    if mode == "buy" then return getText(T .. "Market_Buy") end
-    if mode == "cancel" then return getText(T .. "Market_Cancel") end
-    if mode == "price" then return getText(T .. "Market_List") end
-    if mode == "bid" then return getText(T .. "Auction_Bid") end
-    if mode == "auction" then return getText(T .. "Auction_Create") end
-    if mode == "acancel" then return getText(T .. "Auction_CancelTitle") end
-    return nil     -- the picker confirms by picking a row
-end
-
-function MarketDialog:createChildren()
-    local bh = math.max(28, fontH.medium + 10)
-    self.confirmButton = Button.create(0, 0, 120, bh, confirmLabel("buy"), self, MarketDialog.onConfirm, "primary")
-    self.confirmButton.font = UIFont.Medium
-    self:addChild(self.confirmButton)
-    local cancel = getText(T .. "Admin_Cancel")
-    self.cancelButton = Button.create(0, 0, textWidth(cancel) + 30, bh, cancel, self, MarketDialog.onCancel, "chip")
-    self:addChild(self.cancelButton)
-    self.priceEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
-    self.priceEntry.target = self
-    self.priceEntry.onTextChangeFunction = MarketDialog.onPriceChanged
-    self:addChild(self.priceEntry)
-    -- the lot size: only shown when the picked row carries more than one item
-    self.qtyEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
-    self.qtyEntry.target = self
-    self.qtyEntry.onTextChangeFunction = MarketDialog.onPriceChanged
-    self:addChild(self.qtyEntry)
-    local only = getText(T .. "Market_OnlyListable")
-    self.onlyButton = Button.create(0, 0, textWidth(only) + 30, math.max(CHIP_H, fontH.small + 10),
-        only, self, MarketDialog.onOnlyListable, "chip")
-    self.onlyListable = true             -- the backpack is mostly unlistable: start on the useful half
-    self.onlyButton.active = true
-    self:addChild(self.onlyButton)
-    -- auction duration chips: one per preset, retitled when the create step opens (the sandbox
-    -- range decides which of them exist, so they are built once and hidden until then)
-    self.hourButtons = {}
-    for i = 1, #HOUR_PRESETS do
-        local b = Button.create(0, 0, 60, math.max(CHIP_H, fontH.small + 10), "", self, MarketDialog.onHours, "chip")
-        b:setVisible(false)
-        self:addChild(b)
-        self.hourButtons[i] = b
-    end
-    local tw, th = tileSize()
-    self.pickList = U.newTable(CandidateCell, th)
-    self.pickList.cols.tileW, self.pickList.cols.tileH = tw, th
-    -- VirtualList hands onSelect the row (a whole strip of tiles) and no x, so the tile is
-    -- resolved here from the click's own x; the scrollbar keeps the framework's handler.
-    local scrollDown = self.pickList.onMouseDown
-    self.pickList.onMouseDown = function(list, x, y)
-        local e = self:tileAt(x, y)
-        if e then
-            self.panel:onCandidate(e)
-            return true
-        end
-        return scrollDown(list, x, y)
-    end
-    self:addChild(self.pickList)
-end
-
-function MarketDialog:onCancel() self.panel:closeMarketDialog() end
-function MarketDialog:onConfirm()
-    if AUCTION_MODES[self.mode] then self.panel:submitAuction(self) else self.panel:submitMarket(self) end
-end
-
-function MarketDialog:onHours(button)
-    self.hours = button.internal
-    for _, b in ipairs(self.hourButtons) do b.active = b.internal == self.hours end
-    self.message = nil
-end
-
--- The create step opens: build the chip set the sandbox range allows and preselect the one
--- closest to a day (the duration a player picks by default on every auction house there is).
-function MarketDialog:setHourRange(minH, maxH)
-    local choices = hourChoices(minH, maxH)
-    local best = choices[1]
-    for _, hrs in ipairs(choices) do
-        if math.abs(hrs - HOUR_DEFAULT) < math.abs(best - HOUR_DEFAULT) then best = hrs end
-    end
-    self.hours = best
-    for i, b in ipairs(self.hourButtons) do
-        b.internal = choices[i]
-        if b.internal then
-            local title = getText(T .. "Auction_Hours", tostring(b.internal))
-            b:setTitle(title)
-            b:setWidth(textWidth(title) + 22)
-            b.active = b.internal == best
-        end
-    end
-end
-function MarketDialog:onPriceChanged() self.message = nil end
-
-function MarketDialog:onOnlyListable()
-    self.onlyListable = not self.onlyListable
-    self.onlyButton.active = self.onlyListable
-    self.pickNote = nil
-    self:rebuildGrid()
-end
-
--- The candidate under (x, y), or nil outside the tiles (row gap, empty tail of a strip, the
--- scrollbar column). Returns the strip index and the column too: the paint reads them for hover.
-function MarketDialog:tileAt(x, y)
-    local list = self.pickList
-    local tw = list.cols.tileW
-    if not tw or x < 0 or x >= list:cellWidth() then return nil end
-    local index = list:indexAt(x, y)
-    if not index then return nil end
-    local tiles = list:getItems()[index]
-    local col = math.floor(x / tw) + 1
-    local e = tiles and tiles[col]
-    if not e then return nil end
-    return e, index, col
-end
-
--- Candidates -> strips of gridCols tiles, dropping the unlistable ones while the filter is on.
--- Called on a fresh snapshot, on the filter chip, and when a resize changes the column count.
-function MarketDialog:rebuildGrid()
-    local rows = self.panel.candidateRows or {}
-    local perRow = math.max(1, self.gridCols or 1)
-    local grid, strip, shown, listable = {}, nil, 0, 0
-    for i = 1, #rows do
-        local e = rows[i]
-        if e.ok then listable = listable + 1 end
-        if e.ok or not self.onlyListable then
-            if not strip or #strip >= perRow then
-                strip = {}
-                grid[#grid + 1] = strip
-            end
-            strip[#strip + 1] = e
-            shown = shown + 1
-        end
-    end
-    self.candTotal, self.candListable, self.candShown = #rows, listable, shown
-    self.pickList:setItems(grid)
-end
-
--- Whole numbers only: the entry filters the keyboard, this filters a paste.
-function MarketDialog:priceValue()
-    local raw = string.match(entryText(self.priceEntry), "^%s*(.-)%s*$")
-    if not string.match(raw, "^%d+$") then return nil end
-    local n = tonumber(raw)
-    if not n or n <= 0 then return nil end
-    return math.floor(n)
-end
-
--- The lot size to list, 1..count. nil = not a usable number: the confirm stays closed instead
--- of the server refusing a request the client could already tell was wrong.
-function MarketDialog:lotCount()
-    return (self.cand and self.cand.count) or 1
-end
-
-function MarketDialog:qtyValue()
-    local max = self:lotCount()
-    if max <= 1 then return 1 end
-    local raw = string.match(entryText(self.qtyEntry), "^%s*(.-)%s*$")
-    if not string.match(raw, "^%d+$") then return nil end
-    local n = tonumber(raw)
-    if not n or n < 1 or n > max then return nil end
-    return math.floor(n)
-end
-
-function MarketDialog:available()
-    local currency = (self.row and self.row.currency) or (C.market and C.market.currency)
-        or (C.auction and C.auction.currency)
-    local bal = C.wallet and C.wallet.balances and C.wallet.balances[currency]
-    return bal and tonumber(bal.available) or 0
-end
-
--- Raising an own leading bid only reserves the difference: the server holds the first amount
--- already (ECAuction.bid takes `delta` off the available balance, not the whole new bid).
-function MarketDialog:bidReserve(amount)
-    local row = self.row
-    local held = (row and row.leading and tonumber(row.bid)) or 0
-    return math.max(0, amount - held)
-end
-
-function MarketDialog:layoutInside(maxW, maxH)
-    local line = fontH.small + 8
-    local mode = self.mode
-    local w
-    if mode == "pick" then
-        -- the grid is the page: 90% of the content area, never under a readable minimum
-        w = math.min(maxW, math.max(640, math.floor(maxW * 0.9)))
-    elseif mode == "cancel" or mode == "acancel" then
-        w = math.max(340, math.min(maxW, 480))
-    elseif mode == "auction" then
-        -- the duration chips share a line with their label: wide enough for all five presets
-        w = math.max(340, math.min(maxW, 560))
-    else
-        w = math.max(340, math.min(maxW, 440))
-    end
-    local y = PAD
-    self.titleY = y
-    self.priceEntry:setVisible(mode == "price" or mode == "auction" or mode == "bid")
-    local multi = (mode == "price" or mode == "auction") and self:lotCount() > 1
-    self.qtyEntry:setVisible(multi)
-    local hourChips = mode == "auction"
-    for _, b in ipairs(self.hourButtons) do b:setVisible(hourChips and b.internal ~= nil) end
-    self.pickList:setVisible(mode == "pick")
-    self.onlyButton:setVisible(mode == "pick")
-    if mode == "pick" then
-        -- title, the listable counter and the filter chip share the top line
-        local chipH = self.onlyButton.height
-        local headH = math.max(fontH.medium, chipH)
-        self.onlyButton:setX(w - PAD - self.onlyButton.width)
-        self.onlyButton:setY(y + math.floor((headH - chipH) / 2))
-        self.countR = self.onlyButton.x - 8
-        y = y + headH + PAD
-    else
-        y = y + fontH.medium + PAD
-    end
-    if mode == "buy" then
-        self.itemY = y; y = y + math.max(ITEM_ICON, line * 2) + PAD
-        self.fromY = y; y = y + line
-        self.payY = y; y = y + line
-        self.afterY = y; y = y + line + 6
-    elseif mode == "cancel" then
-        self.bodyY = y; y = y + line + 6
-    elseif mode == "acancel" then
-        self.bodyY = y; y = y + line
-        self.hintY = y; y = y + line + 6
-    elseif mode == "bid" then
-        self.itemY = y; y = y + math.max(ITEM_ICON, line * 2) + PAD
-        self.minNextY = y; y = y + line
-        self.priceY = y; y = y + math.max(self.priceEntry.height, line) + 4
-        self.reserveY = y; y = y + line
-        self.afterY = y; y = y + line + 6
-        self.priceEntry:setX(w - PAD - self.priceEntry.width)
-        self.priceEntry:setY(self.priceY)
-    elseif mode == "auction" then
-        self.itemY = y; y = y + math.max(ITEM_ICON, line) + PAD
-        self.qtyY, self.qtyHintY = nil, nil
-        if multi then
-            self.qtyY = y; y = y + math.max(self.qtyEntry.height, line) + 4
-            self.qtyHintY = y; y = y + line + 6
-            self.qtyEntry:setX(w - PAD - self.qtyEntry.width)
-            self.qtyEntry:setY(self.qtyY)
-        end
-        self.priceY = y; y = y + math.max(self.priceEntry.height, line) + 4
-        self.hintY = y; y = y + line + 6
-        self.priceEntry:setX(w - PAD - self.priceEntry.width)
-        self.priceEntry:setY(self.priceY)
-        -- the duration chips sit next to their own label (the hint for the range shares the
-        -- price hint line above): the create step is the tallest of the six, and the content
-        -- area of a 1000x560 window at the largest UI font is all it has
-        self.hoursY = y
-        local chipH = self.hourButtons[1].height
-        local cx, cy = PAD + textWidth(getText(T .. "Auction_Duration")) + PAD, y
-        for _, b in ipairs(self.hourButtons) do
-            if b.internal then
-                if cx + b.width > w - PAD then
-                    cx = PAD
-                    cy = cy + chipH + 4
-                end
-                b:setX(cx); b:setY(cy)
-                cx = cx + b.width + 6
-            end
-        end
-        y = cy + math.max(chipH, line) + 6
-        self.feeY = y; y = y + line + 6
-    elseif mode == "price" then
-        self.itemY = y; y = y + math.max(ITEM_ICON, line) + PAD
-        self.qtyY, self.qtyHintY = nil, nil
-        if multi then
-            self.qtyY = y; y = y + math.max(self.qtyEntry.height, line) + 4
-            self.qtyHintY = y; y = y + line + 6
-            self.qtyEntry:setX(w - PAD - self.qtyEntry.width)
-            self.qtyEntry:setY(self.qtyY)
-        end
-        self.priceY = y; y = y + math.max(self.priceEntry.height, line) + 4
-        self.hintY = y; y = y + line + 6
-        self.feeY = y; y = y + line
-        self.youGetY = y; y = y + line + 6
-        self.priceEntry:setX(w - PAD - self.priceEntry.width)
-        self.priceEntry:setY(self.priceY)
-    else
-        local tw, th = tileSize()
-        local listW = w - PAD * 2
-        -- 90% of the content area tall: the tail (status line, error line, buttons) is taken off
-        -- the grid so the dialog lands on that height instead of growing past the content area
-        local tail = PAD + line + line + 6 + self.cancelButton.height + PAD
-        local target = math.min(maxH, math.max(380, math.floor(maxH * 0.9)))
-        local listH = math.max(th + 4, target - y - tail)
-        self.pickList:setX(PAD); self.pickList:setY(y)
-        if self.pickList.width ~= listW or self.pickList.height ~= listH then
-            self.pickList:resize(listW, listH)
-        end
-        local cols = self.pickList.cols
-        cols.tileW, cols.tileH = tw, th
-        -- the scrollbar (10 wide + 2 margin) appears as soon as the grid overflows: budget for
-        -- it always, so the strips never have to reflow when it does
-        local perRow = math.max(1, math.floor((listW - 12) / tw))
-        if self.gridCols ~= perRow then
-            self.gridCols = perRow
-            self:rebuildGrid()
-        end
-        y = y + listH + PAD
-        self.statusY = y; y = y + line
-    end
-    -- the error line is always reserved: an answer from the server must not make the dialog
-    -- (and with it the button under the cursor) jump
-    self.messageY = y; y = y + line + 6
-    self.buttonY = y
-    self:setWidth(w)
-    self:setHeight(y + self.cancelButton.height + PAD)
-    local label = confirmLabel(mode)
-    self.confirmButton:setVisible(label ~= nil)
-    if label then
-        if self.confirmButton.title ~= label then self.confirmButton:setTitle(label) end
-        self.confirmButton:setWidth(math.max(120, textWidth(label, UIFont.Medium) + 40))
-        self.confirmButton:setX(w - PAD - self.confirmButton.width)
-        self.confirmButton:setY(self.buttonY)
-        self.cancelButton:setX(self.confirmButton.x - 8 - self.cancelButton.width)
-    else
-        self.cancelButton:setX(w - PAD - self.cancelButton.width)
-    end
-    self.cancelButton:setY(self.buttonY)
-end
-
-function MarketDialog:prerender()
-    local w, h = self.width, self.height
-    local mode = self.mode
-    local panel = self.panel
-    local info = panel.marketInfo
-    local busy = panel.marketPending ~= nil
-    fill(self, 0, 0, w, h, "surface")
-    border(self, 0, 0, w, h, "accent")
-    local title = getText(T .. "Market_ListTitle")
-    if mode == "buy" then title = getText(T .. "Market_BuyTitle", self.row.nameText)
-    elseif mode == "cancel" then title = getText(T .. "Market_Cancel")
-    elseif mode == "bid" then title = getText(T .. "Auction_BidTitle", self.row.nameText)
-    elseif mode == "auction" then title = getText(T .. "Auction_CreateTitle")
-    elseif mode == "acancel" then title = getText(T .. "Auction_CancelTitle") end
-    local titleW = w - PAD * 2
-    if mode == "pick" then
-        -- title, counter and filter chip share the head line: the counter takes its width first
-        self.countText = getText(T .. "Market_PickCount", tostring(self.candListable or 0),
-            tostring(self.candTotal or 0))
-        local info = self.panel.marketInfo or {}
-        if info.mailCapacity then
-            -- a listing takes a mailbox slot: the counter says how many are left
-            self.countText = getText(T .. "Market_MailUsage", tostring(info.mailUsed or 0), tostring(info.mailCapacity))
-                .. "   " .. self.countText
-        end
-        titleW = self.countR - PAD - textWidth(self.countText) - PAD
-    end
-    text(self, fitText(title, titleW, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
-    if mode == "buy" then
-        local row = self.row
-        drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
-        local tx = PAD + ITEM_ICON + PAD
-        text(self, fitText(row.nameText, w - tx - PAD), tx, self.itemY, "text")
-        if row.statusText then
-            text(self, fitText(row.statusText, w - tx - PAD), tx, self.itemY + fontH.small + 4, "textFaint")
-        end
-        text(self, fitText(getText(T .. "Market_BuyFrom", row.seller), w - PAD * 2), PAD, self.fromY, "textMuted")
-        local priceText = amountText(row.price)
-        text(self, getText(T .. "Market_YouPay"), PAD, self.payY, "textMuted")
-        textRight(self, priceText, w - PAD, self.payY, "accent")
-        drawCoin(self, row.currency, w - PAD - textWidth(priceText) - COIN_SMALL - 4,
-            self.payY + math.floor((fontH.small - COIN_SMALL) / 2), COIN_SMALL)
-        local after = self:available() - row.price
-        text(self, getText(T .. "Shop_AfterBalance"), PAD, self.afterY, "textMuted")
-        textRight(self, amountText(after), w - PAD, self.afterY, after < 0 and "warn" or "text")
-        self.confirmButton:setEnable(after >= 0 and not busy and panel:tradeAllowed())
-    elseif mode == "cancel" then
-        text(self, fitText(getText(T .. "Market_CancelConfirm", self.row.name), w - PAD * 2), PAD, self.bodyY, "text")
-        self.confirmButton:setEnable(not busy and panel:tradeAllowed())
-    elseif mode == "acancel" then
-        text(self, fitText(self.row.nameText, w - PAD * 2), PAD, self.bodyY, "text")
-        text(self, fitText(getText(T .. "Auction_CancelHint"), w - PAD * 2), PAD, self.hintY, "textFaint")
-        self.confirmButton:setEnable(not busy and panel:tradeAllowed())
-    elseif mode == "bid" then
-        local row = self.row
-        drawIcon(self, row.texture, PAD, self.itemY, ITEM_ICON)
-        local tx = PAD + ITEM_ICON + PAD
-        text(self, fitText(row.nameText, w - tx - PAD), tx, self.itemY, "text")
-        if row.statusText then
-            text(self, fitText(row.statusText, w - tx - PAD), tx, self.itemY + fontH.small + 4, "textFaint")
-        end
-        text(self, fitText(getText(T .. "Auction_MinNext", amountText(row.minNext)), w - PAD * 2),
-            PAD, self.minNextY, "textMuted")
-        text(self, getText(T .. "Auction_YourBid"), PAD,
-            self.priceY + math.floor((self.priceEntry.height - fontH.small) / 2), "textMuted")
-        local amount = self:priceValue() or 0
-        local reserve = self:bidReserve(amount)
-        local reserveText = amountText(reserve)
-        text(self, getText(T .. "Auction_WillReserve"), PAD, self.reserveY, "textMuted")
-        textRight(self, reserveText, w - PAD, self.reserveY, "accent")
-        drawCoin(self, row.currency, w - PAD - textWidth(reserveText) - COIN_SMALL - 4,
-            self.reserveY + math.floor((fontH.small - COIN_SMALL) / 2), COIN_SMALL)
-        local after = self:available() - reserve
-        text(self, getText(T .. "Shop_AfterBalance"), PAD, self.afterY, "textMuted")
-        textRight(self, amountText(after), w - PAD, self.afterY, after < 0 and "warn" or "text")
-        self.confirmButton:setEnable(amount >= row.minNext and after >= 0 and not busy
-            and not row.ended and panel:tradeAllowed())
-    elseif mode == "auction" then
-        local cand = self.cand
-        drawIcon(self, cand.texture, PAD, self.itemY, ITEM_ICON)
-        local tx = PAD + ITEM_ICON + PAD
-        local count = self:lotCount()
-        local candName = count > 1 and (cand.name .. " " .. cand.qtyText) or cand.name
-        text(self, fitText(candName, w - tx - PAD), tx, self.itemY + math.floor((ITEM_ICON - fontH.small) / 2), "text")
-        if self.qtyY then
-            text(self, getText(T .. "Market_Qty"), PAD,
-                self.qtyY + math.floor((self.qtyEntry.height - fontH.small) / 2), "textMuted")
-            text(self, fitText(getText(T .. "Market_QtyHint", tostring(count), tostring(count)), w - PAD * 2),
-                PAD, self.qtyHintY, "textFaint")
-        end
-        text(self, getText(T .. "Auction_StartPrice"), PAD,
-            self.priceY + math.floor((self.priceEntry.height - fontH.small) / 2), "textMuted")
-        -- the two ranges share the hint line: the price bounds left, the duration bounds right
-        local hours = panel.auctionInfo or {}
-        local hoursHint = getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0),
-            tostring(hours.maxHours or 0))
-        textRight(self, hoursHint, w - PAD, self.hintY, "textFaint")
-        text(self, fitText(getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax)),
-            w - PAD * 2 - textWidth(hoursHint) - PAD), PAD, self.hintY, "textFaint")
-        text(self, getText(T .. "Auction_Duration"), PAD,
-            self.hoursY + math.floor((self.hourButtons[1].height - fontH.small) / 2), "textMuted")
-        local price = self:priceValue() or 0
-        text(self, getText(T .. "Market_Fee"), PAD, self.feeY, "textMuted")
-        textRight(self, amountText(listingFee(price, info.feePercent)), w - PAD, self.feeY, "warn")
-        self.confirmButton:setEnable(price > 0 and self:qtyValue() ~= nil and self.hours ~= nil
-            and not busy and panel:tradeAllowed())
-    elseif mode == "price" then
-        local cand = self.cand
-        drawIcon(self, cand.texture, PAD, self.itemY, ITEM_ICON)
-        local tx = PAD + ITEM_ICON + PAD
-        local count = self:lotCount()
-        local candName = count > 1 and (cand.name .. " " .. cand.qtyText) or cand.name
-        text(self, fitText(candName, w - tx - PAD), tx, self.itemY + math.floor((ITEM_ICON - fontH.small) / 2), "text")
-        if self.qtyY then
-            text(self, getText(T .. "Market_Qty"), PAD,
-                self.qtyY + math.floor((self.qtyEntry.height - fontH.small) / 2), "textMuted")
-            text(self, fitText(getText(T .. "Market_QtyHint", tostring(count), tostring(count)), w - PAD * 2),
-                PAD, self.qtyHintY, "textFaint")
-        end
-        text(self, getText(T .. "Market_Price"), PAD,
-            self.priceY + math.floor((self.priceEntry.height - fontH.small) / 2), "textMuted")
-        text(self, getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax)),
-            PAD, self.hintY, "textFaint")
-        local price = self:priceValue() or 0
-        text(self, getText(T .. "Market_Fee"), PAD, self.feeY, "textMuted")
-        textRight(self, amountText(listingFee(price, info.feePercent)), w - PAD, self.feeY, "warn")
-        text(self, getText(T .. "Market_YouGet"), PAD, self.youGetY, "textMuted")
-        textRight(self, amountText(price - ceilPercent(price, info.taxPercent)), w - PAD, self.youGetY, "positive")
-        self.confirmButton:setEnable(price > 0 and self:qtyValue() ~= nil and not busy and panel:tradeAllowed())
-    else
-        -- one pass over the grid: the tile under the cursor decides the status line, and the
-        -- strips read the same two numbers back when they paint their hover highlight
-        local list = self.pickList
-        local hover = nil
-        list.hoverIndex, list.hoverCol = nil, nil
-        if list:isMouseOver() then
-            local e, index, col = self:tileAt(list:getMouseX(), list:getMouseY())
-            if e then
-                hover, list.hoverIndex, list.hoverCol = e, index, col
-            end
-        end
-        textRight(self, self.countText, self.countR,
-            self.titleY + math.floor((fontH.medium - fontH.small) / 2), "textMuted")
-        -- the hovered tile, else the refusal of the last unlistable tile the player clicked,
-        -- else the invitation to pick one
-        local status, token = getText(T .. "Market_PickSelect"), "textMuted"
-        local panelInfo = self.panel.marketInfo or {}
-        if panelInfo.mailCapacity and (panelInfo.mailUsed or 0) >= panelInfo.mailCapacity then
-            status, token = getText(T .. "Market_Error_mailbox_full"), "errorText"
-        elseif hover then
-            status = hover.detailText
-            if not hover.ok then token = "warn" end
-        elseif self.pickNote then
-            status, token = self.pickNote, "warn"
-        end
-        text(self, fitText(status, w - PAD * 2), PAD, self.statusY, token)
-        if (self.candTotal or 0) == 0 then
-            text(self, getText(T .. "Market_PickEmpty"), PAD * 2, list.y + 6, "textMuted")
-        elseif (self.candShown or 0) == 0 then
-            text(self, getText(T .. "Market_NoMatch"), PAD * 2, list.y + 6, "textMuted")
-        end
-    end
-    if self.message then text(self, fitText(self.message, w - PAD * 2), PAD, self.messageY, "errorText") end
-end
-
-function MarketDialog:render() end
-
-function MarketDialog:onMouseDown() return true end
-function MarketDialog:onMouseUp() return true end
-function MarketDialog:onMouseMove() return true end
-
--- ---------- window ----------
-
+local iconButton = C.AdminWindow.iconButton
+local BuyDialog, MarketDialog, AUCTION_MODES = Dialogs.BuyDialog, Dialogs.MarketDialog, Dialogs.AUCTION_MODES
+local PrefsPopover, PREFS_W, opacityPercent = Preferences.PrefsPopover, Preferences.PREFS_W, Preferences.opacityPercent
+local defaultSize = Layout.defaultSize
+local TIMEOUT_MS = 8000
+local SHOP_POLL_MS = 30000
+
+local itemRowHeight, newEntry = W.itemRowHeight, W.newEntry
+local newReader = U.newReader
+local detailLine, setPlaceholder, itemBaseName, shopError = W.detailLine, W.setPlaceholder, W.itemBaseName, W.shopError
+local marketError, listingRow, auctionRow = W.marketError, W.listingRow, W.auctionRow
+local candidateRow, shopRow, ShopCell, MailCell = W.candidateRow, W.shopRow, W.ShopCell, W.MailCell
+local StatementCell, ListingCell, historyRowHeight, historyRow = W.StatementCell, W.ListingCell, W.historyRowHeight, W.historyRow
+local auctionHistoryRow, HistoryCell, drawBadge, newHeader = W.auctionHistoryRow, W.HistoryCell, W.drawBadge, W.newHeader
+local newCombo, comboSelect, comboFill, sortKeysFor = W.newCombo, W.comboSelect, W.comboFill, W.sortKeysFor
+local sortLabel, MARKET_SORTS, AUCTION_SORTS = W.sortLabel, W.MARKET_SORTS, W.AUCTION_SORTS
+local currencyLabel, defaultCurrency = W.currencyLabel, W.defaultCurrency
+local deliveryNote = C.deliveryText
+
+-- One segment of a bulk claim. The server checks at most twenty envelopes (and two hundred
+-- items) in one synchronous handler, so the client never asks it for more than that at once.
+local MAIL_SEGMENT = 20
+
+-- ---------- modal isolation ----------
 local Panel = ISCollapsableWindow:derive("MinidoracatEconomyPanel")
 
--- Default size follows the screen (about 3/4 of it, never below the minimum, never off-screen);
--- a size the player dragged to is kept by ISLayoutManager and only clamped back into the screen.
-local function defaultSize()
-    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
-    local w = math.min(sw - 40, math.max(MIN_WIDTH, math.floor(sw * 0.74)))
-    local h = math.min(sh - 40, math.max(MIN_HEIGHT, math.floor(sh * 0.78)))
-    return math.max(320, w), math.max(240, h)
-end
+-- Bind concrete implementations once; the window and all native callback identities stay intact.
+Panel.layoutMarket = Layout.layoutMarket
+Panel.layout = Layout.layout
+Panel.headerTipName = Layout.headerTipName
+Panel.updateHeaderTip = Layout.updateHeaderTip
+Panel.onMouseMove = Layout.onMouseMove
+Panel.onMouseMoveOutside = Layout.onMouseMoveOutside
+Panel.drawHeader = Layout.drawHeader
+Panel.drawWallet = Layout.drawWallet
+Panel.drawRewards = Layout.drawRewards
+Panel.drawShop = Layout.drawShop
+Panel.drawMail = Layout.drawMail
+Panel.drawMarketHistory = Layout.drawMarketHistory
+Panel.drawMarket = Layout.drawMarket
+Panel.drawAuctionHistory = Layout.drawAuctionHistory
+Panel.drawAuction = Layout.drawAuction
+Panel.drawFooter = Layout.drawFooter
 
 -- Taller than vanilla (max(16, small font + 1)) so the Medium title fits; the vanilla
 -- close/pin/collapse buttons and the drag region size themselves from this value.
 function Panel:titleBarHeight()
-    return 28
+    return math.max(28, fontH.medium + 8)
 end
 
 -- Title-bar chip, shown only while the size differs from the default: back to the default size,
@@ -1766,17 +110,56 @@ function Panel:onResetSize()
     self:layout()
 end
 
+-- ---------- navigation entries ----------
+-- The six pages, then the two utility entries. C.Navigation adopts these button instances and owns
+-- their glyph, their label and their geometry from there on; the instances stay ours, so `internal`,
+-- `active`, `fullTitle` and the callback are what the rest of this file reads. Nothing outside the
+-- navigation module may setTitle/setWidth/setHeight on them again, and no test here reads `title`.
+local NAV_ENTRIES = {
+    { "Wallet" }, { "Rewards" }, { "Shop" }, { "Market" }, { "Auction" }, { "Mail" },
+    { "Leaderboard" },
+    { "Admin", true }, { "Settings", true },
+}
+local NAV_ICONS = {
+    Wallet = "wallet", Rewards = "gift", Shop = "shop", Market = "market",
+    Auction = "auction", Mail = "mail", Leaderboard = "chart", Admin = "users", Settings = "settings",
+}
+
+
 function Panel:createChildren()
     ISCollapsableWindow.createChildren(self)
+    -- ----- navigation -----
     self.tabButtons = {}
-    for _, tab in ipairs({ "Wallet", "Rewards", "Shop", "Market", "Auction", "Mail", "Admin" }) do
-        local b = Button.create(0, 0, TAB_W, TAB_H, getText(T .. "Tab_" .. tab), self, Panel.onTab, "tab")
-        b.internal = tab
+    for _, entry in ipairs(NAV_ENTRIES) do
+        local title = getText(T .. "Tab_" .. entry[1])
+        local b = Button.create(0, 0, 140, ROW, title, self, Panel.onTab, "tab")
+        b.internal = entry[1]
+        b.fullTitle = title
+        b.navUtility = entry[2]
         self:addChild(b)
         self.tabButtons[#self.tabButtons + 1] = b
-        if tab == "Mail" then self.mailTabButton = b end
+        if entry[1] == "Mail" then self.mailTabButton = b end
+        if entry[1] == "Admin" then self.adminNavButton = b end
     end
+    self.nav = Nav.create(self, self.tabButtons, NAV_ICONS, "player")
+    self:addChild(self.nav)
+    -- the toggle goes in the title row, outside the rail: reachable whether the rail is open or
+    -- shut, and it never spends one of the vertical rows
+    self.navToggle = self.nav.toggleButton
+    self:addChild(self.navToggle)
 
+    -- ----- the fixed header identity -----
+    -- The login account of this client, under the page title on every tab: the one thing in this
+    -- window that does not belong to a page, so a screenshot of any of them names whose economy
+    -- it is. It is a chip rather than a painted line because a header row can only ever show what
+    -- fits, and an account name is exactly the kind of value that does not: pressing it (or Enter
+    -- on it) spells the whole thing out in the session's record window, which copies it as well.
+    local idLabel = getText(T .. "Player_IdentityUnknown")
+    self.identityButton = Button.create(0, 0, textWidth(idLabel) + 20, ROW, idLabel,
+        self, Panel.onIdentity, "chip")
+    self:addChild(self.identityButton)
+
+    -- ----- wallet -----
     self.periodButtons = {}
     for _, f in ipairs({ "Recent", "ThisMonth", "LastMonth" }) do
         local title = getText(T .. "Wallet_" .. f)
@@ -1785,36 +168,84 @@ function Panel:createChildren()
         self:addChild(b)
         self.periodButtons[#self.periodButtons + 1] = b
     end
-
-    self.list = U.newTable(Cell, ROW)
+    -- The detailed balances are a separate reading view, not a second table competing for width.
+    local fold = getText(T .. "Wallet_Details")
+    self.walletDetailsButton = Button.create(0, 0, textWidth(fold) + 22, CHIP_H, fold, self,
+        Panel.onWalletDetails, "chip")
+    self:addChild(self.walletDetailsButton)
+    local filters = getText(T .. "Admin_Tx_Filters")
+    self.walletFilterButton = Button.create(0, 0, textWidth(filters) + 22, CHIP_H, filters, self, Panel.onWalletFilters, "chip")
+    self:addChild(self.walletFilterButton)
+    self.list = U.newTable(StatementCell, math.max(ROW, fontH.small + 8))
+    -- picking a row reads it: the record opens as the session's own floating window (Detail)
+    self.list.onSelect = function(_, item) self:onDetailRow("statement", item) end
     self:addChild(self.list)
-    -- the statement is paged on the client (the reply is the whole month): kind chips, a day
-    -- range, a time/amount sort and the pager, all local
-    self.walletBar = FilterBar.new(self, kindText, "amount", Panel.rebuildList)
+    -- the statement is paged on the client (the reply is the whole month): a keyword box, kind
+    -- chips, a day range, a time/amount sort and the pager, all local
+    self.walletBar = FilterBar.new(self, kindText, "amount", Panel.rebuildList, "Wallet_SearchHint")
 
-    -- shop page: the category chips are rebuilt per snapshot (Panel:rebuildCategories), the
-    -- search box filters the table by item name or sku id
-    self.catButtons = {}
+    -- ----- the whole-page reader -----
+    -- Two pages *are* a reading surface and have no table of their own: the wallet's balance
+    -- view (every currency with its reserve, its ceiling and this month's totals) and the
+    -- Rewards page (the daily state and every configured milestone). Both scroll, neither may
+    -- truncate, and the copy chip beside them hands the untruncated text to the clipboard.
+    -- A picked *row* is not read here any more: it opens the floating record window, so no
+    -- table ever gives up its height to a preview band (see Panel:onDetailRow).
+    self.detailBox = newReader(self, 240, fontH.small * 2 + 12)
+    local copyLabel = getText(T .. "Market_Detail_Copy")
+    self.detailCopyButton = Button.create(0, 0, textWidth(copyLabel) + 22, CHIP_H, copyLabel,
+        self, Panel.onDetailCopy, "chip")
+    self:addChild(self.detailCopyButton)
+    -- One retry chip for the three history reads (statement / market ring / auction record): the
+    -- read that failed is the one on screen, and nothing in this window ever retries on its own.
+    local retryLabel = getText(T .. "History_Retry")
+    self.historyRetryButton = Button.create(0, 0, textWidth(retryLabel) + 22, CHIP_H, retryLabel,
+        self, Panel.onHistoryRetry, "chip")
+    self:addChild(self.historyRetryButton)
+
+    -- ----- shop -----
     self.shopEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Shop_Search"))
     self.shopEntry.target = self
     self.shopEntry.onTextChangeFunction = Panel.onShopSearch
     self:addChild(self.shopEntry)
+    self.shopCatCombo = newCombo(self, 140, Panel.onShopCat)
+    self.shopCatCombo:addOptionWithData(getText(T .. "Shop_All"), "")
+    -- The currency this page trades in. One choice, made explicitly: a catalog quotes a price
+    -- per currency, and the player picks which of them this visit spends.
+    self.shopCurCombo = newCombo(self, 140, Panel.onShopCurrency)
+    -- filled with the registered set by Panel:syncCurrencyCombos, together with the two browse
+    -- filters: one place decides what every currency box offers
     self.shopList = U.newTable(ShopCell, itemRowHeight())
+    -- A row is a read: it selects the sku and spells it out in the reader. Buying and selling
+    -- are the row's own two buttons (ECRowActions), which is also the keyboard's way in - the
+    -- toolbar pair below acts on the picked row for the same reason it always did.
     self.shopList.onSelect = function(_, item) self:onShopRow(item) end
-    local shopDown = self.shopList.onMouseDown
-    self.shopList.onMouseDown = function(list, x, y)
-        self.shopClickX = x    -- which chip of the row was hit (buy / sell)
-        return shopDown(list, x, y)
-    end
+    self.shopList.onRowAction = function(_, row, actionId) self:onShopAction(row, actionId) end
     self:addChild(self.shopList)
+    for _, spec in ipairs({ { "Buy", "Shop_Buy", Panel.onShopBuy },
+        { "Sell", "Shop_SellConfirm", Panel.onShopSell } }) do
+        local title = getText(T .. spec[2])
+        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, spec[3], "chip")
+        self:addChild(b)
+        self["shop" .. spec[1] .. "Button"] = b
+    end
 
-    -- mailbox page
+    -- ----- mailbox -----
+    -- A row is a read (Panel:onMailRow opens the reader and does nothing else). Claiming one
+    -- letter is that row's own button; the chip above claims every letter that is ready, in
+    -- segments, without ever splitting an envelope.
     self.mailList = U.newTable(MailCell, itemRowHeight())
     self.mailList.onSelect = function(_, item) self:onMailRow(item) end
+    self.mailList.onRowAction = function(_, row, actionId) self:onMailAction(row, actionId) end
     self:addChild(self.mailList)
+    local claimLabel = getText(T .. "Mail_ClaimAll")
+    self.mailClaimAllButton = Button.create(0, 0, textWidth(claimLabel) + 22, CHIP_H, claimLabel,
+        self, Panel.onMailClaimAll, "chip")
+    self:addChild(self.mailClaimAllButton)
 
-    -- market page: mode/refresh bar over either the browse cards (category + search + sort on
-    -- the left, the listing table on the right) or the single "my listings" / "history" card
+    -- ----- market -----
+    -- the mode bar over either the browse table (search / category / sort above it) or the single
+    -- "my listings" / "history" card, all of them the whole workspace wide
     local MODE_KEYS = { browse = "Browse", mine = "Mine", history = "History" }
     self.marketModeButtons = {}
     for _, mode in ipairs({ "browse", "mine", "history" }) do
@@ -1826,24 +257,25 @@ function Panel:createChildren()
         self.marketModeButtons[#self.marketModeButtons + 1] = b
         if mode == "mine" then self.marketMineButton = b end
     end
-    self.marketSortButtons = {}
-    for _, sort in ipairs({ "time", "time_asc", "price", "price_desc" }) do
-        local title = getText(T .. "Market_Sort_" .. sort)
-        local b = Button.create(0, 0, textWidth(title) + 22, CHIP_H, title, self, Panel.onMarketSort, "chip")
-        b.internal = sort
-        b.active = sort == self.marketSort
-        self:addChild(b)
-        self.marketSortButtons[#self.marketSortButtons + 1] = b
-    end
-    self.marketCatButtons = {}
     self.marketEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Market_Search"))
     self.marketEntry.target = self
     self.marketEntry.onTextChangeFunction = Panel.onMarketSearch
     self:addChild(self.marketEntry)
+    self.marketCatCombo = newCombo(self, 140, Panel.onMarketCat)
+    self.marketCatCombo:addOptionWithData(getText(T .. "Shop_All"), "")
+    -- the currency filter: "all" is the default, and it is also the one state in which a price
+    -- sort is meaningless (prices of two currencies do not compare)
+    self.marketCurCombo = newCombo(self, 140, Panel.onMarketCurrency)
+    self.marketSortCombo = newCombo(self, 160, Panel.onMarketSort)
+    comboFill(self.marketSortCombo, sortKeysFor(MARKET_SORTS, self.marketCur ~= nil),
+        sortLabel(MARKET_SORTS), self.marketSort)
     self.marketList = U.newTable(ListingCell, itemRowHeight())
+    -- a listing row reads; buying it (or pulling an own one back) is the row's own button
     self.marketList.onSelect = function(_, item) self:onMarketRow(item) end
+    self.marketList.onRowAction = function(_, row, actionId) self:onMarketAction(row, actionId) end
     self:addChild(self.marketList)
     self.marketHistoryList = U.newTable(HistoryCell, historyRowHeight())
+    self.marketHistoryList.onSelect = function(_, item) self:onDetailRow("history", item) end
     self:addChild(self.marketHistoryList)
     self.marketHeader = newHeader(self, "marketSort", "marketHeaderHits",
         function(panel) return panel.marketMode == "browse" and not panel.browseBusy end,
@@ -1851,7 +283,7 @@ function Panel:createChildren()
     self:addChild(self.marketHeader)
     self.historyBar = FilterBar.new(self,
         function(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end,
-        "amount", Panel.rebuildMarketHistory)
+        "amount", Panel.rebuildMarketHistory, "Market_History_SearchHint")
     for _, spec in ipairs({ { "Refresh", Panel.onMarketRefresh }, { "List", Panel.onMarketList },
         { "Prev", Panel.onMarketPage }, { "Next", Panel.onMarketPage } }) do
         local title = getText(T .. "Market_" .. spec[1])
@@ -1862,9 +294,15 @@ function Panel:createChildren()
     self.marketPrevButton.internal = -1
     self.marketNextButton.internal = 1
     self:updateMarketInfo()
+    local sellerClear = getText(T .. "Admin_Mkt_SellerClear")
+    self.marketSellerClearButton = Button.create(0, 0, textWidth(sellerClear) + 22, CHIP_H,
+        sellerClear, self, Panel.onMarketSellerClear, "chip")
+    self:addChild(self.marketSellerClearButton)
 
-    -- auction page: the same mode bar, one full-width card, and the browse/mine tables built
-    -- from the very same ListingCell (their columns drop the seller and add the bid count)
+    -- ----- auction -----
+    -- the same mode bar, one full-workspace card, and the browse/mine tables built from the very
+    -- same ListingCell. Every auction row carries its own record button, so the record page is
+    -- reached from the row it belongs to instead of a toolbar chip that had to guess.
     self.auctionModeButtons = {}
     for _, spec in ipairs({ { "browse", "Auction_Browse" }, { "mine", "Auction_Mine" },
         { "history", "Auction_History" } }) do
@@ -1880,23 +318,20 @@ function Panel:createChildren()
     self.auctionEntry.target = self
     self.auctionEntry.onTextChangeFunction = Panel.onAuctionSearch
     self:addChild(self.auctionEntry)
-    -- the three auction tables carry two chips per row (the action and the record one), so the
-    -- x of the press is remembered the way the shop rows do it
-    self.auctionList = U.newTable(ListingCell, itemRowHeight())
-    self.auctionList.onSelect = function(_, item) self:onAuctionRow(item, "browse") end
-    self:addChild(self.auctionList)
-    self.auctionSellList = U.newTable(ListingCell, itemRowHeight())
-    self.auctionSellList.onSelect = function(_, item) self:onAuctionRow(item, "selling") end
-    self:addChild(self.auctionSellList)
-    self.auctionBidList = U.newTable(ListingCell, itemRowHeight())
-    self.auctionBidList.onSelect = function(_, item) self:onAuctionRow(item, "bidding") end
-    self:addChild(self.auctionBidList)
-    for _, list in ipairs({ self.auctionList, self.auctionSellList, self.auctionBidList }) do
-        local down = list.onMouseDown
-        list.onMouseDown = function(l, x, y)
-            self.auctionClickX = x
-            return down(l, x, y)
-        end
+    -- the sort box is the keyboard's equivalent of the sortable header (a header is a click
+    -- target and nothing else), and it offers exactly the keys that header can produce
+    self.auctionSortCombo = newCombo(self, 160, Panel.onAuctionSort)
+    self.auctionCurCombo = newCombo(self, 140, Panel.onAuctionCurrency)
+    comboFill(self.auctionSortCombo, sortKeysFor(AUCTION_SORTS, self.auctionCur ~= nil),
+        sortLabel(AUCTION_SORTS), self.auctionSort)
+    for _, spec in ipairs({ { "auctionList", "browse" }, { "auctionSellList", "selling" },
+        { "auctionBidList", "bidding" } }) do
+        local context = spec[2]
+        local list = U.newTable(ListingCell, itemRowHeight())
+        list.onSelect = function(_, item) self:onAuctionRow(item) end
+        list.onRowAction = function(_, row, actionId) self:onAuctionAction(row, actionId, context) end
+        self:addChild(list)
+        self[spec[1]] = list
     end
     -- the three tables are always the same width, so they read one column set (Panel:layout
     -- fills the browse table's own; the identity is what keeps them in step)
@@ -1909,6 +344,7 @@ function Panel:createChildren()
     -- the record page: the same two-line cell and the same client-side filter bar the market
     -- ring uses, over the snapshot the server filtered for this player (or for one auction)
     self.auctionHistoryList = U.newTable(HistoryCell, historyRowHeight())
+    self.auctionHistoryList.onSelect = function(_, item) self:onDetailRow("history", item) end
     self:addChild(self.auctionHistoryList)
     self.auctionHistoryBar = FilterBar.new(self,
         function(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end,
@@ -1924,7 +360,11 @@ function Panel:createChildren()
     self.auctionPrevButton.internal = -1
     self.auctionNextButton.internal = 1
     self:updateAuctionInfo()
+    self.auctionSellerClearButton = Button.create(0, 0, textWidth(sellerClear) + 22, CHIP_H,
+        sellerClear, self, Panel.onAuctionSellerClear, "chip")
+    self:addChild(self.auctionSellerClearButton)
 
+    -- ----- rewards / window chrome -----
     self.claimButton = Button.create(0, 0, 200, 40, "", self, Panel.onClaim, "primary")
     self.claimButton.font = UIFont.Medium
     self:addChild(self.claimButton)
@@ -1936,21 +376,10 @@ function Panel:createChildren()
     local reset = getText(T .. "Window_ResetSize")
     self.resetSizeButton = Button.create(0, 0, textWidth(reset) + 20, self:titleBarHeight() - 8, reset, self, Panel.onResetSize, "chip")
     self:addChild(self.resetSizeButton)
-
-    -- title row: the chrome opacity (a stateless Skin.slider plus two step chips), left of the
-    -- reset chip and the vanilla pin/collapse buttons
-    self.opacitySlider = newPrefSlider(OPACITY_W, self:titleBarHeight() - 8, OPACITY_SPEC)
-    self:addChild(self.opacitySlider)
-    -- the labels carry the step ("-5" / "+5"): the buy/list dialogs already own a bare
-    -- "-" / "+" pair, and two chips with the same title in one window is a trap
-    for _, spec in ipairs({ { "Minus", -OPACITY_STEP }, { "Plus", OPACITY_STEP } }) do
-        local title = (spec[2] < 0 and "-" or "+") .. tostring(math.abs(spec[2]))
-        local b = Button.create(0, 0, textWidth(title) + 14, self:titleBarHeight() - 8, title,
-            self, Panel.onOpacityStep, "chip")
-        b.internal = spec[2]
-        self:addChild(b)
-        self["opacity" .. spec[1] .. "Button"] = b
-    end
+    self.feeInfoButton = Button.create(0, 0, 120, math.max(CHIP_H, fontH.small + 8),
+        getText(T .. "Trade_FeeDetails"), self, Panel.onFeeDetails, "chip")
+    self.feeInfoButton:setVisible(false)
+    self:addChild(self.feeInfoButton)
 
     -- the vanilla title buttons wear the framework icons: close, and lock/unlock for the pin
     -- state (collapseButton shows while pinned, pinButton while not - ISCollapsableWindow.pin/collapse)
@@ -1958,24 +387,117 @@ function Panel:createChildren()
     iconButton(self.collapseButton, "lock")
     iconButton(self.pinButton, "unlock")
 
-    -- preferences: a gear left of the opacity group that opens the popover
-    local gear = self:titleBarHeight() - 8
-    self.prefsButton = Button.create(0, 0, gear, gear, "", self, Panel.onPrefs, "chip")
-    iconButton(self.prefsButton, "sliders")
-    self:addChild(self.prefsButton)
+    -- the backdrop every modal of this window sits on (see ModalGuard): added before the
+    -- popover, raised under whichever modal is up
+    self.modalGuard = U.newModalGuard(self)
+
+    -- preferences: the navigation's Settings entry opens this popover, which is where the chrome
+    -- opacity lives now (the title row is the window's, not a control panel)
     self.prefsPopover = ISPanel:new(0, 0, PREFS_W, 100)
     setmetatable(self.prefsPopover, PrefsPopover)
     self.prefsPopover.background = false
+    self.prefsPopover.panel = self
     self.prefsPopover:initialise()
     self.prefsPopover:instantiate()
     self.prefsPopover:setVisible(false)
     self:addChild(self.prefsPopover)
 
+    -- The two seller boxes, built last: each adds its candidate list as the owner's last child,
+    -- which is what puts it over the table it drops across without a per-frame bringToTop. They
+    -- share one in-flight market.sellers slot (Panel:sellersSend) and answer only to their own
+    -- context and requestId. Typing lists candidates; only picking a whole one pins an exact
+    -- seller, so the keyword box above keeps whatever it holds.
+    self.marketSellerPicker = PlayerPicker.create(self,
+        function(command, args) return self:sellersSend(command, args) end,
+        function() return self.sellersPendingAt ~= nil end,
+        C.newRequestId,
+        function(entry) self:onMarketSellerPicked(entry) end, "market", "market.sellers")
+    self.auctionSellerPicker = PlayerPicker.create(self,
+        function(command, args) return self:sellersSend(command, args) end,
+        function() return self.sellersPendingAt ~= nil end,
+        C.newRequestId,
+        function(entry) self:onAuctionSellerPicked(entry) end, "auction", "market.sellers")
+
+    -- the public board: its own controls, its own geometry, its own single read
+    self.leaderboard = Leaderboard.create(self)
+
+    self:syncCurrencyCombos()
+
     self:setTab("Wallet")
 end
 
-function Panel:onPrefs()
-    self:showPrefs(not self.prefsPopover:getIsVisible())
+-- What the three currency boxes offer: the catalog page trades in exactly one registered
+-- currency, the two browse filters offer the same set plus "every currency" in first place.
+-- Refilled only when the registered set really changes (a config push from the server), so a
+-- currency an admin switched off stops being offered without the page rebuilding per frame.
+-- A choice that is no longer registered falls back: the catalog to the default, a filter to
+-- "every currency".
+function Panel:syncCurrencyCombos()
+    local ids = W.currencyIds()
+    -- The signature is the set *and* what each of them is called: an admin renaming a currency
+    -- at runtime has to reach every box, not just an added or removed one. Built only when the
+    -- server pushed a new registry (prerender compares the table identity), never per frame,
+    -- and the selected id -- with every price, revision and quote already on screen -- is kept.
+    local parts = {}
+    for i, id in ipairs(ids) do parts[i] = id .. "=" .. currencyLabel(id) end
+    local sig = table.concat(parts, ",")
+    if sig == self.currencySig then return end
+    self.currencySig = sig
+    local known = {}
+    for _, id in ipairs(ids) do known[id] = true end
+    if not known[self.shopCur] then self.shopCur = defaultCurrency() end
+    -- a filter that lost its currency falls back to "every currency", and there a price order
+    -- does not exist: the sort box loses those keys with it, exactly as if the player had
+    -- chosen "every currency" by hand
+    if self.marketCur ~= nil and not known[self.marketCur] then
+        self.marketCur = nil
+        if W.isPriceSort(self.marketSort) then self.marketSort = "time" end
+        comboFill(self.marketSortCombo, sortKeysFor(MARKET_SORTS, false),
+            sortLabel(MARKET_SORTS), self.marketSort)
+    end
+    if self.auctionCur ~= nil and not known[self.auctionCur] then
+        self.auctionCur = nil
+        if W.isPriceSort(self.auctionSort) then self.auctionSort = "ending" end
+        comboFill(self.auctionSortCombo, sortKeysFor(AUCTION_SORTS, false),
+            sortLabel(AUCTION_SORTS), self.auctionSort)
+    end
+    comboFill(self.shopCurCombo, ids, currencyLabel, self.shopCur)
+    local browse = { "" }
+    for i = 1, #ids do browse[i + 1] = ids[i] end
+    local label = function(id)
+        if id == "" then return getText(T .. "Market_CurrencyAll") end
+        return currencyLabel(id)
+    end
+    comboFill(self.marketCurCombo, browse, label, self.marketCur or "")
+    comboFill(self.auctionCurCombo, browse, label, self.auctionCur or "")
+    -- a currency that left the registry also leaves the rows: repaint both browse lists against
+    -- the filter that is really in force now (the shop page is rebuilt by its own snapshot)
+    if self.marketRows ~= nil then self:rebuildMarket() end
+    if self.auctionRows ~= nil then self:rebuildAuctions() end
+end
+
+-- The backdrop follows the modal state, and is raised between the page and the modal that owns
+-- it. Called by everything that opens or closes one, and by the layout (the window may have
+-- been resized or collapsed under an open dialog).
+function Panel:updateModalGuard()
+    local guard = self.modalGuard
+    if guard == nil then return end
+    local top = self.marketDialog or self.buyDialog
+    if top == nil and self.prefsPopover ~= nil and self.prefsPopover:getIsVisible() then
+        top = self.prefsPopover
+    end
+    if top == nil or self.isCollapsed then
+        if guard:getIsVisible() then guard:setVisible(false) end
+        return
+    end
+    local th = self:titleBarHeight()
+    local h = math.max(1, self.height - th - (self.resizable and self:resizeWidgetHeight() or 0))
+    guard:setX(0)
+    guard:setY(th)
+    if guard.width ~= self.width then guard:setWidth(self.width) end
+    if guard.height ~= h then guard:setHeight(h) end
+    guard:setVisible(true)
+    guard:raise(top)
 end
 
 function Panel:showPrefs(show)
@@ -1983,54 +505,228 @@ function Panel:showPrefs(show)
     if not pop then return end
     pop:setVisible(show == true and not self.isCollapsed)
     if pop:getIsVisible() then
-        pop:bringToTop()
-        Keys.clear(self)    -- the popover owns the window: no ring is left behind it
+        Keys.blurInputs(self)
+        self:closeCombos()
     end
+    self:updateModalGuard()
+    -- the popover owns the window while it is up: the ring moves into it (its two step chips are
+    -- what a keyboard user presses instead of dragging a track) and comes back out on close
+    Keys.invalidate(self)
 end
 
 -- The text boxes that only exist on one page: a hidden one must not keep the keyboard.
 function Panel:unfocusEntries()
     for _, e in ipairs({ self.shopEntry, self.marketEntry, self.auctionEntry,
-        self.walletBar.fromEntry, self.walletBar.toEntry,
-        self.historyBar.fromEntry, self.historyBar.toEntry,
+        self.walletBar.searchEntry, self.walletBar.fromEntry, self.walletBar.toEntry,
+        self.historyBar.searchEntry, self.historyBar.fromEntry, self.historyBar.toEntry,
         self.auctionHistoryBar.fromEntry, self.auctionHistoryBar.toEntry }) do
         pcall(function() e:unfocus() end)
     end
 end
 
+-- A page switch, a hide or a collapse takes every open dropdown with it: an ISComboBox popup is
+-- added to the UIManager (ISComboBox.lua:200-215), so it would float over the page that replaced
+-- it. Same three lines ECKeyboard uses when the ring leaves a combo.
+function Panel:closeCombos()
+    for _, combo in ipairs({ self.shopCatCombo, self.shopCurCombo, self.marketCatCombo,
+        self.marketSortCombo, self.marketCurCombo, self.auctionSortCombo, self.auctionCurCombo }) do
+        if combo ~= nil and combo.expanded == true then
+            combo.expanded = false
+            local popup = combo.popup
+            if popup ~= nil and popup.parentCombo == combo and combo.hidePopup ~= nil then
+                pcall(combo.hidePopup, combo)
+            end
+        end
+    end
+    self.leaderboard:closeCombos()
+    -- the seller candidate list is a dropdown too, and the box under it must not keep the
+    -- keyboard behind a page that is gone (or behind a confirmation this just put up)
+    for _, picker in ipairs({ self.marketSellerPicker, self.auctionSellerPicker }) do
+        picker:close()
+        pcall(picker.entry.unfocus, picker.entry)
+    end
+end
+
 -- ----- keyboard -----
--- The ordered targets ECKeyboard walks (Tab / Shift+Tab). This window owns the two strips of tabs;
--- the money pages then hand over their own descriptors, so a page that has no keyboard flow of its
--- own offers exactly what it really has -- its tab -- and never claims more.
+-- The ordered targets ECKeyboard walks (Tab / Shift+Tab). The navigation hands over its own two
+-- descriptors first (the rail toggle, then the entries in visual order), then the page adds
+-- everything it really has -- and nothing it has not: ECKeyboard drops a descriptor whose controls
+-- are all unreachable, so a control the current mode does not paint simply is not in the walk.
 --
--- nil means "no keyboard right now": while one of this window's own modal dialogs (buy / list /
--- bid) or the preferences popover is open, its own mouse flow owns the window and a background
--- hotkey pressing a chip behind it would be a trap.
+-- Every mouse action on every page has an entry here. Where a row carries a chip the mouse can hit
+-- directly (the shop's sell chip, the auction's record chip) the toolbar carries the same call for
+-- the picked row, because a keyboard Enter on a list has no x to hit a chip with.
+--
+-- nil means "no keyboard right now": one of this window's own modal dialogs (buy / list / bid) owns
+-- it, and a background hotkey pressing a chip behind it would be a trap. The preference popover is
+-- modal too, but it answers with its own targets instead of nil: its sliders have to be reachable.
 function Panel:keyboardTargets()
     if not self.shown or self.isCollapsed then return nil end
-    if self.buyDialog or self.marketDialog then return nil end
-    if self.prefsPopover and self.prefsPopover:getIsVisible() then return nil end
-    local tabs = {}
-    for _, b in ipairs(self.tabButtons) do
-        if b:getIsVisible() then tabs[#tabs + 1] = b end
+    if self.marketDialog then return self.marketDialog:keyboardTargets() end
+    if self.buyDialog then return self.buyDialog:keyboardTargets() end
+    if self.prefsPopover and self.prefsPopover:getIsVisible() then
+        return self.prefsPopover:keyboardTargets()
     end
-    local out = { { kind = "group", controls = tabs, label = getText(T .. "Kb_Group_Tabs") } }
-    local admin = self.adminPanel
-    if self.tab ~= "Admin" or not self.adminAccess or admin == nil then return out end
-    if admin.dialog then return nil end     -- the admin page's own modal owns the window as well
-    local subs = {}
-    for _, b in ipairs(admin.subTabButtons or {}) do
-        if b:getIsVisible() then subs[#subs + 1] = b end
+    -- copied, never appended to: the navigation owns whatever table it returns
+    local out = {}
+    for _, desc in ipairs(self.nav:keyboardTargets() or {}) do out[#out + 1] = desc end
+    out[#out + 1] = { kind = "button", control = self.resetSizeButton,
+        label = getText(T .. "Window_ResetSize") }
+    -- the header identity belongs to the window, not to a page: it is in the walk on every tab,
+    -- right where the eye finds it. While no account can be read the chip is disabled, so
+    -- ECKeyboard steps over it instead of offering a press that could only answer nothing.
+    out[#out + 1] = { kind = "button", control = self.identityButton,
+        label = self.identityButton.fullTitle or getText(T .. "Player_IdentityTitle") }
+    local tab = self.tab
+    if tab == "Wallet" then self:walletTargets(out)
+    elseif tab == "Rewards" then self:rewardsTargets(out)
+    elseif tab == "Shop" then self:shopTargets(out)
+    elseif tab == "Market" then self:marketTargets(out)
+    elseif tab == "Auction" then self:auctionTargets(out)
+    elseif tab == "Mail" then self:mailTargets(out)
+    elseif tab == "Leaderboard" then self.leaderboard:keyboardTargets(out)
     end
-    if #subs > 0 then
-        out[#out + 1] = { kind = "group", controls = subs, label = getText(T .. "Kb_Group_AdminTabs") }
-    end
-    if admin.keyboardTargets == nil then return out end
-    local ok, list = pcall(admin.keyboardTargets, admin)
-    if ok and type(list) == "table" then
-        for _, desc in ipairs(list) do out[#out + 1] = desc end
-    end
+    out[#out + 1] = { kind = "button", control = self.feeInfoButton, label = getText(T .. "Trade_FeeDetails") }
+    self:detailTargets(out)
     return out
+end
+
+-- The filter bar of a client-paged list (the statement, the market ring, the auction record): the
+-- kind chips, the two day boxes with their calendar glyphs, the sort pair. One implementation, so
+-- every paged list is walked the same way.
+function Panel:filterTargets(out, bar)
+    if bar.filterButton then
+        out[#out + 1] = { kind = "button", control = bar.filterButton, label = bar.filterButton.fullTitle }
+    end
+    -- the page's own keyword box, where it has one (the auction record is searched by the server)
+    if bar.searchEntry then
+        out[#out + 1] = { kind = "entry", control = bar.searchEntry, label = getText(T .. "Filter_Search") }
+    end
+    if #bar.kindButtons > 0 then
+        local controls = { bar.kindPrevButton }
+        for _, button in ipairs(bar.kindButtons) do controls[#controls + 1] = button end
+        controls[#controls + 1] = bar.kindNextButton
+        out[#out + 1] = { kind = "group", controls = controls, label = getText(T .. "Filter_Kind") }
+    end
+    for _, spec in ipairs({ { "fromEntry", "Filter_From" }, { "toEntry", "Filter_To" } }) do
+        local e = bar[spec[1]]
+        out[#out + 1] = { kind = "entry", control = e, label = getText(T .. spec[2]) }
+        if e.calendarButton then
+            out[#out + 1] = { kind = "button", control = e.calendarButton, label = getText(T .. "Filter_Calendar") }
+        end
+    end
+    out[#out + 1] = { kind = "group", controls = bar.sortButtons, label = getText(T .. "Filter_Sort") }
+end
+
+function Panel:pagerTargets(out, bar)
+    out[#out + 1] = { kind = "group", controls = { bar.prevButton, bar.nextButton },
+        label = getText(T .. "Filter_PageNav") }
+end
+
+-- The page reader is read-only and never focusable (Core.updateKeyboard wants isEditable while
+-- GameKeyboard only tests isDoingTextEntry: a focused read-only box swallows every key), so the
+-- keyboard scrolls it and Ctrl+C is routed to the copy chip -- the page's own single copy path.
+-- A picked row is not read here: it has its own window, which carries its own copy entry.
+function Panel:detailTargets(out)
+    -- the retry chip only exists while a history read failed, and the reader only on the two
+    -- pages that are one: ECKeyboard drops a descriptor whose controls are all unreachable, so
+    -- neither has to be filtered here
+    out[#out + 1] = { kind = "button", control = self.historyRetryButton,
+        label = getText(T .. "History_Retry") }
+    out[#out + 1] = { kind = "scroll", control = self.detailBox, focusable = false,
+        copyAll = self.detailCopyButton, label = getText(T .. "Kb_Detail") }
+    out[#out + 1] = { kind = "button", control = self.detailCopyButton,
+        label = getText(T .. "Market_Detail_Copy") }
+end
+
+function Panel:walletTargets(out)
+    out[#out + 1] = { kind = "button", control = self.walletDetailsButton,
+        label = getText(T .. "Wallet_Details") }
+    out[#out + 1] = { kind = "button", control = self.walletFilterButton, label = self.walletFilterButton.fullTitle }
+    out[#out + 1] = { kind = "group", controls = self.periodButtons, label = getText(T .. "Wallet_Period") }
+    self:filterTargets(out, self.walletBar)
+    out[#out + 1] = { kind = "list", control = self.list, label = getText(T .. "Wallet_Statement") }
+    self:pagerTargets(out, self.walletBar)
+end
+
+function Panel:rewardsTargets(out)
+    out[#out + 1] = { kind = "group", controls = { self.claimButton, self.moreButton },
+        label = getText(T .. "Rewards_Daily") }
+end
+
+-- The action buttons of the row a table has picked, as one group right behind that table: they
+-- are real buttons inside the row, so the keyboard reaches exactly what the mouse presses.
+-- R.targets answers an empty table when nothing is picked (or the picked row scrolled out of
+-- sight), and ECKeyboard drops a descriptor with nothing reachable in it.
+function Panel:rowActionTargets(out, list)
+    out[#out + 1] = { kind = "group", controls = R.targets(list),
+        label = getText(T .. "Kb_Row_Actions") }
+end
+
+function Panel:shopTargets(out)
+    out[#out + 1] = { kind = "entry", control = self.shopEntry, label = getText(T .. "Shop_Search") }
+    out[#out + 1] = { kind = "combo", control = self.shopCatCombo, label = getText(T .. "Shop_Category") }
+    out[#out + 1] = { kind = "combo", control = self.shopCurCombo, label = getText(T .. "Trade_Currency") }
+    out[#out + 1] = { kind = "group", controls = { self.shopBuyButton, self.shopSellButton },
+        label = getText(T .. "Kb_Shop_Actions") }
+    out[#out + 1] = { kind = "list", control = self.shopList, label = getText(T .. "Shop_Title") }
+    self:rowActionTargets(out, self.shopList)
+end
+
+-- Every descriptor of the market page, in reading order. Nothing is filtered by mode here: a
+-- control the current mode does not paint is invisible, and ECKeyboard drops a descriptor whose
+-- controls are all unreachable.
+function Panel:marketTargets(out)
+    local modes = {}
+    for _, b in ipairs(self.marketModeButtons) do modes[#modes + 1] = b end
+    modes[#modes + 1] = self.marketListButton
+    modes[#modes + 1] = self.marketRefreshButton
+    out[#out + 1] = { kind = "group", controls = modes, label = getText(T .. "Kb_Market_Modes") }
+    out[#out + 1] = { kind = "entry", control = self.marketEntry, label = getText(T .. "Kb_Market_Search") }
+    for _, desc in ipairs(self.marketSellerPicker:keyboardTargets()) do out[#out + 1] = desc end
+    out[#out + 1] = { kind = "button", control = self.marketSellerClearButton,
+        label = getText(T .. "Admin_Mkt_SellerClear") }
+    out[#out + 1] = { kind = "combo", control = self.marketCatCombo, label = getText(T .. "Kb_Market_Cats") }
+    out[#out + 1] = { kind = "combo", control = self.marketCurCombo, label = getText(T .. "Trade_Currency") }
+    out[#out + 1] = { kind = "combo", control = self.marketSortCombo, label = getText(T .. "Kb_Market_Sort") }
+    out[#out + 1] = { kind = "list", control = self.marketList, label = getText(T .. "Kb_Market_List") }
+    self:rowActionTargets(out, self.marketList)
+    self:filterTargets(out, self.historyBar)
+    out[#out + 1] = { kind = "list", control = self.marketHistoryList, label = getText(T .. "Kb_Market_History") }
+    self:pagerTargets(out, self.historyBar)
+    out[#out + 1] = { kind = "group", controls = { self.marketPrevButton, self.marketNextButton },
+        label = getText(T .. "Kb_Market_Pager") }
+end
+
+function Panel:auctionTargets(out)
+    local modes = {}
+    for _, b in ipairs(self.auctionModeButtons) do modes[#modes + 1] = b end
+    modes[#modes + 1] = self.auctionCreateButton
+    modes[#modes + 1] = self.auctionRefreshButton
+    out[#out + 1] = { kind = "group", controls = modes, label = getText(T .. "Kb_Auction_Modes") }
+    out[#out + 1] = { kind = "entry", control = self.auctionEntry, label = getText(T .. "Kb_Auction_Search") }
+    for _, desc in ipairs(self.auctionSellerPicker:keyboardTargets()) do out[#out + 1] = desc end
+    out[#out + 1] = { kind = "button", control = self.auctionSellerClearButton,
+        label = getText(T .. "Admin_Mkt_SellerClear") }
+    out[#out + 1] = { kind = "combo", control = self.auctionSortCombo, label = getText(T .. "Kb_Auction_Sort") }
+    out[#out + 1] = { kind = "combo", control = self.auctionCurCombo, label = getText(T .. "Trade_Currency") }
+    for _, spec in ipairs({ { self.auctionList, "Kb_Auction_List" },
+        { self.auctionSellList, "Kb_Auction_Selling" }, { self.auctionBidList, "Kb_Auction_Bidding" } }) do
+        out[#out + 1] = { kind = "list", control = spec[1], label = getText(T .. spec[2]) }
+        self:rowActionTargets(out, spec[1])
+    end
+    self:filterTargets(out, self.auctionHistoryBar)
+    out[#out + 1] = { kind = "list", control = self.auctionHistoryList, label = getText(T .. "Kb_Auction_History") }
+    self:pagerTargets(out, self.auctionHistoryBar)
+    out[#out + 1] = { kind = "group", controls = { self.auctionPrevButton, self.auctionNextButton },
+        label = getText(T .. "Kb_Market_Pager") }
+end
+
+function Panel:mailTargets(out)
+    out[#out + 1] = { kind = "button", control = self.mailClaimAllButton,
+        label = getText(T .. "Mail_ClaimAll") }
+    out[#out + 1] = { kind = "list", control = self.mailList, label = getText(T .. "Mail_Title") }
+    self:rowActionTargets(out, self.mailList)
 end
 
 -- UIManager offers key events to top-level UI only, and asks isKeyConsumed *after* the handler ran
@@ -2039,28 +735,109 @@ function Panel:onKeyPress(key) Keys.onKeyPress(self, key) end
 function Panel:onKeyRepeat(key) Keys.onKeyRepeat(self, key) end
 function Panel:onKeyRelease(key) Keys.onKeyRelease(self, key) end
 function Panel:isKeyConsumed(key) return Keys.isKeyConsumed(self, key) end
+function Panel:onFocus() Keys.onFocus(self) end
+
+function Panel:isModal()
+    return self.marketDialog ~= nil or self.buyDialog ~= nil
+        or (self.prefsPopover and self.prefsPopover:getIsVisible())
+end
+
+function Panel:onEscape()
+    if self.marketDialog then self:closeMarketDialog(); return true end
+    if self.buyDialog then self:closeBuy(); return true end
+    if self.prefsPopover and self.prefsPopover:getIsVisible() then self:showPrefs(false); return true end
+    -- the candidate list folds first: Escape walks back out of what it opened, and the page
+    -- behind it is left alone
+    if self.marketSellerPicker:isOpen() then self.marketSellerPicker:close(); return true end
+    if self.auctionSellerPicker:isOpen() then self.auctionSellerPicker:close(); return true end
+    -- the record window closes before the keyboard is given back: Escape walks back out of what
+    -- it opened, and it is this window's own child in spirit even though it floats on its own
+    if Detail.isOpen(self) then Detail.close(self); return true end
+    return false
+end
 
 -- ----- actions -----
 
-function Panel:onTab(button) self:setTab(button.internal) end
+function Panel:onTab(button)
+    local id = button.internal
+    -- The Admin entry is not a page of this window: it opens (or focuses) the administration
+    -- window, which owns the one admin panel of the session. Settings is not a page either -- it
+    -- is the preference popover, which is where the opacity slider lives now.
+    if id == "Admin" then
+        C.AdminWindow.open()
+        return
+    end
+    if id == "Settings" then
+        self:showPrefs(not self.prefsPopover:getIsVisible())
+        return
+    end
+    self:setTab(id)
+end
 
 function Panel:setTab(tab)
-    if tab == "Admin" and not C.AdminPanel.canRead() then tab = "Wallet" end
     if tab ~= self.tab then
-        DatePicker.close()
+        DatePicker.close(self)   -- this window's calendar only; another window keeps its own
+        self:closeCombos()
         self:closeBuy()
         self:closeMarketDialog()
         self:unfocusEntries()
         self:cancelAuctionHistory()
         self:showPrefs(false)
+        Detail.close(self)       -- the record belonged to the page that is being left
+        self.leaderboard:leave()   -- a queued public read belongs to the page being left
     end
     self.tab = tab
     for _, b in ipairs(self.tabButtons) do b.active = b.internal == tab end
     self:layout()
-    -- the page under the ring changed: the tab strips survive it, everything the old page offered
+    -- the page under the ring changed: the navigation survives it, everything the old page offered
     -- does not, so the focus is revalidated instead of pointing at a hidden control
     Keys.invalidate(self)
     if self.shown then self:refresh() end
+end
+
+-- The server view a page reads, or nil (Rewards has one of its own poll). views.changed names
+-- these scopes, and the page that is on screen is the only one that asks again.
+function Panel:tabScope()
+    local tab = self.tab
+    if tab == "Wallet" then return "wallet" end
+    if tab == "Shop" then return "shop" end
+    if tab == "Mail" then return "mail" end
+    if tab == "Market" then return "market" end
+    if tab == "Auction" then return "auction" end
+    return nil
+end
+
+-- The server said the data behind a scope moved (a write of this player's own, or anything else
+-- that reached their view). A page that is not on screen only records it; the page the player is
+-- looking at asks again through its own request path. That path is the one gate the command
+-- itself has (ECClient's snapshot gates): the 650 ms window, one read in flight and the newest
+-- wish kept, so a second notice inside the window is never dropped without a reply -- it goes
+-- out as soon as the first read is answered. That is why the flag may be spent here.
+-- The snapshot is never cleared: a notice is not a fresh answer.
+function Panel:onViewChanged(scope)
+    if type(scope) ~= "string" then return end
+    self.viewDirty[scope] = true
+    self:pumpViews()
+end
+
+function Panel:pumpViews()
+    if not self.shown or self.isCollapsed then return end
+    local scope = self:tabScope()
+    if scope == nil or not self.viewDirty[scope] then return end
+    self.viewDirty[scope] = nil
+    if scope == "wallet" then
+        C.requestWallet()
+        self:loadHistory()
+    elseif scope == "shop" then
+        self.shopAt = EC.now()
+        C.requestShop()
+    elseif scope == "mail" then
+        C.requestMail()
+    elseif scope == "market" then
+        self:requestMarketMode()
+    else
+        self:requestAuctionMode()
+    end
 end
 
 
@@ -2086,7 +863,7 @@ function Panel:refresh()
         if self.marketMode == "mine" then
             C.requestMyListings()
         elseif self.marketMode == "history" then
-            C.requestMarketHistory()
+            self:requestMarketHistory()
         elseif not C.market or EC.now() - (self.marketAt or 0) > SHOP_POLL_MS then
             self:requestBrowse(1)
         end
@@ -2097,8 +874,11 @@ function Panel:refresh()
         if not C.wallet then C.requestWallet() end
     elseif self.tab == "Mail" then
         C.requestMail()
-    elseif self.tab == "Admin" then
-        if self.adminPanel and C.AdminPanel.canRead() then self.adminPanel:refresh() end
+    elseif self.tab == "Leaderboard" then
+        -- a public board moves whenever anybody trades: the page asks again every time it is
+        -- opened, through the transport's own read gate
+        self.leaderboard:fillCurrencies()
+        self.leaderboard:request(self.leaderboard.page)
     end
 end
 
@@ -2112,13 +892,48 @@ function Panel:onPeriod(button)
     self:rebuildList()
 end
 
+-- Whether the page this read belongs to is really on screen. A hidden page owes its read and
+-- sends nothing: the gate keeps the wish until the player looks at it again.
+function Panel:pageVisible(tab, mode)
+    if not self.shown or self.isCollapsed or self.tab ~= tab then return false end
+    if tab == "Market" then return self.marketMode == mode end
+    if tab == "Auction" then return self.auctionMode == mode end
+    return true
+end
+
+-- Switch readers without changing statement filters, selection or list scroll.
+function Panel:onWalletDetails()
+    self.walletFiltersOpen = false
+    DatePicker.close(self)
+    self:unfocusEntries()
+    self.walletDetails = not self.walletDetails
+    self:layout()
+    Keys.invalidate(self)
+end
+
+function Panel:onWalletFilters()
+    DatePicker.close(self)
+    self:unfocusEntries()
+    self.walletFiltersOpen = not self.walletFiltersOpen
+    self:layout()
+    Keys.invalidate(self)
+end
+
 function Panel:onMore()
     self:setTab("Wallet")
 end
 
+-- One claim, and only while the server's own state says it may be taken. The request carries
+-- the day and the reward number the state named, so a stale page cannot claim twice.
 function Panel:onClaim()
+    local st = C.rewards
+    if st == nil or st.canClaim ~= true or self.claimPending then return end
     self.claimButton:setEnable(false)
+    -- one claim in flight, and it is stamped: every reply clears it (onRewards), and a server
+    -- that never answers is given up on in prerender instead of locking the button for the
+    -- rest of the session
     self.claimPending = true
+    self.claimPendingAt = EC.now()
     self.message = nil
     C.checkin()
 end
@@ -2134,10 +949,17 @@ function Panel:periodMonth()
     return EC.monthKey(ms)
 end
 
+-- The three history reads, each through the one gate they share (ECReadGate): the month of the
+-- statement, the market ring, the auction record. The gate holds the 650 ms window, the single
+-- read in flight, the wish of a page that is not on screen and the question every reply is
+-- matched against; the page keeps its own data and its own error.
 function Panel:loadHistory()
-    self.historyLoading = true
     self.historyError = nil
-    C.requestHistory(self:periodMonth())
+    self.walletGate:want(self:periodMonth(), self:pageVisible("Wallet"))
+end
+
+function Panel:requestMarketHistory()
+    self.marketGate:want("ring", self:pageVisible("Market", "history"))
 end
 
 -- ----- data -----
@@ -2163,11 +985,21 @@ local function normalize(e, offsetMin)
         desc = accountName(cp)
     end
     local kind = e.kind or e.type
+    local valueText = signedText(amount)
+    local label = kindText(kind)
+    local item = type(e.item) == "string" and e.item or nil
     return {
+        recordKey = U.recordKey(e),
         ts = e.ts, txId = e.txId, kind = kind, currency = e.currency, amount = amount,
         after = e.after or e.availableAfter, rolledBack = e.rolledBack == true,
-        time = stampText(e.ts, offsetMin), kindText = kindText(kind), desc = desc,
-        amountText = signedText(amount) .. " " .. C.currencyName(e.currency),
+        time = stampText(e.ts, offsetMin), kindText = label, desc = desc,
+        reasonText = type(e.reasonText) == "string" and e.reasonText or nil,
+        valueText = valueText, amountText = valueText .. " " .. C.currencyName(e.currency),
+        -- what the statement's keyword box searches: the note (which already names the
+        -- counterparty or the item), the raw account key, the item's own fullType and localised
+        -- name, the kind, and the transaction id an admin or a bug report quotes
+        searchText = string.lower(table.concat({ desc, tostring(cp or ""), item or "",
+            item and itemName(item) or "", label, tostring(e.txId or "") }, " ")),
     }
 end
 
@@ -2178,11 +1010,37 @@ local function newestFirst(src, offsetMin)
 end
 
 -- self.rows = the visible statement page, self.allRows = the whole period (the filter bar
--- filters/sorts/pages it locally), self.recentRows = the server receipt ring (rewards page
--- "recent ledger"). All rebuilt only when data or a filter changes, never per frame.
--- "Recent" is the newest RECENT_ROWS lines of the receipt files (they keep what a crash rolled
--- back); the ModData ring only paints the first frame until the file reply lands.
+-- filters/sorts/pages it locally), self.recentRows = the server receipt ring the "Recent" period
+-- falls back to until the file reply lands. All rebuilt only when data or a filter changes, never
+-- per frame. "Recent" is the newest RECENT_ROWS lines of the receipt files (they keep what a crash
+-- rolled back).
 local RECENT_ROWS = 20
+
+-- One row per currency for the wallet detail table: everything the compact header had no room for.
+-- The ceiling is the currency's own (config.currencies[id].balanceMax, ECConfig.currency merges the
+-- sandbox default into it); a build that sends none says so instead of printing a zero.
+function Panel:rebuildBalances()
+    self.balanceCurrencies = C.currencies
+    local lines = {}
+    for _, id in ipairs(self:currencies()) do
+        local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
+        local def = U.currencyDef(id)
+        local cap = def and tonumber(def.balanceMax) or nil
+        local t = self.monthTotals and self.monthTotals[id]
+        local row = {
+            id = id, name = C.currencyName(id), enabled = def == nil or def.enabled ~= false,
+            availableText = amountText(bal and bal.available or 0),
+            reservedText = amountText(bal and bal.reserved or 0),
+            capText = cap and amountText(cap) or getText(T .. "Wallet_CapNone"),
+            monthText = "-" .. amountText(t and t.out or 0) .. " / +" .. amountText(t and t.inn or 0),
+        }
+        if #lines > 0 then lines[#lines + 1] = "" end
+        for _, line in ipairs(self:detailText("balance", row)) do lines[#lines + 1] = line end
+    end
+    self.balanceText = table.concat(lines, "\n")
+    self:updateDetail()
+end
+
 function Panel:rebuildList()
     self.recentRows = newestFirst(C.wallet and C.wallet.receipts or {}, self.offsetMin)
     if self.period == "Recent" then
@@ -2198,11 +1056,21 @@ function Panel:rebuildList()
         self.allRows = newestFirst(self.history and self.history.entries or {}, self.offsetMin)
     end
     local bar = self.walletBar
-    if bar:syncKinds(self.allRows) and self.g then self:layout() end
-    local rows, page, pages, total = EC.filterPage(self.allRows, bar:opts("ts"))
+    bar:syncKinds(self.allRows)
+    -- the keyword narrows the rows this page has loaded; the chips, the days, the sort and the
+    -- pager then count exactly what it left
+    local rows, page, pages, total = EC.filterPage(bar:search(self.allRows), bar:opts("ts"))
     bar:setPage(page, pages, total)
     self.rows = rows
+    self.statementAmountW = textWidth(getText(T .. "Wallet_Col_Amount")) + PAD * 2
+    self.statementValueW = 0
+    for _, row in ipairs(rows) do
+        self.statementAmountW = math.max(self.statementAmountW, textWidth(row.amountText) + PAD * 2)
+        self.statementValueW = math.max(self.statementValueW, textWidth(row.valueText))
+    end
     self.list:setItems(rows)
+    self:rebuildBalances()
+    if self.g then self:layout() end
 end
 
 -- Month in/out per currency from this month's receipt file (design: balance card "this month").
@@ -2226,13 +1094,17 @@ function Panel:onWallet(kind, args)
     if kind == "state" then
         self:rebuildList()
     elseif kind == "changed" then
+        self:rebuildBalances()
         self:loadHistory()
     elseif kind == "history" then
-        if args.month ~= self:periodMonth() then return end
-        self.historyLoading = false
+        -- the month the answer itself names is the question it answers: another month is a read
+        -- the player has already moved past, and an older read of the month still in force is
+        -- shown at once (a newer one is on its way and will replace it)
+        if self.walletGate:accept(args, args.month) == "stale" then return end
         if args.error then
             self.historyError = args.error
         else
+            self.historyError = nil
             self.history = args
             self:updateMonthTotals(args)
         end
@@ -2240,17 +1112,43 @@ function Panel:onWallet(kind, args)
     end
 end
 
+-- The reward page. A claim reply carries the fresh state whether it succeeded or not, and so does
+-- the push the server sends after a season's deadline moved, so nothing here asks for a second
+-- read just to repaint - and the moment the next claim becomes due is remembered, so the page
+-- picks the new eligibility up then instead of polling for it every frame.
 function Panel:onRewards(kind, args)
-    self.claimPending = false
+    -- Only the answer to the claim that is in flight ends it, granted or refused. A season
+    -- change arrives as two pushes nobody on this side asked for (seasons.changed, then the
+    -- rewards.state that follows it for every player): freeing the slot on those would let a
+    -- second claim go out while the first one is still unanswered, and the server would then
+    -- have to refuse a request the player never meant to make.
+    if kind == "checkin" then
+        self.claimPending = false
+        self.claimPendingAt = nil
+    end
+    if type(args.state) == "table" then C.rewards = args.state end
     if kind == "checkin" then
         if args.ok then
-            self.message = { text = getText(T .. "Rewards_Granted", tostring(args.amount), C.currencyName(args.currency)) }
+            self.message = { text = getText(T .. "Rewards_GrantedCount",
+                W.moneyText(args.amount, args.currency), tostring(tonumber(args.rewardIndex) or 1),
+                tostring(tonumber(args.dailyLimit) or 1)) }
         else
             local key = T .. "Rewards_Error_" .. tostring(args.error)
             self.message = { text = getTextOrNull(key) or getText(T .. "Rewards_Error_generic", tostring(args.error)), error = true }
         end
-        C.requestRewards()
+        if type(args.state) ~= "table" then C.requestRewards() end
     end
+    if kind == "error" then
+        self.message = { text = getTextOrNull(T .. "Rewards_Error_" .. tostring(args.error))
+            or getText(T .. "Rewards_Error_generic", tostring(args.error)), error = true }
+    end
+    local st = C.rewards
+    local short = st and math.max(0, tonumber(st.remainingOnlineMs) or 0) or 0
+    -- a claim that is only waiting on online time becomes possible at a known moment: ask the
+    -- server again then (and never sooner - this client's clock decides nothing)
+    self.rewardsDueMs = (st ~= nil and short > 0 and st.canClaim ~= true)
+        and (EC.now() + short) or nil
+    self:updateDetail()
 end
 
 -- ----- shop / mailbox -----
@@ -2266,9 +1164,9 @@ function Panel:updateMailTab(unclaimed)
     C.unclaimed = self.unclaimedCount
 end
 
--- Category chips are the categories the snapshot actually uses (plus "all"), so a server that
--- ships two categories does not show five empty filters. The buttons are rebuilt only when that
--- set changes (a snapshot lands every 30 s at most, a catalog edit is rarer still).
+-- The category box offers the categories the snapshot actually uses (plus "all"), so a server that
+-- ships two categories does not offer five empty filters. Refilled only when that set changes (a
+-- snapshot lands every 30 s at most, a catalog edit is rarer still).
 function Panel:rebuildCategories()
     local seen, cats, sig = {}, { "" }, ""
     for _, it in ipairs(C.shop and C.shop.items or {}) do
@@ -2282,32 +1180,27 @@ function Panel:rebuildCategories()
     if self.shopCat and not seen[self.shopCat] then self.shopCat = nil end
     if sig == self.catSig then return end
     self.catSig = sig
-    for _, b in ipairs(self.catButtons or {}) do
-        b:setVisible(false)
-        self:removeChild(b)
-    end
-    self.catButtons = {}
-    for _, cat in ipairs(cats) do
-        local title = cat == "" and getText(T .. "Shop_All") or (getTextOrNull(T .. "Shop_Cat_" .. cat) or cat)
-        local b = Button.create(0, 0, math.min(LEFT_W - PAD * 2, textWidth(title) + 22), CHIP_H, title, self, Panel.onShopCat, "chip")
-        b.internal = cat
-        b.active = (self.shopCat or "") == cat
-        self:addChild(b)
-        self.catButtons[#self.catButtons + 1] = b
-    end
+    comboFill(self.shopCatCombo, cats, function(cat)
+        if cat == "" then return getText(T .. "Shop_All") end
+        return U.categoryText(cat)
+    end, self.shopCat or "")
 end
 
--- Rows for the selected category and search text. A disabled sku is not a row at all: a player
--- must not see what an admin took off the shelf.
+-- Rows for the selected category, currency and search text. A disabled sku is not a row at all:
+-- a player must not see what an admin took off the shelf. A sku the selected currency does not
+-- quote is still a row -- it says it has no price in this currency, which is what the player
+-- needs to know before switching -- but nothing can be bought or sold on it.
 function Panel:rebuildShop()
     local shop = C.shop
     local query = self.shopQuery
+    local currency = self:shopCurrency()
     local rows = {}
     self.shopHasBuyback = false
     for _, it in ipairs(shop and shop.items or {}) do
-        if it.enabled ~= false and it.buyback == true then self.shopHasBuyback = true end
+        local q = it.enabled ~= false and W.quoteOf(it, currency) or nil
+        if q ~= nil and q.buyback == true then self.shopHasBuyback = true end
         if it.enabled ~= false and (self.shopCat == nil or it.category == self.shopCat) then
-            local row = shopRow(it, shop.currency, shop.buyback and shop.buyback.enabled == true)
+            local row = shopRow(it, currency, shop.buyback)
             if query == nil or string.find(string.lower(row.name), query, 1, true)
                 or (row.altName and string.find(string.lower(row.altName), query, 1, true))
                 or string.find(string.lower(tostring(row.id)), query, 1, true)
@@ -2320,27 +1213,65 @@ function Panel:rebuildShop()
     self.shopList:setItems(rows)
 end
 
+-- The currency the catalog page is trading in. Explicit from the first frame (the registered
+-- default, survivor while it exists) and never inferred from whatever a sku happens to quote.
+function Panel:shopCurrency()
+    local id = self.shopCur
+    if type(id) ~= "string" or id == "" then
+        id = defaultCurrency()
+        self.shopCur = id
+    end
+    return id
+end
+
+-- One mailbox row. Every letter the server lists is claimable: a hand-over either delivers the
+-- letter, leaves it exactly where it was, or settles the part it could confirm into a claimed
+-- child of its own and leaves the rest here with a smaller count. `claimable` still comes from
+-- the server's own view - the row never decides that for itself.
 function Panel:rebuildMail()
     local rows = {}
+    -- The account on the other side of the trade, when the server's own record of the deal names
+    -- one. A shop purchase, a return and every letter written before the field carry none, and
+    -- the row then says exactly what it always said.
+    local buyFrom = T .. "Market_BuyFrom"
+    local claimLabel = getText(T .. "Mail_Claim")
     for _, e in ipairs(C.mail and C.mail.entries or {}) do
         local qty = tonumber(e.qty) or 1
         local name = itemName(e.item)
+        local seller = type(e.seller) == "string" and e.seller ~= "" and e.seller or nil
+        local from = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or tostring(e.kind)
+        if seller then from = from .. " - " .. getText(buyFrom, seller) end
         rows[#rows + 1] = {
-            id = e.id, item = e.item, qty = qty, name = name, altName = itemBaseName(e.item), texture = itemTexture(e.item),
+            id = e.id, item = e.item, qty = qty, name = name, altName = itemBaseName(e.item),
+            texture = itemTexture(e.item),
+            -- a letter that carries money names the currency it was written in; one that
+            -- carries none says nothing at all instead of quoting a zero
+            price = tonumber(e.price), currency = e.currency, seller = seller,
             nameText = name .. " x" .. tostring(qty),
-            fromText = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or tostring(e.kind),
+            fromText = from,
+            claimable = e.claimable ~= false,
+            claimLabel = claimLabel,
             timeText = stampText(tonumber(e.at) or 0, self.offsetMin),
-            claimLabel = getText(T .. "Mail_Claim"),
         }
     end
     self.mailRows = rows
     self.mailList:setItems(rows)
 end
 
-function Panel:onShopCat(button)
-    self.shopCat = button.internal ~= "" and button.internal or nil
-    for _, b in ipairs(self.catButtons) do b.active = (self.shopCat or "") == b.internal end
+function Panel:onShopCat(combo)
+    local cat = combo:getOptionData(combo.selected)
+    self.shopCat = (type(cat) == "string" and cat ~= "") and cat or nil
     self:rebuildShop()
+end
+
+-- Another currency is another set of prices: the rows are rebuilt, and an open trade dialog is
+-- left alone (it carries its own currency chips and its own confirmed quote).
+function Panel:onShopCurrency(combo)
+    local id = combo:getOptionData(combo.selected)
+    if type(id) ~= "string" or id == "" or id == self.shopCur then return end
+    self.shopCur = id
+    self:rebuildShop()
+    self:layout()
 end
 
 function Panel:onShopSearch()
@@ -2358,44 +1289,94 @@ function Panel:tradeAllowed()
     return C.nearTerminal()
 end
 
+-- The two writes of the catalog page. They act on the row the table has picked, which is what
+-- the row's own buttons select before they report (ECRowActions) and what the toolbar pair acts
+-- on for a keyboard user; every validation stays exactly where it was.
+function Panel:onShopBuy()
+    local row = self.shopList:getSelectedItem()
+    if not row or row.soldOut or row.hasQuote ~= true then return end
+    if self.buyDialog or self.buyPending or not self:tradeAllowed() then return end
+    self:openBuy(row)
+end
 
+function Panel:onShopSell()
+    local row = self.shopList:getSelectedItem()
+    if not row or row.buyback ~= true or row.buybackOpen ~= true or row.buybackRemaining == 0 then return end
+    if self.buyDialog or self.buyPending or not self:tradeAllowed() then return end
+    self:openBuy(row, true)
+end
+
+-- A catalog row is a read: it selects the sku and opens the reader on it. Nothing is bought
+-- here - the row's buy and sell buttons are the only way in, and they land in onShopAction.
 function Panel:onShopRow(row)
-    if not row or self.buyDialog or self.buyPending or not self:tradeAllowed() then return end
-    local cols = self.shopList.cols
-    local x = self.shopClickX
-    if row.buyback and x and x >= cols.sellX and x < cols.sellX + cols.sellW then
-        if row.buybackOpen and row.buybackRemaining ~= 0 then self:openBuy(row, true) end
-        return
-    end
-    if not row.soldOut then self:openBuy(row) end
+    self:onDetailRow("shop", row)
+end
+
+function Panel:onShopAction(row, actionId)
+    if row == nil then return end
+    if actionId == "sell" then self:onShopSell() else self:onShopBuy() end
 end
 
 -- sell = the buyback dialog: same panel, count in SKU units, the candidates come from the server
 function Panel:openBuy(row, sell)
+    local trigger = Keys.focused()
+    local keyboard = Keys.isKeyboardFocused(trigger)
     self:closeBuy()
     local dlg = ISPanel:new(0, 0, 360, 200)
     setmetatable(dlg, BuyDialog)
     dlg.background = false
     dlg.panel = self
+    dlg.returnFocus = keyboard and trigger or nil
     dlg.row = row
     dlg.sell = sell == true
     dlg.cand = nil
     dlg.count = 1
     dlg.message = nil
+    -- the order starts in the currency the page is on; the dialog's own chips move it from there
+    dlg.currency = self:shopCurrency()
+    -- Every number this dialog shows belongs to one catalog revision, and that is the revision
+    -- the order is submitted with. A sale also needs the candidate quote of that same revision
+    -- (the server prices the backpack per catalog), so the two are never mixed.
+    dlg.quoteRevision = C.shop and C.shop.revision or nil
     dlg:initialise()
     self:addChild(dlg)      -- the buttons exist from here on (instantiate -> createChildren)
     self.buyDialog = dlg
+    for _, b in ipairs(dlg.currencyButtons) do b.active = b.internal == dlg.currency end
+    -- a native combo popup is added to the UIManager (ISComboBox.lua:200-215), so an open
+    -- dropdown would float over this dialog; and the page underneath must not keep taking the
+    -- clicks that land beside it
+    self:closeCombos()
+    self:updateModalGuard()
     self:layoutBuy()
-    if dlg.sell then C.requestSellCandidates(row.id) end
+    Keys.focusControl(dlg.cancelButton, keyboard)
+    if dlg.sell then self:sendSellCandidates(dlg) end
 end
 
-function Panel:layoutBuy()
-    local dlg = self.buyDialog
-    if not dlg then return end
-    dlg:layoutInside(math.max(320, self.width - PAD * 4))
-    dlg:setX(math.max(0, math.floor((self.width - dlg.width) / 2)))
-    dlg:setY(math.max(self.g and self.g.contentY or PAD, math.floor((self.height - dlg.height) / 2)))
+-- What the backpack is worth is quoted per currency, so the question carries one. Changing the
+-- chips asks it again; closing the dialog drops whatever has not gone out yet.
+function Panel:sendSellCandidates(dlg)
+    C.requestSellCandidates(dlg.row.id, dlg.currency)
 end
+
+-- The band a modal owns: under the title bar, above the resize corner. Every dialog sizes
+-- itself to this height, so the summary, the fields and the buttons are inside the window at
+-- every UI font -- a 1000x560 window at 38/45 has no room for a dialog that stacks its lines.
+function Panel:modalBand()
+    local top = self:titleBarHeight() + PAD
+    local bottom = self.height - (self.resizable and self:resizeWidgetHeight() or 0) - PAD
+    return top, math.max(120, bottom - top)
+end
+
+-- One placement for both dialogs: laid out against the band, then centred in it.
+function Panel:layoutDialog(dlg)
+    if not dlg then return end
+    local top, band = self:modalBand()
+    dlg:layoutInside(math.max(320, self.width - PAD * 4), band)
+    dlg:setX(math.max(0, math.floor((self.width - dlg.width) / 2)))
+    dlg:setY(math.max(0, math.min(top + math.floor((band - dlg.height) / 2), self.height - dlg.height)))
+end
+
+function Panel:layoutBuy() self:layoutDialog(self.buyDialog) end
 
 function Panel:closeBuy()
     local dlg = self.buyDialog
@@ -2403,6 +1384,10 @@ function Panel:closeBuy()
     self.buyDialog = nil
     dlg:setVisible(false)
     self:removeChild(dlg)
+    C.cancelSellCandidates()   -- a question nobody is left to read the answer of
+    Keys.invalidate(self)
+    self:updateModalGuard()
+    self.buyReturnFocus = dlg.returnFocus
 end
 
 -- An error belongs in the dialog that caused it; without one (a timeout after the player closed
@@ -2415,6 +1400,20 @@ function Panel:buyMessage(str)
     end
 end
 
+-- A quote that moved under an open dialog is never spent silently: the dialog shows the fresh
+-- one, says so, and the next press of the confirm is only the acknowledgement. One more press
+-- after that is the order. Same rule as the mailbox consent, and the two are independent.
+function Panel:requoteHeld(dlg)
+    if dlg.requoteRequired ~= true then return false end
+    dlg.requoteRequired = nil
+    dlg.message = nil
+    return true
+end
+
+-- A purchase that does not fit is parked in the mailbox, and that is the player's own decision:
+-- while the estimate says so (or the server said so after re-checking), the confirm has to be
+-- pressed once more and only then does `acceptMail` go out. Nothing here ever sends the consent
+-- on the player's behalf, and the server debits nothing until it has it.
 function Panel:submitBuy(dlg)
     local shop = C.shop
     if not shop or self.buyPending then return end
@@ -2422,16 +1421,51 @@ function Panel:submitBuy(dlg)
         self:buyMessage(shopError("not_at_terminal"))
         return
     end
+    if self:requoteHeld(dlg) then return end
+    -- a currency this sku is not quoted in is not an order at all
+    if dlg:unitPrice() == nil then
+        dlg.message = shopError("currency_not_offered")
+        return
+    end
+    local preview = dlg.preview
+    if dlg.mailRequired ~= true and preview ~= nil and preview.willMail == true then
+        dlg.mailRequired = true
+        dlg.message = getText(T .. "Delivery_ConfirmMail")
+        return
+    end
+    -- the revision the player actually read, not whatever the newest snapshot happens to be:
+    -- the server refuses a stale one (catalog_changed) instead of filling it at a new price
+    if dlg.quoteRevision == nil then
+        dlg.message = shopError("catalog_changed")
+        return
+    end
     dlg.message = nil
-    self.buyPending = { requestId = C.newRequestId(), at = EC.now(), name = dlg.row.name }
-    C.buy(dlg.row.id, dlg.count, shop.revision, self.buyPending.requestId)
+    self.buyPending = { requestId = C.newRequestId(), at = EC.now(), name = dlg.row.name,
+        currency = dlg.currency }
+    C.buy(dlg.row.id, dlg.count, dlg.currency, dlg.quoteRevision, self.buyPending.requestId,
+        dlg.mailRequired == true)
 end
 
 function Panel:submitSell(dlg)
-    local shop, c = C.shop, dlg.cand
-    if not shop or not c or self.buyPending then return end
+    local c = dlg.cand
+    if not C.shop or not c or self.buyPending then return end
     if not self:tradeAllowed() then
         self:buyMessage(shopError("not_at_terminal"))
+        return
+    end
+    if self:requoteHeld(dlg) then return end
+    -- the candidates have to be the ones quoted for the currency this sale is paid in
+    if c.currency ~= dlg.currency or dlg:unitBid() == nil then
+        dlg.message = shopError("currency_not_offered")
+        return
+    end
+    -- and for the catalog the player is looking at: the row's price, the backpack price and the
+    -- revision this is sent with are one quote or none at all
+    local revision = dlg.quoteRevision
+    if revision == nil or (c.revision ~= nil and c.revision ~= revision) then
+        dlg.requoteRequired = true
+        dlg.message = getText(T .. "Trade_Requote")
+        self:sendSellCandidates(dlg)
         return
     end
     local unitQty = math.max(1, math.floor(tonumber(c.unitQty) or 1))
@@ -2440,14 +1474,185 @@ function Panel:submitSell(dlg)
     for i = 1, n do ids[i] = c.itemIds[i] end
     if #ids < 1 or #ids ~= n then return end
     dlg.message = nil
-    self.buyPending = { requestId = C.newRequestId(), at = EC.now(), name = dlg.row.name, sell = true }
-    C.sell(dlg.row.id, ids, shop.revision, self.buyPending.requestId)
+    self.buyPending = { requestId = C.newRequestId(), at = EC.now(), name = dlg.row.name,
+        sell = true, currency = dlg.currency }
+    C.sell(dlg.row.id, ids, dlg.currency, revision, self.buyPending.requestId)
 end
 
+-- A mailbox row is a read: it opens the reader and claims nothing. The row's own claim button
+-- takes that one letter, the toolbar chip takes every letter that is ready.
 function Panel:onMailRow(row)
-    if not row or self.mailPending or not self:tradeAllowed() then return end
+    self:onDetailRow("mail", row)
+end
+
+function Panel:onMailAction(row, actionId)
+    if actionId == "claim" then self:claimMailRow(row) end
+end
+
+-- One letter: the row's own claim button. The terminal/freeze gate the server re-checks anyway,
+-- and the one write in flight the mailbox has always had - a bulk claim holds the very same
+-- `mailPending`, so the two can never overlap.
+function Panel:claimMailRow(row)
+    if row == nil or row.claimable ~= true then return end
+    if self.mailPending or self.mailBatch or not self:tradeAllowed() then return end
     self.mailPending = { requestId = C.newRequestId(), at = EC.now(), name = row.name }
     C.claimMail(row.id, self.mailPending.requestId)
+end
+
+-- Every letter that is ready, in segments. The ids are fixed the moment the player presses:
+-- mail that arrives while the batch runs belongs to the next press, never to this one, so a
+-- resend of the same segment can only ever answer `already_claimed`. A normal claim takes whole
+-- envelopes; only the delivery exception splits one, and then the tally says so in items.
+function Panel:onMailClaimAll()
+    if self.mailPending or self.mailBatch or not self:tradeAllowed() then return end
+    local ids = {}
+    for _, row in ipairs(self.mailRows or {}) do
+        if row.claimable == true then ids[#ids + 1] = row.id end
+    end
+    if #ids == 0 then return end
+    self.mailBatch = { ids = ids, total = #ids, claimed = 0, kept = 0, failed = 0,
+        partial = 0, partDone = 0, partLeft = 0 }
+    self:sendMailBatch()
+end
+
+-- One segment of at most MAIL_SEGMENT untried ids. The reply names what it really tried and
+-- those ids leave the queue, whether they were claimed, kept for want of room or refused;
+-- nothing is retried inside one batch.
+function Panel:sendMailBatch()
+    local batch = self.mailBatch
+    if batch == nil or self.mailPending then return end
+    local segment = {}
+    for i = 1, math.min(MAIL_SEGMENT, #batch.ids) do segment[i] = batch.ids[i] end
+    if #segment == 0 then return self:finishMailBatch(nil) end
+    batch.nextAt = nil
+    batch.sent = #segment
+    self.mailPending = { requestId = C.newRequestId(), at = EC.now(), batch = true }
+    C.claimMailBatch(segment, self.mailPending.requestId)
+end
+
+-- The batch is over: what was claimed, what stayed in the mailbox for want of room, what was
+-- refused, and - on its own line - the letters that only handed over part of themselves, in
+-- items. Only a bucket that really happened is worded: a batch where every letter came through
+-- says so and nothing else, instead of also claiming "0 failed" (a zero read as a result is how
+-- a clean run came to look like a broken one). A letter that failed, one that stayed behind and
+-- one that split are each still spelled out in full, so no partial run can read as a whole one.
+-- `code` is a refusal of the command itself (or a read that never came back), and it is reported
+-- next to the tally, never instead of it.
+local BATCH_PARTS = { { "claimed", "Mail_BatchClaimed" }, { "kept", "Mail_BatchKept" },
+    { "failed", "Mail_BatchFailed" } }
+
+function Panel:finishMailBatch(code)
+    local batch = self.mailBatch
+    self.mailBatch = nil
+    if batch == nil then return end
+    local parts = {}
+    for _, spec in ipairs(BATCH_PARTS) do
+        local n = batch[spec[1]]
+        if n > 0 then parts[#parts + 1] = getText(T .. spec[2], tostring(n)) end
+    end
+    if #parts > 0 then C.toast(table.concat(parts, "  ")) end
+    if batch.partial > 0 then
+        C.toast(getText(T .. "Mail_BatchPartial", tostring(batch.partial),
+            tostring(batch.partDone), tostring(batch.partLeft)))
+    end
+    if batch.lastError ~= nil then C.toast(shopError(batch.lastError)) end
+    if code ~= nil then C.toast(shopError(code)) end
+end
+
+-- One reply of the bulk claim. Every id the server named is out of the queue; a segment that
+-- named none is a dead end and stops the batch instead of asking again forever.
+function Panel:onMailBatchReply(args)
+    local batch = self.mailBatch
+    self.mailPending = nil
+    if batch == nil then return end
+    local results = args.results
+    if type(results) ~= "table" or #results == 0 then
+        -- the command itself was refused (not at a terminal, frozen, malformed): nothing tried
+        self:finishMailBatch(args.error or "unknown")
+        return
+    end
+    local tried = {}
+    for _, r in ipairs(results) do
+        tried[r.mailId] = true
+        if r.ok == true then
+            batch.claimed = batch.claimed + 1
+        elseif r.error == "backpack_full" then
+            batch.kept = batch.kept + 1
+        elseif r.error == "delivery_partial" then
+            -- the letter is still there with fewer items: its own line of the tally, in items
+            batch.partial = batch.partial + 1
+            batch.partDone = batch.partDone + math.max(0, math.floor(tonumber(r.deliveredQty) or 0))
+            batch.partLeft = batch.partLeft + math.max(0, math.floor(tonumber(r.remainingQty) or 0))
+        else
+            batch.failed = batch.failed + 1
+            batch.lastError = r.error
+        end
+    end
+    local left, removed = {}, 0
+    for _, id in ipairs(batch.ids) do
+        if tried[id] then removed = removed + 1 else left[#left + 1] = id end
+    end
+    batch.ids = left
+    if removed == 0 then
+        self:finishMailBatch("unknown")
+        return
+    end
+    if #left == 0 then
+        self:finishMailBatch(nil)
+        return
+    end
+    -- the next segment waits out the server's own command window
+    batch.nextAt = EC.now() + ReadGate.MIN_MS
+end
+
+-- A fresh catalog row for an open dialog, in the currency that dialog is trading in. The whole
+-- displayed quote moves together: the row, the revision it belongs to and -- for a sale -- the
+-- candidate prices, which are dropped and asked for again because the ones on screen were
+-- quoted against the catalog that just went away. A moved quote is shown at once and held: the
+-- confirm becomes an acknowledgement first (Panel:requoteHeld), so a snapshot can never turn a
+-- confirmed price into a different one behind the press.
+function Panel:refreshBuyRow(dlg, items, buyback, revision)
+    -- An order already on the wire owns this dialog: the row, the count and the revision it
+    -- was sent with may not move before the reply, or the answer would be read against numbers
+    -- the player never confirmed. The catalog is noted and read again once the write settles.
+    if self.buyPending ~= nil then
+        dlg.catalogDirty = true
+        return dlg.row
+    end
+    local fresh = nil
+    for _, it in ipairs(items or {}) do
+        if it.id == dlg.row.id and it.enabled ~= false then fresh = shopRow(it, dlg.currency, buyback) end
+    end
+    if fresh == nil then return nil end
+    local was = dlg.row
+    local moved = was.price ~= fresh.price or was.bidPrice ~= fresh.bidPrice
+        or (revision ~= nil and dlg.quoteRevision ~= nil and revision ~= dlg.quoteRevision)
+    dlg.row = fresh
+    if revision ~= nil then dlg.quoteRevision = revision end
+    if moved then
+        dlg.requoteRequired = true
+        dlg.message = getText(T .. "Trade_Requote")
+        if dlg.sell then
+            -- the candidate prices belonged to the catalog that just moved: they may not
+            -- price this sale. The count the player asked for is kept -- what the new catalog
+            -- allows is only known once the fresh candidates answer, and it is clamped there.
+            dlg.cand = nil
+            self:sendSellCandidates(dlg)
+        end
+    end
+    return fresh
+end
+
+-- The write that owned the dialog has answered (or been given up on). Whatever the catalog did
+-- meanwhile was held back; it is read now, through the same snapshot gate every page uses, and
+-- a sale asks for the backpack prices of that catalog again. Nothing is patched in from memory:
+-- the fresh reply is what moves the dialog, and it moves it through the requote hold.
+function Panel:resumeBuyDialog()
+    local dlg = self.buyDialog
+    if dlg == nil or dlg.catalogDirty ~= true then return end
+    dlg.catalogDirty = nil
+    C.requestShop()
+    if dlg.sell then self:sendSellCandidates(dlg) end
 end
 
 function Panel:onShop(kind, args)
@@ -2459,12 +1664,8 @@ function Panel:onShop(kind, args)
         -- keep an open dialog on the fresh price/remaining, or drop it if the sku is gone
         local dlg = self.buyDialog
         if dlg then
-            local fresh = nil
-            for _, it in ipairs(args.items or {}) do
-                if it.id == dlg.row.id and it.enabled ~= false then fresh = shopRow(it, args.currency, args.buyback and args.buyback.enabled == true) end
-            end
+            local fresh = self:refreshBuyRow(dlg, args.items, args.buyback, args.revision)
             if fresh and (not dlg.sell or (fresh.buyback and fresh.buybackOpen)) then
-                dlg.row = fresh
                 self:layoutBuy()
             else
                 self:closeBuy()
@@ -2473,11 +1674,64 @@ function Panel:onShop(kind, args)
         end
         return
     end
+    -- One sku's remaining share moved because somebody else bought it (a server-wide daily cap).
+    -- ECClient already put the number on the snapshot; this only repaints the rows. A delta for
+    -- a catalog this client does not hold is not patched into the one it does: the page asks for
+    -- the whole list instead of showing a number from another revision.
+    if kind == "stock" then
+        if args.revision ~= nil and C.shop ~= nil and args.revision ~= C.shop.revision then
+            self.viewDirty["shop"] = true
+            self:pumpViews()
+            return
+        end
+        self:rebuildShop()
+        -- an open buy dialog reads the sku's own numbers: it takes the whole fresh row, so the
+        -- count it allows and the text it spells out can never come from two different reads
+        local dlg = self.buyDialog
+        local shop = C.shop
+        if dlg and not dlg.sell and shop and dlg.row.id == args.id then
+            self:refreshBuyRow(dlg, shop.items, shop.buyback, shop.revision)
+            self:layoutBuy()
+        end
+        return
+    end
     if kind == "candidates" then
         local dlg = self.buyDialog
-        if dlg and dlg.sell and args.id == dlg.row.id then
-            dlg.cand = args.ok ~= false and args or { count = 0, itemIds = {}, unitQty = 1, bidPrice = dlg.row.bidPrice, buyback = args.buyback }
-            if args.ok == false then dlg.message = shopError(args.error) end
+        -- the reply echoes the sku and the currency it was asked about: an answer for the
+        -- currency the player has already switched away from is not this dialog's answer
+        if dlg and dlg.sell and args.id == dlg.row.id and args.currency == dlg.currency then
+            -- a sale already on the wire keeps the quote it was sent with: a candidate reply
+            -- that lands meanwhile is noted and asked for again once the write has answered
+            if self.buyPending ~= nil then
+                dlg.catalogDirty = true
+                return
+            end
+            -- and neither is an answer quoted against another catalog: the row on screen and
+            -- the backpack price have to come from one and the same revision, so a reply from
+            -- a different one is dropped and the catalog itself is asked for instead
+            if args.revision ~= nil and dlg.quoteRevision ~= nil
+                and args.revision ~= dlg.quoteRevision then
+                dlg.cand = nil
+                dlg.requoteRequired = true
+                dlg.message = getText(T .. "Trade_Requote")
+                C.requestShop()
+                self:layoutBuy()
+                return
+            end
+            local was = dlg.cand
+            dlg.cand = args.ok ~= false and args
+                or { count = 0, itemIds = {}, unitQty = 1, currency = dlg.currency,
+                     revision = dlg.quoteRevision, bidPrice = dlg.row.bidPrice, buyback = args.buyback }
+            -- a backpack price that moved under an open dialog is a new quote, not a repaint
+            if was ~= nil and tonumber(was.bidPrice) ~= tonumber(dlg.cand.bidPrice) then
+                dlg.requoteRequired = true
+                dlg.message = getText(T .. "Trade_Requote")
+            elseif args.ok == false then
+                dlg.message = shopError(args.error, args.recovery, args.recoveryDetail)
+            end
+            -- the answer carries this currency's own allowances: a count they cannot cover is
+            -- cut now, and the cut says so instead of happening under the player
+            dlg:clampCount()
             self:layoutBuy()
         end
         return
@@ -2486,52 +1740,100 @@ function Panel:onShop(kind, args)
     local pending = self.buyPending
     if pending and args.requestId ~= nil and args.requestId ~= pending.requestId then return end
     self.buyPending = nil
+    -- the write is over: a catalog that landed while it was out is read now, and a sale asks
+    -- for the backpack prices of that catalog again
+    self:resumeBuyDialog()
     if args.ok then
         local name = (args.item and itemName(args.item)) or (pending and pending.name) or ""
         self:closeBuy()
         if kind == "sell" then
-            C.toast(getText(T .. "Shop_Sold", name, tostring(tonumber(args.qty) or 0), amountText(args.total)))
+            C.toast(getText(T .. "Shop_Sold", name, tostring(tonumber(args.qty) or 0),
+                W.moneyText(args.total, args.currency)))
             return
         end
-        C.toast(getText(T .. "Shop_Bought", name, tostring(tonumber(args.qty) or 0)))
-        if args.delivered == false then C.toast(getText(T .. "Shop_Parked")) end
+        -- the receipt is the server's own: what it really debited, in the currency it debited
+        -- it from -- never the numbers the dialog happened to be showing
+        C.toast(getText(T .. "Shop_Bought", name, tostring(tonumber(args.qty) or 0),
+            W.moneyText(args.total, args.currency)))
+        local note = deliveryNote(args)
+        if note then C.toast(note) end
         return
     end
     if args.error == "catalog_changed" then C.requestShop() end
+    -- The server re-checked the room before it debited anything and found the purchase would
+    -- have to be parked: no money moved, no letter was written, and the dialog stays up saying
+    -- so until the player presses confirm a second time.
+    if args.error == "mail_confirmation_required" then
+        local dlg = self.buyDialog
+        if dlg then
+            dlg.mailRequired = true
+            dlg.message = getText(T .. "Delivery_ConfirmMail")
+            return
+        end
+        C.toast(getText(T .. "Delivery_ConfirmMail"))
+        return
+    end
     -- the buyback cap refusals carry how much room is left today
     local code = tostring(args.error or "unknown")
     if args.remaining ~= nil and getTextOrNull(T .. "Shop_Error_" .. code) then
         self:buyMessage(getText(T .. "Shop_Error_" .. code, tostring(math.floor(tonumber(args.remaining) or 0))))
     else
-        self:buyMessage(shopError(args.error))
+        self:buyMessage(shopError(args.error, args.recovery, args.recoveryDetail))
     end
 end
 
 function Panel:onMail(kind, args)
     self:updateMailTab(args.unclaimed)
     self:rebuildMail()
-    if kind == "list" then return end
+    if kind == "list" then
+        -- the capacity row under the card title exists only while the server sends its usage
+        if self.shown and self.g then self:layout() end
+        return
+    end
     local pending = self.mailPending
     if pending and args.requestId ~= nil and args.requestId ~= pending.requestId then return end
+    if kind == "claimAll" then return self:onMailBatchReply(args) end
     self.mailPending = nil
     if args.ok then
         local name = (args.item and itemName(args.item)) or (pending and pending.name) or ""
         C.toast(getText(T .. "Mail_Claimed", name, tostring(tonumber(args.qty) or 0)))
+        local note = deliveryNote(args)
+        if note then C.toast(note) end
     else
-        C.toast(shopError(args.error))
+        -- a refusal of the claim (not at a terminal, already claimed) is one message; a
+        -- hand-over that only settled part of the letter is another, and it says how many items
+        -- went into the backpack and how many letters are still waiting
+        C.toast(deliveryNote(args) or shopError(args.error, args.recovery, args.recoveryDetail))
     end
+end
+
+-- ----- the header identity -----
+
+-- The whole account, in the session's own record window: the header chip shows what fits in a
+-- row, and this is where a long or a CJK name is read complete and handed to the clipboard by
+-- the window's own CopyAll. Pressing the chip again closes it, the way every other note chip in
+-- this mod behaves; with no account to name there is nothing to open and nothing is opened.
+function Panel:onIdentity()
+    local account = self:username()
+    if account == nil then return end
+    if Detail.isOpen(self, "identity") then Detail.close(self); return end
+    Detail.open(self, "identity", getText(T .. "Player_IdentityTitle"), account)
 end
 
 -- ----- market -----
 
 -- The player's own account name: an own listing must not be sold back to them, and the server
--- says so too (own_listing) — this only keeps the chip from lying.
+-- says so too (own_listing) — this only keeps the chip from lying. The fixed header identity
+-- reads this very value. Only a real name is ever remembered: in the frames before the player
+-- object exists the answer is "not yet", never a "there is none" that would outlive the world's
+-- own start-up and leave the header reading "loading" for the rest of the session.
 function Panel:username()
-    if self.playerName == nil then
-        local ok, value = pcall(function() return getPlayer():getUsername() end)
-        self.playerName = (ok and type(value) == "string" and value ~= "") and value or false
-    end
-    return self.playerName or nil
+    local cached = self.playerName
+    if type(cached) == "string" then return cached end
+    local ok, value = pcall(function() return getPlayer():getUsername() end)
+    if not ok or type(value) ~= "string" or value == "" then return nil end
+    self.playerName = value
+    return value
 end
 
 -- The market numbers live in three snapshots (browse, own listings, backpack candidates) and
@@ -2549,10 +1851,12 @@ function Panel:updateMarketInfo()
         or tonumber(m and m.mine) or tonumber(cand and cand.mine) or 0
     info.maxListings = tonumber(mine and mine.maxListings) or tonumber(m and m.maxListings)
         or tonumber(cand and cand.maxListings) or 0
-    -- mailbox slots (candidates reply): a listing needs one, so the picker says when there is none
+    -- Mailbox slots (candidates reply): a listing needs one. `used` is the total the server
+    -- itself counts over all three kinds (letters waiting, listings parked, auctions running),
+    -- so this side never adds two of them up and calls it the whole.
     local usage = cand and cand.usage or nil
     if type(usage) == "table" and tonumber(usage.capacity) then
-        info.mailUsed = (tonumber(usage.unclaimed) or 0) + (tonumber(usage.listings) or 0)
+        info.mailUsed = tonumber(usage.used) or 0
         info.mailCapacity = tonumber(usage.capacity) or 0
     else
         info.mailUsed, info.mailCapacity = nil, nil   -- an older server: no gate on this side
@@ -2561,9 +1865,9 @@ function Panel:updateMarketInfo()
     local b = self.marketMineButton
     if b then
         local title = getText(T .. "Market_MineCount", tostring(info.mine), tostring(info.maxListings))
-        if b.title ~= title then
-            b:setTitle(title)
+        if b.fullTitle ~= title then
             b:setWidth(textWidth(title) + 22)
+            U.setButtonTitle(b, title)
         end
     end
 end
@@ -2579,13 +1883,42 @@ end
 -- disabled, so the player cannot queue a wish they can no longer see the state of.
 local BROWSE_MIN_MS = 650
 local BROWSE_TIMEOUT_MS = 5000
+local SELLERS_TIMEOUT_MS = 8000
 
 function Panel:sendBrowse()
     self.browseWanted = nil
     self.browseSentAt = EC.now()
     self.marketAt = self.browseSentAt
+    -- nil currency is "every currency": the server answers with `all` and refuses a price sort
+    -- there, which is exactly the state the sort box is filtered for
     C.requestMarket({ category = self.marketCat, query = self.marketQuery,
-        sort = self.marketSort, page = self.marketPage })
+        sort = self.marketSort, page = self.marketPage, seller = self.marketSeller,
+        currency = self.marketCur or "all" })
+end
+
+-- The currency filter of a browse page, and with it which sorts exist at all. Changing it is a
+-- new question: back to page one, and a price sort that can no longer be honoured falls back
+-- to the page default instead of being sent and refused.
+function Panel:setBrowseCurrency(id)
+    self.marketCur = id
+    if id == nil and W.isPriceSort(self.marketSort) then self.marketSort = "time" end
+    comboFill(self.marketSortCombo, sortKeysFor(MARKET_SORTS, id ~= nil),
+        sortLabel(MARKET_SORTS), self.marketSort)
+    -- the page is repainted against the new filter at once: the snapshot on screen belongs to
+    -- the old one, and its rows of another currency must not sit there until the answer lands
+    self:rebuildMarket()
+    self:requestBrowse(1)
+end
+
+function Panel:onMarketCurrency(combo)
+    local id = combo:getOptionData(combo.selected)
+    id = (type(id) == "string" and id ~= "") and id or nil
+    if id == self.marketCur then return end
+    if self.browseBusy then
+        comboSelect(combo, self.marketCur or "")   -- the page is waiting: put the box back
+        return
+    end
+    self:setBrowseCurrency(id)
 end
 
 function Panel:requestBrowse(page)
@@ -2600,8 +1933,60 @@ function Panel:requestBrowse(page)
     self:sendBrowse()
 end
 
--- The category chips are the categories the current page actually carries (plus "all"), the
--- same rule the shop follows; the server names them, the client only translates.
+-- ----- the seller candidate read (market.sellers) -----
+--
+-- A public read, so the two browse pages own it the way the admin window owns its own commands:
+-- one request in flight, the same 650 ms client window that covers the server's 500 ms one, and
+-- a timeout that frees the slot again. Both boxes share that single slot -- only one of the two
+-- pages is ever on screen -- and each still matches an answer against its own context and
+-- requestId, so a reply that crossed a page switch is dropped instead of being shown as the
+-- candidates of the page that is up now. A refused send leaves the box's debounce armed: it
+-- asks again on the next frame the window allows, so a keystroke is never silently lost.
+function Panel:sellersSend(command, args)
+    if command ~= "market.sellers" or getPlayer() == nil then return false end
+    local now = EC.now()
+    if self.sellersPendingAt ~= nil then return false end
+    if self.sellersSentAt and now - self.sellersSentAt < BROWSE_MIN_MS then return false end
+    self.sellersPendingAt = now
+    self.sellersSentAt = now
+    self.sellersRequestId = args.requestId
+    C.requestSellers(args.query, args.context, args.requestId)
+    return true
+end
+
+-- A whole candidate was picked: that -- and only that -- pins the exact seller the server
+-- compares byte for byte. Back to page 1, because the page the player was on counted the whole
+-- board; the keyword, the category and the sort stay exactly as they are.
+function Panel:onMarketSellerPicked(entry)
+    if entry.username == self.marketSeller then return end
+    self.marketSeller = entry.username
+    self:requestBrowse(1)
+end
+
+function Panel:onMarketSellerClear()
+    self.marketSellerPicker:setText("")
+    self.marketSellerPicker:close()
+    if self.marketSeller == nil then return end
+    self.marketSeller = nil
+    self:requestBrowse(1)
+end
+
+function Panel:onAuctionSellerPicked(entry)
+    if entry.username == self.auctionSeller then return end
+    self.auctionSeller = entry.username
+    self:requestAuctionBrowse(1)
+end
+
+function Panel:onAuctionSellerClear()
+    self.auctionSellerPicker:setText("")
+    self.auctionSellerPicker:close()
+    if self.auctionSeller == nil then return end
+    self.auctionSeller = nil
+    self:requestAuctionBrowse(1)
+end
+
+-- The category box offers the categories the current page actually carries (plus "all"), the same
+-- rule the shop follows; the server names them, the client only translates.
 function Panel:rebuildMarketCategories()
     local seen, cats, sig = {}, { "" }, ""
     for _, cat in ipairs(C.market and C.market.categories or {}) do
@@ -2614,21 +1999,12 @@ function Panel:rebuildMarketCategories()
     if self.marketCat and not seen[self.marketCat] then self.marketCat = nil end
     if sig == self.marketCatSig then return end
     self.marketCatSig = sig
-    for _, b in ipairs(self.marketCatButtons or {}) do
-        b:setVisible(false)
-        self:removeChild(b)
-    end
-    self.marketCatButtons = {}
-    for _, cat in ipairs(cats) do
+    comboFill(self.marketCatCombo, cats, function(cat)
         -- DisplayCategory names come from the item scripts: vanilla translates them under
         -- IGUI_ItemCat_<cat> (ISInventoryPane.lua:2533), an unknown one shows the raw name
-        local title = cat == "" and getText(T .. "Shop_All") or (getTextOrNull("IGUI_ItemCat_" .. cat) or cat)
-        local b = Button.create(0, 0, math.min(LEFT_W - PAD * 2, textWidth(title) + 22), CHIP_H, title, self, Panel.onMarketCat, "chip")
-        b.internal = cat
-        b.active = (self.marketCat or "") == cat
-        self:addChild(b)
-        self.marketCatButtons[#self.marketCatButtons + 1] = b
-    end
+        if cat == "" then return getText(T .. "Shop_All") end
+        return getTextOrNull("IGUI_ItemCat_" .. cat) or cat
+    end, self.marketCat or "")
 end
 
 -- The server paged and sorted this list already; the only thing it could not match is the
@@ -2638,16 +2014,22 @@ function Panel:rebuildMarket()
     local mine = self.marketMode == "mine"
     local snap = mine and C.myListings or C.market
     local src = (snap and snap.items) or {}
-    local currency = (C.market and C.market.currency) or EC.CURRENCY_ORDER[1]
     local query = (not mine) and self.marketQuery or nil
+    -- the filter in force, applied to whatever snapshot is on screen: between choosing a
+    -- currency and its answer landing, the old page must not keep showing rows of the currency
+    -- the player just filtered out
+    local currency = (not mine) and self.marketCur or nil
     local username = self:username()
     local rows = {}
     for _, it in ipairs(src) do
-        local row = listingRow(it, currency, username, self.offsetMin, mine)
-        if query == nil or string.find(string.lower(row.name), query, 1, true)
+        -- the currency is the listing's own, never the page's: a mixed page quotes each row in
+        -- what its seller set, and a row that carries none says so instead of borrowing one
+        local row = listingRow(it, username, self.offsetMin, mine)
+        if (currency == nil or row.currency == currency)
+            and (query == nil or string.find(string.lower(row.name), query, 1, true)
             or (row.altName and string.find(string.lower(row.altName), query, 1, true))
             or string.find(string.lower(tostring(row.item)), query, 1, true)
-            or string.find(string.lower(row.seller), query, 1, true) then
+            or string.find(string.lower(row.seller), query, 1, true)) then
             rows[#rows + 1] = row
         end
     end
@@ -2683,7 +2065,7 @@ function Panel:rebuildMarketHistory()
     local bar = self.historyBar
     if bar:syncKinds(rows) and self.g then self:layout() end
     local page, pages, total
-    rows, page, pages, total = EC.filterPage(rows, bar:opts("ts"))
+    rows, page, pages, total = EC.filterPage(bar:search(rows), bar:opts("ts"))
     bar:setPage(page, pages, total)
     self.marketHistoryRows = rows
     self.marketHistoryList:setItems(rows)
@@ -2694,7 +2076,7 @@ function Panel:requestMarketMode()
     if self.marketMode == "mine" then
         C.requestMyListings()
     elseif self.marketMode == "history" then
-        C.requestMarketHistory()
+        self:requestMarketHistory()
     else
         self:requestBrowse(self.marketPage)
     end
@@ -2703,41 +2085,61 @@ end
 function Panel:onMarketMode(button)
     if self.marketMode == button.internal then return end
     self.marketMode = button.internal
+    Detail.close(self)          -- the record belongs to the page that is being left
     for _, b in ipairs(self.marketModeButtons) do b.active = b.internal == self.marketMode end
     self:closeMarketDialog()
+    self:closeCombos()
     self:rebuildMarket()
     self:rebuildMarketHistory()
     self:layout()
     self:requestMarketMode()
 end
 
-function Panel:onMarketSort(button)
-    if self.browseBusy or self.marketSort == button.internal then return end
-    self.marketSort = button.internal
-    for _, b in ipairs(self.marketSortButtons) do b.active = b.internal == self.marketSort end
+function Panel:onMarketSort(combo)
+    local key = combo:getOptionData(combo.selected)
+    if self.browseBusy then
+        comboSelect(combo, self.marketSort)   -- the page is waiting: put the box back
+        return
+    end
+    if type(key) ~= "string" or key == self.marketSort then return end
+    self.marketSort = key
     self:requestBrowse(1)
 end
 
 -- A click on the table header: the same column again flips the direction, a new one starts
 -- ascending. Anything that is not a column (the icon column left of the item name, the gaps
--- between two columns) is the plain default sort, newest listing first.
+-- between two columns) is the plain default sort, newest listing first. Every key the header can
+-- produce is one the sort box also offers, so the two never disagree -- and a key the server does
+-- not accept would be answered with the default page, which the throttle would then re-ask for.
 function Panel:onMarketHeader(x)
     if self.marketMode ~= "browse" or self.browseBusy then return end
     local key = "time"
     for _, c in ipairs(self.marketHeaderHits or {}) do
-        if x >= c.x and x < c.x + c.w then key = c.key end
+        -- a caption column (the own-listings table sorts by nothing) is not a hit target
+        if c.sortable ~= false and x >= c.x and x < c.x + c.w then key = c.key end
+    end
+    -- prices of two currencies do not compare, and the server says so (currency_required):
+    -- the click is answered here instead of being sent and refused
+    if W.isPriceSort(key) and self.marketCur == nil then
+        C.toast(getText(T .. "Market_CurrencyRequired"))
+        return
     end
     if key ~= "time" and self.marketSort == key then key = key .. "_desc" end
     if key == self.marketSort then return end
     self.marketSort = key
-    for _, b in ipairs(self.marketSortButtons) do b.active = b.internal == key end
+    comboSelect(self.marketSortCombo, key)
     self:requestBrowse(1)
 end
 
-function Panel:onMarketCat(button)
-    if self.browseBusy then return end
-    self.marketCat = button.internal ~= "" and button.internal or nil
-    for _, b in ipairs(self.marketCatButtons) do b.active = (self.marketCat or "") == b.internal end
+function Panel:onMarketCat(combo)
+    if self.browseBusy then
+        comboSelect(combo, self.marketCat or "")
+        return
+    end
+    local cat = combo:getOptionData(combo.selected)
+    cat = (type(cat) == "string" and cat ~= "") and cat or nil
+    if cat == self.marketCat then return end
+    self.marketCat = cat
     self:requestBrowse(1)
 end
 
@@ -2762,17 +2164,369 @@ function Panel:onMarketPage(button)
     self:requestBrowse(page)
 end
 
-function Panel:onOpacityStep(button)
-    setOpacityPercent(opacityPercent() + button.internal)
+-- A listing row is a read: it selects the listing and spells it out in the reader, whether or
+-- not this player may trade it. Buying it, and pulling an own one back, is the row's own button.
+function Panel:onMarketRow(row)
+    self:onDetailRow("market", row)
 end
 
-function Panel:onMarketRow(row)
-    if not row or self.marketDialog or self.marketPending or not self:tradeAllowed() then return end
-    if row.mine then
-        self:openMarketDialog("cancel", row)
-    elseif not row.own then
-        self:openMarketDialog("buy", row)
+function Panel:onMarketAction(row, actionId)
+    if row == nil then return end
+    if self.marketDialog or self.marketPending or not self:tradeAllowed() then return end
+    if actionId == "cancel" then
+        if row.mine then self:openMarketDialog("cancel", row) end
+        return
     end
+    -- a record the server is holding (its currency cannot be proven) is not bought from here
+    if row.blocked ~= nil then
+        C.toast(marketError({ error = row.blocked }))
+        return
+    end
+    if not row.own then self:openMarketDialog("buy", row) end
+end
+
+-- ----- the record of one row -----
+-- A table cuts a long name to its column; the whole record is read in the session's own floating
+-- window (ECDetailWindow), which scrolls, copies its untruncated text and closes on its own X or
+-- on Escape. One implementation for every page, built when a row is opened or refreshed and
+-- never per frame.
+
+-- Every string one row of one table has to spell out, in reading order.
+function Panel:detailText(kind, e)
+    local out = {}
+    if kind == "statement" then
+        out[1] = detailLine("Wallet_Col_Time", e.time)
+        out[2] = detailLine("Wallet_Col_Kind", e.kindText)
+        out[3] = detailLine("Wallet_Col_Desc", e.desc)
+        out[4] = detailLine("Wallet_Col_Amount", e.amountText)
+        out[5] = detailLine("Wallet_Col_Balance", amountText(e.after))
+        if e.rolledBack then out[#out + 1] = getText(T .. "Wallet_RolledBack") end
+        if e.txId then out[#out + 1] = detailLine("Detail_TxId", e.txId) end
+        if e.reasonText and e.reasonText ~= "" then out[#out + 1] = detailLine("Admin_Tx_Field_Reason", e.reasonText) end
+        return out
+    end
+    if kind == "balance" then
+        out[1] = e.name
+        out[2] = detailLine("Wallet_Available", e.availableText)
+        out[3] = detailLine("Wallet_Reserved", e.reservedText)
+        out[4] = detailLine("Wallet_Cap", e.capText)
+        out[5] = detailLine("Wallet_ThisMonth", e.monthText)
+        if not e.enabled then out[#out + 1] = getText(T .. "Wallet_CurrencyOff") end
+        return out
+    end
+    if kind == "history" then
+        out[1] = e.nameText
+        out[2] = detailLine("Filter_Kind", e.kindText)
+        out[3] = detailLine("Wallet_Col_Amount", e.amountText)
+        out[4] = e.detailText
+        if e.rolledBack then out[#out + 1] = getText(T .. "Wallet_RolledBack") end
+        return out
+    end
+    -- every item row (shop, market, auction, mailbox): the localised name, the script's own name
+    -- and the fullType a command or a file edit needs, then that table's own columns
+    out[1] = e.name or e.nameText
+    if e.altName and e.altName ~= out[1] then out[#out + 1] = e.altName end
+    out[#out + 1] = tostring(e.item)
+    if e.statusText and e.statusText ~= "" then out[#out + 1] = e.statusText end
+    if kind == "shop" then
+        out[#out + 1] = e.qtyText
+        out[#out + 1] = detailLine("Trade_Currency", e.currencyText)
+        out[#out + 1] = detailLine("Shop_Col_Price", W.moneyText(e.price, e.currency))
+        out[#out + 1] = detailLine("Shop_Col_Remaining", e.remainText)
+        -- whose share the daily cap counts: per account or the whole server. The row cannot
+        -- say it in its column, and "per player per day" is not a fact for every sku.
+        if e.dailyCap > 0 then
+            out[#out + 1] = detailLine("Shop_CapScope", getText(T ..
+                ((e.dailyCapScope == "server" or e.dailyCapScope == "global")
+                    and "Shop_Scope_global" or "Shop_Scope_player")))
+        end
+        if e.buyback then out[#out + 1] = detailLine("Shop_Col_Bid", W.moneyText(e.bidPrice, e.currency)) end
+        -- every currency this sku is quoted in, so the record says what switching would cost
+        for _, q in ipairs(e.quotes or {}) do
+            out[#out + 1] = W.currencyLabel(q.currency) .. "  "
+                .. detailLine("Shop_Col_Price", W.moneyText(q.enabled and q.price or nil, q.currency))
+        end
+    elseif kind == "market" then
+        out[#out + 1] = detailLine("Market_Col_Qty", tostring(e.qty))
+        out[#out + 1] = detailLine("Trade_Currency", e.currencyText)
+        out[#out + 1] = detailLine("Market_Col_LotPrice", W.moneyText(e.price, e.currency))
+        out[#out + 1] = detailLine("Market_Col_Expires", e.expiresText)
+        if not e.mine then out[#out + 1] = detailLine("Market_Col_Seller", e.seller) end
+    elseif kind == "auction" then
+        out[#out + 1] = detailLine("Market_Col_Qty", tostring(e.qty))
+        out[#out + 1] = detailLine("Trade_Currency", e.currencyText)
+        out[#out + 1] = detailLine("Auction_Col_Bid", e.priceText .. " " .. e.currencyText)
+        out[#out + 1] = detailLine("Auction_Col_Bids", e.bidsText)
+        out[#out + 1] = detailLine("Auction_Col_Ends", e.expiresText)
+        out[#out + 1] = detailLine("Market_Col_Seller", e.seller)
+        -- the plain column name, never Auction_History_Id: that one is a "%1" template
+        out[#out + 1] = detailLine("Auction_Col_Id", tostring(e.id))
+    elseif kind == "mail" then
+        out[#out + 1] = detailLine("Market_Col_Qty", tostring(e.qty))
+        -- a letter that carries money names it; one that carries none says nothing
+        if e.price ~= nil then
+            out[#out + 1] = detailLine("Market_Col_LotPrice", W.moneyText(e.price, e.currency))
+        end
+        out[#out + 1] = detailLine("Mail_Col_From", e.fromText)
+        -- the record spells the counterparty out under its own column name; a letter with no
+        -- third party (a shop purchase, a return, an old one) has no such line at all
+        if e.seller ~= nil then out[#out + 1] = detailLine("Market_Col_Seller", e.seller) end
+        out[#out + 1] = detailLine("Wallet_Col_Time", e.timeText)
+    end
+    return out
+end
+
+-- Immutable history records have a content key; mutable listings and letters have an id.
+local function detailKey(kind, e)
+    if kind == "statement" or kind == "history" then return kind .. ":" .. e.recordKey end
+    return kind .. ":" .. tostring(e.id)
+end
+
+-- What the record window is titled: the page the row came from, so it says what it is reading
+-- without needing a caption of its own.
+function Panel:detailTitle(kind)
+    if kind == "statement" then return getText(T .. "Wallet_Statement") end
+    if kind == "history" then
+        return getText(T .. (self.tab == "Auction" and "Auction_History_Title" or "Market_History_Title"))
+    end
+    if kind == "shop" then return getText(T .. "Shop_Title") end
+    if kind == "market" then return getText(T .. "Market_Title") end
+    if kind == "auction" then return getText(T .. "Auction_Title") end
+    return getText(T .. "Mail_Title")
+end
+
+-- Only a click or Enter opens a record. Remember its source list so another highlight or
+-- another table's refresh cannot replace it.
+function Panel:showDetail(kind, item, explicit)
+    if item == nil then return end
+    local key = detailKey(kind, item)
+    local title = self:detailTitle(kind)
+    local body = table.concat(self:detailText(kind, item), "\n")
+    if explicit then
+        self.detailList = nil
+        for _, spec in ipairs(self.detailWatch or {}) do
+            if spec.kind == kind and spec.list:getSelectedItem() == item then self.detailList = spec.list; break end
+        end
+        Detail.open(self, key, title, body)
+    else
+        Detail.update(self, key, title, body)
+    end
+end
+
+-- The season's real-world deadline, as this client may honestly state it. C.seasonState is the
+-- server's own complete metadata and the only thing allowed to answer here: its currentId has to
+-- be the very season the reward state was built for, or the two are describing different seasons
+-- and neither may be quoted against the other. Everything else says what it is -- an unread
+-- deadline is not "manual" and never zero days, and a deadline that has already passed says the
+-- server has not rotated yet instead of counting backwards or announcing a season nobody started.
+-- This is real calendar time and labelled so: the survival figures below it are game time.
+function Panel:seasonDeadlineLines(st, lines)
+    local season = C.seasonState
+    local current = type(season) == "table" and season.currentId or nil
+    local meta = nil
+    if current ~= nil and st.season ~= nil and current == st.season then
+        for _, entry in ipairs(type(season.seasons) == "table" and season.seasons or {}) do
+            if entry.id == current then meta = entry; break end
+        end
+    end
+    local endsAt = meta ~= nil and tonumber(meta.endsAt) or nil
+    if type(endsAt) == "number" and endsAt == endsAt and endsAt > -math.huge and endsAt < math.huge then
+        local left = endsAt - EC.now()
+        lines[#lines + 1] = (left > 0)
+            and getText(T .. "Rewards_SeasonRemaining", U.realDurationText(left))
+            or getText(T .. "Rewards_SeasonPending")
+        lines[#lines + 1] = getText(T .. "Rewards_SeasonDeadline", stampText(endsAt, self.offsetMin))
+    elseif meta ~= nil and meta.durationDays == 0 and meta.endsAt == nil then
+        lines[#lines + 1] = getText(T .. "Rewards_SeasonManual")
+    else
+        lines[#lines + 1] = getText(T .. "Rewards_SeasonUnknown")
+    end
+end
+
+-- The daily reward, worded from the server's own state. Nothing here recomputes eligibility:
+-- how many claims today, how much online time this next one needs and whether it may be taken
+-- at all are the server's answer, and a claim it refuses says which rule refused it instead of
+-- leaving a grey button with no reason beside it. Online time is real connected time; this
+-- side only formats the two numbers it is given.
+function Panel:rewardLines(st)
+    local claimed = math.max(0, math.floor(tonumber(st.claimedCount) or 0))
+    local limit = math.max(1, math.floor(tonumber(st.dailyLimit) or 1))
+    local left = math.max(0, math.floor(tonumber(st.remainingClaims) or 0))
+    local played = math.max(0, tonumber(st.playedMs) or 0)
+    local need = math.max(0, tonumber(st.requiredOnlineMs) or 0)
+    local short = math.max(0, tonumber(st.remainingOnlineMs) or 0)
+    local nextReset = tonumber(st.nextResetMs) or 0
+    -- The daily check-in switched off by an admin (CheckinAmount = 0) is not "claim +0": the
+    -- block says the server turned it off, and the milestones below are unaffected.
+    local off = st.blockedReason == "checkin_disabled"
+    local lines = {}
+    if off then
+        lines[1] = getText(T .. "Rewards_Error_checkin_disabled")
+    else
+        lines[1] = getText(T .. "Rewards_Claims", tostring(claimed), tostring(limit))
+        lines[2] = getText(T .. "Rewards_ClaimsLeft", tostring(left))
+        lines[3] = getText(T .. "Rewards_Amount", amountText(st.amount), C.currencyName(st.currency))
+        lines[4] = getText(T .. "Rewards_OnlineProgress", tostring(math.floor(played / 60000)),
+            tostring(math.floor(need / 60000)))
+        if short > 0 then
+            lines[#lines + 1] = getText(T .. "Rewards_NextClaimIn", durationText(short))
+        elseif left > 0 and st.canClaim == true then
+            lines[#lines + 1] = getText(T .. "Rewards_Ready")
+        end
+    end
+    if not off and st.canClaim ~= true and st.blockedReason ~= nil then
+        local code = tostring(st.blockedReason)
+        lines[#lines + 1] = getTextOrNull(T .. "Rewards_Error_" .. code)
+            or getText(T .. "Rewards_Blocked_generic", code)
+    end
+    lines[#lines + 1] = getText(T .. "Rewards_NextDay", stampText(nextReset, self.offsetMin),
+        durationText(math.max(0, nextReset - EC.now())))
+    if self.message then lines[#lines + 1] = self.message.text end
+    lines[#lines + 1] = ""
+    -- The season band: which season this is, when it ends on the real calendar, and only then
+    -- the survival figures, which are game time. The deadline is stated even when the survival
+    -- record could not be read -- how long this season still has to run does not depend on it.
+    lines[#lines + 1] = getText(T .. "Rewards_Milestones", tostring(st.seasonNumber or "-"))
+    self:seasonDeadlineLines(st, lines)
+    if st.survivalError ~= nil then
+        lines[#lines + 1] = getText(T .. "Season_SurvivalFailed", tostring(st.survivalError))
+        return lines
+    end
+    if st.survivalKnown == true and type(st.survivalHours) == "number" then
+        lines[#lines + 1] = getText(T .. "Rewards_SeasonSurvived", C.UI.survivalText(st.survivalHours * 60))
+    else
+        lines[#lines + 1] = getText(T .. "Season_SurvivalUnknown")
+    end
+    if type(st.bestSurvivalHours) == "number" then
+        lines[#lines + 1] = getText(T .. "Rewards_SeasonBest", C.UI.survivalText(st.bestSurvivalHours * 60))
+    end
+    if st.survivalIncomplete == true then lines[#lines + 1] = getText(T .. "Season_Incomplete") end
+    local nextM
+    for _, m in ipairs(st.milestoneList or {}) do
+        if not hasBit(st.milestones, m.index) then nextM = m; break end
+    end
+    lines[#lines + 1] = nextM and getText(T .. "Rewards_NextMilestone", tostring(nextM.days))
+        or getText(T .. "Rewards_AllMilestones")
+    for _, m in ipairs(st.milestoneList or {}) do
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = getText(T .. "Rewards_MilestoneRow", tostring(m.days))
+            .. "  " .. W.moneyText(m.amount, st.currency)
+        lines[#lines + 1] = getText(T .. (hasBit(st.milestones, m.index) and "Rewards_Achieved" or "Rewards_Pending"))
+    end
+    return lines
+end
+
+-- The wrap follows the box width (U.setWrappedText keeps the unwrapped value on the box for the
+-- copy chip). Called when the page's own data changes and when the layout resized the box; never
+-- per frame. Only the two reading pages have a body here -- a row's record lives in its window.
+function Panel:updateDetail()
+    local box = self.detailBox
+    if not box then return end
+    local body = ""
+    local balanceView = self.tab == "Wallet" and self.walletDetails
+    local rewardsView = self.tab == "Rewards"
+    local scroll = rewardsView and self.detailRewardsVisible and box:getYScroll() or nil
+    if balanceView then
+        body = self.balanceText or ""
+    elseif rewardsView then
+        local st = C.rewards
+        if not st then scroll = 0 end
+        self.detailRewards, self.detailRewardsSecond = st, math.floor(EC.now() / 1000)
+        if st then
+            body = table.concat(self:rewardLines(st), "\n")
+        elseif C.rewardsError then
+            body = getTextOrNull(T .. "Rewards_Error_" .. tostring(C.rewardsError))
+                or getText(T .. "Rewards_Error_generic", tostring(C.rewardsError))
+        else
+            body = getText(T .. "Wallet_Loading")
+        end
+    end
+    U.setWrappedText(box, body, box.width)
+    if scroll then box:setYScroll(scroll) end
+    self.detailRewardsVisible = rewardsView
+    self.detailCopyButton:setEnable(body ~= "")
+end
+
+-- A changed highlight only updates the keyboard ring. On a source snapshot replacement,
+-- refresh the explicitly opened record by identity, not by the list's current selection.
+function Panel:syncDetail()
+    local moved = false
+    for _, spec in ipairs(self.detailWatch or {}) do
+        local list = spec.list
+        if list:getIsVisible() then
+            local item, revision = list:getSelectedItem(), list.revision
+            if item ~= spec.last or revision ~= spec.revision then
+                if revision ~= spec.revision and self.detailList == list and Detail.isOpen(self) then
+                    local found = false
+                    for _, row in ipairs(list:getItems()) do
+                        if Detail.isOpen(self, detailKey(spec.kind, row)) then
+                            self:showDetail(spec.kind, row, false)
+                            found = true
+                            break
+                        end
+                    end
+                    if not found then Detail.close(self); self.detailList = nil end
+                end
+                spec.last, spec.revision = item, revision
+                moved = true
+            end
+        end
+    end
+    if moved then Keys.invalidate(self) end
+end
+
+function Panel:onFeeDetails()
+    if self:isModal() or not self.feeInfoButton:getIsVisible() then return end
+    self.detailList = nil
+    Detail.open(self, "fees:" .. self.tab, getText(T .. "Trade_FeeDetails"), self.feeInfoButton.note)
+end
+
+-- What is copied is the untruncated value the box kept, so it is exactly what the player reads.
+function Panel:onDetailCopy()
+    local box = self.detailBox
+    local value = self.detailCopyButton.enable and box and box.ecRawText or nil
+    if type(value) ~= "string" or value == "" then return end
+    local copied = Clipboard ~= nil and Clipboard.setClipboard ~= nil
+        and pcall(Clipboard.setClipboard, value)
+    C.toast(getText(T .. (copied and "Kb_Copied" or "Kb_CopyFailed")))
+end
+
+-- A row of any reading table: its whole record opens as the floating window, the row stays
+-- picked, the list keeps its filters, its page and its scroll, and nothing is bought, claimed or
+-- cancelled here. The keyboard arrives through the same call (Enter is what runs onSelect), and
+-- pressing the same row again after the window was closed opens it again -- VirtualList reports
+-- every click on a row, not only a changed selection.
+function Panel:onDetailRow(kind, item)
+    if item == nil then return end
+    self:showDetail(kind, item, true)
+    Keys.invalidate(self)
+end
+
+-- The history read of the page on screen that failed, as the server's own code, or nil. One
+-- answer for the three reads: the retry chip and the note line both read it.
+function Panel:historyFault()
+    if self.tab == "Wallet" then return self.historyError end
+    if self.tab == "Market" and self.marketMode == "history" then return self.marketHistoryError end
+    if self.tab == "Auction" and self.auctionMode == "history" then return self.auctionHistoryError end
+    return nil
+end
+
+-- The retry chip: the player asking for that read again, once. It goes through the same gate the
+-- page always uses (the 650 ms window, one read in flight), so pressing it twice cannot pile a
+-- second job on the command, and nothing here ever retries on its own.
+function Panel:onHistoryRetry()
+    if self:historyFault() == nil then return end
+    if self.tab == "Wallet" then
+        self:loadHistory()
+    elseif self.tab == "Market" then
+        self.marketHistoryError = nil
+        self:requestMarketHistory()
+    elseif self.tab == "Auction" then
+        self.auctionHistoryError = nil
+        self:requestAuctionHistory()
+    end
+    self:layout()
+    Keys.invalidate(self)
 end
 
 function Panel:onMarketList()
@@ -2803,11 +2557,14 @@ function Panel:onCandidate(cand)
     setEntryText(dlg.priceEntry, "")
     setEntryText(dlg.qtyEntry, tostring(cand.count or 1))   -- the whole lot by default
     self:layoutMarketDialog()
+    Keys.focusControl(dlg.priceEntry, Keys.isKeyboardFocused(dlg.pickList))
 end
 
 -- `forAuction` marks the picker (and the step it hands over to) as the auction page's own; the
 -- auction steps ("bid", "auction", "acancel") set it too, so the dialog never has to guess.
 function Panel:openMarketDialog(mode, row, forAuction)
+    local trigger = Keys.focused()
+    local keyboard = Keys.isKeyboardFocused(trigger)
     self:closeMarketDialog()
     local dlg = ISPanel:new(0, 0, 360, 200)
     setmetatable(dlg, MarketDialog)
@@ -2817,25 +2574,29 @@ function Panel:openMarketDialog(mode, row, forAuction)
     dlg.row = row
     dlg.forAuction = forAuction == true or AUCTION_MODES[mode] == true
     dlg.message = nil
+    dlg.returnFocus = keyboard and trigger or nil
+    -- The currency a new listing or auction will be fixed in. It starts on the page's own
+    -- filter when one is chosen, else on the registered default - never on "whatever the last
+    -- listing on the page happened to use".
+    dlg.currency = (forAuction == true and self.auctionCur or self.marketCur) or defaultCurrency()
     dlg:initialise()
     self:addChild(dlg)      -- the buttons exist from here on (instantiate -> createChildren)
     self.marketDialog = dlg
+    -- the same two rules the buy dialog follows: no native dropdown left floating over this
+    -- panel, and no click beside it reaching the page (the backpack picker is one of its steps)
+    self:closeCombos()
+    self:updateModalGuard()
+    for _, b in ipairs(dlg.currencyButtons) do b.active = b.internal == dlg.currency end
     if mode == "pick" then
         dlg:rebuildGrid()
         C.requestCandidates()
     end
     self:layoutMarketDialog()
+    Keys.focusControl(mode == "pick" and dlg.pickList or dlg.cancelButton, keyboard)
     return dlg
 end
 
-function Panel:layoutMarketDialog()
-    local dlg = self.marketDialog
-    if not dlg then return end
-    local g = self.g
-    dlg:layoutInside(math.max(320, self.width - PAD * 4), math.max(200, (g and g.contentH or self.height) - PAD * 2))
-    dlg:setX(math.max(0, math.floor((self.width - dlg.width) / 2)))
-    dlg:setY(math.max(g and g.contentY or PAD, math.floor((self.height - dlg.height) / 2)))
-end
+function Panel:layoutMarketDialog() self:layoutDialog(self.marketDialog) end
 
 function Panel:closeMarketDialog()
     local dlg = self.marketDialog
@@ -2845,6 +2606,9 @@ function Panel:closeMarketDialog()
     pcall(function() dlg.qtyEntry:unfocus() end)
     dlg:setVisible(false)
     self:removeChild(dlg)
+    Keys.invalidate(self)
+    self:updateModalGuard()
+    self.marketReturnFocus = dlg.returnFocus
 end
 
 function Panel:marketMessage(str)
@@ -2864,6 +2628,14 @@ function Panel:submitMarket(dlg)
         return
     end
     local mode, price, itemIds, qty, listingId, name = dlg.mode, nil, nil, 1, nil, nil
+    -- the currency of this write: the seller's choice when they are creating, the record's own
+    -- when they are buying it. A step that moves money and has none is refused here; pulling
+    -- an own listing back moves none at all, so it is allowed to go out without one.
+    local currency = dlg:activeCurrency()
+    if currency == nil and mode ~= "cancel" then
+        dlg.message = marketError({ error = "currency_required" })
+        return
+    end
     if mode == "price" then
         local info = self.marketInfo
         price = dlg:priceValue()
@@ -2882,15 +2654,26 @@ function Panel:submitMarket(dlg)
         for i = 1, qty do itemIds[i] = dlg.cand.itemIds[i] end
     else
         listingId, price, name = dlg.row.id, dlg.row.price, dlg.row.name
+        -- a lot that does not fit is parked in the mailbox: the estimate says so, and the
+        -- confirm has to be pressed a second time before that consent leaves this client
+        local preview = dlg.preview
+        if mode == "buy" and dlg.mailRequired ~= true and preview ~= nil and preview.willMail == true then
+            dlg.mailRequired = true
+            dlg.message = getText(T .. "Delivery_ConfirmMail")
+            return
+        end
     end
     dlg.message = nil
-    self.marketPending = { requestId = C.newRequestId(), at = EC.now(), kind = mode, name = name, qty = qty }
+    self.marketPending = { requestId = C.newRequestId(), at = EC.now(), kind = mode, name = name,
+        qty = qty, currency = currency }
     if mode == "buy" then
-        C.buyListing(listingId, price, self.marketPending.requestId)
+        -- the currency travels with the offer only so the server can check the two agree: it
+        -- settles in the listing's own, never in one this client picked
+        C.buyListing(listingId, price, currency, self.marketPending.requestId, dlg.mailRequired == true)
     elseif mode == "cancel" then
         C.cancelListing(listingId, self.marketPending.requestId)
     else
-        C.listItem(itemIds, price, self.marketPending.requestId)
+        C.listItem(itemIds, price, currency, self.marketPending.requestId)
     end
 end
 
@@ -2913,8 +2696,31 @@ function Panel:onMarket(kind, args)
         if open and open.mode == "pick" then C.requestCandidates() end
         return
     end
+    -- The shared slot is released by the very read that reserved it, matched on that read's own
+    -- requestId: a stale answer can never free a slot a newer read owns, and a box that was
+    -- folded away by a page switch does not hold the slot for the whole timeout either. Which
+    -- box (if any) still wants the candidates is a separate question, and each answers it for
+    -- itself.
+    if kind == "sellers" then
+        if args.requestId ~= nil and args.requestId == self.sellersRequestId then
+            self.sellersPendingAt, self.sellersRequestId = nil, nil
+        end
+        if not self.marketSellerPicker:onReply(args) then self.auctionSellerPicker:onReply(args) end
+        return
+    end
     if kind == "history" then
-        self.marketHistoryError = args.error and marketError(args) or nil
+        -- the ring takes no parameters, so only the read this page is waiting for can answer it;
+        -- the code itself is kept, because historyError() words it as the read it was (never a
+        -- claim) and the page pairs it with historyRetryButton
+        if self.marketGate:accept(args, "ring") == "stale" then return end
+        if args.error then
+            self.marketHistoryError = tostring(args.error)
+        else
+            -- accepted, and it carries real data: this answer *is* the page's ring now. The
+            -- gate already dropped every reply for another read, so nothing older lands here.
+            self.marketHistoryError = nil
+            C.marketHistory = args
+        end
         self:rebuildMarketHistory()
         self:layout()   -- the kind chips of the bar (and with them the table) may have moved
         return
@@ -2928,10 +2734,14 @@ function Panel:onMarket(kind, args)
             local page = tonumber(args.page)
             if (args.sort ~= nil and args.sort ~= self.marketSort)
                 or ((args.category or "") ~= (self.marketCat or ""))
+                or ((args.seller or "") ~= (self.marketSeller or ""))
+                or ((args.currency or "all") ~= (self.marketCur or "all"))
                 or (page ~= nil and page ~= self.marketPage) then
                 self.browseWanted = true
+                return
             else
                 self.marketPage = math.max(1, page or self.marketPage)
+                C.market = args
             end
             self:rebuildMarketCategories()
         end
@@ -2951,18 +2761,22 @@ function Panel:onMarket(kind, args)
         local name = (pending and pending.name) or (args.item and itemName(args.item)) or ""
         self:closeMarketDialog()
         if kind == "buy" then
-            C.toast(getText(T .. "Market_Bought", name, amountText(args.price)))
+            C.toast(getText(T .. "Market_Bought", name, W.moneyText(args.price, args.currency)))
         elseif kind == "list" then
             local listed = math.max(1, math.floor(tonumber(args.qty) or (pending and pending.qty) or 1))
+            local fee = W.moneyText(args.fee, args.currency or (pending and pending.currency))
             if listed > 1 then
-                C.toast(getText(T .. "Market_ListedQty", name, tostring(listed), amountText(args.fee)))
+                C.toast(getText(T .. "Market_ListedQty", name, tostring(listed), fee))
             else
-                C.toast(getText(T .. "Market_Listed", name, amountText(args.fee)))
+                C.toast(getText(T .. "Market_Listed", name, fee))
             end
         else
+            -- a cancelled listing goes through the mailbox and is handed straight back when
+            -- there is room: the result is one message, and a hand-over that failed is another
             C.toast(getText(T .. "Market_Cancelled"))
         end
-        if args.delivered == false then C.toast(getText(T .. "Shop_Parked")) end
+        local note = deliveryNote(args)
+        if note then C.toast(note) end
         if kind == "buy" then self:requestBrowse(self.marketPage)
         elseif kind == "list" then
             C.requestMyListings()
@@ -2973,6 +2787,28 @@ function Panel:onMarket(kind, args)
     end
     -- the price moved under the player: show why, and put the current page back on screen
     if kind == "buy" and args.error == "price_changed" then self:requestBrowse(self.marketPage) end
+    if kind == "buy" and args.error == "mail_confirmation_required" then
+        -- the server re-checked the room before it debited anything: nothing moved, and the
+        -- dialog stays up until the player confirms the mailbox a second time
+        local dlg = self.marketDialog
+        if dlg then
+            dlg.mailRequired = true
+            dlg.message = getText(T .. "Delivery_ConfirmMail")
+            return
+        end
+        C.toast(getText(T .. "Delivery_ConfirmMail"))
+        return
+    end
+    -- The offer named a currency the record does not settle in. The step is not patched in
+    -- place: a currency swapped under an open confirmation would have the player pressing a
+    -- price they never read. The step is closed, the page's own listing is read again in full,
+    -- and the trade starts over from that fresh quote.
+    if args.error == "currency_mismatch" then
+        self:closeMarketDialog()
+        C.toast(marketError(args))
+        self:requestMarketMode()
+        return
+    end
     self:marketMessage(marketError(args))
 end
 
@@ -3013,9 +2849,9 @@ function Panel:updateAuctionInfo()
     local b = self.auctionMineButton
     if b then
         local title = getText(T .. "Auction_Mine", tostring(info.mine), tostring(info.maxAuctions))
-        if b.title ~= title then
-            b:setTitle(title)
+        if b.fullTitle ~= title then
             b:setWidth(textWidth(title) + 22)
+            U.setButtonTitle(b, title)
         end
     end
 end
@@ -3023,7 +2859,31 @@ end
 function Panel:sendAuctionBrowse()
     self.auctionWanted = nil
     self.auctionSentAt = EC.now()
-    C.requestAuctions({ query = self.auctionQuery, sort = self.auctionSort, page = self.auctionPage })
+    C.requestAuctions({ query = self.auctionQuery, sort = self.auctionSort,
+        page = self.auctionPage, seller = self.auctionSeller,
+        currency = self.auctionCur or "all" })
+end
+
+-- Same rule as the market's filter: "every currency" has no price order, so those keys are not
+-- offered there at all.
+function Panel:setAuctionCurrency(id)
+    self.auctionCur = id
+    if id == nil and W.isPriceSort(self.auctionSort) then self.auctionSort = "ending" end
+    comboFill(self.auctionSortCombo, sortKeysFor(AUCTION_SORTS, id ~= nil),
+        sortLabel(AUCTION_SORTS), self.auctionSort)
+    self:rebuildAuctions()
+    self:requestAuctionBrowse(1)
+end
+
+function Panel:onAuctionCurrency(combo)
+    local id = combo:getOptionData(combo.selected)
+    id = (type(id) == "string" and id ~= "") and id or nil
+    if id == self.auctionCur then return end
+    if self.auctionBusy then
+        comboSelect(combo, self.auctionCur or "")
+        return
+    end
+    self:setAuctionCurrency(id)
 end
 
 function Panel:requestAuctionBrowse(page)
@@ -3038,43 +2898,31 @@ function Panel:requestAuctionBrowse(page)
     self:sendAuctionBrowse()
 end
 
--- ----- auction history -----
--- Debounce typing and keep one file read in flight. A newer query waits for that read to finish
--- instead of receiving busy and discarding the only successful answer. Only the latest queued
--- query is sent next; explicit server errors remain visible rather than retried in a loop.
+-- ----- auction record -----
+-- The typed query is debounced here (a keystroke per command would be dropped by the server's
+-- own window anyway); everything after that - the window, the one read in flight, the wish of a
+-- page that is not on screen - is the gate all three history reads share.
 local HISTORY_DEBOUNCE_MS = 650
 
-function Panel:sendAuctionHistory()
-    self.auctionHistoryWanted = nil
-    self.auctionHistoryQueryAt = nil
-    self.auctionHistoryError = nil
-    self.auctionHistorySentAt = EC.now()
-    -- a pinned auction is an exact lookup: the box only holds its id so the player can see it
-    local pinned = self.auctionHistoryId
-    local id = C.requestAuctionHistory({ auctionId = pinned,
-        query = (pinned == nil) and self.auctionHistoryQuery or nil })
-    self.auctionHistorySentId = id
-    self.auctionHistoryPending = { at = self.auctionHistorySentAt }
+-- The question this page is asking, as one comparable string: a pinned auction is an exact
+-- lookup, everything else is the search text (empty for the whole record). A reply is matched
+-- against it, so an answer to a question the player has already typed past is never applied.
+local function auctionQueryKey(auctionId, query)
+    if auctionId ~= nil then return "id:" .. tostring(auctionId) end
+    return "q:" .. tostring(query or "")
 end
 
 function Panel:requestAuctionHistory()
     self.auctionHistoryQueryAt = nil
-    if self.auctionHistoryPending and EC.now() - self.auctionHistoryPending.at > TIMEOUT_MS then
-        self.auctionHistoryPending = nil
-    end
-    if self.auctionHistoryPending
-        or (self.auctionHistorySentAt and EC.now() - self.auctionHistorySentAt < HISTORY_DEBOUNCE_MS) then
-        self.auctionHistoryWanted = true
-        return
-    end
-    self:sendAuctionHistory()
+    self.auctionGate:want(auctionQueryKey(self.auctionHistoryId, self.auctionHistoryQuery),
+        self:pageVisible("Auction", "history"))
 end
 
 -- Drop queued work when leaving, but remember the real in-flight reader until its reply or
 -- timeout. Reopening must not submit a second job while that reader still owns the command.
 function Panel:cancelAuctionHistory()
     self.auctionHistoryQueryAt = nil
-    self.auctionHistoryWanted = nil
+    self.auctionGate:clear()
 end
 
 -- The reply is oldest first (the server appends); the filter bar sorts, filters and pages it
@@ -3103,6 +2951,8 @@ function Panel:switchAuctionMode(mode)
     self.auctionMode = mode
     for _, b in ipairs(self.auctionModeButtons) do b.active = b.internal == mode end
     self:closeMarketDialog()
+    self:closeCombos()
+    Detail.close(self)           -- the record belongs to the mode that is being left
     self:rebuildAuctions()
     if mode == "history" then self:rebuildAuctionHistory() end
     self:layout()
@@ -3145,23 +2995,28 @@ local function auctionMatch(row, query)
 end
 
 function Panel:rebuildAuctions()
-    local currency = (C.auction and C.auction.currency) or EC.CURRENCY_ORDER[1]
     local src = (C.auction and C.auction.items) or {}
     local query = self.auctionQuery
+    -- the filter in force: a browse page never keeps rows of a currency the player filtered
+    -- out, not even in the gap before the new answer lands
+    local currency = self.auctionCur
     local rows = {}
     for _, it in ipairs(src) do
-        local row = auctionRow(it, currency, "browse")
-        if auctionMatch(row, query) then rows[#rows + 1] = row end
+        -- each auction quotes the currency its seller fixed on it
+        local row = auctionRow(it, "browse")
+        if (currency == nil or row.currency == currency) and auctionMatch(row, query) then
+            rows[#rows + 1] = row
+        end
     end
     self.auctionNoMatch = #rows == 0 and #src > 0
     self.auctionRows = rows
     self.auctionList:setItems(rows)
     local selling, bidding = {}, {}
     for _, it in ipairs(C.myAuctions and C.myAuctions.selling or {}) do
-        selling[#selling + 1] = auctionRow(it, currency, "selling")
+        selling[#selling + 1] = auctionRow(it, "selling")
     end
     for _, it in ipairs(C.myAuctions and C.myAuctions.bidding or {}) do
-        bidding[#bidding + 1] = auctionRow(it, currency, "bidding")
+        bidding[#bidding + 1] = auctionRow(it, "bidding")
     end
     self.auctionSellRows, self.auctionBidRows = selling, bidding
     self.auctionSellList:setItems(selling)
@@ -3178,22 +3033,39 @@ function Panel:onAuctionMode(button)
         and "Auction_History_Search" or "Market_Search")))
     setEntryText(self.auctionEntry, "")
     self.auctionQueryAt, self.auctionHistoryQueryAt = nil, nil
-    self.auctionHistoryWanted = nil
+    self.auctionGate:clear()
     self:switchAuctionMode(button.internal)
     self:requestAuctionMode()
 end
 
--- A click on the auction table header: the same column again flips the direction, a new one
--- starts ascending. Anything that is not a column falls back to the page default (the auctions
--- closest to their end first) — that is `ending`, not the market's `time`.
+-- A click on the auction table header: the same column again flips the direction, a new one starts
+-- ascending. Anything that is not a column falls back to the page default (the auctions closest to
+-- their end first) - that is `ending`, not the market's `time`. Every key here is one the sort box
+-- offers and one ECAuction.SORTS accepts.
 function Panel:onAuctionHeader(x)
     if self.auctionMode ~= "browse" or self.auctionBusy then return end
     local key = "ending"
     for _, c in ipairs(self.auctionHeaderHits or {}) do
         if x >= c.x and x < c.x + c.w then key = c.key end
     end
+    if W.isPriceSort(key) and self.auctionCur == nil then
+        C.toast(getText(T .. "Market_CurrencyRequired"))
+        return
+    end
     if self.auctionSort == key then key = key .. "_desc" end
     if key == self.auctionSort then return end
+    self.auctionSort = key
+    comboSelect(self.auctionSortCombo, key)
+    self:requestAuctionBrowse(1)
+end
+
+function Panel:onAuctionSort(combo)
+    local key = combo:getOptionData(combo.selected)
+    if self.auctionBusy then
+        comboSelect(combo, self.auctionSort)   -- the page is waiting: put the box back
+        return
+    end
+    if type(key) ~= "string" or key == self.auctionSort then return end
     self.auctionSort = key
     self:requestAuctionBrowse(1)
 end
@@ -3227,20 +3099,30 @@ function Panel:onAuctionPage(button)
     self:requestAuctionBrowse(page)
 end
 
--- A row was clicked. The record chip is a read, so it answers before any of the trade gates;
--- browsing and the "bidding on" list then open the bid step, and an own auction may be pulled
--- back only while nobody has bid on it (the server refuses `has_bids` anyway).
-function Panel:onAuctionRow(row, context)
-    if not row then return end
-    local cols = self.auctionList.cols
-    local x = self.auctionClickX
-    if cols.histX and x ~= nil and x >= cols.histX and x < cols.histX + cols.histW then
-        self:openAuctionHistory(row.id)
+-- An auction row is a read: it opens the auction's whole record. Every write and the record page
+-- itself are the row's own buttons, so nothing about a row is hit-tested. The three tables
+-- (browse, selling, bidding) all read the very same kind of row.
+function Panel:onAuctionRow(row)
+    self:onDetailRow("auction", row)
+end
+
+-- A button inside an auction row. The record button is a read, so it answers before any of the
+-- trade gates; the bid button opens the bid step (a raise on the "bidding on" list is the same
+-- step), and an own auction may be pulled back only while nobody has bid on it - the server
+-- refuses `has_bids` too, this only keeps the button from lying.
+function Panel:onAuctionAction(row, actionId, context)
+    if row == nil then return end
+    if actionId == "history" then
+        if row.id ~= nil then self:openAuctionHistory(row.id) end
         return
     end
     if self.marketDialog or self.marketPending or not self:tradeAllowed() then return end
-    if context == "selling" then
+    if actionId == "acancel" then
         if row.bids == 0 then self:openMarketDialog("acancel", row) end
+        return
+    end
+    if row.blocked ~= nil then
+        C.toast(marketError({ error = row.blocked }))
         return
     end
     if row.canBid then
@@ -3263,7 +3145,12 @@ function Panel:submitAuction(dlg)
         return
     end
     local mode = dlg.mode
-    local pending = { requestId = C.newRequestId(), at = EC.now(), kind = mode }
+    local currency = dlg:activeCurrency()
+    if currency == nil and mode ~= "acancel" then
+        dlg.message = marketError({ error = "currency_required" })
+        return
+    end
+    local pending = { requestId = C.newRequestId(), at = EC.now(), kind = mode, currency = currency }
     if mode == "bid" then
         local amount = dlg:priceValue()
         if amount == nil or amount < dlg.row.minNext then
@@ -3273,7 +3160,8 @@ function Panel:submitAuction(dlg)
         dlg.message = nil
         pending.name, pending.amount = dlg.row.name, amount
         self.marketPending = pending
-        C.bidAuction(dlg.row.id, amount, pending.requestId)
+        -- the bid is quoted in the auction's own currency; the server checks the two agree
+        C.bidAuction(dlg.row.id, amount, currency, pending.requestId)
         return
     end
     if mode == "acancel" then
@@ -3306,7 +3194,7 @@ function Panel:submitAuction(dlg)
     dlg.message = nil
     pending.name, pending.qty, pending.price = dlg.cand.name, qty, price
     self.marketPending = pending
-    C.createAuction(itemIds, price, hours, pending.requestId)
+    C.createAuction(itemIds, price, hours, currency, pending.requestId)
 end
 
 function Panel:onAuction(kind, args)
@@ -3317,10 +3205,14 @@ function Panel:onAuction(kind, args)
             -- swallowed the newer one): keep the state as it is and ask again
             local page = tonumber(args.page)
             if (args.sort ~= nil and args.sort ~= self.auctionSort)
+                or ((args.seller or "") ~= (self.auctionSeller or ""))
+                or ((args.currency or "all") ~= (self.auctionCur or "all"))
                 or (page ~= nil and page ~= self.auctionPage) then
                 self.auctionWanted = true
+                return
             else
                 self.auctionPage = math.max(1, page or self.auctionPage)
+                C.auction = args
             end
         end
         self:updateAuctionInfo()
@@ -3328,27 +3220,23 @@ function Panel:onAuction(kind, args)
         self:layout()   -- the mine counter's own width may have moved
         return
     end
-    -- the record page: a read, never a write, so it answers on its own requestId. An answer to
-    -- a question the player has already typed past is dropped (the newer one is still coming),
-    -- a refusal keeps the snapshot on screen instead of pretending the record is empty, and a
-    -- reply that arrives after its own timeout still repairs the page.
+    -- The record page: a read, never a write. The gate matches the reply to the question it
+    -- answers (the pinned auction, or the search text the player last stopped typing): another
+    -- question is dropped because the read for the current one is still coming, an older read of
+    -- the current question is shown at once, a refusal keeps the snapshot on screen instead of
+    -- pretending the record is empty, and a reply after its own timeout still repairs the page.
     if kind == "history" then
-        if args.requestId ~= nil and self.auctionHistorySentId ~= nil
-            and args.requestId ~= self.auctionHistorySentId then
+        if self.auctionGate:accept(args, auctionQueryKey(args.auctionId, args.query)) == "stale" then
             return
         end
-        self.auctionHistoryPending = nil
-        if self.auctionHistoryWanted and self.tab == "Auction" and self.auctionMode == "history" then return end
         if args.error then
-            -- a read has its own refusals: the file that could not be read, and the two "come
-            -- back in a moment" codes the admin pages already word (busy / server_busy)
-            self.auctionHistoryError = (args.error == "read_failed"
-                and getText(T .. "Auction_History_ReadFailed"))
-                or getTextOrNull(T .. "Admin_Error_" .. tostring(args.error))
-                or marketError(args)
+            -- the code itself is kept: historyError() words it as the read it was (never a claim),
+            -- and the page pairs it with historyRetryButton
+            self.auctionHistoryError = tostring(args.error)
         else
             self.auctionHistoryError = nil
             self.auctionHistoryTruncated = args.truncated == true
+            C.auctionHistory = args
             self:rebuildAuctionHistory()
         end
         self:layout()   -- the kind chips of the bar (and with them the table) may have moved
@@ -3365,17 +3253,31 @@ function Panel:onAuction(kind, args)
         local name = (pending and pending.name) or ""
         self:closeMarketDialog()
         if kind == "bid" then
-            C.toast(getText(T .. "Auction_Placed", amountText(args.amount), name))
+            C.toast(getText(T .. "Auction_Placed",
+                W.moneyText(args.amount, args.currency or (pending and pending.currency)), name))
             self:requestAuctionMode()
         elseif kind == "create" then
+            local cur = args.currency or (pending and pending.currency)
             C.toast(getText(T .. "Auction_Created", name,
-                amountText(pending and pending.price), amountText(args.fee)))
+                W.moneyText(pending and pending.price, cur), W.moneyText(args.fee, cur)))
             self:setAuctionMode("mine")
         else
+            -- a cancelled auction goes back through the mailbox and is handed straight over
+            -- when there is room: the result is one message, a failed hand-over another
             C.toast(getText(T .. "Auction_Cancelled"))
-            if args.delivered == false then C.toast(getText(T .. "Shop_Parked")) end
+            local note = deliveryNote(args)
+            if note then C.toast(note) end
         end
         self:layout()
+        return
+    end
+    -- same rule as the market: a bid whose currency the auction does not settle in closes the
+    -- step and re-reads the auction, instead of confirming against a currency swapped in here
+    if args.error == "currency_mismatch" then
+        self:closeMarketDialog()
+        -- the auction has wording of its own for this refusal; the market codes are the fallback
+        C.toast(getTextOrNull(T .. "Auction_Error_currency_mismatch") or marketError(args))
+        self:requestAuctionMode()
         return
     end
     self:marketMessage(marketError(args))
@@ -3400,906 +3302,54 @@ function Panel:currencies()
     return (C.wallet and C.wallet.currencies) or EC.CURRENCY_ORDER
 end
 
--- All child positions derive from the current width/height; called when the size changes,
--- the tab changes, or the currency list arrives.
-function Panel:layout()
-    local w, h = self.width, self.height
-    local th = self:titleBarHeight()
-    local rh = self.resizable and self:resizeWidgetHeight() or 0
-    local g = {}
-    g.statusY = th
-    g.stripY = th + STATUS_H + 2
-    g.tabsY = g.stripY + STRIP_H + 4
-    g.contentY = g.tabsY + TAB_H + PAD
-    local st = C.rewards
-    g.footerH = (self.tab == "Rewards" and st and (tonumber(st.serverCap) or 0) > 0) and ROW or 0
-    g.contentH = h - g.contentY - rh - PAD - g.footerH
-    g.leftX, g.leftW = PAD, LEFT_W
-    g.rightX = PAD + LEFT_W + PAD
-    g.rightW = w - g.rightX - PAD
-    self.g = g
-
-    -- title bar: left of the vanilla pin/collapse button (both are th-2 square at w-1-(th-2))
-    local dw, dh = defaultSize()
-    local rb = self.resetSizeButton
-    rb:setVisible((w ~= dw or h ~= dh) and not self.isCollapsed)
-    rb:setX(w - 1 - (th - 2) - 6 - rb.width)
-    rb:setY(math.floor((th - rb.height) / 2))
-
-    -- opacity group, right to left: the percent readout, "+", the track, "-"; it shares the
-    -- title row with the reset chip and collapses with the window
-    local barVisible = not self.isCollapsed
-    local opacityY = math.floor((th - self.opacitySlider.height) / 2)
-    g.opacityR = (rb:getIsVisible() and rb.x or (w - 1 - (th - 2))) - 6
-    g.opacityTextY = math.floor((th - fontH.small) / 2)
-    local plus, minus = self.opacityPlusButton, self.opacityMinusButton
-    for _, el in ipairs({ plus, minus, self.opacitySlider }) do
-        el:setVisible(barVisible)
-        el:setY(el == self.opacitySlider and opacityY or math.floor((th - el.height) / 2))
-    end
-    plus:setX(g.opacityR - textWidth("100%") - 6 - plus.width)
-    self.opacitySlider:setX(plus.x - 4 - self.opacitySlider.width)
-    minus:setX(self.opacitySlider.x - 4 - minus.width)
-    local gearBtn = self.prefsButton
-    gearBtn:setVisible(barVisible)
-    gearBtn:setX(minus.x - 8 - gearBtn.width)
-    gearBtn:setY(math.floor((th - gearBtn.height) / 2))
-    local pop = self.prefsPopover
-    pop:setX(math.max(PAD, math.min(w - PAD - pop.width, gearBtn.x + gearBtn.width - pop.width)))
-    pop:setY(th + 2)
-    if self.isCollapsed then pop:setVisible(false) end
-
-    local isWallet = self.tab == "Wallet"
-    self.adminAccess = C.AdminPanel.canRead()
-    -- seven tabs at the full TAB_W would run past the tab strip on the narrowest window the
-    -- player may resize to, so the width is the strip's own share when it has to be
-    local tabCount = self.adminAccess and #self.tabButtons or (#self.tabButtons - 1)
-    local tabW = math.min(TAB_W, math.floor((w - PAD * 2) / math.max(1, tabCount)))
-    local x = PAD
-    for _, b in ipairs(self.tabButtons) do
-        local visible = b.internal ~= "Admin" or self.adminAccess
-        b:setVisible(visible)
-        if visible then
-            b:setWidth(tabW)
-            b:setX(x)
-            b:setY(g.tabsY)
-            x = x + tabW
-        end
-    end
-    if self.tab == "Admin" and self.adminAccess and not self.adminPanel then
-        self.adminPanel = C.AdminPanel.create(self)
-        self:addChild(self.adminPanel)
-    end
-    if self.adminPanel then
-        self.adminPanel:setX(PAD)
-        self.adminPanel:setY(g.contentY)
-        self.adminPanel:resize(w - PAD * 2, g.contentH)
-        self.adminPanel:setVisible(self.tab == "Admin" and self.adminAccess and self.shown == true and not self.isCollapsed)
-    end
-
-    -- wallet: period chips, the filter bar, then the statement table inside the right card
-    local chipY = g.contentY + CARD_TITLE_H + 4
-    x = g.rightX + PAD + textWidth(getText(T .. "Wallet_Period")) + PAD
-    for _, b in ipairs(self.periodButtons) do
-        b:setVisible(isWallet)
-        b:setX(x); b:setY(chipY)
-        x = x + b.width + 6
-    end
-    g.tableHeaderY = self.walletBar:layout(g.rightX + PAD, chipY + CHIP_H + 6,
-        g.rightX + g.rightW - PAD, isWallet) + 6
-    local listY = g.tableHeaderY + ROW
-    local listX = g.rightX + 1
-    local listW = g.rightW - 2
-    -- two rows are kept under the table: the pager, then the note line
-    local listH = math.max(ROW * 2, g.contentY + g.contentH - listY - ROW * 2 - 2)
-    self.list:setVisible(isWallet)
-    self.list:setX(listX); self.list:setY(listY)
-    local listResized = self.list.width ~= listW or self.list.height ~= listH
-    -- Columns are measured from the header/typical texts so the player's UI font scale cannot
-    -- make them collide; the description column takes whatever is left (truncated at bind time).
-    local cols = self.list.cols
-    local inner = listW - 12 -- keep clear of the scrollbar
-    local function colW(header, sample) return math.max(textWidth(getText(T .. header)), textWidth(sample)) + PAD * 2 end
-    cols.time = PAD
-    cols.kind = cols.time + colW("Wallet_Col_Time", U.STAMP_SAMPLE)
-    cols.desc = cols.kind + colW("Wallet_Col_Kind", kindText("admin_adjust"))
-    cols.status = inner - colW("Wallet_Col_Status", getText(T .. "Wallet_RolledBack")) + PAD
-    cols.balanceR = cols.status - PAD
-    cols.amountR = cols.balanceR - colW("Wallet_Col_Balance", "999,999,999")
-    cols.descW = math.max(0, cols.amountR - colW("Wallet_Col_Amount", "+999,999 " .. C.currencyName(EC.CURRENCY_ORDER[1])) - cols.desc)
-    if listResized then self.list:resize(listW, listH) end
-    g.listBottom = listY + listH
-    self.walletBar:layoutPager(listX + PAD, g.listBottom + 2, listX + listW - PAD, isWallet)
-    g.walletNoteY = g.listBottom + 2 + ROW
-
-    -- rewards: claim button inside the daily card, "more history" under the recent ledger
-    g.dailyH = CARD_TITLE_H + ROW * 2 + 40 + ROW + PAD * 3
-    self.claimButton:setVisible(self.tab == "Rewards")
-    self.claimButton:setX(g.rightX + PAD)
-    self.claimButton:setY(g.contentY + CARD_TITLE_H + ROW * 2 + PAD)
-    self.claimButton:setWidth(g.rightW - PAD * 2)
-    self.moreButton:setVisible(self.tab == "Rewards")
-    self.moreButton:setX(g.leftX + PAD)
-    self.moreButton:setY(g.contentY + g.contentH - CHIP_H - PAD)
-    self.moreButton:setWidth(g.leftW - PAD * 2)
-
-    -- shop: the category chips wrap inside the left card with the search box under them, the
-    -- item table fills the right card below its note and header line
-    local isShop = self.tab == "Shop"
-    local chipX, chipRow = g.leftX + PAD, g.contentY + PAD
-    local chipRight = g.leftX + g.leftW - PAD
-    for _, b in ipairs(self.catButtons or {}) do
-        b:setVisible(isShop)
-        if chipX > g.leftX + PAD and chipX + b.width > chipRight then
-            chipX = g.leftX + PAD
-            chipRow = chipRow + CHIP_H + 6
-        end
-        b:setX(chipX); b:setY(chipRow)
-        chipX = chipX + b.width + 6
-    end
-    g.shopSearchY = chipRow + CHIP_H + PAD + fontH.small + 4
-    self.shopEntry:setVisible(isShop)
-    self.shopEntry:setX(g.leftX + PAD)
-    self.shopEntry:setY(g.shopSearchY)
-    self.shopEntry:setWidth(g.leftW - PAD * 2)
-    g.shopHeaderY = g.contentY + CARD_TITLE_H + ROW
-    local shopListY = g.shopHeaderY + ROW
-    local shopListH = math.max(ROW * 2, g.contentY + g.contentH - shopListY - PAD)
-    self.shopList:setVisible(isShop)
-    self.shopList:setX(listX); self.shopList:setY(shopListY)
-    local shopCols = self.shopList.cols
-    shopCols.icon = PAD
-    shopCols.name = PAD + ITEM_ICON + PAD
-    shopCols.buyW = textWidth(getText(T .. "Shop_Buy")) + 22
-    shopCols.buyX = math.max(shopCols.name, inner - shopCols.buyW - PAD)
-    -- the sell chip (only painted on buyback rows) sits left of the buy chip; its width fits
-    -- "Sell 1,000,000" so the columns never move when the faucet opens
-    shopCols.sellW = textWidth(getText(T .. "Shop_Sell", "1,000,000")) + 16
-    shopCols.sellX = math.max(shopCols.name, shopCols.buyX - 6 - shopCols.sellW)
-    shopCols.remainR = shopCols.sellX - PAD
-    shopCols.priceR = math.max(shopCols.name + PAD, shopCols.remainR
-        - math.max(textWidth(getText(T .. "Shop_Col_Remaining")), textWidth(getText(T .. "Shop_SoldOut"))) - PAD)
-    shopCols.nameW = math.max(0, shopCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - shopCols.name)
-    if self.shopList.width ~= listW or self.shopList.height ~= shopListH then
-        self.shopList:resize(listW, shopListH)
-    end
-
-    -- mailbox: one card across the whole content area, no column header (name, source, time)
-    local isMail = self.tab == "Mail"
-    local mailListY = g.contentY + CARD_TITLE_H + ROW
-    local mailListW = w - PAD * 2 - 2
-    local mailListH = math.max(ROW * 2, g.contentY + g.contentH - mailListY - PAD)
-    self.mailList:setVisible(isMail)
-    self.mailList:setX(g.leftX + 1); self.mailList:setY(mailListY)
-    local mailCols = self.mailList.cols
-    local mailInner = mailListW - 12
-    mailCols.icon = PAD
-    mailCols.name = PAD + ITEM_ICON + PAD
-    mailCols.claimW = textWidth(getText(T .. "Mail_Claim")) + 22
-    mailCols.claimX = math.max(mailCols.name, mailInner - mailCols.claimW - PAD)
-    mailCols.timeR = mailCols.claimX - PAD
-    mailCols.nameW = math.max(0, mailCols.timeR - textWidth(U.STAMP_SAMPLE) - PAD - mailCols.name)
-    if self.mailList.width ~= mailListW or self.mailList.height ~= mailListH then
-        self.mailList:resize(mailListW, mailListH)
-    end
-
-    -- market: a mode/refresh bar over the page. Browsing keeps the shop's two-card split
-    -- (filters left, listings right) and adds the pager strip under the table; the own-listings
-    -- and history pages have nothing to filter, so they take one card across the whole width.
-    local isMarket = self.tab == "Market"
-    local mineMode = self.marketMode == "mine"
-    local historyMode = self.marketMode == "history"
-    local wideMode = mineMode or historyMode
-    local browseMode = isMarket and not wideMode
-    g.marketBarY = g.contentY
-    g.marketCardY = g.contentY + CHIP_H + PAD
-    g.marketCardH = math.max(CARD_TITLE_H + ROW * 3, g.contentH - CHIP_H - PAD)
-    x = PAD
-    for _, b in ipairs(self.marketModeButtons) do
-        b:setVisible(isMarket)
-        b:setX(x); b:setY(g.marketBarY)
-        x = x + b.width + 6
-    end
-    self.marketRefreshButton:setVisible(isMarket)
-    self.marketRefreshButton:setX(w - PAD - self.marketRefreshButton.width)
-    self.marketRefreshButton:setY(g.marketBarY)
-    self.marketListButton:setVisible(isMarket)   -- listing starts from either page
-    self.marketListButton:setX(self.marketRefreshButton.x - 6 - self.marketListButton.width)
-    self.marketListButton:setY(g.marketBarY)
-
-    chipX, chipRow = g.leftX + PAD, g.marketCardY + PAD
-    for _, b in ipairs(self.marketCatButtons or {}) do
-        b:setVisible(browseMode)
-        if chipX > g.leftX + PAD and chipX + b.width > chipRight then
-            chipX = g.leftX + PAD
-            chipRow = chipRow + CHIP_H + 6
-        end
-        b:setX(chipX); b:setY(chipRow)
-        chipX = chipX + b.width + 6
-    end
-    g.marketSearchY = chipRow + CHIP_H + PAD + fontH.small + 4
-    self.marketEntry:setVisible(browseMode)
-    self.marketEntry:setX(g.leftX + PAD)
-    self.marketEntry:setY(g.marketSearchY)
-    self.marketEntry:setWidth(g.leftW - PAD * 2)
-    chipX, chipRow = g.leftX + PAD, g.marketSearchY + self.marketEntry.height + PAD
-    for _, b in ipairs(self.marketSortButtons) do
-        b:setVisible(browseMode)
-        if chipX > g.leftX + PAD and chipX + b.width > chipRight then
-            chipX = g.leftX + PAD
-            chipRow = chipRow + CHIP_H + 6
-        end
-        b:setX(chipX); b:setY(chipRow)
-        chipX = chipX + b.width + 6
-    end
-
-    g.marketCardX = wideMode and g.leftX or g.rightX
-    g.marketCardW = wideMode and (w - PAD * 2) or g.rightW
-    g.marketHeaderY = g.marketCardY + CARD_TITLE_H + ROW
-    local mktListY = g.marketHeaderY + ROW
-    local mktFooterH = mineMode and 0 or ROW
-    local mktListW = g.marketCardW - 2
-    local mktListH = math.max(ROW * 2, g.marketCardY + g.marketCardH - mktListY - PAD - mktFooterH)
-    self.marketList:setVisible(isMarket and not historyMode)
-    self.marketList:setX(g.marketCardX + 1); self.marketList:setY(mktListY)
-    local mktCols = self.marketList.cols
-    local mktInner = mktListW - 12
-    mktCols.icon = PAD
-    mktCols.name = PAD + ITEM_ICON + PAD
-    mktCols.actionW = math.max(textWidth(getText(T .. "Market_Buy")), textWidth(getText(T .. "Market_Cancel")),
-        textWidth(getText(T .. "Market_Own"))) + 22
-    mktCols.actionX = math.max(mktCols.name, mktInner - mktCols.actionW - PAD)
-    mktCols.expiresR = mktCols.actionX - PAD
-    mktCols.priceR = math.max(mktCols.name + PAD, mktCols.expiresR
-        - math.max(textWidth(getText(T .. "Market_Col_Expires")), textWidth(U.STAMP_SAMPLE)) - PAD)
-    -- The lot column is the narrow one between the name and the seller (a count, never a name).
-    local qtyW = math.max(textWidth(getText(T .. "Market_Col_Qty")), textWidth("999"))
-    -- Reserve eight characters for the item name before allocating the seller column. The
-    -- seller still needs its header width, so very tight layouts may borrow from that reserve.
-    local sellerRoom = mktCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD
-        - (mktCols.name + qtyW + PAD + textWidth("mmmmmmmm"))
-    mktCols.sellerW = math.max(textWidth(getText(T .. "Market_Col_Seller")),
-        math.min(textWidth("mmmmmmmm"), sellerRoom))
-    mktCols.sellerX = math.max(mktCols.name, mktCols.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - mktCols.sellerW)
-    mktCols.qtyR = math.max(mktCols.name + qtyW, mktCols.sellerX - PAD)
-    mktCols.nameW = math.max(0, mktCols.qtyR - qtyW - PAD - mktCols.name)
-    if self.marketList.width ~= mktListW or self.marketList.height ~= mktListH then
-        self.marketList:resize(mktListW, mktListH)
-    end
-
-    -- the sortable header sits over the header row of the listing table and hit-tests against
-    -- these very column edges (paint and click can never disagree)
-    self.marketHeaderHits = {
-        { key = "name", title = getText(T .. "Market_Col_Item"), x = mktCols.name,
-          w = math.max(0, mktCols.qtyR - qtyW - mktCols.name) },
-        { key = "qty", title = getText(T .. "Market_Col_Qty"), x = mktCols.qtyR - qtyW,
-          w = qtyW, right = true },
-        { key = "seller", title = getText(T .. "Market_Col_Seller"), x = mktCols.sellerX,
-          w = mktCols.sellerW },
-        { key = "price", title = getText(T .. "Market_Col_Price"),
-          x = mktCols.sellerX + mktCols.sellerW, w = mktCols.priceR - mktCols.sellerX - mktCols.sellerW,
-          right = true },
-        { key = "expires", title = getText(T .. "Market_Col_Expires"), x = mktCols.priceR,
-          w = mktCols.expiresR - mktCols.priceR, right = true },
-    }
-    local header = self.marketHeader
-    header:setVisible(isMarket and not historyMode)
-    header:setX(self.marketList.x); header:setY(g.marketHeaderY)
-    header:setWidth(mktListW); header:setHeight(ROW)
-
-    -- history: the same card with the filter bar under the note line, two lines per row, no
-    -- icon column (kind, item, amount, status) and the bar's own pager under the table
-    local hist = self.marketHistoryList
-    hist:setVisible(isMarket and historyMode)
-    local histY = self.historyBar:layout(g.marketCardX + PAD, g.marketHeaderY,
-        g.marketCardX + g.marketCardW - PAD, isMarket and historyMode) + 6
-    local histH = math.max(ROW * 2, g.marketCardY + g.marketCardH - histY - PAD - ROW)
-    hist:setX(g.marketCardX + 1); hist:setY(histY)
-    local hCols = hist.cols
-    local hInner = mktListW - 12
-    local kindW = 0
-    for _, k in ipairs(HISTORY_KINDS) do
-        kindW = math.max(kindW, textWidth(getTextOrNull(T .. "Market_Kind_" .. k) or k))
-    end
-    hCols.kind = PAD
-    hCols.name = hCols.kind + kindW + PAD
-    hCols.status = math.max(hCols.name, hInner - textWidth(getText(T .. "Wallet_RolledBack")) - PAD)
-    hCols.amountR = hCols.status - PAD
-    hCols.nameW = math.max(0, hCols.amountR - textWidth("-999,999") - PAD - hCols.name)
-    if hist.width ~= mktListW or hist.height ~= histH then hist:resize(mktListW, histH) end
-    g.historyFooterY = histY + histH + 2
-    self.historyBar:layoutPager(g.marketCardX + PAD, g.historyFooterY,
-        g.marketCardX + g.marketCardW - PAD, isMarket and historyMode)
-
-    -- browse pager: the server's own paging, under the listing table
-    g.marketFooterY = mktListY + mktListH + 2
-    local pageW = textWidth(getText(T .. "Market_Page", "99", "99"))
-    x = g.marketCardX + PAD + pageW + PAD
-    for _, b in ipairs({ self.marketPrevButton, self.marketNextButton }) do
-        b:setVisible(browseMode)
-        b:setX(x); b:setY(g.marketFooterY + math.floor((ROW - CHIP_H) / 2))
-        x = x + b.width + 6
-    end
-    -- auction: the same mode bar over one card that always spans the window. Browsing is a
-    -- sortable table with the server's pager under it; "my auctions" splits the card into the
-    -- two lists (what the player sells, what they bid on), and the record page swaps the whole
-    -- table for the two-line history list with its own filter bar. All three item tables read
-    -- one column set (they are the same width), so the numbers below are computed once.
-    local isAuction = self.tab == "Auction"
-    local aucMine = self.auctionMode == "mine"
-    local aucHistory = self.auctionMode == "history"
-    local aucTable = isAuction and not aucMine and not aucHistory
-    local aucBarH = math.max(CHIP_H, self.auctionEntry.height)
-    g.auctionBarY = g.contentY
-    g.auctionCardY = g.contentY + aucBarH + PAD
-    g.auctionCardH = math.max(CARD_TITLE_H + ROW * 3, g.contentH - aucBarH - PAD)
-    g.auctionCardX, g.auctionCardW = g.leftX, w - PAD * 2
-    x = PAD
-    for _, b in ipairs(self.auctionModeButtons) do
-        b:setVisible(isAuction)
-        b:setX(x); b:setY(g.auctionBarY + math.floor((aucBarH - CHIP_H) / 2))
-        x = x + b.width + 6
-    end
-    for _, b in ipairs({ self.auctionRefreshButton, self.auctionCreateButton }) do
-        b:setVisible(isAuction)
-        b:setY(g.auctionBarY + math.floor((aucBarH - CHIP_H) / 2))
-    end
-    self.auctionRefreshButton:setX(w - PAD - self.auctionRefreshButton.width)
-    self.auctionCreateButton:setX(self.auctionRefreshButton.x - 6 - self.auctionCreateButton.width)
-    self.auctionEntry:setVisible(isAuction and not aucMine)
-    self.auctionEntry:setWidth(math.max(120, math.min(240, self.auctionCreateButton.x - 12 - x)))
-    self.auctionEntry:setX(self.auctionCreateButton.x - 12 - self.auctionEntry.width)
-    self.auctionEntry:setY(g.auctionBarY + math.floor((aucBarH - self.auctionEntry.height) / 2))
-
-    local aucListW = g.auctionCardW - 2
-    local aCols = self.auctionList.cols
-    aCols.icon = PAD
-    aCols.name = PAD + ITEM_ICON + PAD
-    aCols.qtyR, aCols.sellerX, aCols.sellerW = nil, nil, nil   -- both live in the name block
-    aCols.actionW = math.max(textWidth(getText(T .. "Auction_Bid")), textWidth(getText(T .. "Auction_Own")),
-        textWidth(getText(T .. "Auction_Leading")), textWidth(getText(T .. "Auction_Outbid")),
-        textWidth(getText(T .. "Auction_Ended")), textWidth(getText(T .. "Auction_CancelTitle"))) + 22
-    aCols.actionX = math.max(aCols.name, aucListW - 12 - aCols.actionW - PAD)
-    -- the record chip lives left of the action one on every auction row (browse and mine alike):
-    -- one column set, so the paint and Panel:onAuctionRow can never disagree about where it is
-    aCols.histLabel = getText(T .. "Auction_History")
-    aCols.histW = textWidth(aCols.histLabel) + 22
-    aCols.histX = math.max(aCols.name, aCols.actionX - 6 - aCols.histW)
-    aCols.expiresR = aCols.histX - PAD
-    aCols.bidsR = math.max(aCols.name + PAD, aCols.expiresR - PAD
-        - math.max(textWidth(getText(T .. "Auction_Col_Ends")),
-            textWidth(getText(T .. "Auction_Ends_In", getText(T .. "Time_HM", "99", "59")))))
-    aCols.priceR = math.max(aCols.name + PAD, aCols.bidsR - PAD
-        - math.max(textWidth(getText(T .. "Auction_Col_Bids")), textWidth(getText(T .. "Auction_NoBids"))))
-    aCols.nameW = math.max(0, aCols.priceR - COIN_SMALL - 4
-        - textWidth(getText(T .. "Auction_StartsAt", "999,999")) - PAD - aCols.name)
-    self.auctionHeaderHits = {
-        { key = "name", title = getText(T .. "Market_Col_Item"), x = aCols.name, w = aCols.nameW },
-        { key = "price", title = getText(T .. "Auction_Col_Bid"), x = aCols.name + aCols.nameW,
-          w = aCols.priceR - aCols.name - aCols.nameW, right = true },
-        { key = "bids", title = getText(T .. "Auction_Col_Bids"), x = aCols.priceR,
-          w = aCols.bidsR - aCols.priceR, right = true },
-        { key = "ending", title = getText(T .. "Auction_Col_Ends"), x = aCols.bidsR,
-          w = aCols.expiresR - aCols.bidsR, right = true },
-    }
-
-    g.auctionHeaderY = g.auctionCardY + CARD_TITLE_H + ROW
-    g.auctionListY = g.auctionHeaderY + ROW
-    g.auctionFooterY = g.auctionCardY + g.auctionCardH - ROW
-    self.auctionHeader:setVisible(aucTable)
-    self.auctionHeader:setX(g.auctionCardX + 1); self.auctionHeader:setY(g.auctionHeaderY)
-    self.auctionHeader:setWidth(aucListW); self.auctionHeader:setHeight(ROW)
-    self.auctionList:setVisible(aucTable)
-    self.auctionList:setX(g.auctionCardX + 1); self.auctionList:setY(g.auctionListY)
-    if self.auctionList.width ~= aucListW or self.auctionList.height ~= math.max(ROW * 2, g.auctionFooterY - g.auctionListY - 2) then
-        self.auctionList:resize(aucListW, math.max(ROW * 2, g.auctionFooterY - g.auctionListY - 2))
-    end
-    -- "my auctions": the selling half over the bidding half, one section label each
-    g.aucSellLabelY = g.auctionCardY + CARD_TITLE_H + ROW
-    g.aucSellY = g.aucSellLabelY + ROW
-    g.aucSellH = math.max(ROW, math.floor((g.auctionCardY + g.auctionCardH - PAD - g.aucSellY - ROW) / 2))
-    g.aucBidLabelY = g.aucSellY + g.aucSellH
-    g.aucBidY = g.aucBidLabelY + ROW
-    g.aucBidH = math.max(ROW, g.auctionCardY + g.auctionCardH - PAD - g.aucBidY)
-    for _, spec in ipairs({ { self.auctionSellList, g.aucSellY, g.aucSellH },
-        { self.auctionBidList, g.aucBidY, g.aucBidH } }) do
-        spec[1]:setVisible(isAuction and aucMine)
-        spec[1]:setX(g.auctionCardX + 1); spec[1]:setY(spec[2])
-        if spec[1].width ~= aucListW or spec[1].height ~= spec[3] then spec[1]:resize(aucListW, spec[3]) end
-    end
-    -- the record page: the note line, the filter bar, the two-line list and the bar's own pager
-    -- (the snapshot is paged on the client, exactly like the market ring)
-    local ahist = self.auctionHistoryList
-    ahist:setVisible(isAuction and aucHistory)
-    local ahY = self.auctionHistoryBar:layout(g.auctionCardX + PAD, g.auctionHeaderY,
-        g.auctionCardX + g.auctionCardW - PAD, isAuction and aucHistory) + 6
-    local ahH = math.max(ROW * 2, g.auctionCardY + g.auctionCardH - ahY - PAD - ROW)
-    ahist:setX(g.auctionCardX + 1); ahist:setY(ahY)
-    local ahCols = ahist.cols
-    local ahInner = aucListW - 12
-    local aKindW = 0
-    for _, k in ipairs(AUCTION_HISTORY_KINDS) do
-        aKindW = math.max(aKindW, textWidth(getTextOrNull(T .. "Market_Kind_" .. k) or k))
-    end
-    ahCols.kind = PAD
-    ahCols.name = ahCols.kind + aKindW + PAD
-    ahCols.status = math.max(ahCols.name, ahInner - textWidth(getText(T .. "Wallet_RolledBack")) - PAD)
-    ahCols.amountR = ahCols.status - PAD
-    ahCols.nameW = math.max(0, ahCols.amountR - textWidth("999,999,999") - PAD - ahCols.name)
-    if ahist.width ~= aucListW or ahist.height ~= ahH then ahist:resize(aucListW, ahH) end
-    g.aucHistoryFooterY = ahY + ahH + 2
-    self.auctionHistoryBar:layoutPager(g.auctionCardX + PAD, g.aucHistoryFooterY,
-        g.auctionCardX + g.auctionCardW - PAD, isAuction and aucHistory)
-    x = g.auctionCardX + PAD + textWidth(getText(T .. "Market_Page", "99", "99")) + PAD
-    for _, b in ipairs({ self.auctionPrevButton, self.auctionNextButton }) do
-        b:setVisible(aucTable)
-        b:setX(x); b:setY(g.auctionFooterY + math.floor((ROW - CHIP_H) / 2))
-        x = x + b.width + 6
-    end
-
-    self:layoutMarketDialog()
-    self:layoutBuy()
-    self.layoutW, self.layoutH = w, h
-    self.layoutCollapsed = self.isCollapsed
+-- The status band, most restrictive first: a frozen account outranks everything (nothing moves
+-- until an admin unfreezes it), then the remote gate — no terminal registered at all, the player
+-- standing at one, or the plain "walk to a terminal". nil = nothing to say, and only then does the
+-- band cost the workspace a row. Read by layout() (it decides where the content starts) and by
+-- prerender (it paints it), so the two can never disagree about whether the row is there.
+function Panel:statusBand()
+    if C.wallet and C.wallet.frozen then return "Band_Frozen", "errorText" end
+    if not self:remoteReadOnly() then return nil end
+    if #(C.terminals or {}) == 0 then return "Band_NoTerminals", "warn" end
+    if C.nearTerminal() then return "Band_AtTerminal", "positive" end
+    return "Band_RemoteReadOnly", "warn"
 end
 
--- ----- drawing -----
-
-function Panel:drawStrip()
-    local g = self.g
-    local w = self.width
-    fill(self, PAD, g.stripY, w - PAD * 2, STRIP_H, "well")
-    local x = PAD * 2
-    local cy = g.stripY + math.floor((STRIP_H - COIN_STRIP) / 2)
-    local ty = g.stripY + math.floor((STRIP_H - fontH.medium) / 2)
-    local sep = color("border")
-    for i, id in ipairs(self:currencies()) do
-        local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
-        if i > 1 then
-            self:drawRect(x, g.stripY + 8, 1, STRIP_H - 16, sep.a, sep.r, sep.g, sep.b)
-            x = x + PAD * 2
-        end
-        drawCoin(self, id, x, cy, COIN_STRIP)
-        x = x + COIN_STRIP + PAD
-        local name = C.currencyName(id)
-        text(self, name, x, ty, "text", UIFont.Medium)
-        x = x + textWidth(name, UIFont.Medium) + PAD
-        local avail = amountText(bal and bal.available or 0)
-        text(self, avail, x, ty, "accent", UIFont.Medium)
-        x = x + textWidth(avail, UIFont.Medium) + PAD * 2
-        local reserved = bal and tonumber(bal.reserved) or 0
-        if reserved > 0 then
-            self:drawRect(x, g.stripY + 8, 1, STRIP_H - 16, sep.a, sep.r, sep.g, sep.b)
-            x = x + PAD * 2
-            local label = getText(T .. "Wallet_Reserved")
-            text(self, label, x, ty, "textMuted", UIFont.Medium)
-            x = x + textWidth(label, UIFont.Medium) + PAD
-            local r = amountText(reserved)
-            text(self, r, x, ty, "text", UIFont.Medium)
-            x = x + textWidth(r, UIFont.Medium) + PAD * 2
-        end
-    end
-end
-
-function Panel:drawBalanceCard(x, y, w, h, withMonth)
-    card(self, x, y, w, h, getText(T .. "Wallet_Balances"))
-    local cy = y + CARD_TITLE_H + PAD
-    local blockH = withMonth and (ROW * 4 + PAD) or (ROW * 3 + PAD)
-    for _, id in ipairs(self:currencies()) do
-        if cy + blockH > y + h then break end
-        local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
-        fill(self, x + PAD, cy, w - PAD * 2, blockH, "well")
-        drawCoin(self, id, x + PAD * 2, cy + math.floor((ROW + 4 - COIN) / 2), COIN)
-        text(self, C.currencyName(id), x + PAD * 2 + COIN + PAD, cy + math.floor((ROW + 4 - fontH.medium) / 2) + 1, "text", UIFont.Medium)
-        local ry = cy + ROW + 6
-        local right = x + w - PAD * 3
-        text(self, getText(T .. "Wallet_Available"), x + PAD * 2, ry + 3, "textMuted")
-        textRight(self, amountText(bal and bal.available or 0), right, ry + math.floor((ROW - fontH.medium) / 2), "accent", UIFont.Medium)
-        ry = ry + ROW
-        text(self, getText(T .. "Wallet_Reserved"), x + PAD * 2, ry + 3, "textMuted")
-        textRight(self, amountText(bal and bal.reserved or 0), right, ry + 3, "text")
-        if withMonth then
-            ry = ry + ROW
-            text(self, getText(T .. "Wallet_ThisMonth"), x + PAD * 2, ry + 3, "textMuted")
-            local t = self.monthTotals and self.monthTotals[id]
-            local outS = "-" .. amountText(t and t.out or 0)
-            local inS = "+" .. amountText(t and t.inn or 0)
-            textRight(self, outS, right, ry + 3, "negative")
-            local slash = " / "
-            local rx = right - textWidth(outS) - textWidth(slash)
-            text(self, slash, rx, ry + 3, "textFaint")
-            textRight(self, inS, rx, ry + 3, "positive")
-        end
-        cy = cy + blockH + PAD
-    end
-end
-
-function Panel:drawWallet()
-    local g = self.g
-    self:drawBalanceCard(g.leftX, g.contentY, g.leftW, g.contentH, true)
-    card(self, g.rightX, g.contentY, g.rightW, g.contentH, getText(T .. "Wallet_Statement"))
-    text(self, getText(T .. "Wallet_Period"), g.rightX + PAD, g.contentY + CARD_TITLE_H + 4 + math.floor((CHIP_H - fontH.small) / 2), "textMuted")
-    self.walletBar:draw(self)
-    -- table header
-    local cols = self.list.cols
-    local hx = self.list.x
-    local hy = g.tableHeaderY
-    fill(self, hx, hy, self.list.width, ROW, "well", "rect")
-    local ty = hy + math.floor((ROW - fontH.small) / 2)
-    text(self, getText(T .. "Wallet_Col_Time"), hx + cols.time, ty, "textMuted")
-    text(self, getText(T .. "Wallet_Col_Kind"), hx + cols.kind, ty, "textMuted")
-    text(self, fitText(getText(T .. "Wallet_Col_Desc"), cols.descW), hx + cols.desc, ty, "textMuted")
-    textRight(self, getText(T .. "Wallet_Col_Amount"), hx + cols.amountR, ty, "textMuted")
-    textRight(self, getText(T .. "Wallet_Col_Balance"), hx + cols.balanceR, ty, "textMuted")
-    text(self, getText(T .. "Wallet_Col_Status"), hx + cols.status, ty, "textMuted")
-    -- pager, then the footer note
-    self.walletBar:drawPager(self, hx + PAD)
-    local note
-    local n = #self.list:getItems()
-    local all = #(self.allRows or {})
-    if n == 0 and all > 0 then
-        note = getText(T .. "Filter_NoMatch")
-    elseif self.period == "Recent" then
-        if all == 0 then note = getText(T .. "Wallet_Empty") end
-    elseif self.historyLoading then
-        note = getText(T .. "Wallet_Loading")
-    elseif self.historyError then
-        note = getText(T .. "Rewards_Error_generic", tostring(self.historyError))
-    elseif self.history then
-        if all == 0 then
-            note = getText(T .. "Wallet_Empty")
-        elseif self.history.truncated then
-            note = getText(T .. "Wallet_Truncated", tostring(all), tostring(self.history.total or all))
-        end
-    end
-    if note then
-        text(self, note, hx + PAD, g.walletNoteY + math.floor((ROW - fontH.small) / 2), "textMuted")
-    end
-end
-
-function Panel:drawRecentLedger(x, y, w, h)
-    card(self, x, y, w, h, getText(T .. "Wallet_RecentLedger"))
-    local ry = y + CARD_TITLE_H + 4
-    local items = self.recentRows or {}
-    if #items == 0 then
-        text(self, getText(T .. "Wallet_Empty"), x + PAD, ry + 3, "textFaint")
-        return
-    end
-    for i = 1, math.min(#items, math.floor((h - CARD_TITLE_H - PAD) / ROW)) do
-        local e = items[i]
-        if i % 2 == 0 then fill(self, x + 1, ry, w - 2, ROW, "well", "rect") end
-        local ty = ry + math.floor((ROW - fontH.small) / 2)
-        local token = e.rolledBack and "textFaint" or (e.amount >= 0 and "positive" or "negative")
-        text(self, signedText(e.amount), x + PAD, ty, token)
-        text(self, e.kindText, x + PAD + 70, ty, e.rolledBack and "textFaint" or "text")
-        textRight(self, e.time, x + w - PAD, ty, "textFaint")
-        if e.rolledBack then strike(self, x + PAD, ty, w - PAD * 2) end
-        ry = ry + ROW
-    end
-end
-
-function Panel:drawRewards()
-    local g = self.g
-    local st = C.rewards
-    -- left column: wallet summary + recent ledger + "more history"
-    local balH = CARD_TITLE_H + (ROW * 3 + PAD * 2) * #self:currencies() + PAD
-    local leftAvail = g.contentH - CHIP_H - PAD * 2
-    balH = math.min(balH, math.floor(leftAvail / 2))
-    self:drawBalanceCard(g.leftX, g.contentY, g.leftW, balH, false)
-    local ledgerY = g.contentY + balH + PAD
-    self:drawRecentLedger(g.leftX, ledgerY, g.leftW, self.moreButton.y - PAD - ledgerY)
-
-    -- right column: daily reward card
-    local x, y, w = g.rightX, g.contentY, g.rightW
-    card(self, x, y, w, g.dailyH, getText(T .. "Rewards_Daily"))
-    local ly = y + CARD_TITLE_H + PAD
-    if not st then
-        text(self, getText(T .. "Wallet_Loading"), x + PAD, ly, "textMuted")
-        self.claimButton:setEnable(false)
-        return
-    end
-    local played = tonumber(st.playedMs) or 0
-    local need = math.max(0, tonumber(st.minPlaytimeMs) or 0)
-    local playedMin = math.floor(played / 60000)
-    local needMin = math.floor(need / 60000)
-    -- badge
-    local badge = st.claimed and getText(T .. "Rewards_Claimed") or getText(T .. "Rewards_Available")
-    local bw = textWidth(badge) + 20
-    local badgeToken = st.claimed and "textMuted" or "accent"
-    fill(self, x + PAD, ly, bw, CHIP_H, "selected", "pill")
-    border(self, x + PAD, ly, bw, CHIP_H, badgeToken, "pill")
-    textCentre(self, badge, x + PAD + bw / 2, ly + math.floor((CHIP_H - fontH.small) / 2), badgeToken)
-    textRight(self, "+" .. amountText(st.amount) .. " " .. C.currencyName(st.currency), x + w - PAD, ly + math.floor((CHIP_H - fontH.medium) / 2), "accent", UIFont.Medium)
-    ly = ly + ROW + 2
-    local ptText
-    if played >= need then
-        ptText = getText(T .. "Rewards_PlaytimeMet", tostring(playedMin), tostring(needMin))
-    else
-        ptText = getText(T .. "Rewards_PlaytimeShort", tostring(playedMin), tostring(needMin), tostring(math.ceil((need - played) / 60000)))
-    end
-    text(self, ptText, x + PAD, ly + 3, "textMuted")
-    -- claim button sits at ly + ROW (positioned in layout); text below it
-    self.claimButton:setTitle(getText(T .. "Rewards_ClaimButton", amountText(st.amount)))
-    self.claimButton.coinId = st.currency
-    local frozen = C.wallet ~= nil and C.wallet.frozen == true
-    local canClaim = not st.claimed and played >= need and not self.claimPending and not frozen
-    self.claimButton:setEnable(canClaim)
-    ly = self.claimButton.y + self.claimButton.height + PAD
-    local remain = math.max(0, (tonumber(st.nextResetMs) or 0) - EC.now())
-    text(self, getText(T .. "Rewards_NextDay", stampText(tonumber(st.nextResetMs) or 0, self.offsetMin), durationText(remain)), x + PAD, ly + 3, "textMuted")
-    if self.message then
-        textRight(self, self.message.text, x + w - PAD, ly + 3, self.message.error and "errorText" or "positive")
-    end
-
-    -- milestones card
-    y = y + g.dailyH + PAD
-    local mh = g.contentY + g.contentH - y
-    card(self, x, y, w, mh, getText(T .. "Rewards_Milestones", tostring(st.season)))
-    ly = y + CARD_TITLE_H + PAD
-    local player = getPlayer()
-    local survivedDays = player and (player:getHoursSurvived() / 24) or 0
-    text(self, getText(T .. "Rewards_Survived", string.format("%.1f", survivedDays)), x + PAD, ly + 3, "text")
-    local nextM = nil
-    for _, m in ipairs(st.milestoneList or {}) do
-        if not hasBit(st.milestones, m.index) then nextM = m; break end
-    end
-    if nextM then
-        textRight(self, getText(T .. "Rewards_NextMilestone", tostring(nextM.days)), x + w - PAD, ly + 3, "textMuted")
-    else
-        textRight(self, getText(T .. "Rewards_AllMilestones"), x + w - PAD, ly + 3, "positive")
-    end
-    ly = ly + ROW + 4
-    local barW = w - PAD * 2
-    fill(self, x + PAD, ly, barW, 10, "track", "rect")
-    if nextM and nextM.days > 0 then
-        fill(self, x + PAD, ly, math.floor(barW * math.min(1, survivedDays / nextM.days)), 10, "gold", "rect")
-    elseif not nextM then
-        fill(self, x + PAD, ly, barW, 10, "gold", "rect")
-    end
-    ly = ly + 10 + PAD
-    for _, m in ipairs(st.milestoneList or {}) do
-        if ly + ROW > y + mh - 4 then break end
-        local done = hasBit(st.milestones, m.index)
-        local ty = ly + math.floor((ROW - fontH.small) / 2)
-        text(self, getText(T .. "Rewards_MilestoneRow", tostring(m.days)), x + PAD, ty, done and "text" or "textMuted")
-        textRight(self, getText(T .. (done and "Rewards_Achieved" or "Rewards_Pending")), x + w - PAD, ty, done and "positive" or "textFaint")
-        textRight(self, "+" .. amountText(m.amount) .. " " .. C.currencyName(st.currency), x + w - PAD - 90, ty, done and "accent" or "textMuted")
-        ly = ly + ROW
-    end
-end
-
-function Panel:drawShop()
-    local g = self.g
-    local shop = C.shop
-    -- left card: category chips over the search box (the chips are children, positioned in layout)
-    card(self, g.leftX, g.contentY, g.leftW, g.contentH)
-    text(self, getText(T .. "Shop_Search"), g.leftX + PAD, g.shopSearchY - fontH.small - 4, "textMuted")
-
-    card(self, g.rightX, g.contentY, g.rightW, g.contentH, getText(T .. "Shop_Title"))
-    local ty = g.contentY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
-    if not shop then
-        text(self, getText(T .. "Wallet_Loading"), g.rightX + PAD, ty, "textMuted")
-        return
-    end
-    local note = getText(T .. "Shop_Note", C.currencyName(shop.currency))
-    local noteToken = "textMuted"
-    if shop.buyback and shop.buyback.enabled == true then
-        if self.shopHasBuyback then
-            note = getText(T .. "Shop_BuybackNote", amountText(shop.buyback.accountRemaining or 0)) .. "  " .. note
-        else
-            note = getText(T .. "Shop_BuybackNone")
-        end
-    elseif self.shopHasBuyback then
-        note, noteToken = getText(T .. "Shop_BuybackPaused"), "warn"
-    end
-    text(self, fitText(note, g.rightW - PAD * 2), g.rightX + PAD, ty, noteToken)
-    local cols = self.shopList.cols
-    local hx, hy = self.shopList.x, g.shopHeaderY
-    fill(self, hx, hy, self.shopList.width, ROW, "well", "rect")
-    local hty = hy + math.floor((ROW - fontH.small) / 2)
-    text(self, getText(T .. "Shop_Col_Item"), hx + cols.name, hty, "textMuted")
-    textRight(self, getText(T .. "Shop_Col_Price"), hx + cols.priceR, hty, "textMuted")
-    textRight(self, getText(T .. "Shop_Col_Remaining"), hx + cols.remainR, hty, "textMuted")
-    if #self.shopList:getItems() == 0 then
-        text(self, getText(T .. "Shop_Empty"), hx + PAD, self.shopList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
-    end
-end
-
-function Panel:drawMail()
-    local g = self.g
-    local mail = C.mail
-    local x, w = g.leftX, self.width - PAD * 2
-    card(self, x, g.contentY, w, g.contentH, getText(T .. "Mail_Title"))
-    local unclaimed = tonumber(mail and mail.unclaimed) or 0
-    local usage = mail and mail.usage or nil
-    local titleY = g.contentY + math.floor((CARD_TITLE_H - fontH.small) / 2)
-    local rightX = x + w - PAD
-    if usage and tonumber(usage.capacity) then
-        -- slots: unclaimed entries + active listings out of the sandbox capacity
-        local used = (tonumber(usage.unclaimed) or 0) + (tonumber(usage.listings) or 0)
-        local cap = tonumber(usage.capacity) or 0
-        local capText = getText(T .. "Mail_Capacity", tostring(used), tostring(cap))
-        textRight(self, capText, rightX, titleY, used >= cap and "negative" or "textMuted")
-        rightX = rightX - textWidth(capText) - PAD
-    end
-    textRight(self, getText(T .. "Mail_Count", tostring(unclaimed)), rightX, titleY, unclaimed > 0 and "accent" or "textMuted")
-    local ty = g.contentY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
-    if not mail then
-        text(self, getText(T .. "Wallet_Loading"), x + PAD, ty, "textMuted")
-        return
-    end
-    text(self, fitText(getText(T .. "Mail_Note"), w - PAD * 2), x + PAD, ty, "textMuted")
-    if #self.mailList:getItems() == 0 then
-        text(self, getText(T .. "Mail_Empty"), x + PAD, self.mailList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
-    end
-end
-
--- History page: one card, the note line, the filter bar and the ring (newest first by default).
--- No column header (the kind label already names each line); the ring is paged on the client,
--- so the pager under the table is the bar's own.
-function Panel:drawMarketHistory()
-    local g = self.g
-    local list = self.marketHistoryList
-    card(self, g.marketCardX, g.marketCardY, g.marketCardW, g.marketCardH, getText(T .. "Market_History_Title"))
-    local ty = g.marketCardY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
-    local noteW = g.marketCardW - PAD * 2
-    if self.marketHistoryError then
-        text(self, fitText(self.marketHistoryError, noteW), g.marketCardX + PAD, ty, "errorText")
-        return
-    end
-    if not C.marketHistory then
-        text(self, getText(T .. "Wallet_Loading"), g.marketCardX + PAD, ty, "textMuted")
-        return
-    end
-    text(self, fitText(getText(T .. "Market_History_Note"), noteW), g.marketCardX + PAD, ty, "textMuted")
-    self.historyBar:draw(self)
-    self.historyBar:drawPager(self, g.marketCardX + PAD)
-    if #list:getItems() == 0 then
-        local all = #(self.marketHistoryAll or {})
-        text(self, getText(T .. (all > 0 and "Filter_NoMatch" or "Market_History_Empty")), list.x + PAD,
-            list.y + math.floor((ROW - fontH.small) / 2), "textMuted")
-    end
-end
-
-function Panel:drawMarket()
-    local g = self.g
-    local mine = self.marketMode == "mine"
-    local info = self.marketInfo
-    if self.marketMode == "history" then return self:drawMarketHistory() end
-    if not mine then
-        -- left card: category chips, the search box, the sort chips (all children, placed in layout)
-        card(self, g.leftX, g.marketCardY, g.leftW, g.marketCardH)
-        text(self, getText(T .. "Market_Search"), g.leftX + PAD, g.marketSearchY - fontH.small - 4, "textMuted")
-    end
-    card(self, g.marketCardX, g.marketCardY, g.marketCardW, g.marketCardH, getText(T .. "Market_Title"))
-    local ty = g.marketCardY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
-    local snap = mine and C.myListings or C.market
-    if not snap then
-        text(self, getText(T .. "Wallet_Loading"), g.marketCardX + PAD, ty, "textMuted")
-        return
-    end
-    local note = mine and getText(T .. "Market_MineCount", tostring(info.mine), tostring(info.maxListings))
-        or getText(T .. "Market_Note", tostring(info.taxPercent), tostring(info.feePercent))
-    text(self, fitText(note, g.marketCardW - PAD * 2), g.marketCardX + PAD, ty, "textMuted")
-    -- the header row is a child (MarketHeader): it paints the column names and takes the clicks
-    if #self.marketList:getItems() == 0 then
-        text(self, getText(T .. (self.marketNoMatch and "Market_NoMatch" or "Market_Empty")),
-            self.marketList.x + PAD, self.marketList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
-    end
-    if mine then return end
-    -- pager strip: the page counter, the two chips (children), the server's total on the right
-    local fy = g.marketFooterY + math.floor((ROW - fontH.small) / 2)
-    text(self, getText(T .. "Market_Page", tostring(self.marketPage), tostring(info.pages)),
-        g.marketCardX + PAD, fy, "textMuted")
-    textRight(self, getText(T .. "Market_Total", tostring(info.total)),
-        g.marketCardX + g.marketCardW - PAD, fy, "textMuted")
-end
-
--- Record page: one card, one note line and the client-paged ring. The note line is the page's
--- whole state in one place, most urgent first: a refusal (the snapshot underneath stays on
--- screen - an error is not an empty record), the first read of all, the "only the newest 200"
--- warning, and otherwise the note that these amounts are bids and not wallet movements. A read
--- that is still in flight over a snapshot says so on the right, without hiding anything.
-function Panel:drawAuctionHistory()
-    local g = self.g
-    local list = self.auctionHistoryList
-    card(self, g.auctionCardX, g.auctionCardY, g.auctionCardW, g.auctionCardH,
-        getText(T .. "Auction_History_Title"))
-    local ty = g.auctionCardY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
-    local noteW = g.auctionCardW - PAD * 2
-    local pending = self.auctionHistoryPending ~= nil or self.auctionHistoryWanted == true
-    local snap = C.auctionHistory
-    if self.auctionHistoryError then
-        text(self, fitText(self.auctionHistoryError, noteW), g.auctionCardX + PAD, ty, "errorText")
-    elseif not snap then
-        text(self, getText(T .. (pending and "Wallet_Loading" or "Auction_History_Empty")),
-            g.auctionCardX + PAD, ty, "textMuted")
-        return                       -- nothing read yet: no bar, no pager, no empty-filter line
-    elseif self.auctionHistoryTruncated then
-        text(self, fitText(getText(T .. "Auction_History_Truncated"), noteW), g.auctionCardX + PAD, ty, "warn")
-    else
-        text(self, fitText(getText(T .. "Auction_History_Note"), noteW), g.auctionCardX + PAD, ty, "textMuted")
-    end
-    if pending then
-        textRight(self, getText(T .. "Wallet_Loading"), g.auctionCardX + g.auctionCardW - PAD, ty, "textMuted")
-    end
-    self.auctionHistoryBar:draw(self)
-    self.auctionHistoryBar:drawPager(self, g.auctionCardX + PAD)
-    if #list:getItems() == 0 then
-        local all = #(self.auctionHistoryAll or {})
-        text(self, getText(T .. (all > 0 and "Filter_NoMatch" or "Auction_History_Empty")), list.x + PAD,
-            list.y + math.floor((ROW - fontH.small) / 2), "textMuted")
-    end
-end
-
--- Auction page: one card, the note line (the tax and the listing fee the server quoted), then
--- either the sortable browse table with its pager or the two "my auctions" sections.
-function Panel:drawAuction()
-    if self.auctionMode == "history" then return self:drawAuctionHistory() end
-    local g = self.g
-    local info = self.auctionInfo
-    local mine = self.auctionMode == "mine"
-    card(self, g.auctionCardX, g.auctionCardY, g.auctionCardW, g.auctionCardH, getText(T .. "Auction_Title"))
-    local ty = g.auctionCardY + CARD_TITLE_H + math.floor((ROW - fontH.small) / 2)
-    if (mine and not C.myAuctions) or (not mine and not C.auction) then
-        text(self, getText(T .. "Wallet_Loading"), g.auctionCardX + PAD, ty, "textMuted")
-        return
-    end
-    text(self, fitText(getText(T .. "Auction_Note", tostring(info.taxPercent), tostring(info.feePercent)),
-        g.auctionCardW - PAD * 2), g.auctionCardX + PAD, ty, "textMuted")
-    if mine then
-        local labelX = g.auctionCardX + PAD
-        text(self, getText(T .. "Auction_Mine", tostring(info.mine), tostring(info.maxAuctions)),
-            labelX, g.aucSellLabelY + math.floor((ROW - fontH.small) / 2), "text")
-        text(self, getText(T .. "Auction_Bidding"), labelX,
-            g.aucBidLabelY + math.floor((ROW - fontH.small) / 2), "text")
-        if #self.auctionSellList:getItems() == 0 and #self.auctionBidList:getItems() == 0 then
-            text(self, getText(T .. "Auction_MineEmpty"), labelX,
-                g.aucSellY + math.floor((ROW - fontH.small) / 2), "textMuted")
-        end
-        return
-    end
-    -- the header row is a child (MarketHeader): it paints the column names and takes the clicks
-    if #self.auctionList:getItems() == 0 then
-        text(self, getText(T .. (self.auctionNoMatch and "Market_NoMatch" or "Auction_Empty")),
-            self.auctionList.x + PAD, self.auctionList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
-    end
-    local fy = g.auctionFooterY + math.floor((ROW - fontH.small) / 2)
-    text(self, getText(T .. "Market_Page", tostring(self.auctionPage), tostring(info.pages)),
-        g.auctionCardX + PAD, fy, "textMuted")
-    textRight(self, getText(T .. "Market_Total", tostring(info.total)),
-        g.auctionCardX + g.auctionCardW - PAD, fy, "textMuted")
-end
-
-function Panel:drawFooter()
-    local g = self.g
-    local st = C.rewards
-    if g.footerH == 0 or not st then return end
-    local cap = tonumber(st.serverCap) or 0
-    local used = math.floor((tonumber(st.serverPaidToday) or 0) * 100 / cap)
-    textCentre(self, getText(T .. "Rewards_ServerCap", tostring(used)), self.width / 2, g.contentY + g.contentH + math.floor((ROW - fontH.small) / 2), "textMuted")
-end
 
 -- prerender/render replace the parent versions (rounded surfaces; see NBPanel.lua:1826-1897)
 function Panel:prerender()
-    if self.adminAccess ~= C.AdminPanel.canRead() then
-        if self.tab == "Admin" and not C.AdminPanel.canRead() then
-            self:setTab("Wallet")
-        else
-            self:layout()
-        end
+    self:syncDetail()
+    -- the Admin entry appears and disappears with the right; the window it opens looks after itself
+    if self.adminAccess ~= C.AdminPanel.canRead() then self:layout() end
+    -- the account is not readable in the very first frames of a world: the header picks the real
+    -- name up the moment it exists, instead of keeping "loading" until something else resizes
+    if self.identityName ~= self:username() then self:layout() end
+    if self.balanceCurrencies ~= C.currencies then
+        -- the server pushed a new currency registry: the wallet reader and every currency box
+        -- follow it (the box refill is a no-op while the set itself is unchanged)
+        self:syncCurrencyCombos()
+        -- the board keeps its own box, and a board already on screen has to follow the push
+        -- as well: a rename must never leave the old name in a selector the player is looking at
+        self.leaderboard:fillCurrencies()
+        self:rebuildList()
     end
+    local band, bandToken = self:statusBand()
     if self.width ~= self.layoutW or self.height ~= self.layoutH
-        or self.layoutCollapsed ~= self.isCollapsed or (C.rewards ~= nil) ~= self.hadRewards then
+        or self.layoutCollapsed ~= self.isCollapsed or (C.rewards ~= nil) ~= self.hadRewards
+        or self.layoutBand ~= band then
         self.hadRewards = C.rewards ~= nil
         self:layout()
     end
-    -- Rewards state is a snapshot (playtime accrues server-side every 60 s, sandbox thresholds can
-    -- change live): re-request while the tab is open instead of asking the player to reopen.
+    -- Rewards state is a snapshot (online time accrues server-side, sandbox thresholds can
+    -- change live): re-requested on the same 30 s beat while the tab is open, plus once at the
+    -- exact moment the server said the next claim becomes due -- so a player who waited out the
+    -- interval gets the fresh eligibility then, without a request per frame.
     if self.tab == "Rewards" and not self.isCollapsed then
         local now = EC.now()
-        if not self.rewardsPolledMs or now - self.rewardsPolledMs > 30000 then
+        local due = self.rewardsDueMs ~= nil and now >= self.rewardsDueMs
+        if due or not self.rewardsPolledMs or now - self.rewardsPolledMs > 30000 then
             self.rewardsPolledMs = now
+            self.rewardsDueMs = nil
             C.requestRewards()
         end
     end
@@ -4307,11 +3357,40 @@ function Panel:prerender()
     -- disabled forever (the admin pages use the same window).
     if self.buyPending and EC.now() - self.buyPending.at > TIMEOUT_MS then
         self.buyPending = nil
+        self:resumeBuyDialog()
         self:buyMessage(shopError("timeout"))
     end
+    -- the daily claim is a write like any other: a server that never answers must not leave the
+    -- button dead for the rest of the session. The state is asked for again, so whether the
+    -- claim actually landed is read back from the server and never assumed here.
+    if self.claimPending and EC.now() - (self.claimPendingAt or 0) > TIMEOUT_MS then
+        self.claimPending = false
+        self.claimPendingAt = nil
+        self.message = { text = shopError("timeout"), error = true }
+        C.requestRewards()
+        self:updateDetail()
+    end
     if self.mailPending and EC.now() - self.mailPending.at > TIMEOUT_MS then
+        local batch = self.mailBatch
         self.mailPending = nil
-        C.toast(shopError("timeout"))
+        if batch ~= nil then
+            -- a bulk claim whose segment never answered: what it did get through is reported,
+            -- and the untried letters stay in the mailbox for the player to press again
+            self:finishMailBatch("timeout")
+        else
+            C.toast(shopError("timeout"))
+        end
+    end
+    -- The next segment of a bulk claim, once the server's own command window is over. One write
+    -- in flight (mailPending) is what keeps a single claim and a bulk claim apart.
+    local batch = self.mailBatch
+    if batch ~= nil and batch.nextAt ~= nil and self.mailPending == nil
+        and EC.now() >= batch.nextAt then
+        if self:tradeAllowed() then
+            self:sendMailBatch()
+        else
+            self:finishMailBatch("not_at_terminal")
+        end
     end
     if self.marketPending and EC.now() - self.marketPending.at > TIMEOUT_MS then
         self.marketPending = nil
@@ -4322,11 +3401,28 @@ function Panel:prerender()
     if self.marketQueryAt and EC.now() >= self.marketQueryAt and self.tab == "Market" then
         self:requestBrowse(1)
     end
+    -- the two keyword boxes (the statement and the market ring): the text is read back from the
+    -- box every frame, because an IME commit can land in it without the text-change callback ever
+    -- firing. One guard inside pollSearch, so nothing is rebuilt while the text stands still.
+    self.walletBar:pollSearch()
+    self.historyBar:pollSearch()
+    -- the two seller boxes: the debounce clock, the IME read-back and the list's own geometry.
+    -- A box whose page is not up was hidden by the layout and answers tick with nothing.
+    local sellerNow = EC.now()
+    self.marketSellerPicker:tick(sellerNow)
+    self.auctionSellerPicker:tick(sellerNow)
+    -- a candidate read that never came back: the slot is freed and the same text may be asked
+    -- for again by whichever box was waiting for it
+    if self.sellersPendingAt and sellerNow - self.sellersPendingAt > SELLERS_TIMEOUT_MS then
+        self.sellersPendingAt, self.sellersRequestId = nil, nil
+        self.marketSellerPicker:onTimeout()
+        self.auctionSellerPicker:onTimeout()
+    end
     -- a browse the 500 ms server throttle would have eaten: send the newest chip state now
     if self.browseWanted and EC.now() - (self.browseSentAt or 0) >= BROWSE_MIN_MS then
         self:sendBrowse()
     end
-    -- a browse whose answer never came: the sort chips, the header and the pager come back
+    -- a browse whose answer never came: the sort box, the header and the pager come back
     if self.browseBusy and EC.now() - (self.browseBusyAt or 0) > BROWSE_TIMEOUT_MS then
         self.browseBusy = nil
     end
@@ -4340,23 +3436,29 @@ function Panel:prerender()
     if self.auctionBusy and EC.now() - (self.auctionBusyAt or 0) > BROWSE_TIMEOUT_MS then
         self.auctionBusy = nil
     end
-    -- the record page: the typed query goes out once the player stops, a read the throttle
-    -- window would have eaten goes out as soon as it may, and a read that never came back gives
-    -- the page an error instead of a spinner that never ends (the next read repairs it)
+    -- The record page's typed query goes out once the player stops; from there the three history
+    -- reads run on the gate they share. Pumped whether or not this page is on screen: a read
+    -- that never came back has to free the gate wherever the player is, and a page that just
+    -- came back into view sends the read it owed.
     if self.auctionHistoryQueryAt and EC.now() >= self.auctionHistoryQueryAt
         and self.tab == "Auction" and self.auctionMode == "history" then
         self:requestAuctionHistory()
     end
-    if self.auctionHistoryWanted and not self.auctionHistoryPending
-        and self.tab == "Auction" and self.auctionMode == "history"
-        and EC.now() - (self.auctionHistorySentAt or 0) >= HISTORY_DEBOUNCE_MS then
-        self:sendAuctionHistory()
+    self.walletGate:pump(self:pageVisible("Wallet"))
+    self.marketGate:pump(self:pageVisible("Market", "history"))
+    self.auctionGate:pump(self:pageVisible("Auction", "history"))
+    -- A read that never came back is the page's own timeout note, and the manual retry chip
+    -- next to it only appears when the layout is run again: one pass for all three.
+    local expired = false
+    if self.walletGate:expired() then self.historyError, expired = "timeout", true end
+    if self.marketGate:expired() then self.marketHistoryError, expired = "timeout", true end
+    if self.auctionGate:expired() then self.auctionHistoryError, expired = "timeout", true end
+    if expired then
+        self:layout()
+        Keys.invalidate(self)
     end
-    if self.auctionHistoryPending and EC.now() - self.auctionHistoryPending.at > TIMEOUT_MS then
-        self.auctionHistoryPending = nil
-        self.auctionHistoryWanted = nil
-        self.auctionHistoryError = shopError("timeout")
-    end
+    -- a scope views.changed named while its page was hidden: read it now that it is not
+    self:pumpViews()
     local w = self:getWidth()
     local h = self:getHeight()
     local th = self:titleBarHeight()
@@ -4371,44 +3473,44 @@ function Panel:prerender()
         self:setStencilRect(0, 0, self.width, h)
     end
     if self.title then
-        text(self, self.title, th + PAD, math.floor((th - fontH.medium) / 2), "text", UIFont.Medium)
+        text(self, self.title, self.g.titleX, math.floor((th - fontH.medium) / 2), "text", UIFont.Medium)
     end
+    -- the header tooltip follows the pointer, and is taken down again by the same call the moment
+    -- the pointer leaves the strip, the window collapses or it hides
+    self:updateHeaderTip()
     if self.isCollapsed then return end
 
-    -- Status line, most restrictive first: a frozen account outranks everything (nothing moves
-    -- until an admin unfreezes it). Then the remote gate: no terminal registered at all, the
-    -- player standing at one, or the plain "walk to a terminal".
     local g = self.g
-    -- the chrome opacity readout, next to its slider in the title row
-    textRight(self, tostring(opacityPercent()) .. "%", g.opacityR, g.opacityTextY, "textMuted")
-    local band, bandToken
-    if C.wallet and C.wallet.frozen then
-        band, bandToken = "Band_Frozen", "errorText"
-    elseif self:remoteReadOnly() then
-        if #(C.terminals or {}) == 0 then
-            band, bandToken = "Band_NoTerminals", "warn"
-        elseif C.nearTerminal() then
-            band, bandToken = "Band_AtTerminal", "positive"
-        else
-            band, bandToken = "Band_RemoteReadOnly", "warn"
-        end
-    end
+    -- The status band is a row of words, never an icon: a player who cannot spend has to be able
+    -- to read why. It only exists while there is something to read (see Panel:statusBand).
     if band then
-        U.Skin.dot(self, PAD * 2, g.statusY + math.floor((STATUS_H - 8) / 2), 8, color(bandToken))
-        text(self, getText(T .. band), PAD * 2 + 14, g.statusY + math.floor((STATUS_H - fontH.small) / 2), bandToken)
+        U.Skin.dot(self, PAD * 2, g.statusY + math.floor((g.statusH - 8) / 2), 8, color(bandToken))
+        text(self, getText(T .. band), PAD * 2 + 14, g.statusY + math.floor((g.statusH - fontH.small) / 2), bandToken)
     end
-    self:drawStrip()
-    fill(self, PAD, g.tabsY, w - PAD * 2, TAB_H, "well", "rect")
+    self:drawHeader()
     local gateClosed = not self:tradeAllowed()
     self.shopList.buyDisabled = gateClosed or self.buyPending ~= nil
-    self.mailList.claimDisabled = gateClosed or self.mailPending ~= nil
+    -- one write in flight for the mailbox, whether it is one letter or the whole batch, and the
+    -- batch chip needs at least one letter that is really ready
+    local mailBusy = gateClosed or self.mailPending ~= nil or self.mailBatch ~= nil
+    self.mailList.actionDisabled = mailBusy
+    local mailReady = false
+    for _, row in ipairs(self.mailRows or {}) do
+        if row.claimable == true then mailReady = true; break end
+    end
+    self.mailClaimAllButton:setEnable(not mailBusy and mailReady)
+    local writeOpen = not gateClosed and self.buyPending == nil and self.buyDialog == nil
+    local shopPick = self.shopList:getSelectedItem()
+    self.shopBuyButton:setEnable(writeOpen and shopPick ~= nil and not shopPick.soldOut)
+    self.shopSellButton:setEnable(writeOpen and shopPick ~= nil and shopPick.buyback == true
+        and shopPick.buybackOpen == true and shopPick.buybackRemaining ~= 0)
     local info = self.marketInfo
     self.marketList.actionDisabled = gateClosed or self.marketPending ~= nil
     self.marketListButton:setEnable(not gateClosed and self.marketPending == nil and self.marketDialog == nil
         and (info.maxListings <= 0 or info.mine < info.maxListings))
     local browseBusy = self.browseBusy == true
-    for _, b in ipairs(self.marketSortButtons) do b:setEnable(not browseBusy) end
-    for _, b in ipairs(self.marketCatButtons or {}) do b:setEnable(not browseBusy) end
+    self.marketSortCombo:setEnabled(not browseBusy)
+    self.marketCatCombo:setEnabled(not browseBusy)
     self.marketPrevButton:setEnable(self.marketPage > 1 and not browseBusy)
     self.marketNextButton:setEnable(self.marketPage < info.pages and not browseBusy)
     local aucInfo = self.auctionInfo
@@ -4418,8 +3520,19 @@ function Panel:prerender()
     end
     self.auctionCreateButton:setEnable(not gateClosed and self.marketPending == nil and self.marketDialog == nil
         and (aucInfo.maxAuctions <= 0 or aucInfo.mine < aucInfo.maxAuctions))
+    self.auctionSortCombo:setEnabled(not aucBusy)
     self.auctionPrevButton:setEnable(self.auctionPage > 1 and not aucBusy)
     self.auctionNextButton:setEnable(self.auctionPage < aucInfo.pages and not aucBusy)
+    if self.marketReturnFocus then
+        local target = self.marketReturnFocus
+        self.marketReturnFocus = nil
+        if Keys.activeRoot == self then Keys.focusControl(target, true) end
+    end
+    if self.buyReturnFocus then
+        local target = self.buyReturnFocus
+        self.buyReturnFocus = nil
+        if Keys.activeRoot == self then Keys.focusControl(target, true) end
+    end
     if self.tab == "Wallet" then
         self:drawWallet()
     elseif self.tab == "Rewards" then
@@ -4432,6 +3545,9 @@ function Panel:prerender()
         self:drawAuction()
     elseif self.tab == "Mail" then
         self:drawMail()
+    elseif self.tab == "Leaderboard" then
+        self.leaderboard:sync()
+        self.leaderboard:draw(self)
     end
     self:drawFooter()
 end
@@ -4441,12 +3557,17 @@ function Panel:render()
     local h = self:getHeight()
     local th = self:titleBarHeight()
     if self.isCollapsed then h = th end
-    -- Pending mailbox count as a corner bubble on the Mail tab: painted here, after the tab
-    -- buttons had their own render pass, so a hover fill cannot cover it.
+    -- Pending mailbox count as a corner bubble on the Mail entry of the navigation: painted here,
+    -- after the buttons had their own render pass, so a hover fill cannot cover it. The entry is a
+    -- child of the rail now, so its own x/y are rail-relative. A modal is the one thing it gives
+    -- way to: children are rendered between prerender and this call (UIElement.java:1626-1634),
+    -- so a bubble painted now would sit on top of the dialog the player is reading - and a count
+    -- is never worth covering a confirm with.
     local mailTab = self.mailTabButton
     local unclaimed = math.floor(tonumber(C.unclaimed) or 0)
-    if not self.isCollapsed and mailTab and unclaimed > 0 and mailTab:getIsVisible() then
-        drawBadge(self, mailTab.x + mailTab.width - 2, mailTab.y + 2, unclaimed)
+    if not self.isCollapsed and not self:isModal() and mailTab and unclaimed > 0
+        and mailTab:getIsVisible() and self.nav:getIsVisible() then
+        drawBadge(self, self.nav.x + mailTab.x + mailTab.width - 2, self.nav.y + mailTab.y + 2, unclaimed)
     end
     if not self.isCollapsed and self.resizable and self.resizeWidget:getIsVisible() then
         local rh = self:resizeWidgetHeight()
@@ -4464,26 +3585,30 @@ function Panel:render()
 end
 
 function Panel:close()
-    self:setVisible(false)
+    Keys.close(self)
 end
 
 function Panel:setVisible(visible)
     ISCollapsableWindow.setVisible(self, visible)
     self.shown = visible == true
-    if not visible then self:showPrefs(false) end
-    if self.adminPanel and not visible then self.adminPanel:setVisible(false) end
     if not visible then
-        DatePicker.close()
+        self:showPrefs(false)
+        DatePicker.close(self)   -- this window's calendar only; the admin window keeps its own
+        self:closeCombos()       -- a dropdown popup lives in the UIManager, not in this window
         self:closeBuy()
         self:closeMarketDialog()
+        Detail.close(self)       -- a record of a window that is gone is not a record
         self:unfocusEntries()
         self:cancelAuctionHistory()   -- a closed window asks the server for nothing
+        self.walletGate:clear()
+        self.marketGate:clear()
+        self.leaderboard:leave()
         Keys.clear(self)              -- no ring waiting behind a closed window
     end
     if visible then
         self.offsetMin = localOffsetMinutes()
         U.setAlpha(opacityPercent() / 100)   -- ModOptions may have changed it since the last open
-        self:bringToTop()
+        Keys.onFocus(self)
         self:layout()
         self:refresh()
     end
@@ -4496,6 +3621,7 @@ end
 -- second setWidth in the same frame would drop the first delta and leave the grip off the window.
 function Panel:RestoreLayout(name, layout)
     local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    self.minimumWidth, self.minimumHeight = math.min(MIN_WIDTH, sw), math.min(MIN_HEIGHT, sh)
     local w = math.min(sw, math.max(MIN_WIDTH, tonumber(layout.width) or self.width))
     local h = math.min(sh, math.max(MIN_HEIGHT, tonumber(layout.height) or self.height))
     layout.width, layout.height = w, h
@@ -4515,17 +3641,38 @@ function Panel.create()
     setmetatable(o, Panel)
     o.title = getText(T .. "Toast_Title")
     o.resizable = true
-    o.minimumWidth = MIN_WIDTH
-    o.minimumHeight = MIN_HEIGHT
+    o.minimumWidth = math.min(MIN_WIDTH, sw)
+    o.minimumHeight = math.min(MIN_HEIGHT, sh)
     o.period = "ThisMonth"
     o.offsetMin = localOffsetMinutes()
     o.monthTotals = nil
-    o.marketMode = "browse"     -- read by createChildren (initialise -> addToUIManager, below)
+    o.walletDetails = false
+    o.walletFiltersOpen = false
+    o.detailWatch = {}
+    o.viewDirty = {}
+    -- The three history reads share one gate implementation (ECReadGate): the window, the single
+    -- read in flight, the wish a hidden page owes and the question every reply is matched
+    -- against. Each page keeps its own data, its own filters and its own error.
+    o.walletGate = ReadGate.create(function(month, requestId) C.requestHistory(month, requestId) end)
+    o.marketGate = ReadGate.create(function(_, requestId) C.requestMarketHistory(requestId) end)
+    o.auctionGate = ReadGate.create(function(_, requestId)
+        -- a pinned auction is an exact lookup: the box only holds its id so the player sees it
+        local pinned = o.auctionHistoryId
+        C.requestAuctionHistory({ auctionId = pinned,
+            query = (pinned == nil) and o.auctionHistoryQuery or nil, requestId = requestId })
+    end)
+    o.marketMode = "browse"
     o.marketSort = "time"
     o.marketPage = 1
     o.auctionMode = "browse"
     o.auctionSort = "ending"    -- the auctions closest to their end are the ones that matter
     o.auctionPage = 1
+    -- The trade pages start on an explicit currency: the catalog on the registered default
+    -- (survivor while it exists), the two browse filters on "every currency" -- which is also
+    -- the one state where a price sort does not exist.
+    o.shopCur = defaultCurrency()
+    o.marketCur = nil
+    o.auctionCur = nil
     o:initialise()
     -- UIManager offers key events to top-level UI that asked for them (UIManager.java:1435-1466);
     -- without this the window's four key hooks are never called
@@ -4551,6 +3698,14 @@ function P.instance()
         C.onMail(function(kind, args) if P.window then P.window:onMail(kind, args) end end)
         C.onMarket(function(kind, args) if P.window then P.window:onMarket(kind, args) end end)
         C.onTerminals(function() if P.window then P.window:onTerminals() end end)
+        -- the public board: one read, one snapshot, and a note when the server's public rules
+        -- moved under the page
+        C.onLeaderboard(function(kind, args)
+            if P.window then P.window.leaderboard:onReply(kind, args) end
+        end)
+        -- views.changed: the server says the data behind a scope moved. Only the page on screen
+        -- reads again; every other page records it and asks when it is looked at.
+        C.onViews(function(scope) if P.window then P.window:onViewChanged(scope) end end)
     end
     return P.window
 end
@@ -4588,8 +3743,9 @@ Events.OnKeyPressed.Add(onKeyPressed)
 -- rebuild against the new server state).
 local function onGameStart()
     DatePicker.close()
+    C.AdminWindow.reset()   -- the admin page is disposed for real here, and nowhere else
     if P.window then
-        if P.window.adminPanel then P.window.adminPanel:dispose() end
+        Detail.close(P.window)   -- the record window outlives a world otherwise
         P.window:removeFromUIManager()
         P.window = nil
     end
@@ -4598,11 +3754,15 @@ Events.OnGameStart.Add(onGameStart)
 -- A resolution change (or window-mode switch) must not leave the panel off-screen or larger
 -- than the screen; the size the player chose is otherwise kept.
 Events.OnResolutionChange.Add(function()
+    C.AdminWindow.clampToScreen()
     local win = P.window
     if not win then return end
     local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
-    win:setWidth(math.max(MIN_WIDTH, math.min(sw, win.width)))
-    win:setHeight(math.max(MIN_HEIGHT, math.min(sh, win.height)))
+    win.minimumWidth, win.minimumHeight = math.min(MIN_WIDTH, sw), math.min(MIN_HEIGHT, sh)
+    local width = math.min(sw, math.max(MIN_WIDTH, win.width))
+    local height = math.min(sh, math.max(MIN_HEIGHT, win.height))
+    if width ~= win.width then win:setWidth(width) end
+    if height ~= win.height then win:setHeight(height) end
     win:setX(math.max(0, math.min(win.x, sw - win.width)))
     win:setY(math.max(0, math.min(win.y, sh - win.height)))
     win:layout()

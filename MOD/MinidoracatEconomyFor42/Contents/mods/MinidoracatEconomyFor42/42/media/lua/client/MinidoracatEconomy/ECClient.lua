@@ -20,6 +20,10 @@ end
 EC.Client = EC.Client or {}
 local C = EC.Client
 
+-- The read gate the snapshot reads below and the three history pages of the panel share; it
+-- hangs off C, so it is loaded once C exists.
+require "MinidoracatEconomy/ECReadGate"
+
 C.session = nil          -- hello.ack payload from the current server process
 C.unclaimed = 0          -- pending mailbox items; every reply that knows the number refreshes it
 
@@ -38,8 +42,74 @@ end
 local handlers = {}
 C.handlers = handlers
 
+local function notify(listeners, label, kind, args)
+    for _, fn in ipairs(listeners) do
+        local ok, err = pcall(fn, kind, args)
+        if not ok then EC.log(label .. " listener failed: " .. tostring(err)) end
+    end
+end
+-- ---------- the five snapshot reads ----------
+-- wallet.state, shop.list, mail.list, market.mine and auction.mine take no parameters at all:
+-- every caller -- a page that came into view, a views.changed notice, the reply of a purchase
+-- or of a claim -- asks for the very same thing, "the newest one". So they share one gate per
+-- command (ECReadGate: the server's own command window, one read in flight, only the newest
+-- wish kept). A write reply and a page can no longer knock each other's read out of that
+-- window: the second ask is remembered and goes out when the first is answered, instead of
+-- being dropped by the server without a reply and lost.
+--
+-- Whether a read is owed at all stays the caller's decision (a page that is not on screen asks
+-- for nothing); this owns the timing only. The wish is flushed by a one-shot OnTick that is
+-- added while a read is owed and removes itself again the moment none is, so an idle client
+-- polls nothing.
+local snapshotGates = {}
+local snapshotPumping = false
+
+local function snapshotPump()
+    local owed = false
+    for _, gate in ipairs(snapshotGates) do
+        local query, requestId = gate.sentQuery, gate.sentId
+        gate:pump(true)
+        if gate.onTimeout and gate:expired() then gate.onTimeout(query, requestId) end
+        if gate.wanted == true or (gate.onTimeout and gate.pending ~= nil) then owed = true end
+    end
+    if not owed then
+        snapshotPumping = false
+        Events.OnTick.Remove(snapshotPump)
+    end
+end
+
+local function snapshotRead(command, encode, onTimeout)
+    local gate
+    gate = C.ReadGate.create(function(query, requestId)
+        local args = encode and encode(query) or {}
+        args.requestId = requestId
+        gate.sentQuery = query
+        send(command, args)
+    end)
+    gate.onTimeout = onTimeout
+    snapshotGates[#snapshotGates + 1] = gate
+    return gate
+end
+
+local function askSnapshot(gate, query)
+    if query == nil then query = true end
+    gate:want(query, true)
+    if (gate.wanted == true or (gate.onTimeout and gate.pending ~= nil)) and not snapshotPumping then
+        snapshotPumping = true
+        Events.OnTick.Add(snapshotPump)
+    end
+end
+
+local walletSnapshot = snapshotRead("wallet.state")
+local shopSnapshot = snapshotRead("shop.list")
+local mailSnapshot = snapshotRead("mail.list")
+local listingsSnapshot = snapshotRead("market.mine")
+local auctionsSnapshot = snapshotRead("auction.mine")
+
 handlers["hello.ack"] = function(args)
     C.session = args
+    C.options = type(args.options) == "table" and args.options or nil
+    C.seasonState = type(args.seasonState) == "table" and args.seasonState or nil
     setUnclaimed(args)
     C.currencies = args.currencies or C.currencies
     if type(args.terminals) == "table" then C.terminals = args.terminals end
@@ -57,12 +127,30 @@ handlers["hello.ack"] = function(args)
         .. " terminals=" .. tostring(args.terminals and #args.terminals or 0))
 end
 
+local leaderboardGate
+local seasonGeneration, leaderboardSentGeneration = 0, nil
+local function optionValue(options, key)
+    local option = options and options[key]
+    if type(option) == "table" then return option.value end
+end
+
 -- Runtime currency changes (name override, enabled, rates) pushed by the server.
 handlers["config"] = function(args)
     if type(args.currencies) == "table" then
         C.currencies = args.currencies
     end
-    if type(args.options) == "table" then C.options = args.options end
+    if type(args.options) == "table" then
+        local changed = optionValue(C.options, "LeaderboardEnabled") ~= optionValue(args.options, "LeaderboardEnabled")
+            or optionValue(C.options, "LeaderboardShowAmounts") ~= optionValue(args.options, "LeaderboardShowAmounts")
+        C.options = args.options
+        if changed then
+            C.leaderboard, C.leaderboardError = nil, nil
+            leaderboardGate:clear()
+            leaderboardGate.pending, leaderboardGate.sentId = nil, nil
+            leaderboardGate.query, leaderboardGate.settled = nil, true
+            notify(C.leaderboardListeners, "leaderboard", "config", args)
+        end
+    end
     -- the remote read-only switch is a runtime option now: the session mirrors the live value
     if args.remoteReadOnly ~= nil and C.session then C.session.remoteReadOnly = args.remoteReadOnly end
 end
@@ -85,25 +173,42 @@ end
 
 -- Rewards (server-authoritative; the UI in stage B6 renders C.rewards and listens via C.onRewards)
 C.rewards = nil
+C.rewardsError = nil
+local checkinRequestId
 C.rewardsListeners = {}
 function C.onRewards(fn) C.rewardsListeners[#C.rewardsListeners + 1] = fn end
-local function notify(listeners, label, kind, args)
-    for _, fn in ipairs(listeners) do
-        local ok, err = pcall(fn, kind, args)
-        if not ok then EC.log(label .. " listener failed: " .. tostring(err)) end
+C.viewListeners = {}
+function C.onViews(fn) C.viewListeners[#C.viewListeners + 1] = fn end
+local VIEW_SCOPES = { wallet = true, market = true, auction = true, mail = true, shop = true,
+    transactions = true, audit = true, players = true, whitelist = true, leaderboard = true }
+handlers["views.changed"] = function(args)
+    for _, scope in ipairs(args.scopes or {}) do
+        if VIEW_SCOPES[scope] then notify(C.viewListeners, "views", scope, args) end
     end
 end
 
 handlers["rewards.state"] = function(args)
-    C.rewards = args
-    notify(C.rewardsListeners, "rewards", "state", args)
+    if args.ok == false or args.error ~= nil then
+        C.rewards, C.rewardsError = nil, args.error or "data_unreadable"
+        notify(C.rewardsListeners, "rewards", "error", args)
+    else
+        C.rewards, C.rewardsError = args, nil
+        notify(C.rewardsListeners, "rewards", "state", args)
+    end
 end
 
 handlers["rewards.checkin"] = function(args)
+    if checkinRequestId == nil or args.requestId ~= checkinRequestId then return end
+    checkinRequestId = nil
     EC.log("checkin ok=" .. tostring(args.ok) .. " error=" .. tostring(args.error) .. " amount=" .. tostring(args.amount) .. " balance=" .. tostring(args.balance))
+    if type(args.state) == "table" then
+        C.rewards, C.rewardsError = args.state, nil
+    elseif args.stateError ~= nil or args.error == "data_unreadable" or args.error == "not_ready" then
+        C.rewards, C.rewardsError = nil, args.stateError or args.error
+    end
     if args.ok then
-        if C.rewards then C.rewards.claimed = true end
-        C.toast(getText("IGUI_MinidoracatEconomy_Rewards_Granted", tostring(args.amount), C.currencyName(args.currency)))
+        local money = C.UI and C.UI.amountText or tostring
+        C.toast(getText("IGUI_MinidoracatEconomy_Rewards_Granted", money(args.amount), C.currencyName(args.currency)))
     end
     notify(C.rewardsListeners, "rewards", "checkin", args)
 end
@@ -116,7 +221,102 @@ handlers["milestone.granted"] = function(args)
 end
 
 function C.requestRewards() send("rewards.state") end
-function C.checkin() send("rewards.checkin") end
+function C.checkin()
+    local state = C.rewards
+    if not state then return end
+    local requestId = C.newRequestId()
+    checkinRequestId = requestId
+    send("rewards.checkin", { day = state.day, rewardIndex = state.claimedCount + 1, requestId = requestId })
+    return requestId
+end
+
+-- Parameterized reads use stable query keys and exact request ids; an old answer cannot
+-- restore a different currency, page, or a snapshot revoked by a privacy-setting change.
+local function pairQuery(first, second)
+    return tostring(first) .. "\1" .. tostring(second)
+end
+
+C.leaderboard = nil
+C.leaderboardError = nil
+C.leaderboardListeners = {}
+function C.onLeaderboard(fn) C.leaderboardListeners[#C.leaderboardListeners + 1] = fn end
+
+local function leaderboardArgs(query)
+    local kind, currency, season, page = string.match(query, "^(.-)\1(.-)\1(.-)\1(.*)$")
+    return { kind = kind, currency = currency ~= "" and currency or nil,
+        season = season ~= "" and season or nil, page = tonumber(page) }
+end
+
+leaderboardGate = snapshotRead("leaderboard", function(query)
+    leaderboardSentGeneration = seasonGeneration
+    return leaderboardArgs(query)
+end, function(query, requestId)
+    local args = leaderboardArgs(query)
+    args.ok, args.error, args.requestId = false, "timeout", requestId
+    handlers["leaderboard"](args)
+end)
+
+handlers["leaderboard"] = function(args)
+    if args.requestId ~= leaderboardGate.sentId then return end
+    local query = leaderboardGate.sentQuery
+    local generation = leaderboardSentGeneration
+    if leaderboardGate:accept(args, query) == "stale" then return end
+    local expected = leaderboardArgs(query)
+    local matches = args.kind == expected.kind and args.currency == expected.currency and args.season == expected.season
+    if expected.kind == "survival" then
+        matches = matches and type(args.selectedSeason) == "table" and type(args.seasonState) == "table"
+            and args.selectedSeason.id == (expected.season == "current" and args.seasonState.currentId or expected.season)
+    end
+    if args.ok == true and matches and type(args.entries) == "table" then
+        C.leaderboard, C.leaderboardError = args, nil
+        if type(args.seasonState) == "table" and generation == seasonGeneration then
+            C.seasonState = args.seasonState
+        end
+        notify(C.leaderboardListeners, "leaderboard", "state", args)
+    else
+        if args.ok == true then
+            args = { ok = false, error = "read_failed", kind = expected.kind, currency = expected.currency,
+                season = expected.season, page = expected.page, requestId = args.requestId }
+        end
+        C.leaderboardError = args.error or "read_failed"
+        if C.leaderboardError ~= "timeout" then C.leaderboard = nil end
+        notify(C.leaderboardListeners, "leaderboard", "error", args)
+    end
+end
+
+function C.requestLeaderboard(kind, currency, season, page)
+    page = page or 1
+    currency = kind == "wealth" and currency or nil
+    season = kind == "survival" and (season or "current") or nil
+    C.leaderboardError = nil
+    local query = tostring(kind) .. "\1" .. tostring(currency or "") .. "\1" .. tostring(season or "") .. "\1" .. tostring(page)
+    askSnapshot(leaderboardGate, query)
+    notify(C.leaderboardListeners, "leaderboard", "loading", { kind = kind, currency = currency, season = season, page = page })
+end
+
+function C.leaderboardBusy() return leaderboardGate:busy() end
+function C.cancelLeaderboard() leaderboardGate:clear() end
+
+handlers["seasons.changed"] = function(args)
+    if type(args.seasonState) ~= "table" then return end
+    seasonGeneration = seasonGeneration + 1
+    C.seasonState = args.seasonState
+    local query = leaderboardGate.query or leaderboardGate.sentQuery
+    local selected = query and leaderboardArgs(query) or nil
+    if selected and selected.kind == "survival" and selected.season == "current" then
+        leaderboardGate:clear()
+        leaderboardGate.pending, leaderboardGate.sentId = nil, nil
+        leaderboardGate.query, leaderboardGate.settled = nil, true
+    end
+    if C.leaderboard and C.leaderboard.kind == "survival" and C.leaderboard.season == "current" then
+        C.leaderboard, C.leaderboardError = nil, nil
+    end
+    notify(C.leaderboardListeners, "leaderboard", "seasons", args)
+    notify(C.rewardsListeners, "rewards", "season", args)
+    if args.warning == "publication_failed" then
+        C.toast(getText("IGUI_MinidoracatEconomy_Season_PublicationFailed"))
+    end
+end
 
 -- Wallet (server-authoritative view; ECWallet.lua). C.wallet = { balances, receipts, currencies }.
 C.wallet = nil
@@ -125,6 +325,7 @@ function C.onWallet(fn) C.walletListeners[#C.walletListeners + 1] = fn end
 
 
 handlers["wallet.state"] = function(args)
+    if args.requestId ~= nil and walletSnapshot:accept(args) == "stale" then return end
     C.wallet = args
     notify(C.walletListeners, "wallet", "state", args)
 end
@@ -147,8 +348,12 @@ handlers["wallet.history"] = function(args)
     notify(C.walletListeners, "wallet", "history", args)
 end
 
-function C.requestWallet() send("wallet.state") end
-function C.requestHistory(month) send("wallet.history", { month = month }) end
+function C.requestWallet() askSnapshot(walletSnapshot) end
+function C.requestHistory(month, requestId)
+    requestId = requestId or C.newRequestId()
+    send("wallet.history", { month = month, requestId = requestId })
+    return requestId
+end
 
 -- ---------- terminals / shop / mailbox (stage C) ----------
 
@@ -186,22 +391,36 @@ function C.registerTerminal(x, y, z, kind, requestId) send("terminal.register", 
 function C.unregisterTerminal(id, requestId) send("terminal.unregister", { id = id, requestId = requestId }) end
 function C.demolishTerminal(x, y, z, requestId) send("terminal.demolish", { x = x, y = y, z = z, requestId = requestId }) end
 
--- Shop snapshot (shop.list / shop.buy replies carry the same fields): { revision, currency,
--- items = { {id, item, qty, price, dailyCap, category, enabled, remaining?, override?}, ... },
--- count, file, dayEndsMs, countMax, atTerminal, unclaimed }.
+-- Shop snapshots carry per-SKU prices[currency], a shared unit quota, and per-currency buyback
+-- budgets. Every transaction names its currency; there is no page-level settlement currency.
 C.shop = nil
 C.shopListeners = {}
 function C.onShop(fn) C.shopListeners[#C.shopListeners + 1] = fn end
 
 
 handlers["shop.list"] = function(args)
+    if args.requestId ~= nil and shopSnapshot:accept(args) == "stale" then return end
     C.shop = args
     setUnclaimed(args)
     notify(C.shopListeners, "shop", "list", args)
 end
+handlers["shop.stock"] = function(args)
+    if not C.shop or C.shop.revision ~= args.revision then
+        notify(C.viewListeners, "views", "shop", args)
+        return
+    end
+    for _, item in ipairs(C.shop.items or {}) do
+        if item.id == args.id then
+            item.remaining = args.remaining
+            notify(C.shopListeners, "shop", "stock", args)
+            return
+        end
+    end
+end
 
 -- Reply of one purchase: { ok, error?, requestId, txId?, item, qty, total, currency, delivered,
--- deliveryError?, balance, revision, remaining?, unclaimed }.
+-- deliveryError?, deliveredQty, remainingQty, childMailId?, balance, revision,
+-- remaining?, unclaimed }. `delivered` stays a boolean; the Qty fields count physical items.
 handlers["shop.buy"] = function(args)
     setUnclaimed(args)
     if args.ok then C.requestWallet() end
@@ -212,7 +431,26 @@ end
 -- Buyback (stage G). shop.candidates: { ok, id, item, itemIds, count, unitQty, bidPrice, revision,
 -- buyback = { enabled, accountRemaining, serverRemaining, skuRemaining? } }; shop.sell: { ok, error?,
 -- requestId, txId?, item, qty, count, total, currency, balance, revision, buyback }.
+local function sellCandidatesArgs(query)
+    local id, currency = string.match(query, "^(.-)\1(.*)$")
+    return { id = id, currency = currency }
+end
+
+local sellCandidatesGate = snapshotRead("shop.candidates", sellCandidatesArgs, function(query, requestId)
+    local args = sellCandidatesArgs(query)
+    args.ok, args.error, args.requestId = false, "timeout", requestId
+    handlers["shop.candidates"](args)
+end)
+
 handlers["shop.candidates"] = function(args)
+    if args.requestId ~= sellCandidatesGate.sentId then return end
+    local query = sellCandidatesGate.sentQuery
+    if sellCandidatesGate:accept(args, query) == "stale" then return end
+    local expected = sellCandidatesArgs(query)
+    if args.ok == true and (args.id ~= expected.id or args.currency ~= expected.currency) then
+        args = { ok = false, error = "read_failed", id = expected.id,
+            currency = expected.currency, requestId = args.requestId }
+    end
     notify(C.shopListeners, "shop", "candidates", args)
 end
 
@@ -229,24 +467,38 @@ handlers["exchange.notice"] = function(args)
     C.toast(getText("IGUI_MinidoracatEconomy_Exchange_Notice_deposited", money(args.amount), C.currencyName(args.currency), tostring(math.floor(tonumber(args.points) or 0))))
 end
 
-function C.requestShop() send("shop.list") end
-function C.buy(id, count, revision, requestId) send("shop.buy", { id = id, count = count, revision = revision, requestId = requestId }) end
-function C.requestSellCandidates(id) send("shop.candidates", { id = id }) end
-function C.sell(id, itemIds, revision, requestId) send("shop.sell", { id = id, itemIds = itemIds, revision = revision, requestId = requestId }) end
+function C.requestShop() askSnapshot(shopSnapshot) end
+function C.buy(id, count, currency, revision, requestId, acceptMail)
+    send("shop.buy", { id = id, count = count, currency = currency, revision = revision, requestId = requestId, acceptMail = acceptMail })
+end
+function C.sell(id, itemIds, currency, revision, requestId)
+    send("shop.sell", { id = id, itemIds = itemIds, currency = currency, revision = revision, requestId = requestId })
+end
+function C.requestSellCandidates(id, currency)
+    askSnapshot(sellCandidatesGate, pairQuery(id, currency))
+end
+function C.cancelSellCandidates() sellCandidatesGate:clear() end
 
--- Mailbox: { entries = { {id, kind, item, qty, price, txId, at}, ... }, unclaimed, atTerminal }.
+-- Mailbox: { entries = { {id, kind, item, qty, price, currency, seller?, txId, at}, ... }, unclaimed,
+-- atTerminal }. `seller` is the account on the other side of a real trade, written by the server
+-- from its own record of the deal; a shop purchase, a return and every letter written before the
+-- field simply have none.
 C.mail = nil
 C.mailListeners = {}
 function C.onMail(fn) C.mailListeners[#C.mailListeners + 1] = fn end
 
 
 handlers["mail.list"] = function(args)
+    if args.requestId ~= nil and mailSnapshot:accept(args) == "stale" then return end
     C.mail = args
     setUnclaimed(args)
     notify(C.mailListeners, "mail", "list", args)
 end
 
--- Reply of one claim: { ok, error?, requestId, mailId, item, qty, entries, unclaimed }.
+-- Reply of one claim: { ok, error?, requestId, mailId, item, qty, deliveredQty?, remainingQty?,
+-- childMailId?, entries, unclaimed }. A claim that only settled part of the letter
+-- answers ok=false with error='delivery_partial': deliveredQty went into the backpack and
+-- remainingQty stayed in the letter, which is still there to be claimed again.
 handlers["mail.claim"] = function(args)
     setUnclaimed(args)
     if C.mail then
@@ -256,9 +508,103 @@ handlers["mail.claim"] = function(args)
     end
     notify(C.mailListeners, "mail", "claim", args)
 end
+handlers["mail.claimAll"] = function(args)
+    setUnclaimed(args)
+    if C.mail then
+        C.mail.entries = args.entries or C.mail.entries
+        C.mail.unclaimed = args.unclaimed or C.mail.unclaimed
+        C.mail.usage = args.usage or C.mail.usage
+    end
+    notify(C.mailListeners, "mail", "claimAll", args)
+end
 
-function C.requestMail() send("mail.list") end
+function C.requestMail() askSnapshot(mailSnapshot) end
 function C.claimMail(mailId, requestId) send("mail.claim", { mailId = mailId, requestId = requestId }) end
+function C.claimMailBatch(mailIds, requestId)
+    send("mail.claimAll", { mailIds = mailIds, requestId = requestId })
+end
+
+-- ---------- recovery (asset conservation) ----------
+-- Units the server is holding back because it cannot prove where they came from: they are
+-- neither handed over nor written off until an admin has reconciled them, and the evidence is
+-- kept either way. The server pushes the count when the player logs in and whenever it moves
+-- (recovery.status { held }). This is a read for the player, so it is worded once per new
+-- number -- never per frame, and never again for a number that has not changed. A held count of
+-- zero says nothing at all: there is nothing waiting.
+C.recoveryHeld = 0
+
+handlers["recovery.status"] = function(args)
+    local n = tonumber(args.held)
+    if n == nil then return end
+    n = math.max(0, math.floor(n))
+    local previous = C.recoveryHeld
+    C.recoveryHeld = n
+    if n > 0 and n ~= previous then
+        C.toast(getText("IGUI_MinidoracatEconomy_Recovery_Held", tostring(n)))
+    end
+end
+
+-- What became of the items a write produced, worded for a toast. The outcome is a delivery code
+-- (`deliveryError` next to a purchase's `delivered = false`, or the `error` of a claim, which is
+-- itself the outcome); any other code is not a delivery answer and is left to the caller's own
+-- error space. The counts are items and the mailbox figure is letters still waiting, so a
+-- partial hand-over never reads as "the whole thing failed" and a parked one never as "all
+-- claimed". deliveredQty = nil means the server could not confirm a count, and an unknown is
+-- never worded as zero. This lives in the transport because the auction notice has to toast
+-- without any page being open.
+local DELIVERY_CODES = { mailbox = true, backpack_full = true, delivery_failed = true, delivery_partial = true }
+
+function C.deliveryText(args)
+    if type(args) ~= "table" then return nil end
+    local code = args.deliveryError
+    if code == nil and args.ok ~= true then code = args.error end
+    if code == nil and args.delivered == false then code = "mailbox" end
+    if type(code) ~= "string" or DELIVERY_CODES[code] ~= true then return nil end
+    local key = "IGUI_MinidoracatEconomy_"
+    local left = tostring(math.max(0, math.floor(tonumber(args.unclaimed) or C.unclaimed or 0)))
+    local done = tonumber(args.deliveredQty)
+    if code == "delivery_partial" then
+        return getText(key .. "Delivery_Partial", tostring(math.floor(done or 0)),
+            tostring(math.floor(tonumber(args.remainingQty) or 0)), left)
+    end
+    if code == "delivery_failed" then
+        return getText(key .. "Delivery_Failed", getTextOrNull(key .. "Shop_Error_delivery_failed") or code, left)
+    end
+    return getText(key .. "Shop_Parked", left)
+end
+
+local function finiteWeight(value)
+    return type(value) == "number" and value >= 0 and value < math.huge
+end
+
+-- Preview only: encumbrance is not the hard container capacity. The server prepares the real
+-- items and checks again before debit (ItemContainer.java:195-237, 2247-2270).
+function C.deliveryPreview(fullType, qty, unitWeight)
+    local out = { known = false, qty = qty }
+    if not finiteWeight(qty) or qty < 1 or qty ~= math.floor(qty) then return out end
+    if unitWeight == nil then
+        local ok, value = pcall(function()
+            local script = ScriptManager.instance:FindItem(fullType)
+            return script and script:getActualWeight()
+        end)
+        if ok then unitWeight = value end
+    end
+    if not finiteWeight(unitWeight) or not finiteWeight(qty * unitWeight) then return out end
+    local player = getPlayer()
+    if not player then return out end
+    local ok, capacity, weight, limit, fits = pcall(function()
+        local inv = player:getInventory()
+        return inv:getEffectiveCapacity(player), inv:getCapacityWeight(), inv:getMaxWeight(),
+            inv:hasRoomFor(player, qty * unitWeight)
+    end)
+    if not ok or not finiteWeight(capacity) or not finiteWeight(weight)
+        or not finiteWeight(limit) or type(fits) ~= "boolean" then return out end
+    out.known, out.totalWeight = true, qty * unitWeight
+    out.freeCapacity, out.carriedWeight, out.encumbranceLimit = math.max(0, capacity - weight), weight, limit
+    out.fitQty = weight <= capacity and (unitWeight == 0 and qty or math.min(qty, math.floor(out.freeCapacity / unitWeight))) or 0
+    out.willMail = not fits
+    return out
+end
 
 -- ---------- market (stage D) ----------
 
@@ -282,11 +628,11 @@ function C.onMarket(fn) C.marketListeners[#C.marketListeners + 1] = fn end
 
 
 handlers["market.browse"] = function(args)
-    C.market = args
     notify(C.marketListeners, "market", "browse", args)
 end
 
 handlers["market.mine"] = function(args)
+    if args.requestId ~= nil and listingsSnapshot:accept(args) == "stale" then return end
     C.myListings = args
     notify(C.marketListeners, "market", "mine", args)
 end
@@ -307,14 +653,16 @@ handlers["market.list"] = function(args)
     notify(C.marketListeners, "market", "list", args)
 end
 
--- market.buy reply: { ok, error?, requestId, txId?, listingId, item, price, tax, delivered, deliveryError?, balance, unclaimed }
+-- market.buy reply: { ok, error?, requestId, txId?, listingId, item, price, tax, delivered,
+-- deliveryError?, deliveredQty, remainingQty, childMailId?, balance, unclaimed }
 handlers["market.buy"] = function(args)
     setUnclaimed(args)
     if args.ok then C.requestWallet() end
     notify(C.marketListeners, "market", "buy", args)
 end
 
--- market.cancel reply: { ok, error?, requestId, listingId, mailId?, delivered?, mine, unclaimed }
+-- market.cancel reply: { ok, error?, requestId, listingId, mailId?, delivered, deliveryError?,
+-- deliveredQty, remainingQty, childMailId?, mine, unclaimed }
 handlers["market.cancel"] = function(args)
     setUnclaimed(args)
     if type(args.mine) == "table" then
@@ -324,10 +672,10 @@ handlers["market.cancel"] = function(args)
     notify(C.marketListeners, "market", "cancel", args)
 end
 
--- market.history reply: the player's own ring (oldest first). A refusal (busy/server_busy)
--- must not wipe the snapshot the page is already showing.
+-- market.history reply: the player's own ring (oldest first). Transport only -- the page's read
+-- gate decides whether this answer is still the question it is asking, and the page writes
+-- C.marketHistory itself once it has accepted it. A refusal never becomes a snapshot.
 handlers["market.history"] = function(args)
-    if not args.error then C.marketHistory = args end
     notify(C.marketListeners, "market", "history", args)
 end
 
@@ -335,27 +683,36 @@ end
 -- sides of an auction (stage F): { kind = "sold"|"delisted"|"expired"|"auction_bid"|
 -- "auction_outbid"|"auction_sold"|"auction_won"|"auction_unsold"|"auction_cancelled"|
 -- "auction_refund", listingId?, auctionId?, item, qty, price, tax?, currency?, buyer?, bidder?,
--- reason?, unclaimed }. The toast has to fire without any page being open, so it lives here.
+-- reason?, mailId?, delivered?, deliveryError?, deliveredQty?, remainingQty?,
+-- unclaimed }. The toast has to fire without any page being open, so it lives here.
 -- %3 of the message: a sale nets the tax off, a cancellation names its reason, every auction
 -- money line is the amount that moved; auction_unsold uses two parameters only.
+-- A won auction is claimed for the winner before this notice is sampled, so the second line
+-- says how many items actually reached the backpack and how many letters are still waiting.
 handlers["market.notice"] = function(args)
     setUnclaimed(args)
     local kind = tostring(args.kind or "")
     local key = getTextOrNull("IGUI_MinidoracatEconomy_Market_Notice_" .. kind)
     if key then
         local money = C.UI and C.UI.amountText or tostring
+        local currency = args.currency ~= nil and C.currencyName(args.currency)
+            or getText("IGUI_MinidoracatEconomy_Market_CurrencyUnknown")
         local name = C.itemLabel(args.item)
         local qty = tostring(math.max(1, math.floor(tonumber(args.qty) or 1)))
         local third = ""
         if kind == "sold" or kind == "auction_sold" then
-            third = money((tonumber(args.price) or 0) - (tonumber(args.tax) or 0))
+            local price, tax = tonumber(args.price), tonumber(args.tax)
+            third = price and tax and (money(price - tax) .. " " .. currency) or "-"
         elseif kind == "delisted" or kind == "auction_cancelled" then
             third = (type(args.reason) == "string" and args.reason ~= "") and args.reason or "-"
         elseif kind == "auction_bid" or kind == "auction_outbid" or kind == "auction_won"
             or kind == "auction_refund" then
-            third = money(tonumber(args.price) or 0)
+            local price = tonumber(args.price)
+            third = price and (money(price) .. " " .. currency) or "-"
         end
         C.toast(getText("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, name, qty, third))
+        local note = C.deliveryText(args)
+        if note then C.toast(note) end
     end
     notify(C.marketListeners, "market", "notice", args)
 end
@@ -365,17 +722,37 @@ handlers["market.whitelist"] = function(args)
     notify(C.marketListeners, "market", "whitelist", args)
 end
 
+-- market.sellers reply: { ok, error?, query, context, requestId, players = { {username, online},
+-- ... }, total, truncated }. Transport only -- the candidate box that asked for it matches the
+-- reply against its own context and requestId (ECPlayerPicker:owns), so the market page, the
+-- auction page and the two admin pages never read each other's answer. The listener is the
+-- market one, the way every auction reply already rides it.
+handlers["market.sellers"] = function(args)
+    notify(C.marketListeners, "market", "sellers", args)
+end
+
+-- `seller` is an exact account name: the server compares it byte for byte, and it is a condition
+-- of its own -- the keyword still searches item and seller text the way it always did.
 function C.requestMarket(opts)
     opts = opts or {}
-    send("market.browse", { category = opts.category, query = opts.query, sort = opts.sort, page = opts.page })
+    send("market.browse", { category = opts.category, query = opts.query, sort = opts.sort,
+        page = opts.page, seller = opts.seller, currency = opts.currency or "all" })
 end
-function C.requestMyListings() send("market.mine") end
+function C.requestMyListings() askSnapshot(listingsSnapshot) end
 function C.requestCandidates() send("market.candidates") end
 -- `itemIds` is the whole lot the player picked; `price` is the total for it.
-function C.listItem(itemIds, price, requestId) send("market.list", { itemIds = itemIds, price = price, requestId = requestId }) end
-function C.buyListing(listingId, price, requestId) send("market.buy", { listingId = listingId, price = price, requestId = requestId }) end
+function C.listItem(itemIds, price, currency, requestId)
+    send("market.list", { itemIds = itemIds, price = price, currency = currency, requestId = requestId })
+end
+function C.buyListing(listingId, price, currency, requestId, acceptMail)
+    send("market.buy", { listingId = listingId, price = price, currency = currency, requestId = requestId, acceptMail = acceptMail })
+end
 function C.cancelListing(listingId, requestId) send("market.cancel", { listingId = listingId, requestId = requestId }) end
-function C.requestMarketHistory() send("market.history") end
+function C.requestMarketHistory(requestId)
+    requestId = requestId or C.newRequestId()
+    send("market.history", { requestId = requestId })
+    return requestId
+end
 
 -- ---------- auction (stage F) ----------
 -- The auction pages ride the market listener (C.onMarket): the kinds are prefixed "auction.",
@@ -406,11 +783,11 @@ local function setMyAuctions(mine)
 end
 
 handlers["auction.browse"] = function(args)
-    C.auction = args
     notify(C.marketListeners, "market", "auction.browse", args)
 end
 
 handlers["auction.mine"] = function(args)
+    if args.requestId ~= nil and auctionsSnapshot:accept(args) == "stale" then return end
     C.myAuctions = args
     notify(C.marketListeners, "market", "auction.mine", args)
 end
@@ -432,42 +809,45 @@ handlers["auction.bid"] = function(args)
 end
 
 -- auction.cancel reply: { ok, error?, requestId, auctionId, mailId, delivered, deliveryError?,
--- mine, unclaimed }
+-- deliveredQty, remainingQty, childMailId?, mine, unclaimed }
 handlers["auction.cancel"] = function(args)
     setUnclaimed(args)
     setMyAuctions(args.mine)
     notify(C.marketListeners, "market", "auction.cancel", args)
 end
 
--- The newest auction.history this client asked for. A search is typed, so two answers can be in
--- flight at once: only the newest one may become the snapshot (the page compares the same id
--- before it repaints). A refusal (busy / server_busy / read_failed / invalid_args) keeps the
--- snapshot the page is already showing -- an error must never look like an empty result.
-local auctionHistoryId = nil
-
+-- auction.history reply. Transport only: a search is typed, so two answers can be in flight at
+-- once and only the page's own read gate knows which question is still in force. It writes
+-- C.auctionHistory after it accepted the answer; a refusal never becomes a snapshot.
 handlers["auction.history"] = function(args)
-    local stale = auctionHistoryId ~= nil and args.requestId ~= nil and args.requestId ~= auctionHistoryId
-    if not stale and not args.error then C.auctionHistory = args end
     notify(C.marketListeners, "market", "auction.history", args)
 end
 
 function C.requestAuctions(opts)
     opts = opts or {}
-    send("auction.browse", { page = opts.page, sort = opts.sort, query = opts.query })
+    send("auction.browse", { page = opts.page, sort = opts.sort, query = opts.query,
+        seller = opts.seller, currency = opts.currency or "all" })
 end
-function C.requestMyAuctions() send("auction.mine") end
+
+-- The public seller candidates both browse pages (and the two admin pages) type into. The caller
+-- owns the requestId and the throttle: this is the wire and nothing else.
+function C.requestSellers(query, context, requestId)
+    send("market.sellers", { query = query, context = context, requestId = requestId })
+end
+function C.requestMyAuctions() askSnapshot(auctionsSnapshot) end
 -- `itemIds` is the whole lot the player picked; `startPrice` is the opening bid for it.
-function C.createAuction(itemIds, startPrice, hours, requestId)
-    send("auction.create", { itemIds = itemIds, startPrice = startPrice, hours = hours, requestId = requestId })
+function C.createAuction(itemIds, startPrice, hours, currency, requestId)
+    send("auction.create", { itemIds = itemIds, startPrice = startPrice, hours = hours, currency = currency, requestId = requestId })
 end
-function C.bidAuction(auctionId, amount, requestId) send("auction.bid", { auctionId = auctionId, amount = amount, requestId = requestId }) end
+function C.bidAuction(auctionId, amount, currency, requestId)
+    send("auction.bid", { auctionId = auctionId, amount = amount, currency = currency, requestId = requestId })
+end
 function C.cancelAuction(auctionId, requestId) send("auction.cancel", { auctionId = auctionId, requestId = requestId }) end
 -- `query` searches the whole visible history (auction id, account, item), `auctionId` pins one
 -- auction and asks for its public timeline instead. Returns the requestId the reply will echo.
 function C.requestAuctionHistory(opts)
     opts = opts or {}
     local requestId = opts.requestId or C.newRequestId()
-    auctionHistoryId = requestId
     send("auction.history", { query = opts.query, auctionId = opts.auctionId, requestId = requestId })
     return requestId
 end
@@ -522,17 +902,31 @@ end
 
 local function onGameStart()
     if not isClient() then return end
+    for _, gate in ipairs(snapshotGates) do
+        gate.query, gate.wanted, gate.pending = nil, nil, nil
+        gate.sentAt, gate.sentId, gate.sentQuery = nil, nil, nil
+        gate.settled, gate.timedOut = nil, nil
+    end
+    if snapshotPumping then
+        snapshotPumping = false
+        Events.OnTick.Remove(snapshotPump)
+    end
     sent = false
     C.session = nil
     C.unclaimed = 0
     C.wallet = nil
     C.rewards = nil
+    checkinRequestId = nil
+    C.rewardsError, C.seasonState = nil, nil
+    seasonGeneration, leaderboardSentGeneration = seasonGeneration + 1, nil
+    C.leaderboard, C.leaderboardError = nil, nil
     C.shop = nil
     C.mail = nil
     C.market = nil
     C.myListings = nil
     C.candidates = nil
     C.marketHistory = nil
+    C.auctionHistory = nil
     C.terminals = {}
     Events.OnTick.Add(firstTick)
 end

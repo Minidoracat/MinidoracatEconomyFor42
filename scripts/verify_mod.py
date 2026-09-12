@@ -8,6 +8,7 @@
 涵蓋的檢查與其對應的實際事故（皆有反編譯出處，詳見 AGENTS.md 踩坑錄）：
 
   1. luac -p 語法        — 需要 PATH 有 luac；沒有則列為 SKIP 而非 PASS
+ 1b. 每個函式的累計 local — Debug 用固定 200 格記錄宣告；含離開作用域的變數，預算 190
   2. BOM / CRLF          — 有 BOM 或 CRLF 的翻譯檔會被引擎「靜默忽略」
   3. 翻譯鍵集一致          — 缺鍵的語系會顯示原始 key
   4. 裸 % 檢查           — 42.20.1 起 formatted() 遇裸 % 崩潰；只允許 %1-%9 與 %%
@@ -34,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -103,6 +105,46 @@ def iter_files(root, exts):
                 yield os.path.join(base, name)
 
 
+def lua_local_issues(listing):
+    # 家族 190 預算；不能只看 main，也不能以同時活躍的 slots 取代累計 locals。
+    summaries = re.findall(
+        r"^(?:main|function) <([^\n]+)>[^\n]*\n[^\n]*?(\d+) locals?\b",
+        listing, re.MULTILINE)
+    if not summaries:
+        return ["luac 未提供可辨識的函式摘要"]
+    return [f"{source}: {count} locals（>190，Kahlua Debug 上限 200）"
+            for source, count in summaries if int(count) > 190]
+
+
+def self_test_lua_limits():
+    compiler = shutil.which("luac")
+    if not compiler:
+        raise RuntimeError("local 邊界測試需要 luac")
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "local limits.lua")
+        for name, count, nested, reject in (
+                ("at-budget", 190, False, False),
+                ("over-budget", 191, False, True),
+                ("nested-expired-locals", 201, True, True)):
+            source = "do local value = 1 end\n" * count
+            if nested:
+                source = "local function nested()\n" + source + "end\n"
+            with open(path, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(source)
+            result = subprocess.run([compiler, "-p", "-l", path], capture_output=True,
+                                    text=True, encoding="utf-8", errors="replace", check=True)
+            if bool(lua_local_issues(result.stdout)) != reject:
+                raise AssertionError(name)
+    if not lua_local_issues(""):
+        raise AssertionError("missing compiler summary must fail closed")
+    print("PASS Lua local 邊界：190／191、內層函式的失效作用域、缺少編譯摘要")
+
+
+if __name__ == "__main__" and "--self-test-lua-limits" in sys.argv:
+    self_test_lua_limits()
+    sys.exit(0)
+
+
 MEDIA_DIRS = find_media()
 if not MEDIA_DIRS:
     print("找不到 MOD/*/Contents/mods/*/42/media，中止")
@@ -115,13 +157,20 @@ LUA_FILES = [f for m in MEDIA_DIRS for f in iter_files(os.path.join(m, "lua"), {
 luac = shutil.which("luac")
 if not luac:
     skip("Lua 語法（luac -p）", "PATH 沒有 luac")
+    skip("Kahlua local 預算（每個函式 ≤190）", "PATH 沒有 luac")
 else:
-    bad = []
+    bad, bad_limits = [], []
     for f in LUA_FILES:
-        r = subprocess.run([luac, "-p", f], capture_output=True, text=True)
+        r = subprocess.run([luac, "-p", "-l", f], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             bad.append(r.stderr.strip().splitlines()[-1] if r.stderr else f)
+            bad_limits.append(f"{os.path.relpath(f, REPO)}: 語法失敗，無法檢查 local 預算")
+        else:
+            bad_limits.extend(lua_local_issues(r.stdout))
     fail("Lua 語法（luac -p）", bad) if bad else ok(f"Lua 語法（luac -p，{len(LUA_FILES)} 檔）")
+    fail("Kahlua local 預算（每個函式 ≤190）", bad_limits) if bad_limits \
+        else ok("Kahlua local 預算（每個函式 ≤190）")
 
 # ---- 2. BOM / CRLF ----
 bad = []
@@ -144,6 +193,7 @@ fail("BOM / CRLF（42/media 下）", bad) if bad else ok("BOM / CRLF（42/media 
 # 刻意不含 printf 旗標字元（-+空白#0）：含空白旗標會讓「50% done」的「% d」被解析成
 # 合法指令而漏抓——翻譯實務上只會出現簡單的 %s/%d/%.1f，罕見旗標用法交給豁免清單
 PRINTF_RE = re.compile(r"%\d*(?:\.\d+)?[sdifuxXcqgGeE]")
+TRANSLATION_PREFIXES = {"IG_UI.json": "IGUI_", "UI.json": "UI_", "Sandbox.json": "Sandbox_"}
 
 
 def find_bare_pct(value, tolerant):
@@ -175,6 +225,7 @@ for m in MEDIA_DIRS:
     mismatch, badpct, broken = [], [], []
     for n in names:
         keysets = {}
+        prefix = TRANSLATION_PREFIXES.get(n)
         for l in langs:
             p = os.path.join(troot, l, n)
             if not os.path.isfile(p):
@@ -188,6 +239,8 @@ for m in MEDIA_DIRS:
                 continue
             keysets[l] = set(data)
             for k, v in data.items():
+                if prefix and not k.startswith(prefix):
+                    broken.append(f"{l}/{n}: {k} 必須放在對應前綴的翻譯檔")
                 if find_bare_pct(v, tolerant):
                     badpct.append(f"{l}/{n} 的 {k}")
         if len(keysets) > 1:
@@ -196,9 +249,9 @@ for m in MEDIA_DIRS:
                 if ks != base:
                     mismatch.append(f"{n}: {l} 鍵集不一致（差 {len(ks ^ base)} 鍵）")
     if broken:
-        fail("翻譯 JSON 可解析", broken)
+        fail("翻譯 JSON 與檔案分類", broken)
     else:
-        ok("翻譯 JSON 可解析")
+        ok("翻譯 JSON 與檔案分類")
     fail("翻譯鍵集一致", mismatch) if mismatch else ok(f"翻譯鍵集一致（{'/'.join(langs)}）")
     pct_label = "翻譯值無裸 %（翻譯包模式：另接受 printf 指令）" if tolerant else "翻譯值無裸 %（僅 %1-%9 與 %%）"
     fail(pct_label, sorted(set(badpct))) if badpct else ok(pct_label)

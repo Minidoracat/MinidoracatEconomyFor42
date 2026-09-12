@@ -29,10 +29,10 @@ local S = EC and EC.Server
 local X = EC and EC.Export
 local T = EC and EC.Terminal
 local Mk = EC and EC.Market
-if not S or not S.AUTHORITY or not X or not T or not Mk then
+local Cfg = EC and EC.Config
+if not S or not S.AUTHORITY or not X or not T or not Mk or not Cfg then
     return
 end
-
 EC.Radio = EC.Radio or {}
 local Rd = EC.Radio
 
@@ -40,10 +40,14 @@ Rd.CATEGORY = "Economy"
 Rd.LATEST_MAX = 3               -- listings named per broadcast
 Rd.MESSAGE_MAX = 200            -- spec 17.3: one short line, never a wall of text
 Rd.LANGUAGES = { CH = true, CN = true, EN = true, JP = true }
-Rd.TEMPLATE_KEYS = { "Radio_Empty", "Radio_Summary", "Radio_Latest", "Radio_Item", "Radio_ItemQty", "Radio_Sep", "Radio_Auctions", "Radio_Channel" }
+Rd.TEMPLATE_KEYS = { "Radio_Empty", "Radio_Summary", "Radio_Latest", "Radio_Item", "Radio_ItemQty",
+    "Radio_ItemCur", "Radio_ItemQtyCur", "Radio_Sep", "Radio_Auctions", "Radio_Channel" }
+-- a price on the air is only a number until the currency is named with it
+for _, id in ipairs(EC.CURRENCY_ORDER) do
+    Rd.TEMPLATE_KEYS[#Rd.TEMPLATE_KEYS + 1] = "Currency_" .. id
+end
 
 local md = nil
-local lastBroadcast = 0
 local templates = {}            -- lang -> { key = text } (loaded once per language)
 local channelRegistered = nil   -- frequency the server registered its channel name for
 
@@ -122,6 +126,17 @@ local function itemLabel(fullType)
     return tostring(fullType)
 end
 
+-- The currency's display name: the admin override first (that is the name players see
+-- everywhere else), then the registry's own key through the same template path as the rest of
+-- the line, so a broadcast in the sandbox's RadioLanguage is not half in another language.
+function Rd.currencyName(id)
+    if type(id) ~= "string" or id == "" then return nil end
+    local def = Cfg.currency(id)
+    if def and type(def.nameOverride) == "string" and def.nameOverride ~= "" then return def.nameOverride end
+    if EC.CURRENCIES[id] == nil then return nil end
+    return Rd.text("Currency_" .. id)
+end
+
 -- ---------- message ----------
 
 -- One line: listing count + sellers, then the newest listings (name, qty, price).
@@ -146,8 +161,17 @@ function Rd.compose()
         local l = rows[i]
         local name = itemLabel(l.item)
         local price = EC.amountText and EC.amountText(l.price) or tostring(l.price)
+        -- a listing whose currency this server could not prove is still on the board; its
+        -- price goes out without a currency name rather than with a borrowed one
+        local currency = Rd.currencyName(l.currency)
         if (l.qty or 1) > 1 then
-            parts[#parts + 1] = Rd.text("Radio_ItemQty", name, tostring(l.qty), price)
+            if currency then
+                parts[#parts + 1] = Rd.text("Radio_ItemQtyCur", name, tostring(l.qty), price, currency)
+            else
+                parts[#parts + 1] = Rd.text("Radio_ItemQty", name, tostring(l.qty), price)
+            end
+        elseif currency then
+            parts[#parts + 1] = Rd.text("Radio_ItemCur", name, price, currency)
         else
             parts[#parts + 1] = Rd.text("Radio_Item", name, price)
         end

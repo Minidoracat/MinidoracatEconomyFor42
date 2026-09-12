@@ -62,7 +62,7 @@ local fontH = U.fontH
 
 local function framework()
     local ui = MinidoracatUI and MinidoracatUI.v1
-    if ui and ui.API_MAJOR == 1 and ui.API_REVISION >= 3 and ui.CAPABILITIES
+    if ui and ui.API_MAJOR == 1 and ui.API_REVISION >= 6 and ui.CAPABILITIES
         and ui.CAPABILITIES.theme == true and ui.CAPABILITIES.skin == true
         and ui.CAPABILITIES.virtualList == true then
         return ui
@@ -82,7 +82,7 @@ function U.init()
     local ui = framework()
     if not ui then
         if not U.warned then
-            EC.log("MinidoracatUI v1 (rev>=3, virtualList) missing: Economy Center UI disabled")
+            EC.log("MinidoracatUI v1 (rev>=6, virtualList) missing: Economy Center UI disabled")
             U.warned = true
         end
         return nil
@@ -127,6 +127,27 @@ function U.itemName(fullType)
         if ok and type(name) == "string" and name ~= "" then return name end
     end
     return tostring(fullType or "-")
+end
+
+-- Item icon (Item.java:1650-1652), cached per fullType for the whole session; false = asked and
+-- missing. Every geometry change rebuilds every row, and ScriptManager lookups are not free.
+local itemTextures = {}
+function U.itemTexture(fullType)
+    if type(fullType) ~= "string" then return nil end
+    local cached = itemTextures[fullType]
+    if cached ~= nil then return cached or nil end
+    local tex = nil
+    pcall(function()
+        local script = ScriptManager and ScriptManager.instance and ScriptManager.instance:FindItem(fullType)
+        if script then tex = script:getNormalTexture() end
+    end)
+    itemTextures[fullType] = tex or false
+    return tex
+end
+
+-- Shop catalog category: the mod's own label, falling back to the raw key the file wrote.
+function U.categoryText(category)
+    return getTextOrNull(T .. "Shop_Cat_" .. tostring(category)) or tostring(category or "-")
 end
 
 function U.newEntry(width, height, opts)
@@ -236,6 +257,67 @@ function U.fitText(str, maxW, font)
     return best
 end
 
+-- A transaction may have several receipt lines. Key the immutable record, not its txId;
+-- rollback status and local sort position are annotations, not record identity.
+function U.recordKey(record)
+    local immutable = {}
+    for key, value in pairs(record) do
+        if key ~= "rolledBack" and key ~= "ord" then immutable[key] = value end
+    end
+    return EC.jsonEncode(immutable)
+end
+
+-- Split on the same UTF-16/UTF-8 boundaries as fitText. Used by scrolling detail views;
+-- the unwrapped value is retained separately for copying.
+function U.wrapText(s, w, maxLines)
+    local out, rest = {}, tostring(s or "")
+    while rest ~= "" and #out < maxLines do
+        local cut = fitText(rest, w)
+        if cut == rest or string.sub(cut, -3) ~= "..." then
+            out[#out + 1] = rest
+            rest = ""
+        else
+            local n = #cut - 3
+            if n <= 0 then
+                out[#out + 1] = cut
+                rest = ""
+            else
+                out[#out + 1] = string.sub(rest, 1, n)
+                rest = string.sub(rest, n + 1)
+            end
+        end
+    end
+    return out
+end
+
+function U.setWrappedText(box, value, width)
+    -- UITextBox2.update does not run UIElement's deferred resize pass. Place its scrollbar
+    -- explicitly after the caller assigned the final box size, even when the text is unchanged.
+    local scroll = box.vscroll
+    if scroll then
+        if scroll.anchorRight then scroll:setAnchorRight(false) end
+        if scroll.anchorBottom then scroll:setAnchorBottom(false) end
+        local x = math.max(0, box.width - scroll.width)
+        if scroll.x ~= x then scroll:setX(x) end
+        if scroll.y ~= 0 then scroll:setY(0) end
+        if scroll.height ~= box.height then scroll:setHeight(box.height) end
+    end
+    value = tostring(value or "")
+    width = math.max(80, width - 20)
+    if box.ecRawText == value and box.ecWrapWidth == width then return end
+    local changed = box.ecRawText ~= value
+    local lines = {}
+    for line in (string.gsub(value, "\r\n", "\n") .. "\n"):gmatch("(.-)\n") do
+        if line == "" then lines[#lines + 1] = ""
+        else
+            for _, part in ipairs(U.wrapText(line, width, math.huge)) do lines[#lines + 1] = part end
+        end
+    end
+    box.ecRawText, box.ecWrapWidth = value, width
+    U.setEntryText(box, table.concat(lines, "\n"))
+    if changed then box:setYScroll(0) end
+end
+
 function U.textRight(el, str, rightX, y, token, font)
     text(el, str, rightX - textWidth(str, font), y, token, font)
 end
@@ -256,6 +338,7 @@ end
 -- 64 px texture (EC.CURRENCIES[id].iconDefault), else a gold dot.
 local coinTextures = {}
 function U.drawCoin(el, id, x, y, size)
+    if type(id) ~= "string" or EC.CURRENCIES[id] == nil then return end
     local cache = EC.IconCache
     local tex = cache and cache.texture(id) or nil
     if not tex then
@@ -329,6 +412,24 @@ function U.durationText(ms)
         return getText(T .. "Time_HM", tostring(math.floor(minutes / 60)), tostring(minutes % 60))
     end
     return getText(T .. "Time_Minutes", tostring(minutes))
+end
+
+function U.realDurationText(ms)
+    if type(ms) ~= "number" or ms ~= ms or ms < 0 or ms == math.huge then
+        return getText(T .. "Rewards_SeasonUnknown")
+    end
+    local minutes = math.ceil(ms / 60000)
+    return getText(T .. "Season_RealDuration", tostring(math.floor(minutes / 1440)),
+        tostring(math.floor(minutes / 60) % 24), tostring(minutes % 60))
+end
+
+function U.survivalText(minutes)
+    if type(minutes) ~= "number" or minutes ~= minutes or minutes < 0 or minutes == math.huge then
+        return getText(T .. "Season_SurvivalUnknown")
+    end
+    minutes = math.floor(minutes)
+    return getText(T .. "Season_SurvivalTime", tostring(math.floor(minutes / 1440)),
+        tostring(math.floor(minutes / 60) % 24), tostring(minutes % 60))
 end
 
 function U.amountText(n)
@@ -478,14 +579,15 @@ function Button:render()
             textToken = hovered and "text" or "textMuted"
         end
     else -- chip
+        local stateToken = self.enable and self.stateToken or nil
         if self.active then
             fill(self, 0, 0, w, h, "selected", "pill")
-            border(self, 0, 0, w, h, "accent", "pill")
-            textToken = "accent"
+            border(self, 0, 0, w, h, stateToken or "accent", "pill")
+            textToken = stateToken or "accent"
         else
             if hovered then fill(self, 0, 0, w, h, "hover", "pill") end
-            border(self, 0, 0, w, h, "border", "pill")
-            textToken = hovered and "text" or "textMuted"
+            border(self, 0, 0, w, h, stateToken or "border", "pill")
+            textToken = stateToken or (hovered and "text" or "textMuted")
         end
     end
     if not self.enable then textToken = "textFaint" end
@@ -604,36 +706,109 @@ function TableCell:render()
         end
         self.cellCols, self.cellWidth = cols, w
     end
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
+    local lit = U.rowBackground(self)
     local ty = math.floor((h - fontH.small) / 2)
     for i, str in ipairs(self.cellText) do
         local col = cols[i]
         if col then
             local token = e.muted and "textFaint" or ((e.tokens and e.tokens[i]) or "text")
+            if lit and (token == "textFaint" or token == "textMuted") then token = "text" end
             if col.right then textRight(self, str, col.x, ty, token) else text(self, str, col.x, ty, token) end
         end
     end
     if e.muted then strike(self, cols[1].x, ty, w - cols[1].x - PAD) end
 end
 
--- Two-line administrative history rows; the transaction page adds its selection band.
--- textMuted preserves readable secondary text on selected rows; amountToken may override the accent.
+-- The base cell owns the background; derived rows add their explicit action buttons afterwards.
 local AdminHistoryCell = ISPanel:derive("MinidoracatEconomyAdminHistoryCell")
 U.AdminHistoryCell = AdminHistoryCell
 
 function AdminHistoryCell:render()
     local e = self.entry
     if not e then return end
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    text(self, e.headText, PAD, e.line1Y, e.rolled and "textMuted" or "text")
-    textRight(self, e.amountLabel, e.amountRight, e.line1Y, e.rolled and "textMuted" or (e.amountToken or "accent"))
-    text(self, e.metaText, PAD, e.line2Y, "textMuted")
+    local lit = U.rowBackground(self)
+    local secondary = lit and "text" or "textMuted"
+    text(self, e.headText, PAD, e.line1Y, e.rolled and secondary or "text")
+    textRight(self, e.amountLabel, e.amountRight, e.line1Y, e.rolled and secondary or (e.amountToken or "accent"))
+    text(self, e.metaText, PAD, e.line2Y, secondary)
     if e.rolled then
         U.strike(self, PAD, e.line1Y, e.headW)
-        textRight(self, e.rolledLabel, e.amountRight, e.line2Y, "textMuted")
+        textRight(self, e.rolledLabel, e.amountRight, e.line2Y, secondary)
     end
+end
+
+-- Every modal this window puts over itself (the buy / sell dialog, the one trade dialog the
+-- market and auction pages share with its backpack picker, the preference popover) is a small
+-- panel in the middle of a page that stays fully painted underneath. Without a backdrop the
+-- page's own chips and tables keep taking every click that lands beside the dialog: a claim, a
+-- listing or a page switch fired while a purchase is still waiting for its confirm. This guard
+-- is one child that covers the workspace, dims what it covers so the dialog reads against it,
+-- and swallows every mouse event. The title row is left out on purpose — the window can still
+-- be moved, collapsed and closed. It is raised under whichever modal is up
+-- (Panel:updateModalGuard), never over it, and it is no alwaysOnTop root: it lives inside this
+-- window and covers nothing else on screen.
+local ModalGuard = ISPanel:derive("MinidoracatEconomyModalGuard")
+
+function ModalGuard:prerender()
+    U.theme:fill(self, 0, 0, self.width, self.height, "surface", nil, 0.55)
+end
+
+function ModalGuard:render() end
+function ModalGuard:onMouseDown() return true end
+function ModalGuard:onMouseUp() return true end
+function ModalGuard:onRightMouseDown() return true end
+function ModalGuard:onRightMouseUp() return true end
+function ModalGuard:onMouseMove() return true end
+function ModalGuard:onMouseWheel() return true end
+
+-- Child bringToTop is deferred and preserves old sibling order (UIElement.java:1663-1673).
+-- The parent's BringToTop is immediate, so the backdrop cannot overtake its dialog.
+function ModalGuard:raise(top)
+    self.parent.javaObject:BringToTop(self.javaObject)
+    self.parent.javaObject:BringToTop(top.javaObject)
+end
+
+-- One read-only, scrollable surface for player and administrative details.
+function U.newReader(owner, width, height)
+    local box = U.newEntry(width, height, { multiline = true, maxLines = 12 })
+    box.target = owner
+    local bg, fg = color("well"), color("text")
+    box.backgroundColor = { r = bg.r, g = bg.g, b = bg.b, a = 1 }
+    U.setEntryEditable(box, false)
+    box:setSelectable(false)
+    box:setTextRGBA(fg.r, fg.g, fg.b, fg.a)
+    owner:addChild(box)
+    box:addScrollBars()
+    return box
+end
+
+function U.newModalGuard(owner)
+    local guard = ISPanel.new(ModalGuard, 0, 0, 1, 1)
+    guard.background = false
+    guard:initialise()
+    owner:addChild(guard)
+    guard:setVisible(false)
+    return guard
+end
+
+function U.detailHeight(availableH, rowHeight, chromeH, controlsH)
+    local height = math.min(fontH.small * 8 + 12,
+        availableH - controlsH - chromeH - rowHeight * 3)
+    if height < fontH.small * 6 + 12 then return 0, true end
+    return height, false
+end
+
+function U.rowBackground(cell)
+    if cell.index and cell.index % 2 == 0 then
+        fill(cell, 0, 0, cell.width, cell.height, "card", "rect")
+    end
+    local lit = cell.list and cell.list:isSelected(cell.index) or false
+    if lit then fill(cell, 0, 0, cell.width, cell.height, "selected", "rect") end
+    if cell:isMouseOver() then
+        fill(cell, 0, 0, cell.width, cell.height, "hover", "rect")
+        lit = true
+    end
+    return lit
 end
 
 -- VirtualList factory shared by every table: rows are plain item tables, cells bind by reference.
@@ -647,12 +822,16 @@ function U.newTable(cellClass, rowHeight)
             return cell
         end,
         bindCell = function(l, cell, item, index)
+            if cell.ecResetActions then cell:ecResetActions() end
             cell.entry = item
             cell.index = index
             cell.cellText = nil
             if cellClass == Cell then cell.descText = fitText(item.desc, l.cols.descW or 9999) end
         end,
-        unbindCell = function(_, cell) cell.entry = nil end,
+        unbindCell = function(_, cell)
+            if cell.ecResetActions then cell:ecResetActions() end
+            cell.entry = nil
+        end,
         colors = { thumb = color("textFaint"), thumbHover = color("textMuted"), track = color("track") },
     })
     list.cols = {}
@@ -660,15 +839,16 @@ function U.newTable(cellClass, rowHeight)
     return list
 end
 
--- Card frame with an optional title row (CARD_TITLE_H tall).
+-- Card frame with an optional title row; callers may allocate a taller heading.
 U.CARD_TITLE_H = 36
-function U.card(el, x, y, w, h, title)
+function U.card(el, x, y, w, h, title, titleHeight)
     fill(el, x, y, w, h, "card")
     border(el, x, y, w, h, "border")
     if title then
-        text(el, title, x + PAD, y + math.floor((U.CARD_TITLE_H - fontH.medium) / 2), "text", UIFont.Medium)
+        titleHeight = titleHeight or U.CARD_TITLE_H
+        text(el, title, x + PAD, y + math.floor((titleHeight - fontH.medium) / 2), "text", UIFont.Medium)
         local c = color("border")
-        el:drawRect(x + 1, y + U.CARD_TITLE_H, w - 2, 1, c.a * U.alpha, c.r, c.g, c.b)
+        el:drawRect(x + 1, y + titleHeight, w - 2, 1, c.a * U.alpha, c.r, c.g, c.b)
     end
 end
 
