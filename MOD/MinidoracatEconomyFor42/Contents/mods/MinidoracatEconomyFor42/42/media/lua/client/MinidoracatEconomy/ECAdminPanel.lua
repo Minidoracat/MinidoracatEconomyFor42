@@ -1041,14 +1041,6 @@ local function auditChangeText(e)
     return getText(T .. "Admin_Audit_Change", auditFieldText(field), before or "-", after or "-")
 end
 
--- The shared table cell plus the selection band: the audit table is the only one whose rows are
--- picked (the detail strip under it describes the selected line).
-local AuditCell = TableCell:derive("MinidoracatEconomyAuditCell")
-
-function AuditCell:render()
-    TableCell.render(self)      -- the base cell owns zebra / selection / hover (U.rowBackground)
-end
-
 -- ---------- one player's market history (admin.marketHistory) ----------
 
 -- One history row: "kind / item / xN" over "time / counterparty / reason", the amount on the
@@ -1728,7 +1720,7 @@ function Admin:createChildren()
     self.subTabButtons = {}
     for _, tab in ipairs(TABS) do
         local title = tr("Admin_Tab_" .. tab)
-        local b = Button.create(0, 0, textWidth(title) + 28, 26, title, self, Admin.onSubTab, "tab")
+        local b = Button.create(0, 0, textWidth(title) + 28, 26, title, self, Admin.onSubTab)
         b.internal = tab
         b.active = tab == self.tab
         self:addChild(b)
@@ -1889,7 +1881,7 @@ function Admin:createChildren()
     self.auditF.accountCombo = actorCombo
     self.auditF.accountLabel = tr("Admin_Audit_Actor")
     self.auditF.accountW = actorCombo.width
-    self.auditList = U.newTable(AuditCell, rowH())
+    self.auditList = U.newTable(TableCell, rowH())
     self.auditList.onSelect = function(_, item)
         self:onAuditRow(item)
     end

@@ -24,7 +24,6 @@ local MIN_MS = 650
 local TIMEOUT_MS = 8000
 
 G.MIN_MS = MIN_MS
-G.TIMEOUT_MS = TIMEOUT_MS
 
 local Gate = {}
 Gate.__index = Gate

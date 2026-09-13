@@ -94,7 +94,6 @@ local function sortRows(list, less)
     end
     return list
 end
-St.sortRows = sortRows
 
 -- Stable account order: case-insensitive first (what a reader expects), exact bytes to break a
 -- case-only tie, so two accounts never compare equal. One rule for every list this file builds -

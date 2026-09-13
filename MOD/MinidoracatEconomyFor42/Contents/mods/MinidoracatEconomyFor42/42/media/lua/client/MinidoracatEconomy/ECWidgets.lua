@@ -1,6 +1,6 @@
 -- MinidoracatEconomyFor42 — client UI toolkit shared by the Economy Center tabs (ECPanel,
 -- ECAdminPanel): theme tokens, paint helpers over MinidoracatUIFor42 v1 (Theme/Skin), number/time
--- formatting, the skinned Button (tab / chip / primary) and the statement/table cells for VirtualList.
+-- formatting, the skinned Button (chip / primary) and table cells for VirtualList.
 --
 -- U.init() resolves the framework once per session (called by ECPanel before any window exists);
 -- every helper reads U.theme / U.Skin / U.fontH at call time, so files may alias them at load.
@@ -512,7 +512,7 @@ end
 
 color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, dateText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2 = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin, U.clockText, U.dateText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.pad2
 
--- ---------- skinned button (tab / chip / primary) ----------
+-- ---------- skinned button (chip / primary) ----------
 
 local Button = ISButton:derive("MinidoracatEconomyButton")
 U.Button = Button
@@ -569,14 +569,6 @@ function Button:render()
             fill(self, 0, 0, w, h, "well")
             border(self, 0, 0, w, h, "border")
             textToken = "textFaint"
-        end
-    elseif self.style == "tab" then
-        if hovered then fill(self, 0, 0, w, h, "hover", "rect") end
-        if self.active then
-            fill(self, 0, h - 2, w, 2, "accent", "rect")
-            textToken = "accent"
-        else
-            textToken = hovered and "text" or "textMuted"
         end
     else -- chip
         local stateToken = self.enable and self.stateToken or nil
@@ -655,36 +647,6 @@ function U.drawFocusCaption(el, x, y, w, h, caption)
     el:drawRectBorder(bx, by, bw, bh, bd.a, bd.r, bd.g, bd.b)
     text(el, caption, bx + 5, by + 3, "text")
 end
-
--- ---------- statement cell (VirtualList) ----------
-
-local Cell = ISPanel:derive("MinidoracatEconomyStatementCell")
-U.StatementCell = Cell
-
-function Cell:render()
-    local e = self.entry
-    if not e then return end
-    local cols = self.list.cols
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    if self:isMouseOver() then fill(self, 0, 0, w, h, "hover", "rect") end
-    local ty = math.floor((h - fontH.small) / 2)
-    local muted = e.rolledBack
-    local tokenText = muted and "textFaint" or "text"
-    local tokenMuted = muted and "textFaint" or "textMuted"
-    text(self, e.time, cols.time, ty, tokenMuted)
-    text(self, e.kindText, cols.kind, ty, tokenText)
-    text(self, self.descText or e.desc, cols.desc, ty, tokenMuted)
-    textRight(self, e.amountText, cols.amountR, ty, muted and "textFaint" or (e.amount >= 0 and "positive" or "negative"))
-    textRight(self, amountText(e.after), cols.balanceR, ty, tokenText)
-    if muted then
-        text(self, getText(T .. "Wallet_RolledBack"), cols.status, ty, "textFaint")
-        strike(self, cols.time, ty, cols.balanceR - cols.time)
-    else
-        text(self, "-", cols.status, ty, "textFaint")
-    end
-end
-
 
 -- ---------- generic table cell (admin tables) ----------
 -- item = { cells = { "text", ... }, tokens = { "text"|"positive"|..., ... } (optional), muted = bool }
@@ -791,13 +753,6 @@ function U.newModalGuard(owner)
     return guard
 end
 
-function U.detailHeight(availableH, rowHeight, chromeH, controlsH)
-    local height = math.min(fontH.small * 8 + 12,
-        availableH - controlsH - chromeH - rowHeight * 3)
-    if height < fontH.small * 6 + 12 then return 0, true end
-    return height, false
-end
-
 function U.rowBackground(cell)
     if cell.index and cell.index % 2 == 0 then
         fill(cell, 0, 0, cell.width, cell.height, "card", "rect")
@@ -821,12 +776,11 @@ function U.newTable(cellClass, rowHeight)
             cell.list = l
             return cell
         end,
-        bindCell = function(l, cell, item, index)
+        bindCell = function(_, cell, item, index)
             if cell.ecResetActions then cell:ecResetActions() end
             cell.entry = item
             cell.index = index
             cell.cellText = nil
-            if cellClass == Cell then cell.descText = fitText(item.desc, l.cols.descW or 9999) end
         end,
         unbindCell = function(_, cell)
             if cell.ecResetActions then cell:ecResetActions() end

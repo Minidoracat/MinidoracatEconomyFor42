@@ -109,7 +109,6 @@ A.ADJUST_ACCOUNT = "SYSTEM_ADJUST"
 A.RATE_PER_MINUTE = 10
 A.REASON_MAX = 1000                -- one JSON line in the event / audit files; "unlimited" for a text box
 A.REQUEST_ID_MAX = 64
-A.TOP_HOLDERS = 5
 A.DAILY_VERSION = 2               -- md.adminDaily shape: per currency add/sub buckets
 A.TX_QUERY_CHARS = 128            -- transactions search box (bytes, as the client sends them)
 A.TX_ID_CHARS = 96

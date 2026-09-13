@@ -107,11 +107,6 @@ function Se.currentId()
     return season and season.id or nil
 end
 
-function Se.currentNumber()
-    local season = current()
-    return season and season.number or nil
-end
-
 function Se.state()
     local season, err = current()
     if not season then return nil, err end

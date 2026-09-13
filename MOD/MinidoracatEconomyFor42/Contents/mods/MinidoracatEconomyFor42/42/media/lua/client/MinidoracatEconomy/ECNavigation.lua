@@ -68,7 +68,6 @@ local TOGGLE_ICON = 16
 local EMPTY = {}
 
 local Nav = ISPanel:derive("MinidoracatEconomyNav")
-N.Panel = Nav
 
 -- ---------- paint ----------
 

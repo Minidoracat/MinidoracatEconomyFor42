@@ -23,7 +23,7 @@
 --                                              and its loss of permission all end here.
 --   D.isOpen(owner, key?)                      visible, owned by that owner (or a descendant),
 --                                              and -- when a key is named -- showing that key.
---   D.text(owner) / D.title(owner)             what is on screen right now, for the owner only.
+--   D.text(owner)                              what is on screen right now, for the owner only.
 --
 -- Where it opens: beside the page the first record of all was read from, and from then on wherever
 -- the player last left it -- a close and a reopen, another row, another page and another owner all
@@ -489,11 +489,6 @@ end
 function D.text(owner)
     if not D.isOpen(owner) then return nil end
     return D.window.rawText
-end
-
-function D.title(owner)
-    if not D.isOpen(owner) then return nil end
-    return D.window.detailTitle
 end
 
 return D

@@ -162,7 +162,6 @@ local function rollup(day)
     end
     return normalise(r)
 end
-R.rollup = rollup
 
 -- Writer's row for one currency on one day (created on demand).
 function R.rollupCurrency(day, currency)

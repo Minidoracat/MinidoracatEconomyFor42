@@ -1208,11 +1208,6 @@ local AUCTION_SORTS = {
     { "name", "Market_Col_Item" }, { "name_desc", "Market_Col_Item" },
 }
 
-local function sortKeys(specs)
-    local keys = {}
-    for i = 1, #specs do keys[i] = specs[i][1] end
-    return keys
-end
 -- Comparing prices across currencies is not a comparison at all, so the server refuses a price
 -- sort while the browse filter is "every currency" (error currency_required). The box simply
 -- does not offer those keys there: a control that cannot be honoured must not be pressable.
@@ -1296,7 +1291,6 @@ W.newCombo = newCombo
 W.comboSelect = comboSelect
 W.comboFill = comboFill
 W.comboWidth = comboWidth
-W.sortKeys = sortKeys
 W.sortLabel = sortLabel
 W.MARKET_SORTS = MARKET_SORTS
 W.AUCTION_SORTS = AUCTION_SORTS

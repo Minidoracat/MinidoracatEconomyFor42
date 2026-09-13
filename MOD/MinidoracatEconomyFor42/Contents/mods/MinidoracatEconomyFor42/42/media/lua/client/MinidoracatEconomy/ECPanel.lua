@@ -132,7 +132,7 @@ function Panel:createChildren()
     self.tabButtons = {}
     for _, entry in ipairs(NAV_ENTRIES) do
         local title = getText(T .. "Tab_" .. entry[1])
-        local b = Button.create(0, 0, 140, ROW, title, self, Panel.onTab, "tab")
+        local b = Button.create(0, 0, 140, ROW, title, self, Panel.onTab)
         b.internal = entry[1]
         b.fullTitle = title
         b.navUtility = entry[2]
