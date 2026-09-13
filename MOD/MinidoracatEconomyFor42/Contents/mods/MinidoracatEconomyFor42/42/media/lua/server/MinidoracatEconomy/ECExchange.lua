@@ -248,8 +248,7 @@ end
 
 -- Admin / health view.
 function Ex.stats()
-    local n = 0
-    for _ in pairs(md.exchange.tombstones) do n = n + 1 end
+    local n = EC.countKeys(md.exchange.tombstones)
     local today = dailyRow(R.dayKey(EC.now()), false)
     local total = {}
     if today and type(today.total) == "table" then for k, v in pairs(today.total) do total[k] = v end end
@@ -266,8 +265,7 @@ function Ex.init(root)
     md = root
     md.exchange = md.exchange or { tombstones = {}, count = 0, daily = {} }
     if type(md.exchange.daily) ~= "table" then md.exchange.daily = {} end
-    local n = 0
-    for _ in pairs(md.exchange.tombstones) do n = n + 1 end
+    local n = EC.countKeys(md.exchange.tombstones)
     md.exchange.count = n
     lastPoll, lastPrune = 0, 0
     Cfg.emitExchangeConfig()

@@ -85,16 +85,11 @@ local function ownerSet(username, create)
     return s
 end
 
-local function ownerCount(username)
-    local s = ownerSet(username, false)
-    if not s then return 0 end
-    local n = 0
-    for _ in pairs(s) do n = n + 1 end
-    return n
-end
-
 -- Active listings of one seller: they occupy mailbox slots (ECMailbox.used).
-function Mk.ownerCount(username) return ownerCount(username) end
+function Mk.ownerCount(username)
+    local s = ownerSet(username, false)
+    return s and EC.countKeys(s) or 0
+end
 
 local function removeListing(id)
     local l = md.market.listings[id]
@@ -268,7 +263,7 @@ function Mk.browse(username, args)
         ok = true, page = page, pages = pages, total = total, items = out, categories = catList,
         currency = currency, currencies = tradableCurrencies(),
         sort = sort, category = category, query = query, seller = seller,
-        mine = ownerCount(username), maxListings = EC.sandbox("MarketMaxListings", 5),
+        mine = Mk.ownerCount(username), maxListings = EC.sandbox("MarketMaxListings", 5),
         feePercent = EC.sandbox("MarketListingFeePercent", 2), taxPercent = EC.sandbox("MarketSalesTaxPercent", 5),
         priceMin = EC.sandbox("MarketPriceMin", 1), priceMax = EC.sandbox("MarketPriceMax", 1000000),
         listingDays = EC.sandbox("MarketListingDays", 7),
@@ -330,19 +325,6 @@ end
 
 -- ---------- list-out (rule two) ----------
 
-local function findItem(inv, itemId)
-    local found = nil
-    pcall(function() found = inv:getItemWithID(itemId) end)
-    if not found then return nil end
-    -- top level only: the item must be directly in the backpack (bags are not scanned by the picker)
-    local ok, items = pcall(function() return inv:getItems() end)
-    if not ok or not items then return nil end
-    for i = 0, items:size() - 1 do
-        if items:get(i) == found then return found end
-    end
-    return nil
-end
-
 -- args = { itemIds | itemId, price, currency, requestId }: interchangeable copies from the top
 -- level of the backpack; price is for the whole lot, in the currency the seller chose. That
 -- currency is fixed into the listing here and everything downstream reads it off the listing.
@@ -385,7 +367,7 @@ function Mk.list(player, args)
     if not isInt(price, pmin, pmax) then return { ok = false, error = "price_range", min = pmin, max = pmax } end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
     if L.isFrozen(username) then return { ok = false, error = "account_frozen" } end
-    if ownerCount(username) >= EC.sandbox("MarketMaxListings", 5) then return { ok = false, error = "too_many_listings" } end
+    if Mk.ownerCount(username) >= EC.sandbox("MarketMaxListings", 5) then return { ok = false, error = "too_many_listings" } end
     if md.market.count >= Mk.MAX_LISTINGS then return { ok = false, error = "market_full" } end
     -- a listing occupies a mailbox slot from the start: whatever brings it back (sale is money,
     -- but cancel / expiry / delist are items) already has its place
@@ -394,7 +376,7 @@ function Mk.list(player, args)
     if not inv then return { ok = false, error = "item_not_found" } end
     local items, signature = {}, nil
     for _, id in ipairs(ids) do
-        local item = findItem(inv, id)
+        local item = M.findTopLevel(inv, id)
         if not item then return { ok = false, error = "item_not_found" } end
         local pass, reason = Codec.check(item)
         if not pass then return { ok = false, error = reason } end
@@ -752,7 +734,7 @@ S.handlers["market.candidates"] = function(player, args)
         items = Mk.candidates(player), atTerminal = T.near(player),
         feePercent = EC.sandbox("MarketListingFeePercent", 2), taxPercent = EC.sandbox("MarketSalesTaxPercent", 5),
         priceMin = EC.sandbox("MarketPriceMin", 1), priceMax = EC.sandbox("MarketPriceMax", 1000000),
-        mine = ownerCount(player:getUsername()), maxListings = EC.sandbox("MarketMaxListings", 5),
+        mine = Mk.ownerCount(player:getUsername()), maxListings = EC.sandbox("MarketMaxListings", 5),
         currencies = tradableCurrencies(),
         usage = M.usage(player:getUsername()),
     })

@@ -427,7 +427,7 @@ local A = EC.Admin
 
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1294
+local EXPECTED_ASSERTIONS = 1296
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -12204,6 +12204,17 @@ check(result.requestId == "live-config-publication" and result.ok == true
     and Se.state().seasons[1].durationDays == 31,
     "a post-commit config publication error still answers the matching request with its applied deadline and warning")
 onlinePlayers = {}
+end)()
+
+;(function()
+local inv = fakeInventory()
+local top, nested = { id = 1 }, { id = 2 }
+inv:AddItem(top)
+check(EC.Mailbox.findTopLevel(inv, top.id) == top,
+    "shared inventory lookup returns the actual top-level item")
+inv.getItemWithID = function() return nested end
+check(EC.Mailbox.findTopLevel(inv, nested.id) == nil,
+    "an item found by ID but absent from the top-level list cannot enter escrow")
 end)()
 
 io.write("\n")

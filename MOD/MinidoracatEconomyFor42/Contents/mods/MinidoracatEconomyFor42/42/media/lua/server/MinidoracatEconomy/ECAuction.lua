@@ -137,10 +137,7 @@ end
 
 function Au.ownerCount(username)
     local s = ownerSet(username, false)
-    if not s then return 0 end
-    local n = 0
-    for _ in pairs(s) do n = n + 1 end
-    return n
+    return s and EC.countKeys(s) or 0
 end
 
 local function add(a)
@@ -300,18 +297,6 @@ end
 
 -- ---------- list-out (rule two, shared shape with ECMarket) ----------
 
-local function findItem(inv, itemId)
-    local found = nil
-    pcall(function() found = inv:getItemWithID(itemId) end)
-    if not found then return nil end
-    local ok, items = pcall(function() return inv:getItems() end)
-    if not ok or not items then return nil end
-    for i = 0, items:size() - 1 do
-        if items:get(i) == found then return found end
-    end
-    return nil
-end
-
 -- args = { itemIds | itemId, startPrice, hours, currency, requestId }
 function Au.create(player, args)
     local username = player:getUsername()
@@ -362,7 +347,7 @@ function Au.create(player, args)
     if not inv then return { ok = false, error = "item_not_found" } end
     local items, signature = {}, nil
     for _, id in ipairs(ids) do
-        local item = findItem(inv, id)
+        local item = M.findTopLevel(inv, id)
         if not item then return { ok = false, error = "item_not_found" } end
         local pass, reason = Codec.check(item)
         if not pass then return { ok = false, error = reason } end

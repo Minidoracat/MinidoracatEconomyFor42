@@ -92,14 +92,7 @@ def clean(doc: dict[str, object]) -> tuple[dict[str, str], list[str]]:
 
 
 def render(entries: dict[str, str]) -> bytes:
-    lines = ["{"]
-    keys = sorted(entries)
-    for i, key in enumerate(keys):
-        k = json.dumps(key, ensure_ascii=False)
-        v = json.dumps(entries[key], ensure_ascii=False)
-        lines.append(f"  {k}: {v}" + ("," if i + 1 < len(keys) else ""))
-    lines.append("}")
-    return ("\n".join(lines) + "\n").encode("utf-8")
+    return (json.dumps(entries, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
 def check(path: Path) -> int:

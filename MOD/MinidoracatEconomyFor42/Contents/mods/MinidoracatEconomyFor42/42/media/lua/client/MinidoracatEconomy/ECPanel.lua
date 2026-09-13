@@ -219,7 +219,7 @@ function Panel:createChildren()
     -- A row is a read: it selects the sku and spells it out in the reader. Buying and selling
     -- are the row's own two buttons (ECRowActions), which is also the keyboard's way in - the
     -- toolbar pair below acts on the picked row for the same reason it always did.
-    self.shopList.onSelect = function(_, item) self:onShopRow(item) end
+    self.shopList.onSelect = function(_, item) self:onDetailRow("shop", item) end
     self.shopList.onRowAction = function(_, row, actionId) self:onShopAction(row, actionId) end
     self:addChild(self.shopList)
     for _, spec in ipairs({ { "Buy", "Shop_Buy", Panel.onShopBuy },
@@ -231,11 +231,11 @@ function Panel:createChildren()
     end
 
     -- ----- mailbox -----
-    -- A row is a read (Panel:onMailRow opens the reader and does nothing else). Claiming one
+    -- A row is a read (onDetailRow opens the reader and does nothing else). Claiming one
     -- letter is that row's own button; the chip above claims every letter that is ready, in
     -- segments, without ever splitting an envelope.
     self.mailList = U.newTable(MailCell, itemRowHeight())
-    self.mailList.onSelect = function(_, item) self:onMailRow(item) end
+    self.mailList.onSelect = function(_, item) self:onDetailRow("mail", item) end
     self.mailList.onRowAction = function(_, row, actionId) self:onMailAction(row, actionId) end
     self:addChild(self.mailList)
     local claimLabel = getText(T .. "Mail_ClaimAll")
@@ -271,7 +271,7 @@ function Panel:createChildren()
         sortLabel(MARKET_SORTS), self.marketSort)
     self.marketList = U.newTable(ListingCell, itemRowHeight())
     -- a listing row reads; buying it (or pulling an own one back) is the row's own button
-    self.marketList.onSelect = function(_, item) self:onMarketRow(item) end
+    self.marketList.onSelect = function(_, item) self:onDetailRow("market", item) end
     self.marketList.onRowAction = function(_, row, actionId) self:onMarketAction(row, actionId) end
     self:addChild(self.marketList)
     self.marketHistoryList = U.newTable(HistoryCell, historyRowHeight())
@@ -328,7 +328,7 @@ function Panel:createChildren()
         { "auctionBidList", "bidding" } }) do
         local context = spec[2]
         local list = U.newTable(ListingCell, itemRowHeight())
-        list.onSelect = function(_, item) self:onAuctionRow(item) end
+        list.onSelect = function(_, item) self:onDetailRow("auction", item) end
         list.onRowAction = function(_, row, actionId) self:onAuctionAction(row, actionId, context) end
         self:addChild(list)
         self[spec[1]] = list
@@ -1306,12 +1306,6 @@ function Panel:onShopSell()
     self:openBuy(row, true)
 end
 
--- A catalog row is a read: it selects the sku and opens the reader on it. Nothing is bought
--- here - the row's buy and sell buttons are the only way in, and they land in onShopAction.
-function Panel:onShopRow(row)
-    self:onDetailRow("shop", row)
-end
-
 function Panel:onShopAction(row, actionId)
     if row == nil then return end
     if actionId == "sell" then self:onShopSell() else self:onShopBuy() end
@@ -1477,12 +1471,6 @@ function Panel:submitSell(dlg)
     self.buyPending = { requestId = C.newRequestId(), at = EC.now(), name = dlg.row.name,
         sell = true, currency = dlg.currency }
     C.sell(dlg.row.id, ids, dlg.currency, revision, self.buyPending.requestId)
-end
-
--- A mailbox row is a read: it opens the reader and claims nothing. The row's own claim button
--- takes that one letter, the toolbar chip takes every letter that is ready.
-function Panel:onMailRow(row)
-    self:onDetailRow("mail", row)
 end
 
 function Panel:onMailAction(row, actionId)
@@ -2162,12 +2150,6 @@ function Panel:onMarketPage(button)
     local page = self.marketPage + button.internal
     if page < 1 or page > self.marketInfo.pages then return end
     self:requestBrowse(page)
-end
-
--- A listing row is a read: it selects the listing and spells it out in the reader, whether or
--- not this player may trade it. Buying it, and pulling an own one back, is the row's own button.
-function Panel:onMarketRow(row)
-    self:onDetailRow("market", row)
 end
 
 function Panel:onMarketAction(row, actionId)
@@ -3097,13 +3079,6 @@ function Panel:onAuctionPage(button)
     local page = self.auctionPage + button.internal
     if page < 1 or page > self.auctionInfo.pages then return end
     self:requestAuctionBrowse(page)
-end
-
--- An auction row is a read: it opens the auction's whole record. Every write and the record page
--- itself are the row's own buttons, so nothing about a row is hit-tested. The three tables
--- (browse, selling, bidding) all read the very same kind of row.
-function Panel:onAuctionRow(row)
-    self:onDetailRow("auction", row)
 end
 
 -- A button inside an auction row. The record button is a read, so it answers before any of the

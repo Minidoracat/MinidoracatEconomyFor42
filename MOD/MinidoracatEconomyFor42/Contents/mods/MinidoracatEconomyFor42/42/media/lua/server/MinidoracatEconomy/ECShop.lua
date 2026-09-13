@@ -1127,18 +1127,6 @@ end
 
 -- ---------- buyback (stage G) ----------
 
-local function findTopLevel(inv, itemId)
-    local found = nil
-    pcall(function() found = inv:getItemWithID(itemId) end)
-    if not found then return nil end
-    local ok, items = pcall(function() return inv:getItems() end)
-    if not ok or not items then return nil end
-    for i = 0, items:size() - 1 do
-        if items:get(i) == found then return found end
-    end
-    return nil
-end
-
 -- args = { id, itemIds, currency, revision, requestId }: itemIds are canonical copies of the
 -- SKU's item from the top level of the backpack, a whole number of SKU units (qty each). The
 -- player is paid the chosen currency's bidPrice per unit; the items are destroyed. Order of
@@ -1201,7 +1189,7 @@ function Shop.sell(player, args)
     local Codec = S.Codec
     local items = {}
     for _, id in ipairs(ids) do
-        local item = findTopLevel(inv, id)
+        local item = M.findTopLevel(inv, id)
         if not item then return { ok = false, error = "item_not_found" } end
         local pass, reason = Codec.stateCheck(item)
         if not pass then return { ok = false, error = reason } end

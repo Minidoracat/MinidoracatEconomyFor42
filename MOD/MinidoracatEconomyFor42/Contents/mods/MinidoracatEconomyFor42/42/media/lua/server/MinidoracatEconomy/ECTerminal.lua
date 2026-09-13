@@ -75,9 +75,7 @@ function T.list()
 end
 
 function T.count()
-    local n = 0
-    for _ in pairs(md.terminals) do n = n + 1 end
-    return n
+    return EC.countKeys(md.terminals)
 end
 
 function T.at(x, y, z)

@@ -275,20 +275,17 @@ end
 
 -- ---------- player side (witness + stamps) ----------
 
-local function playerData(player)
-    local t = player:getModData()
-    local p = t[EC.PLAYER_MODDATA_KEY]
-    if type(p) ~= "table" then
-        p = {}
-        t[EC.PLAYER_MODDATA_KEY] = p
+function M.findTopLevel(inv, itemId)
+    local found = nil
+    pcall(function() found = inv:getItemWithID(itemId) end)
+    if not found then return nil end
+    -- top level only: the item must be directly in the backpack (bags are not scanned by the picker)
+    local ok, items = pcall(function() return inv:getItems() end)
+    if not ok or not items then return nil end
+    for i = 0, items:size() - 1 do
+        if items:get(i) == found then return found end
     end
-    if type(p.claims) ~= "table" then p.claims = {} end
-    if type(p.pendingOuts) ~= "table" then p.pendingOuts = {} end
-    return p
-end
-
-local function transmit(player)
-    pcall(function() player:transmitModData() end)
+    return nil
 end
 
 local function addWitness(p, mailId, epoch, seq)
@@ -527,11 +524,11 @@ local function splitDelivered(player, o, entry, claimSeq, kept, ms, inPlace)
     for i, obj in ipairs(kept) do
         obj:getModData()[EC.PLAYER_MODDATA_KEY] = stampFor(child, claimSeq, child.units[i])
     end
-    local p = playerData(player)
+    local p = R.playerData(player)
     addWitness(p, child.id, md.meta.epoch, claimSeq)
     settle(o, child, "claimed", ms)
     child.claimSeq = claimSeq
-    transmit(player)
+    R.transmit(player)
     local left = {}
     for _, t in ipairs(letterUnits(entry)) do
         if not byToken[t] then left[#left + 1] = t end
@@ -566,9 +563,9 @@ function M.claim(player, mailId, prepared)
     local claimSeq = S.nextSeq()
     local res = deliver(player, entry, claimSeq, prepared)
     if res.ok then
-        local p = playerData(player)
+        local p = R.playerData(player)
         addWitness(p, mailId, md.meta.epoch, claimSeq)
-        transmit(player)
+        R.transmit(player)
         settle(o, entry, "claimed", ms)
         entry.claimSeq = claimSeq
         if res.forced then anomaly(username, mailId, "delivery-kept-all", { qty = total }) end
@@ -788,7 +785,7 @@ function M.reconcile(player)
         S.reply(player, "recovery.status", R.status(username))
         return false, "read_failed"
     end
-    local p, ms = playerData(player), EC.now()
+    local p, ms = R.playerData(player), EC.now()
     local scan = R.scanUnits(inv)
     if scan.failed then
         R.hold(username, "inventory", "inventory_unreadable", {})
@@ -817,7 +814,7 @@ function M.reconcile(player)
             end
         end
     end
-    if changed then transmit(player) end
+    if changed then R.transmit(player) end
     -- Reattach rolled-back split units before a later parent witness settles its remainder.
     local remapped = false
     for mailId, stamped in pairs(scan.stamped) do
@@ -851,7 +848,7 @@ function M.reconcile(player)
         end
     end
     if remapped then
-        transmit(player)
+        R.transmit(player)
         scan = R.scanUnits(inv)
         if scan.failed then
             R.hold(username, "inventory", "inventory_unreadable", {})
@@ -1078,7 +1075,7 @@ function M.reconcile(player)
             R.closeReceipt(username, receipt, ms)
         end
     end
-    if changed then transmit(player) end
+    if changed then R.transmit(player) end
     S.reply(player, "recovery.status", R.status(username))
     return true
 end
@@ -1250,9 +1247,9 @@ function M.onNewGame(player)
     local pending = carryOver[username]
     if not pending then return end
     carryOver[username] = nil
-    local p = playerData(player)
+    local p = R.playerData(player)
     for id, pend in pairs(pending) do p.pendingOuts[id] = pend end
-    transmit(player)
+    R.transmit(player)
 end
 
 -- ---------- retention ----------
