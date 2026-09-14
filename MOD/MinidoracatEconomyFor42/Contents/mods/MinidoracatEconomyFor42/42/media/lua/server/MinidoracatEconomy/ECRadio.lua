@@ -50,6 +50,7 @@ end
 local md = nil
 local templates = {}            -- lang -> { key = text } (loaded once per language)
 local channelRegistered = nil   -- frequency the server registered its channel name for
+local lastBroadcast = 0         -- ms of the last summary round (process memory, not ModData)
 
 -- ---------- options ----------
 
@@ -62,6 +63,25 @@ function Rd.strength()
     return r
 end
 function Rd.enabled() return EC.sandbox("RadioIntervalMinutes", 10) > 0 end
+
+-- The two-way relay (ECTradeRadioRelay) is a separate switch from the summary broadcast: an
+-- upgrade must not start listening to anybody just because the summary was already on.
+function Rd.relayEnabled() return EC.sandbox("RadioRelayEnabled", false) end
+
+-- The native transmitRange of the placed device. RadioRange is shared with the summary, where 0
+-- means "everyone" through strength -1 (ZomboidRadio.java:690-701). A DeviceData range is not a
+-- transmission strength and has no such sentinel: SetChannelsRouting / OnVoiceData keep the
+-- float and compare sqrt(dx*dx+dy*dy) against it (native tail dump at
+-- .omc/tmp/native-radio-tail.c:15963-16139), and a negative range would silence the device
+-- instead of widening it. Unlimited is therefore expressed as a distance no pair of encodable
+-- radio coordinates can reach: Java stores a radio's x/y as short, so the largest possible
+-- separation is below 92700 tiles.
+Rd.NATIVE_RANGE_UNLIMITED = 100000
+function Rd.nativeRange()
+    local r = EC.sandbox("RadioRange", 500)
+    if r <= 0 then return Rd.NATIVE_RANGE_UNLIMITED end
+    return r
+end
 
 function Rd.language()
     local v = EC.sandbox("RadioLanguage", "auto")
@@ -243,9 +263,19 @@ function Rd.onTick()
     Rd.broadcast(Rd.compose())
 end
 
--- What the client needs to register the channel name on its side (hello.ack).
+-- What the client needs to name the channel and to explain the station to a player (hello.ack
+-- and every `config` push). `enabled` keeps its original meaning for the client that only wants
+-- to know whether the channel exists at all: either half of the station being on is enough.
+-- The two halves are reported separately next to it, so nothing has to be inferred from it.
 function Rd.clientInfo()
-    return { frequency = Rd.frequency(), enabled = Rd.enabled(), category = Rd.CATEGORY }
+    return {
+        frequency = Rd.frequency(),
+        category = Rd.CATEGORY,
+        enabled = Rd.enabled() or Rd.relayEnabled(),
+        summaryEnabled = Rd.enabled(),
+        relayEnabled = Rd.relayEnabled(),
+        range = Rd.nativeRange(),
+    }
 end
 
 function Rd.init(root)
@@ -256,7 +286,8 @@ function Rd.init(root)
     local radio = Rd.radio()
     if radio then Rd.registerChannel(radio) end
     EC.log("radio: " .. (radio and "available" or "no instance") .. ", " .. (Rd.enabled() and ("every " .. tostring(EC.sandbox("RadioIntervalMinutes", 10)) .. " min") or "off")
-        .. ", " .. tostring(Rd.frequency() / 1000) .. " MHz, range " .. tostring(EC.sandbox("RadioRange", 500)))
+        .. ", " .. tostring(Rd.frequency() / 1000) .. " MHz, range " .. tostring(EC.sandbox("RadioRange", 500))
+        .. ", two-way relay " .. (Rd.relayEnabled() and "on" or "off"))
 end
 
 S.Radio = Rd

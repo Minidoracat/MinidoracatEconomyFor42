@@ -1,0 +1,98 @@
+{
+  "provider": "openai-codex",
+  "reportedModel": "gpt-6-astra",
+  "source": "source.png",
+  "inputReference": "../catgirl/sheet_preview.png",
+  "template": "product-commerce-visual / concept-product-breakdown",
+  "sourceSize": [
+    1374,
+    1145
+  ],
+  "quadrants": {
+    "S": [
+      0,
+      0,
+      687,
+      572
+    ],
+    "E": [
+      687,
+      0,
+      1374,
+      572
+    ],
+    "N": [
+      0,
+      572,
+      687,
+      1145
+    ],
+    "W": [
+      687,
+      572,
+      1374,
+      1145
+    ]
+  },
+  "cutout": {
+    "background": "channel max-min <= 12 and min >= 180",
+    "postprocess": "scripts/cutout_tile.py (existing RGBA path)"
+  },
+  "placement": {
+    "speaker_catgirl": {
+      "size": [
+        13,
+        12
+      ],
+      "positions": {
+        "S": [
+          65,
+          58
+        ],
+        "E": [
+          53,
+          58
+        ],
+        "N": [
+          29,
+          65
+        ],
+        "W": [
+          86,
+          65
+        ]
+      },
+      "chestKeepClear": {
+        "S": [25, 65, 64, 104],
+        "E": [70, 65, 105, 104]
+      },
+      "base": "catgirl"
+    },
+    "speaker_terminal": {
+      "size": [
+        21,
+        19
+      ],
+      "positions": {
+        "S": [
+          24,
+          92
+        ],
+        "E": [
+          83,
+          92
+        ],
+        "N": [
+          79,
+          98
+        ],
+        "W": [
+          27,
+          98
+        ]
+      },
+      "base": "terminal"
+    }
+  },
+  "notes": "原創四面向配件；共用基礎終端 pixels 不更動，位置編入 128x256 透明 cell。chestKeepClear 為 [left, top, right, bottom]，右、下界不含。原生 IsoRadio 保留，不畫隱形機身。"
+}

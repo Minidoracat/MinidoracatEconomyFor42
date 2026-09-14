@@ -106,6 +106,35 @@ local mailSnapshot = snapshotRead("mail.list")
 local listingsSnapshot = snapshotRead("market.mine")
 local auctionsSnapshot = snapshotRead("auction.mine")
 
+-- The radio the trade terminals own, as the server sees it right now: { frequency, category,
+-- enabled (either mode), relayEnabled, range, summaryEnabled }. hello.ack brings the state of
+-- the session, the `config` broadcast every later change of it -- a new frequency is registered
+-- on the spot instead of waiting for the next login. A broadcast that carries no radio at all
+-- (a currency or option change) leaves the last known one alone.
+C.radio = nil
+
+-- Read the native registry instead of caching a successful registration: its instance may
+-- change between sessions, and addChannelName appends knownFrequencies even on overwrite
+-- (ZomboidRadio.java:135-168). A failed registration must remain eligible on the next snapshot.
+
+local function applyRadio(info)
+    C.radio = info
+    local frequency = info and tonumber(info.frequency)
+    if not frequency or not info.enabled then return end
+    local ok, err = pcall(function()
+        local radio = getZomboidRadio()
+        if not radio then
+            EC.log("radio channel registration: no native instance")
+            return
+        end
+        local name = getText("IGUI_MinidoracatEconomy_Radio_Channel")
+        if radio:getChannelName(frequency) ~= name then
+            radio:addChannelName(name, frequency, info.category or "Economy")
+        end
+    end)
+    if not ok then EC.log("radio channel registration failed: " .. tostring(err)) end
+end
+
 handlers["hello.ack"] = function(args)
     C.session = args
     C.options = type(args.options) == "table" and args.options or nil
@@ -113,14 +142,7 @@ handlers["hello.ack"] = function(args)
     setUnclaimed(args)
     C.currencies = args.currencies or C.currencies
     if type(args.terminals) == "table" then C.terminals = args.terminals end
-    -- the radio channel name is a client-side registry (RWMGeneral.lua reads it): register the
-    -- market frequency here so a tuned radio shows the name instead of a bare number
-    if type(args.radio) == "table" and args.radio.enabled and tonumber(args.radio.frequency) then
-        pcall(function()
-            local radio = getZomboidRadio()
-            if radio then radio:addChannelName(getText("IGUI_MinidoracatEconomy_Radio_Channel"), args.radio.frequency, args.radio.category or "Economy") end
-        end)
-    end
+    applyRadio(type(args.radio) == "table" and args.radio or nil)
     EC.log("session epoch=" .. tostring(args.epoch) .. " loadedSeq=" .. tostring(args.loadedSeq)
         .. " server=" .. tostring(args.version) .. " remoteReadOnly=" .. tostring(args.remoteReadOnly)
         .. " currencies=" .. tostring(args.currencies and #args.currencies or 0)
@@ -151,6 +173,9 @@ handlers["config"] = function(args)
             notify(C.leaderboardListeners, "leaderboard", "config", args)
         end
     end
+    -- a config push that carries a radio replaces it (a frequency, a range or a switch changed);
+    -- one that does not is about something else and leaves the known radio in place
+    if type(args.radio) == "table" then applyRadio(args.radio) end
     -- the remote read-only switch is a runtime option now: the session mirrors the live value
     if args.remoteReadOnly ~= nil and C.session then C.session.remoteReadOnly = args.remoteReadOnly end
 end

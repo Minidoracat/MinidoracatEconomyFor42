@@ -611,6 +611,10 @@ EC.OPTIONS = {
     { key = "AuctionMaxPerPlayer", group = "auction", kind = "int", min = 1, max = 50, step = 1, default = 3 },
     { key = "AuctionMinIncrementPercent", group = "auction", kind = "int", min = 1, max = 100, step = 1, default = 5, unit = "percent" },
     { key = "RadioIntervalMinutes", group = "radio", kind = "int", min = 0, max = 120, step = 5, default = 10, unit = "minutes", zeroOff = true },
+    -- the voice/chat relay is its own switch: an upgrade must never start picking up microphones
+    -- next to a trade terminal because the market summary happened to be on (spec 17.3, radio
+    -- contract decision 4). RadioIntervalMinutes = 0 still only stops the summary.
+    { key = "RadioRelayEnabled", group = "radio", kind = "bool", default = false },
     { key = "RadioFrequency", group = "radio", kind = "int", min = 88000, max = 108000, step = 200, default = 101100, unit = "mhz" },
     { key = "RadioRange", group = "radio", kind = "int", min = 0, max = 5000, step = 50, default = 500, unit = "tiles", zeroUnlimited = true },
     { key = "RadioLanguage", group = "radio", kind = "text", default = "auto", unit = "lang" },

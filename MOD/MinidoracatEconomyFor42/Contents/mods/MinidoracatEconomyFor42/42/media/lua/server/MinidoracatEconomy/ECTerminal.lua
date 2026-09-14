@@ -65,10 +65,18 @@ local function squareHasTerminal(x, y, z)
     return ok and found == true
 end
 
+-- Trade terminals carry the placement state of their two-way radio (ECTradeRadioRelay):
+-- "disabled" (the relay option is off), "waiting" (registered, device not standing yet),
+-- "active" (device placed and configured this uptime), "error" (the last attempt failed).
+-- It is a placement state, never a promise that anybody heard anything. ATMs have no device and
+-- no field. The relay module loads after this one, so it is looked up per call, not captured.
 function T.list()
     local out = {}
+    local relay = S.TradeRadio
     for id, t in pairs(md.terminals) do
-        out[#out + 1] = { id = id, x = t.x, y = t.y, z = t.z, kind = t.kind }
+        local e = { id = id, x = t.x, y = t.y, z = t.z, kind = t.kind }
+        if t.kind == "trade" and relay then e.radioState = relay.state(t.x, t.y, t.z) end
+        out[#out + 1] = e
     end
     EC.sortSafe(out, function(a, b) return a.id < b.id end)
     return out
@@ -106,8 +114,42 @@ function T.near(player)
     return d ~= nil and d <= EC.TERMINAL_RANGE
 end
 
-local function broadcastList()
+-- The client snapshot of the terminal list. Public because the radio relay pushes it as well: a
+-- device state that changed during a sweep (repaired, failed, chunk loaded) has no other way
+-- into a window that is already open.
+function T.pushList()
     S.broadcast("terminals", { list = T.list(), remoteReadOnly = EC.sandbox("RemoteReadOnly", true), range = EC.TERMINAL_RANGE })
+end
+
+-- Registration changes tell the radio relay about the square it touched, before the list goes
+-- out, so the pushed list already carries the state this change produced. The relay answers with
+-- the state of that square (nil when it no longer holds a registration).
+local function radioSync(x, y, z)
+    local relay = S.TradeRadio
+    if not relay then
+        EC.log("trade radio: the relay module is not loaded")
+        return "error"
+    end
+    local ok, state = pcall(relay.onTerminalsChanged, x, y, z)
+    if not ok then
+        EC.log("trade radio: sync after a registration change failed: " .. tostring(state))
+        return "error"
+    end
+    return state
+end
+
+-- The companion device has to go before the registration does: the relay's bounded sweep only
+-- visits registered squares, so dropping the entry first and failing afterwards would leave a
+-- listening device standing with nothing left that would ever retry it. Returns nil when the
+-- square is verified clear - a genuinely unloaded chunk included, since the next chunk load
+-- collects orphans - or the failure's own text.
+local function clearCompanion(x, y, z)
+    local relay = S.TradeRadio
+    if not relay then return "the radio relay is not loaded" end
+    local ok, cleared, err = pcall(relay.clearSquare, x, y, z)
+    if not ok then return tostring(cleared) end
+    if cleared == false then return tostring(err) end
+    return nil
 end
 
 function T.register(player, args)
@@ -124,7 +166,11 @@ function T.register(player, args)
     md.terminals[id] = { x = args.x, y = args.y, z = args.z, kind = kind, by = player:getUsername(), at = EC.now() }
     X.emit("terminal.registered", { terminalId = id, x = args.x, y = args.y, z = args.z, terminalKind = kind, actor = player:getUsername() })
     X.audit({ action = "terminal", target = id, field = "register", after = args.x .. "," .. args.y .. "," .. args.z, admin = player:getUsername() })
-    broadcastList()
+    local radioState = radioSync(args.x, args.y, args.z)
+    T.pushList()
+    -- The terminal IS registered; only the native device failed. The result says so, and the
+    -- warning tells the admin the station is not carrying voice yet.
+    if radioState == "error" then return { ok = true, id = id, warning = "radio_unavailable" } end
     return { ok = true, id = id }
 end
 
@@ -133,10 +179,16 @@ function T.unregister(player, args)
     local id = type(args) == "table" and args.id or nil
     local t = type(id) == "string" and md.terminals[id] or nil
     if not t then return { ok = false, error = "unknown_terminal" } end
+    local stuck = clearCompanion(t.x, t.y, t.z)
+    if stuck then
+        EC.log("trade radio: unregister refused, the device is still standing: " .. stuck)
+        return { ok = false, error = "radio_unavailable" }
+    end
     md.terminals[id] = nil
     X.emit("terminal.unregistered", { terminalId = id, x = t.x, y = t.y, z = t.z, actor = player:getUsername() })
     X.audit({ action = "terminal", target = id, field = "unregister", before = t.x .. "," .. t.y .. "," .. t.z, admin = player:getUsername() })
-    broadcastList()
+    radioSync(t.x, t.y, t.z)
+    T.pushList()
     return { ok = true, id = id }
 end
 
@@ -148,6 +200,13 @@ function T.demolish(player, args)
     if not isAdmin(player) then return { ok = false, error = "forbidden" } end
     if type(args) ~= "table" or not isInt(args.x) or not isInt(args.y) or not isInt(args.z) then
         return { ok = false, error = "invalid_args" }
+    end
+    -- The device first: it is the reversible half. A demolish that took the tile away and then
+    -- failed to remove the device would drop the very registration the sweep needs to retry.
+    local stuck = clearCompanion(args.x, args.y, args.z)
+    if stuck then
+        EC.log("trade radio: demolish refused, the device is still standing: " .. stuck)
+        return { ok = false, error = "radio_unavailable" }
     end
     local removed = false
     local ok = pcall(function()
@@ -171,8 +230,10 @@ function T.demolish(player, args)
     if id then
         md.terminals[id] = nil
         X.emit("terminal.unregistered", { terminalId = id, x = args.x, y = args.y, z = args.z, actor = player:getUsername(), demolished = true })
-        broadcastList()
     end
+    -- the terminal tile is gone either way, so the square must not keep a device standing on it
+    radioSync(args.x, args.y, args.z)
+    if id then T.pushList() end
     X.audit({ action = "terminal", target = id or (args.x .. "," .. args.y .. "," .. args.z), field = "demolish", admin = player:getUsername() })
     return { ok = true, id = id }
 end

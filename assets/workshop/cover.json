@@ -1,0 +1,58 @@
+{
+  "template": "poster-layout-system",
+  "tool": "Codex built-in image_gen",
+  "title": "ECONOMY",
+  "subtitle": "TRADE + AUCTIONS + REWARDS",
+  "accent": "#C4A76A",
+  "generator": "../MinidoracatLangFor42/output/workshop-covers/build_cover.py",
+  "referenceImages": [
+    "../MinidoracatLangFor42/output/workshop-covers/notice-board/artwork.png",
+    "../MinidoracatLangFor42/output/workshop-covers/ui-library/artwork.png"
+  ],
+  "prompt": "prompt.txt",
+  "source": "artwork.png",
+  "master": "cover-1024.png",
+  "gif": {
+    "path": "MOD/MinidoracatEconomyFor42/workshop/preview.gif",
+    "width": 512,
+    "height": 512,
+    "frames": 24,
+    "durationMs": 3840,
+    "loop": 0,
+    "bytes": 317255
+  },
+  "apng": {
+    "preview": "MOD/MinidoracatEconomyFor42/preview.png",
+    "poster": "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/poster.png",
+    "frames": 12,
+    "durationMs": 3840,
+    "colorType": 2
+  },
+  "files": [
+    {
+      "file": "assets/workshop/artwork.png",
+      "bytes": 2146846,
+      "sha256": "c16d19004608f9cef5e775d6683a96c205415ed1e51e0878ae6618c5e1d6cddb"
+    },
+    {
+      "file": "assets/workshop/cover-1024.png",
+      "bytes": 1404871,
+      "sha256": "3ed6929027056bdc50f80b4dd68a8eef8b390506cefaa36871de145561ef3128"
+    },
+    {
+      "file": "MOD/MinidoracatEconomyFor42/workshop/preview.gif",
+      "bytes": 317255,
+      "sha256": "7bfcb4a8b3c64de7aea58aeaba85fd2e1cbe4f1b04758f120ac4247fbd0e7893"
+    },
+    {
+      "file": "MOD/MinidoracatEconomyFor42/preview.png",
+      "bytes": 433437,
+      "sha256": "edfebf715628a06dc771d792581911a9bc55ddb7c355f798cfd63e1ec6656437"
+    },
+    {
+      "file": "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/poster.png",
+      "bytes": 433437,
+      "sha256": "edfebf715628a06dc771d792581911a9bc55ddb7c355f798cfd63e1ec6656437"
+    }
+  ]
+}

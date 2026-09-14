@@ -20,7 +20,12 @@ Conventions (checked against vanilla Tiles2x.pack and B42 tile mods such as Dyla
     * each entry stores the trimmed opaque rectangle (x, y, w, h in the page) plus its offset in
       the cell (ox, oy) and the cell size (fx, fy);
     * sprite names are <tileset>_<index>; the tiledef gives every index a stable sprite id
-      (IsoWorld.getSpriteID) so client and server agree on what a placed object is.
+      (IsoWorld.getSpriteID) so client and server agree on what a placed object is;
+    * a set can instead ship finished cells ("cell": True in TILESETS): the art is then stored
+      exactly as given, because for the speakers the position inside the cell IS where the object
+      sits on the tile (a shoulder, a machine's upper edge) and trimming or re-centring it would
+      move it in the world;
+    * the current four sets share one 2048x256 page (16 cells); existing entries keep their order.
 
 Facing order follows vanilla furniture: 0 = S (front toward lower-left), 1 = E, 2 = N, 3 = W.
 Every tileset in TILESETS lands on the same pack page and in the same tiledef (tileset numbers
@@ -45,19 +50,6 @@ FACES = ["S", "E", "N", "W"]
 CELL_W, CELL_H = 128, 256
 MAX_W = 124                   # never wider than the tile footprint (vanilla consoles are 114)
 
-# One entry per world object: source folder under assets/tiles/, object height inside the cell
-# (one machine, so every facing shares it), the lowest opaque row inside the 256 cell, and the
-# build-menu icon (optionally only the top part of the S face: a full-body figure is a smear at
-# 64px, her head and tablet are not). The ATM is a box that reaches the front corner of the tile
-# like the vanilla consoles (bottom 252); the catgirl stands on a round base centred on the tile,
-# so her base rim ends where a floor-centred ellipse does, above the vanilla console front edge.
-TILESETS = [
-    {"name": "MinidoracatEconomy_terminal", "source": "terminal", "height": 176, "bottom": 252,
-     "custom_name": "Economy Terminal", "icon": "terminal_icon.png", "icon_top": 1.0},
-    {"name": "MinidoracatEconomy_catgirl", "source": "catgirl", "height": 216, "bottom": 236,
-     "custom_name": "Economy Terminal (Catgirl)", "icon": "catgirl_icon.png", "icon_top": 0.42},
-]
-
 PROPS = {
     "BlocksPlacement": "",
     "GroupName": "Economy",
@@ -65,6 +57,38 @@ PROPS = {
     "MaterialType": "Metal",
     "solidtrans": "",
 }
+
+# Visual metadata only, never the device's ownership identity. No movement, scrap, collision or
+# surface properties; no CustomItem either, because the relay explicitly installs its HAM data
+# instead of using the sprite constructor's randomisation (IsoWaveSignal.java:64-96).
+SPEAKER_PROPS = {
+    "GroupName": "Economy",
+    "Material": "Electric",
+    "MaterialType": "Metal",
+}
+
+# One entry per world object: source folder under assets/tiles/, object height inside the cell
+# (one machine, so every facing shares it), the lowest opaque row inside the 256 cell, and the
+# build-menu icon (optionally only the top part of the S face: a full-body figure is a smear at
+# 64px, her head and tablet are not). The ATM is a box that reaches the front corner of the tile
+# like the vanilla consoles (bottom 252); the catgirl stands on a round base centred on the tile,
+# so her base rim ends where a floor-centred ellipse does, above the vanilla console front edge.
+#
+# The two speaker sets are the trade relay's own small speaker: ECTradeRadioRelay places one as a
+# real IsoRadio on a registered trade terminal's square instead of the vanilla ham set, on the
+# catgirl's shoulder or on the machine's upper edge. Where it sits is the whole point, so their
+# art arrives as finished 128x256 cells and is taken verbatim ("cell": True): height, bottom and
+# icon do not apply, and there is no build-menu icon because a speaker is not a buildable object.
+TILESETS = [
+    {"name": "MinidoracatEconomy_terminal", "source": "terminal", "height": 176, "bottom": 252,
+     "custom_name": "Economy Terminal", "icon": "terminal_icon.png", "icon_top": 1.0},
+    {"name": "MinidoracatEconomy_catgirl", "source": "catgirl", "height": 216, "bottom": 236,
+     "custom_name": "Economy Terminal (Catgirl)", "icon": "catgirl_icon.png", "icon_top": 0.42},
+    {"name": "MinidoracatEconomy_speaker_catgirl", "source": "speaker_catgirl", "cell": True,
+     "custom_name": "Economy Speaker", "props": SPEAKER_PROPS},
+    {"name": "MinidoracatEconomy_speaker_terminal", "source": "speaker_terminal", "cell": True,
+     "custom_name": "Economy Speaker", "props": SPEAKER_PROPS},
+]
 
 
 def fit_face(path: Path, target_h: int, bottom_y: int) -> Image.Image:
@@ -82,6 +106,16 @@ def fit_face(path: Path, target_h: int, bottom_y: int) -> Image.Image:
     cell = Image.new("RGBA", (CELL_W, CELL_H), (0, 0, 0, 0))
     cell.paste(img, ((CELL_W - img.width) // 2, bottom_y - img.height), img)
     return cell
+
+
+def read_cell(path: Path) -> Image.Image:
+    """Take a finished cell verbatim: its opaque position IS the object's place on the tile."""
+    img = Image.open(path).convert("RGBA")
+    if img.size != (CELL_W, CELL_H):
+        raise SystemExit(f"{path}: {img.width}x{img.height}, expected a finished {CELL_W}x{CELL_H} cell")
+    if not img.getbbox():
+        raise SystemExit(f"{path}: fully transparent")
+    return img
 
 
 def build_sheet(cells: list[Image.Image]) -> Image.Image:
@@ -127,7 +161,7 @@ def write_tiledef(out: Path) -> None:
         body += line(ts["name"]) + line(f"{ts['name']}.png")
         body += u32(len(FACES)) + u32(1) + u32(number) + u32(len(FACES))
         for face in FACES:
-            props = dict(PROPS)
+            props = dict(ts.get("props", PROPS))
             props["CustomName"] = ts["custom_name"]
             props["Facing"] = face
             body += u32(len(props))
@@ -198,16 +232,20 @@ def main() -> None:
     cells: list[tuple[str, Image.Image]] = []
     for ts in TILESETS:
         source = ROOT / "assets/tiles" / ts["source"]
-        faces = [fit_face(source / f"{face}.png", ts["height"], ts["bottom"]) for face in FACES]
+        if ts.get("cell"):
+            faces = [read_cell(source / f"{face}.png") for face in FACES]
+        else:
+            faces = [fit_face(source / f"{face}.png", ts["height"], ts["bottom"]) for face in FACES]
         build_sheet(faces).save(source / "sheet_preview.png")
         cells += [(f"{ts['name']}_{i}", c) for i, c in enumerate(faces)]
-        write_icon(source / "S.png", MEDIA / "ui" / "MinidoracatEconomy" / ts["icon"], ts["icon_top"])
+        if ts.get("icon"):
+            write_icon(source / "S.png", MEDIA / "ui" / "MinidoracatEconomy" / ts["icon"], ts["icon_top"])
     sheet = build_sheet([c for _, c in cells])
     entries = write_pack(sheet, cells, MEDIA / "texturepacks" / f"{PACK_NAME}.pack")
     write_tiledef(MEDIA / f"{TILEDEF_NAME}.tiles")
     for e in entries:
         print(f"{e[0]}: {e[3]}x{e[4]} at {e[5]},{e[6]}")
-    icons = ", ".join(f"ui/MinidoracatEconomy/{ts['icon']}" for ts in TILESETS)
+    icons = ", ".join(f"ui/MinidoracatEconomy/{ts['icon']}" for ts in TILESETS if ts.get("icon"))
     print(f"wrote {PACK_NAME}.pack, {TILEDEF_NAME}.tiles (file number {FILE_NUMBER}) and {icons}")
 
 

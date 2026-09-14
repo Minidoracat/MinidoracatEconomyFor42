@@ -349,17 +349,286 @@ function fakeInventory(maxWeight)
     inv.count = function(fullType) local n = 0; for _, it in ipairs(inv.items) do if not fullType or it.fullType == fullType then n = n + 1 end end; return n end
     return inv
 end
-worldSprites = {}                -- "x,y,z" -> sprite name（getCell():getGridSquare 的假物件）
+-- ===== 假世界（格子與物件）=====
+-- 全域（不是 local）：主函式的 local 額度已接近 Lua 的 200 上限。
+-- worldSprites 維持原語意：一格一個「終端 tile」物件；worldObjects 是該格其他 IsoObject
+-- （relay 放的 IsoRadio、原版世界收音機）；worldLoaded 讓「已載入但沒有終端 tile」的格子
+-- 也回得出 square——實體終端消失的反面情境需要它。三者皆空＝chunk 未載入（getGridSquare 回 nil，
+-- IsoCell.java:3189）。
+worldSprites = {}                -- "x,y,z" -> 終端 tile sprite 名
+worldObjects = {}                -- "x,y,z" -> 其他物件陣列
+worldLoaded = {}                 -- "x,y,z" -> true：已載入的格（即使沒有終端 tile）
+worldSpriteDeny = {}             -- sprite 名 -> true：getSprite 回 nil（tile 未載入，建立必須失敗）
+worldRemoveRefuses = {}          -- 物件 -> true：引擎什麼都沒刪、回 -1（非例外的失敗）
+worldRemoveRefuseAll = false     -- 同上，但對這一格的每個物件都成立
+-- 故障注入：把注入點設成錯誤字串，對應的原生呼叫就拋一次（用完即清）。原生 getter 與集合存取
+-- 真的會拋（Kahlua 綁定、索引），而「拋一次、下一次正常」才測得出「同一個讀取失敗被轉成
+-- false／空清單／不存在」所造成的錯誤決策。
+worldFault = {}                  -- getGridSquare | getObjects | addSpecialObject | removeItem | transmit | clone
+function faultCheck(name)
+    local f = worldFault[name]
+    if f == nil then return false end
+    worldFault[name] = nil
+    error(f, 0)
+end
+-- 多格 sprite（SpriteGrid）。原生預設的刪除會按 sprite 把整組的物件一起刪掉，而且只比 sprite，
+-- 不看 IsoRadio、也不看 deviceName（IsoGridSquare.java:6339-6357 → IsoObjectUtils:115-158）。
+function gridSprite(name, members, incomplete)
+    local grid = { members = {}, incomplete = incomplete == true }
+    for _, m in ipairs(members) do grid.members[m] = true end
+    return { getName = function() return name end, getSpriteGrid = function() return grid end }
+end
+function spriteGridOf(o)
+    local s = o and o.getSprite and o:getSprite()
+    return s and s.getSpriteGrid and s:getSpriteGrid() or nil
+end
+function worldKey(x, y, z) return x .. "," .. y .. "," .. z end
+function worldObjectList(key)
+    local out = {}
+    local name = worldSprites[key]
+    if name then
+        out[1] = { __class = "IsoObject", ecTerminal = true,
+            getName = function() return nil end,
+            getSprite = function() return { getName = function() return name end } end }
+    end
+    for _, o in ipairs(worldObjects[key] or {}) do out[#out + 1] = o end
+    return out
+end
 function getCell()
     return { getGridSquare = function(_, x, y, z)
-        local key = x .. "," .. y .. "," .. z
-        local name = worldSprites[key]
-        if not name then return nil end
-        local obj = { getSprite = function() return { getName = function() return name end } end }
-        return { getObjects = function() return javaList({ obj }) end,
-            transmitRemoveItemFromSquare = function(_, o) if o == obj then worldSprites[key] = nil end end }
+        faultCheck("getGridSquare")
+        local key = worldKey(x, y, z)
+        if not worldSprites[key] and not worldLoaded[key] and #(worldObjects[key] or {}) == 0 then return nil end
+        local sq = {}
+        sq.__class = "IsoGridSquare"
+        sq.getX = function() return x end
+        sq.getY = function() return y end
+        sq.getZ = function() return z end
+        sq.getObjects = function() faultCheck("getObjects") return javaList(worldObjectList(key)) end
+        -- AddSpecialObject 先把物件放進 objects／specialObjects，之後才 addToWorld（也就是
+        -- ZomboidRadio.RegisterDevice 的入口）與重算（IsoGridSquare.java:6189-6224）。注入點
+        -- 刻意在「已經加進去之後」：那正是引擎會留下一個沒註冊、沒發送的真物件的地方。
+        sq.AddSpecialObject = function(_, o)
+            worldObjects[key] = worldObjects[key] or {}
+            worldObjects[key][#worldObjects[key] + 1] = o
+            faultCheck("addSpecialObject")
+        end
+        -- transmitRemoveItemFromSquare(obj[, safelyRemove])：safelyRemove 預設 true，回被刪物件
+        -- 的 index，物件不在清單裡或多格展開失敗回 -1（IsoGridSquare.java:6315-6363）。
+        -- safelyRemove 為 true 且 sprite 有 SpriteGrid 時，同組成員一起刪——只比 sprite。
+        sq.transmitRemoveItemFromSquare = function(_, o, safelyRemove)
+            if o == nil then return -1 end
+            if safelyRemove == nil then safelyRemove = true end
+            faultCheck("removeItem")
+            if o.ecTerminal then worldSprites[key] = nil return 0 end
+            local list = worldObjects[key] or {}
+            local function indexOf(target)
+                for i = 1, #list do if list[i] == target then return i end end
+                return nil
+            end
+            local at = indexOf(o)
+            if at == nil then return -1 end
+            if worldRemoveRefuseAll or worldRemoveRefuses[o] then return -1 end
+            local victims = { o }
+            local grid = safelyRemove and spriteGridOf(o) or nil
+            if grid then
+                if grid.incomplete then return -1 end
+                for _, other in ipairs(list) do
+                    local s = other ~= o and other.getSprite and other:getSprite() or nil
+                    local n = s and s.getName and s:getName()
+                    if n and grid.members[n] then victims[#victims + 1] = other end
+                end
+            end
+            for _, v in ipairs(victims) do
+                local i = indexOf(v)
+                if i then table.remove(list, i); v.removed = true end
+            end
+            return at - 1
+        end
+        sq.RecalcProperties = function() end
+        sq.RecalcAllWithNeighbours = function() end
+        return sq
     end }
 end
+
+-- instanceof 是原生 Java 類別判定（LuaManager 曝露）；假物件用 __class 標記自己的類別。
+function instanceof(obj, class)
+    if type(obj) ~= "table" then return false end
+    return obj.__class == class
+end
+function getSprite(name)
+    -- IsoSpriteManager.getSprite(String) creates a non-nil placeholder for an unknown name.
+    -- Only the real tiledef supplies these properties; missing art cannot be tested with nil alone.
+    local props = {}
+    if not worldSpriteDeny[name] and string.find(name, "^MinidoracatEconomy_speaker_") then
+        props.GroupName, props.CustomName = "Economy", "Economy Speaker"
+    end
+    return {
+        getName = function() return name end,
+        getProperties = function() return { get = function(_, key) return props[key] end } end,
+    }
+end
+
+-- 所有權標記字串寫死在情境裡（不是從受測模組讀來的），偽造情境才真的偽造得到同一個字串。
+EC_TRADE_RADIO_TAG = "MinidoracatEconomyTradeRadio"
+
+-- DeviceData 假件按真 setter 語意：setUseDelta 存 f/60、setPower 夾 0..1、setChannelRaw 不受
+-- min/max 限制（DeviceData.java:502-511, 576-598）。預設值刻意是「HamRadio1 clone 後又被
+-- 建構子亂數化」的樣子（沒開機、亂頻率、會耗電、有電池），所以斷言最終值就證明了覆寫真的發生。
+function fakeDeviceData(parent)
+    local d = { parent = parent, deviceName = "WaveSignalDevice", twoWay = true, portable = false,
+        tv = false, noTransmit = false,
+        channel = 92700, minCh = 88000, maxCh = 108000, transmitRange = 1250, micRange = 12,
+        micMuted = true, batteryPowered = true, hasBattery = true, power = 0.4, useDelta = 0.1,
+        volume = 0.8, on = false, mediaType = -1, media = false }
+    d.getParent = function() return d.parent end
+    d.getIsTwoWay = function() return d.twoWay end
+    d.setIsTwoWay = function(_, v) d.twoWay = v end
+    d.getIsPortable = function() return d.portable end
+    d.setIsPortable = function(_, v) d.portable = v end
+    d.getIsTelevision = function() return d.tv end
+    d.setIsTelevision = function(_, v) d.tv = v end
+    d.isNoTransmit = function() return d.noTransmit end
+    d.setNoTransmit = function(_, v) d.noTransmit = v end
+    d.getChannel = function() return d.channel end
+    d.setChannelRaw = function(_, v) d.channel = v end
+    d.setChannel = function(_, v) if v >= d.minCh and v <= d.maxCh then d.channel = v end end
+    d.getMinChannelRange = function() return d.minCh end
+    d.setMinChannelRange = function(_, v) d.minCh = v end
+    d.getMaxChannelRange = function() return d.maxCh end
+    d.setMaxChannelRange = function(_, v) d.maxCh = v end
+    d.getTransmitRange = function() return d.transmitRange end
+    d.setTransmitRange = function(_, v) d.transmitRange = v end
+    d.getMicRange = function() return d.micRange end
+    d.setMicRange = function(_, v) d.micRange = v end
+    d.getMicIsMuted = function() return d.micMuted end
+    d.setMicIsMuted = function(_, v) d.micMuted = v end
+    d.getIsBatteryPowered = function() return d.batteryPowered end
+    d.setIsBatteryPowered = function(_, v) d.batteryPowered = v end
+    d.getHasBattery = function() return d.hasBattery end
+    d.setHasBattery = function(_, v) d.hasBattery = v end
+    d.getPower = function() return d.power end
+    d.setPower = function(_, v) d.power = math.max(0, math.min(1, v)) end
+    d.getUseDelta = function() return d.useDelta end
+    d.setUseDelta = function(_, v) d.useDelta = v / 60 end
+    d.getDeviceVolume = function() return d.volume end
+    d.setDeviceVolumeRaw = function(_, v) d.volume = v end
+    d.getIsTurnedOn = function() return d.on end
+    d.setTurnedOnRaw = function(_, v) d.on = v end
+    d.hasMedia = function() return d.media end
+    d.getMediaType = function() return d.mediaType end
+    -- deviceName 是所有權標記本身（DeviceData.java:55, 435-441；隨物件存檔 :1237/:1278）。
+    -- 預設值就是原版的 "WaveSignalDevice"，不是我們的名字。
+    d.getDeviceName = function() return d.deviceName end
+    d.setDeviceName = function(_, v) d.deviceName = v end
+    return d
+end
+
+-- IsoRadio.new(cell, square, sprite)（IsoRadio.java:14-16；原版用例
+-- ISMoveableSpriteProps.lua:2133）。sprite / name / modData 三樣都刻意保留可改：這三樣都是
+-- client 端動得到的（modData 走 ObjectModDataPacket、name 走原版放置流程
+-- ISMoveableSpriteProps.lua:2273-2281、sprite 走旋轉的 transmitUpdatedSpriteToServer），
+-- 所以情境要能真的改它們，證明所有權判定不受影響。
+radioSerial = 0
+IsoRadio = { new = function(_cell, _square, sprite)
+    radioSerial = radioSerial + 1
+    local o = { __class = "IsoRadio", serial = radioSerial, modData = {}, sprite = sprite }
+    o.getName = function() return o.name end
+    o.setName = function(_, v) o.name = v end
+    o.getObjectName = function() return "Radio" end
+    o.getSprite = function() return o.sprite end
+    o.setSprite = function(_, v) o.sprite = v end
+    o.getModData = function() return o.modData end
+    o.deviceData = fakeDeviceData(o)
+    -- cloneDeviceDataFromItem 回 nil 是真失敗（IsoWaveSignal.java:98-115 找不到該 script item
+    -- 的裝置資料就是這樣）：契約要的是真正的 Base.HamRadio1 裝置，不是建構子留下的亂數化資料。
+    o.cloneDeviceDataFromItem = function(_, full)
+        if worldFault.clone ~= nil then worldFault.clone = nil return nil end
+        return fakeDeviceData(o)
+    end
+    o.getDeviceData = function() return o.deviceData end
+    o.setDeviceData = function(_, d) o.deviceData = d; d.parent = o end
+    o.transmitCompleteItemToClients = function()
+        faultCheck("transmit")
+    end
+    return o
+end }
+
+-- 一台「別人的」世界收音機：同 sprite、可偽造 modData 標記、甚至用原版放置路徑把 IsoObject 的
+-- name 寫成我們的標記字串——DeviceData 的 deviceName 不是我們的，就一律不是我們的。
+function fakeWorldRadio(spriteName, forgeMode)
+    local o = IsoRadio.new(nil, nil, { getName = function() return spriteName end })
+    if forgeMode == "modData" or forgeMode == "both" then
+        o.modData.MinidoracatEconomyTradeRadio = true
+    end
+    if forgeMode == "objectName" or forgeMode == "both" then
+        o:setName(EC_TRADE_RADIO_TAG)
+    end
+    return o
+end
+
+-- 原版 moveable／device 入口的最小真 contract 假件：簽章同 42.20.4 的
+-- shared/Moveables/ISMoveableSpriteProps.lua 與 shared/TimedActions/ISDevice*Action.lua，
+-- 並且真的做「原版會做的破壞」（生成物品、把物件移出格子），否則防線測不出來。
+movCalls = {}
+ISMoveableSpriteProps = {
+    canPickUpMoveable = function(_self, _chr, _sq, _obj) movCalls[#movCalls + 1] = "canPickUp"; return true end,
+    pickUpMoveableInternal = function(_self, _chr, _sq, _obj, _sprInstance, _spriteName, _createItem, _rotating)
+        movCalls[#movCalls + 1] = "pickUpInternal"
+        if _createItem and _chr then
+            local item = instanceItem("Base.RadioRed")
+            _chr:getInventory():AddItem(item)
+        end
+        if _sq and _obj then _sq:transmitRemoveItemFromSquare(_obj) end
+        return { picked = true }
+    end,
+    -- 外層 rotateMoveable 只拿到原 sprite 名，真正的目標物件是在格子上解析出來的
+    findOnSquare = function(_self, _sq, _spriteName)
+        local objects = _sq and _sq:getObjects() or nil
+        if objects == nil then return nil end
+        for i = 0, objects:size() - 1 do
+            local o = objects:get(i)
+            local s = o and o.getSprite and o:getSprite() or nil
+            local n = s and s.getName and s:getName()
+            if n == _spriteName then return o end
+        end
+        return nil
+    end,
+    -- 真正的旋轉執行入口：server transaction 與共享 timed action 都走這裡
+    -- （TransactionProcessor.lua:16-25、ISMoveablesAction.lua:236-245 →
+    -- ISMoveableSpriteProps.lua:2705-2727）。原版先用 _forceAllow 把物件撿起來（略過選單
+    -- gate），再無條件 place：place 會從背包挑一件同 worldSprite 的既有物品放下並消耗它。
+    -- 所以「只擋 canRotateMoveable」不是沒有副作用的拒絕——它會挪用玩家另一台普通 HAM。
+    rotateMoveable = function(self, _chr, _sq, _origSpriteName)
+        movCalls[#movCalls + 1] = "rotateMoveable"
+        local obj = ISMoveableSpriteProps.findOnSquare(self, _sq, _origSpriteName)
+        ISMoveableSpriteProps.pickUpMoveableInternal(self, _chr, _sq, obj, nil, _origSpriteName, true, true)
+        local inv = _chr and _chr:getInventory() or nil
+        for _, item in ipairs(inv and inv.items or {}) do
+            if item.worldSprite == _origSpriteName then
+                inv:Remove(item)
+                local placed = IsoRadio.new(nil, _sq, { getName = function() return _origSpriteName end })
+                _sq:AddSpecialObject(placed)
+                return true
+            end
+        end
+        return false
+    end,
+    canRotateMoveable = function(_self, _sq, _obj, _origProps) movCalls[#movCalls + 1] = "canRotate"; return true end,
+    canScrapObject = function(_self, _chr) movCalls[#movCalls + 1] = "canScrap"; return { canScrap = true }, 100, "Electrical" end,
+    scrapObjectInternal = function(_self, _chr, _def, _sq, _obj, _res, _chance, _perk)
+        movCalls[#movCalls + 1] = "scrapInternal"
+        if _sq and _obj then _sq:transmitRemoveItemFromSquare(_obj) end
+        return 3
+    end,
+}
+ISDeviceBatteryAction = { isValid = function(self)
+    return self.deviceData:getIsBatteryPowered() and self.deviceData:getHasBattery() == self.isRemove
+end }
+ISDeviceMediaAction = { isValid = function(self)
+    if self.isRemove then return self.deviceData:hasMedia() end
+    return (not self.deviceData:hasMedia()) and self.deviceData:getMediaType() == self.secondaryItem:getMediaType()
+end }
 
 -- 每個假玩家一個固定的 slot 與一個生死旗標：伺服器是按 getPlayerNum() 分槽去讀自己那份生存
 -- 時數的，而一具屍體的時數還會繼續往上跑，所以 isDead 必須答得出來——否則「還在活的這條命」
@@ -386,13 +655,21 @@ local function fakePlayer(username)
 end
 
 -- ===== 載入受測程式碼（shared → server；client 檔不在 server 端載入）=====
-local loaded = {}
+-- Native contracts above are already loaded; do not pretend their failed MOD lookup succeeded.
+local loaded = {
+    ["Moveables/ISMoveableSpriteProps"] = true,
+    ["TimedActions/ISDeviceBatteryAction"] = true,
+    ["TimedActions/ISDeviceMediaAction"] = true,
+}
 function require(name)
     if loaded[name] then return true end
-    loaded[name] = true
     for _, dir in ipairs({ "shared", "server", "client" }) do
         local chunk = loadfile(MEDIA .. "/" .. dir .. "/" .. name .. ".lua")
-        if chunk then chunk() return true end
+        if chunk then
+            loaded[name] = true
+            chunk()
+            return true
+        end
     end
     error("require not found: " .. name)
 end
@@ -413,6 +690,7 @@ require("MinidoracatEconomy/ECShop")
 require("MinidoracatEconomy/ECCodec")
 require("MinidoracatEconomy/ECMarket")
 require("MinidoracatEconomy/ECRadio")
+require("MinidoracatEconomy/ECTradeRadioRelay")
 require("MinidoracatEconomy/ECAuction")
 require("MinidoracatEconomy/ECExchange")
 require("MinidoracatEconomy/ECAdmin")
@@ -424,10 +702,9 @@ local Cfg = EC.Config
 local R = EC.Rewards
 local W = EC.Wallet
 local A = EC.Admin
-
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1296
+local EXPECTED_ASSERTIONS = 1359   -- 1296 + 59 observable radio lifecycle / failure boundaries + 4 speaker appearance
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -12215,6 +12492,494 @@ check(EC.Mailbox.findTopLevel(inv, top.id) == top,
 inv.getItemWithID = function() return nested end
 check(EC.Mailbox.findTopLevel(inv, nested.id) == nil,
     "an item found by ID but absent from the top-level list cannot enter escrow")
+end)()
+
+-- ===== 情境：交易站雙向電台（原生 IsoRadio 附屬、所有權、生命週期、原生操作防線）=====
+-- 只測「真的不確定」的邊界：偽造標記、重複、被關機、節流、設定同步、卸載、實體終端消失、
+-- 孤兒、登錄失敗警告、原生 moveable／device 入口。不測字串內容，不靠「有被呼叫」當綠燈——
+-- 每條防線都先讓原版假件真的做破壞（生成物品、移出格子），再證明防線攔得住。
+io.write("scenario: trade terminal two-way radio\n")
+;(function()
+local Rd, Rl, TR = S.Radio, S.TradeRadio, EC.TradeRadio
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+radioSent, radioChannels = {}, {}
+worldSprites, worldObjects, worldLoaded, worldSpriteDeny = {}, {}, {}, {}
+worldRemoveRefuses, worldFault, worldRemoveRefuseAll = {}, {}, false
+movCalls = {}
+nowMs = nowMs + 61000
+SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = 10
+SandboxVars.MinidoracatEconomy.RadioFrequency = 101100
+SandboxVars.MinidoracatEconomy.RadioRange = 500
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = true
+worldSprites["100,200,0"] = "MinidoracatEconomy_terminal_2"   -- trade；朝向索引 2
+worldSprites["300,400,0"] = "MinidoracatEconomy_terminal_0"   -- ATM
+worldSprites["500,600,1"] = "appliances_com_01_53"            -- trade；原版主控台，53 % 4 = 1
+fire("OnServerStarted")
+local root = ModData.getOrCreate(EC.MODDATA_KEY)
+local boss = fakePlayer("boss"); boss.role = "admin"; boss.inventory = fakeInventory(50)
+onlinePlayers = { boss }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function option(key, value)
+    return cmd(boss, "admin.option", { key = key, value = value, requestId = key })
+end
+local function square(x, y, z) return getCell():getGridSquare(x, y, z) end
+local function owned(x, y, z) return TR.ownedOnSquare(square(x, y, z)) end
+local function place(x, y, z, obj)
+    local k = worldKey(x, y, z)
+    worldObjects[k] = worldObjects[k] or {}
+    worldObjects[k][#worldObjects[k] + 1] = obj
+    return obj
+end
+-- 一台「冒牌 owned」：deviceName 是我們的，但不是 relay 放的（重複／孤兒情境用）
+local function ownedRadio(spriteName)
+    local o = IsoRadio.new(nil, nil, { getName = function() return spriteName end })
+    o:getDeviceData():setDeviceName(EC_TRADE_RADIO_TAG)
+    return o
+end
+local function sweep(ms)
+    nowMs = nowMs + (ms or 31000)
+    fire("OnTickEvenPaused")
+end
+
+local reg = cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "trade" })
+local device = owned(100, 200, 0)[1]
+check(reg.ok == true and reg.warning == nil and #owned(100, 200, 0) == 1
+    and device:getObjectName() == "Radio"
+    and device:getSprite():getName() == "MinidoracatEconomy_speaker_terminal_2",
+    "registering a trade terminal attaches exactly one speaker facing the terminal")
+local dd = device:getDeviceData()
+check(cmd(boss, "terminal.register", { x = 300, y = 400, z = 0, kind = "atm" }).ok == true
+    and #owned(300, 400, 0) == 0, "an ATM never gets a device")
+local byKind = {}
+for _, e in ipairs(lastSent("terminals").args.list) do byKind[e.kind .. e.x] = e end
+check(byKind["trade100"].radioState == "active" and byKind["atm300"].radioState == nil,
+    "the pushed terminal list carries radioState for trade terminals only")
+check(cmd(boss, "terminal.register", { x = 500, y = 600, z = 1, kind = "trade" }).ok == true
+    and #owned(500, 600, 1) == 1
+    and owned(500, 600, 1)[1]:getSprite():getName() == "MinidoracatEconomy_speaker_terminal_1",
+    "a vanilla console terminal gets the machine speaker facing the same way (sprite index modulo four)")
+
+-- 偽造：同 sprite、偽造 modData 鍵、並用原版放置路徑把 IsoObject 的 name 寫成我們的標記
+local forged = place(100, 200, 0, fakeWorldRadio("appliances_com_01_2", "both"))
+sweep()
+check(#owned(100, 200, 0) == 1 and forged.removed == nil and TR.isOwned(forged) == false,
+    "a vanilla radio with a forged ModData key and a forged object name is not owned and is never removed")
+check(owned(100, 200, 0)[1].serial == device.serial,
+    "a device that is already correct is not rebuilt on every sweep")
+local dupe = place(100, 200, 0, ownedRadio("appliances_com_01_2"))
+sweep()
+check(#owned(100, 200, 0) == 1 and dupe.removed == true and owned(100, 200, 0)[1].serial == device.serial,
+    "a duplicate device on the same square is removed and the standing one is kept")
+
+dd:setTurnedOnRaw(false)
+sweep()
+local rebuilt = owned(100, 200, 0)[1]
+check(#owned(100, 200, 0) == 1 and rebuilt.serial ~= device.serial and device.removed == true
+    and rebuilt:getDeviceData():getIsTurnedOn() == true,
+    "a device switched off by a client packet comes back as a remove + add, not a resent add packet")
+rebuilt:getDeviceData():setChannelRaw(88000)
+sweep(5000)
+check(owned(100, 200, 0)[1].serial == rebuilt.serial and Rl.state(100, 200, 0) == "waiting",
+    "a second tamper inside the repair window is not rebuilt every tick, and is reported as not ready")
+sweep()
+check(owned(100, 200, 0)[1]:getDeviceData():getChannel() == 101100 and Rl.state(100, 200, 0) == "active",
+    "once the repair window passed the tampered device is put back on the market frequency")
+-- Raw IEEE floats arrive in native device packets. A NaN must not pass the usable-state gate.
+for _, field in ipairs({ "power", "volume" }) do
+    local bad = owned(100, 200, 0)[1]
+    bad:getDeviceData()[field] = 0 / 0
+    sweep()
+    local repaired = owned(100, 200, 0)[1]
+    check(bad.removed == true and #owned(100, 200, 0) == 1
+        and repaired:getDeviceData()[field] > 0 and Rl.state(100, 200, 0) == "active",
+        "a native NaN " .. field .. " cannot leave an unusable device permanently active")
+end
+
+check(option("RadioFrequency", 104200).ok == true
+    and owned(100, 200, 0)[1]:getDeviceData():getChannel() == 104200
+    and owned(100, 200, 0)[1]:getDeviceData():getMinChannelRange() == 104200
+    and owned(100, 200, 0)[1]:getDeviceData():getMaxChannelRange() == 104200
+    and lastSent("config").args.radio.frequency == 104200
+    and lastSent("config").args.radio.relayEnabled == true,
+    "an admin frequency change retunes the standing devices at once and rides along in the config push")
+check(option("RadioRange", 0).ok == true and Rd.nativeRange() == 100000 and Rd.strength() == -1
+    and owned(100, 200, 0)[1]:getDeviceData():getTransmitRange() == 100000
+    and lastSent("config").args.radio.range == 100000,
+    "range 0 stays strength -1 for the summary and becomes the named unlimited native range on the device")
+
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = false
+local bystander = place(100, 200, 0, fakeWorldRadio("appliances_com_01_2", "modData"))
+sweep()
+check(#owned(100, 200, 0) == 0 and #owned(500, 600, 1) == 0 and bystander.removed == nil
+    and Rl.state(100, 200, 0) == "disabled",
+    "switching the relay off takes every loaded device away and leaves vanilla radios standing")
+local info = Rd.clientInfo()
+check(info.relayEnabled == false and info.summaryEnabled == true and info.enabled == true
+    and info.frequency == 104200 and info.range == 100000 and info.category == "Economy",
+    "radioInfo reports the two halves separately and enabled when either one is on")
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = true
+check(option("RadioIntervalMinutes", 0).ok == true and Rd.clientInfo().summaryEnabled == false
+    and Rd.clientInfo().relayEnabled == true and Rd.clientInfo().enabled == true
+    and #owned(100, 200, 0) == 1,
+    "the market summary can be off while the relay is on: the device is still placed")
+
+worldSprites["100,200,0"] = nil
+worldLoaded["100,200,0"] = true            -- 格子還在，只是實體終端不在了
+sweep()
+check(#owned(100, 200, 0) == 0 and Rl.state(100, 200, 0) == "waiting"
+    and EC.countKeys(root.terminals) == 3,
+    "a registration whose physical terminal is gone loses its device and reports not ready, keeping the registration")
+worldSprites["500,600,1"], worldObjects["500,600,1"], worldLoaded["500,600,1"] = nil, nil, nil
+sweep()
+check(Rl.state(500, 600, 1) == "waiting" and worldObjects["500,600,1"] == nil
+    and EC.countKeys(root.terminals) == 3,
+    "an unloaded chunk is reported as not ready: nothing created, nothing dropped, no square held")
+
+worldLoaded["900,900,0"] = true
+local orphan = place(900, 900, 0, ownedRadio("appliances_com_01_0"))
+local neighbour = place(900, 900, 0, fakeWorldRadio("appliances_com_01_0", "objectName"))
+fire("LoadGridsquare", square(900, 900, 0))
+check(#owned(900, 900, 0) == 0 and orphan.removed == true and neighbour.removed == nil,
+    "an owned device on a square nobody registered is deleted on chunk load, the vanilla radio beside it is not")
+worldSprites["500,600,1"] = "appliances_com_01_53"
+worldLoaded["500,600,1"] = true
+fire("LoadGridsquare", square(500, 600, 1))
+check(#owned(500, 600, 1) == 1 and Rl.state(500, 600, 1) == "active",
+    "a registered trade terminal gets its device back as soon as its chunk is loaded again")
+local id500 = nil
+for tid, t in pairs(root.terminals) do if t.x == 500 then id500 = tid end end
+check(cmd(boss, "terminal.unregister", { id = id500 }).ok == true and #owned(500, 600, 1) == 0,
+    "unregistering a trade terminal takes its device away with it")
+
+worldSpriteDeny["MinidoracatEconomy_speaker_terminal_1"] = true
+local failed = cmd(boss, "terminal.register", { x = 500, y = 600, z = 1, kind = "trade" })
+check(failed.ok == true and failed.id ~= nil and failed.warning == "radio_unavailable"
+    and #owned(500, 600, 1) == 0 and Rl.state(500, 600, 1) == "error"
+    and EC.countKeys(root.terminals) == 3,
+    "a native attachment failure keeps the real registration result and warns instead of faking success")
+worldSpriteDeny["MinidoracatEconomy_speaker_terminal_1"] = nil
+sweep()
+check(#owned(500, 600, 1) == 1 and Rl.state(500, 600, 1) == "active",
+    "the bounded sweep picks a failed attachment up later, with no journal and no retry store")
+
+-- 原生操作防線：owned 一律擋，原版 radio 一律走原路徑
+local sq = square(500, 600, 1)
+local guarded = owned(500, 600, 1)[1]
+movCalls = {}
+check(ISMoveableSpriteProps.canPickUpMoveable({}, boss, sq, guarded) == false and #movCalls == 0,
+    "the moveable menu refuses to pick an owned device up")
+check(ISMoveableSpriteProps.pickUpMoveableInternal({}, boss, sq, guarded, nil, "MinidoracatEconomy_speaker_terminal_1", true, false) == nil
+    and #movCalls == 0 and boss.inventory.count("Base.RadioRed") == 0 and #owned(500, 600, 1) == 1,
+    "the pickup execution point refuses too: no free ham radio item and the device stays on the square")
+local plain = place(500, 600, 1, fakeWorldRadio("appliances_com_01_1"))
+check(ISMoveableSpriteProps.canPickUpMoveable({}, boss, sq, plain) == true
+    and ISMoveableSpriteProps.pickUpMoveableInternal({}, boss, sq, plain, nil, "appliances_com_01_1", true, false) ~= nil
+    and plain.removed == true and boss.inventory.count("Base.RadioRed") == 1 and #movCalls == 2,
+    "a vanilla radio still goes through the original pickup path and really is picked up")
+movCalls = {}
+local scrap = ISMoveableSpriteProps.canScrapObject({ object = guarded }, boss)
+check(scrap.canScrap == false
+    and ISMoveableSpriteProps.scrapObjectInternal({ object = guarded }, boss, {}, sq, guarded, scrap, 0, nil) == 0
+    and #movCalls == 1 and #owned(500, 600, 1) == 1,
+    "an owned device cannot be scrapped, and the execution point refuses even a forced call")
+local plain2 = place(500, 600, 1, fakeWorldRadio("appliances_com_01_1"))
+check(ISMoveableSpriteProps.canScrapObject({ object = plain2 }, boss).canScrap == true
+    and ISMoveableSpriteProps.scrapObjectInternal({ object = plain2 }, boss, {}, sq, plain2, {}, 100, nil) == 3
+    and plain2.removed == true, "a vanilla radio can still be scrapped")
+check(ISMoveableSpriteProps.canRotateMoveable({}, sq, guarded) == false
+    and ISMoveableSpriteProps.canRotateMoveable({}, sq, plain2) == true,
+    "an owned device cannot be rotated, a vanilla one can")
+check(ISDeviceBatteryAction.isValid({ deviceData = guarded:getDeviceData(), isRemove = false }) == false
+    and ISDeviceMediaAction.isValid({ deviceData = guarded:getDeviceData(), isRemove = false,
+        secondaryItem = { getMediaType = function() return -1 end } }) == false,
+    "device options cannot feed an owned device a battery or a tape")
+check(ISDeviceBatteryAction.isValid({ deviceData = fakeDeviceData(fakeWorldRadio("appliances_com_01_1")), isRemove = true }) == true,
+    "the same battery action still works on a vanilla device")
+check(TR.guardsInstalled() == true and TR.isOwned(guarded) == true and TR.isOwned(plain2) == false
+    and TR.isOwned(nil) == false,
+    "the guards are installed and ownership is decided by the device name alone")
+
+-- 第一層：client 真的動得到的東西——物件 modData 被清空、原生 object name 被抹掉又被改成我方標記
+-- 字串、sprite 被換掉。這些都不得影響 owned 判定，尤其不得讓伺服器每次掃描都「以為裝置不見了」
+-- 而再補一台（那會是可由 client 觸發的無限生成 DoS）。外觀遭改可重建，但數量恆為一。
+guarded.modData = {}
+guarded:setName(nil)
+sweep()
+check(#owned(500, 600, 1) == 1 and owned(500, 600, 1)[1].serial == guarded.serial
+    and TR.isOwned(guarded) == true,
+    "wiping the object ModData and the native object name keeps the device ours and places no second one")
+guarded:setName(EC_TRADE_RADIO_TAG)
+guarded.modData.MinidoracatEconomyTradeRadio = true
+guarded:setSprite({ getName = function() return "" end })
+sweep()
+check(#owned(500, 600, 1) == 1 and TR.isOwned(guarded) == true and guarded.removed == true
+    and owned(500, 600, 1)[1]:getSprite():getName() == "MinidoracatEconomy_speaker_terminal_1",
+    "a hidden owned radio is replaced with one visible speaker without losing ownership or duplicating devices")
+guarded = owned(500, 600, 1)[1]
+
+-- 第二層：deviceName 本身被改掉。那是伺服器才寫得到的欄位（client 封包寫不到，見 ECTradeRadio
+-- 檔頭出處），所以這才是「不再是我們的」的唯一判準：不刪那台別人的收音機，另外補一台我方裝置。
+-- 這不是 modData wipe 的預期行為，兩層必須分開看。
+guarded:getDeviceData():setDeviceName("WaveSignalDevice")
+sweep()
+check(#owned(500, 600, 1) == 1 and owned(500, 600, 1)[1].serial ~= guarded.serial
+    and guarded.removed == nil and Rl.state(500, 600, 1) == "active",
+    "only a server-written deviceName change ends ownership: the old device is left alone and a new one is placed")
+
+-- ---------- 原生失敗邊界：「呼叫回來了」不等於「世界照做了」 ----------
+
+-- 多格刪除。client 改得到世界物件的 sprite（GameServer.java:1879-1907），而原生預設的刪除會
+-- 按 sprite 展開整組格子成員、只比 sprite，不看 IsoRadio 也不看 deviceName，所以預設 overload
+-- 會連旁邊那台別人的收音機一起刪掉。Main 已在真 jar 上重現（native-removal-proof.json）。
+local dev = owned(500, 600, 1)[1]
+dev:setSprite(gridSprite("MinidoracatEconomy_speaker_terminal_1", { "MinidoracatEconomy_speaker_terminal_1" }))
+dev:getDeviceData():setTurnedOnRaw(false)
+sweep()
+check(#owned(500, 600, 1) == 1 and owned(500, 600, 1)[1].serial ~= dev.serial
+    and dev.removed == true and guarded.removed == nil and Rl.state(500, 600, 1) == "active",
+    "removing an owned device takes only that object: the plain radio sharing its sprite grid is left standing")
+
+-- 非例外的失敗：引擎什麼都沒刪、只回 -1（多格不完整就是這個回傳）。不得當成成功、不得接著再
+-- 補一台，也不得回報健康。
+local refused = owned(500, 600, 1)[1]
+worldRemoveRefuses[refused] = true
+refused:getDeviceData():setTurnedOnRaw(false)
+sweep()
+check(#owned(500, 600, 1) == 1 and owned(500, 600, 1)[1].serial == refused.serial
+    and Rl.state(500, 600, 1) == "error",
+    "a removal the engine refused with -1 is not success: no second device is placed and the square reports error")
+worldRemoveRefuses[refused] = nil
+worldFault.removeItem = "native removal threw"
+sweep()
+check(#owned(500, 600, 1) == 1 and owned(500, 600, 1)[1].serial == refused.serial
+    and Rl.state(500, 600, 1) == "error" and worldFault.removeItem == nil,
+    "a removal that raised stops the pass with the engine's own error instead of adding a device on top of it")
+sweep()
+check(#owned(500, 600, 1) == 1 and owned(500, 600, 1)[1].serial ~= refused.serial
+    and refused.removed == true and Rl.state(500, 600, 1) == "active",
+    "the bounded sweep recovers from a removal failure too, once the removal goes through")
+
+-- AddSpecialObject 先插入、之後才 addToWorld 與重算（IsoGridSquare.java:6189-6224）。
+-- added 布林會說「加成功了」；只有問格子才知道世界上真的留了東西。
+local squareObjects = #(worldObjects["500,600,1"] or {})
+local doomed = owned(500, 600, 1)[1]
+doomed:getDeviceData():setTurnedOnRaw(false)
+worldFault.addSpecialObject = "addToWorld failed after the object was inserted"
+sweep()
+check(#owned(500, 600, 1) == 0 and doomed.removed == true
+    and #(worldObjects["500,600,1"] or {}) == squareObjects - 1
+    and Rl.state(500, 600, 1) == "error",
+    "a build that failed after its object was inserted takes the half-built device back out by membership")
+
+-- Add 成功、發送失敗、回滾的 remove 又被拒絕：一台裝置資料完全正確、卻從未走完 addToWorld／
+-- RegisterDevice、也從未送給任何 client 的物件留在世界上。只讀資料的健康檢查會說它 active。
+worldFault.transmit = "publish failed"
+worldRemoveRefuseAll = true
+sweep()
+local ghost = owned(500, 600, 1)[1]
+check(#owned(500, 600, 1) == 1 and ghost ~= nil and Rl.state(500, 600, 1) == "error"
+    and ghost:getDeviceData():getIsTurnedOn() == true and ghost:getDeviceData():getChannel() == 104200,
+    "an inserted but unpublished device whose rollback was refused stays visible as an error, not as a healthy station")
+worldRemoveRefuseAll = false
+sweep()
+check(#owned(500, 600, 1) == 1 and owned(500, 600, 1)[1].serial ~= ghost.serial
+    and ghost.removed == true and Rl.state(500, 600, 1) == "active",
+    "the unpublished leftover is replaced on the next pass: correct device data does not clear an unfinished build")
+
+-- guard 裝不起來（原版 symbol 不見、require 失敗）就不准有裝置：原生 pickup 會發一件真物品並
+-- 移走世界裝置，sweep 再補一台，一次漏擋就成了可反覆領取的免費 HAM。
+local realInstall = TR.installGuards
+TR.installGuards = function() return false, "ISMoveableSpriteProps:pickUpMoveableInternal" end
+local unguarded = owned(500, 600, 1)[1]
+sweep()
+check(#owned(500, 600, 1) == 0 and unguarded.removed == true and Rl.state(500, 600, 1) == "error",
+    "with the operation guards unavailable nothing is created and the standing device is taken away")
+TR.installGuards = realInstall
+sweep()
+check(#owned(500, 600, 1) == 1 and Rl.state(500, 600, 1) == "active",
+    "the device comes back by itself once the guards install again")
+
+-- cloneDeviceDataFromItem 回 nil 是真失敗。沿用建構子留下的亂數化資料會放出一台看起來成功、
+-- 實際頻率／開關／耗電全不對的電台——契約要的是真正的 Base.HamRadio1 裝置。
+worldFault.clone = "no device data for Base.HamRadio1"
+local uncloned = owned(500, 600, 1)[1]
+uncloned:getDeviceData():setTurnedOnRaw(false)
+sweep()
+check(#owned(500, 600, 1) == 0 and uncloned.removed == true and Rl.state(500, 600, 1) == "error",
+    "a device data clone that came back nil fails the build instead of publishing whatever the constructor left")
+sweep()
+
+-- 解除登錄／拆站：附屬裝置得先確認清掉，才准丟掉登錄或動不可回復的實體。bounded sweep 只走
+-- 還在登錄裡的格子，先丟登錄再清理失敗，就是把一台還在收音的裝置留在世界上，而且再也沒有任何
+-- 路徑會重試它。
+local id500b = nil
+for tid, t in pairs(root.terminals) do if t.x == 500 then id500b = tid end end
+worldFault.removeItem = "native removal threw"
+local blocked = cmd(boss, "terminal.unregister", { id = id500b })
+check(blocked.ok == false and blocked.error == "radio_unavailable"
+    and root.terminals[id500b] ~= nil and #owned(500, 600, 1) == 1,
+    "an unregister whose device would not go is refused, so the registration that entitles the retry survives")
+local freed = cmd(boss, "terminal.unregister", { id = id500b })
+check(freed.ok == true and root.terminals[id500b] == nil and #owned(500, 600, 1) == 0,
+    "the same unregister succeeds once the device really leaves the square")
+local reg500 = cmd(boss, "terminal.register", { x = 500, y = 600, z = 1, kind = "trade" })
+worldFault.removeItem = "native removal threw"
+local kept = cmd(boss, "terminal.demolish", { x = 500, y = 600, z = 1 })
+check(kept.ok == false and kept.error == "radio_unavailable"
+    and root.terminals[reg500.id] ~= nil and worldSprites["500,600,1"] == "appliances_com_01_53"
+    and #owned(500, 600, 1) == 1,
+    "a demolish whose device would not go is refused before the tile is touched: tile and registration both stay")
+local razed = cmd(boss, "terminal.demolish", { x = 500, y = 600, z = 1 })
+check(razed.ok == true and root.terminals[reg500.id] == nil
+    and worldSprites["500,600,1"] == nil and #owned(500, 600, 1) == 0,
+    "the same demolish succeeds once the device goes, and takes the tile and the registration with it")
+
+-- 設定已提交、裝置沒跟上：option 必須回 warning——不是假成功，也不是把已提交的設定回滾。
+worldSprites["100,200,0"] = "MinidoracatEconomy_terminal_2"
+worldSpriteDeny["MinidoracatEconomy_speaker_terminal_2"] = true
+local warned = option("RadioFrequency", 105500)
+check(warned.ok == true and warned.warning == "radio_unavailable"
+    and Rd.frequency() == 105500 and lastSent("config").args.radio.frequency == 105500
+    and Rl.state(100, 200, 0) == "error",
+    "a radio setting that could not reach the devices keeps the committed value and answers with a warning")
+worldSpriteDeny["MinidoracatEconomy_speaker_terminal_2"] = nil
+local applied = option("RadioFrequency", 101100)
+check(applied.ok == true and applied.warning == nil
+    and owned(100, 200, 0)[1]:getDeviceData():getChannel() == 101100,
+    "the same change answers without a warning once the standing devices really were rebuilt")
+
+-- 掃描裡變動的狀態要自己推一次聚合快照：已經開著的視窗只在 hello 或自己再要一次時才收得到
+-- 清單，否則修復／失敗／chunk 載入之後永遠顯示舊狀態。
+worldSpriteDeny["MinidoracatEconomy_speaker_terminal_2"] = true
+owned(100, 200, 0)[1]:getDeviceData():setTurnedOnRaw(false)
+sentCommands = {}
+sweep()
+local pushedState = nil
+for _, e in ipairs(((lastSent("terminals") or {}).args or {}).list or {}) do
+    if e.x == 100 then pushedState = e.radioState end
+end
+check(pushedState == "error" and Rl.state(100, 200, 0) == "error",
+    "a state that changed during a sweep is pushed to the clients once, with nobody asking for the list")
+worldSpriteDeny["MinidoracatEconomy_speaker_terminal_2"] = nil
+sweep()
+sentCommands = {}
+sweep()
+check(lastSent("terminals") == nil and Rl.state(100, 200, 0) == "active",
+    "a sweep that changed no state pushes nothing: the aggregate push follows changes, not the clock")
+
+-- 真正的旋轉入口是外層 rotateMoveable（TransactionProcessor.lua:16-25、
+-- ISMoveablesAction.lua:236-245）：原版先 _forceAllow 撿起來，再無條件從背包挑一件同
+-- worldSprite 的既有物品放下。只擋 canRotateMoveable 的「拒絕」會挪用玩家另一台普通 HAM。
+worldObjects["100,200,0"] = {}
+sweep()
+local target = owned(100, 200, 0)[1]
+local ham = instanceItem("Base.RadioRed")
+ham.worldSprite = "MinidoracatEconomy_speaker_terminal_2"
+boss.inventory:AddItem(ham)
+movCalls = {}
+ISMoveableSpriteProps.rotateMoveable({}, boss, square(100, 200, 0), "MinidoracatEconomy_speaker_terminal_2")
+check(#movCalls == 0 and boss.inventory:contains(ham) == true
+    and #(worldObjects["100,200,0"] or {}) == 1 and target.removed == nil
+    and owned(100, 200, 0)[1].serial == target.serial,
+    "the real rotate entry point refuses an owned device with no side effects: the player's other ham radio stays in the bag")
+local spare = place(100, 200, 0, fakeWorldRadio("appliances_com_01_9"))
+local spareItem = instanceItem("Base.RadioRed")
+spareItem.worldSprite = "appliances_com_01_9"
+boss.inventory:AddItem(spareItem)
+movCalls = {}
+ISMoveableSpriteProps.rotateMoveable({}, boss, square(100, 200, 0), "appliances_com_01_9")
+check(#movCalls == 2 and spare.removed == true and boss.inventory:contains(spareItem) == false
+    and target.removed == nil,
+    "a vanilla radio still goes through the whole original rotation, item and all")
+-- A partial Lua load must not forget existing native devices while pretending cleanup worked.
+local registeredId = S.Terminal.at(100, 200, 0)
+S.TradeRadio = nil
+check(cmd(boss, "terminal.unregister", { id = registeredId }).error == "radio_unavailable"
+    and root.terminals[registeredId] ~= nil and target.removed == nil,
+    "a missing relay module cannot silently unregister an existing device")
+check(cmd(boss, "terminal.demolish", { x = 100, y = 200, z = 0 }).error == "radio_unavailable"
+    and worldSprites["100,200,0"] ~= nil and root.terminals[registeredId] ~= nil,
+    "a missing relay module refuses demolition before losing the cleanup coordinates")
+worldSprites["700,800,0"] = "MinidoracatEconomy_terminal_0"
+local partial = cmd(boss, "terminal.register", { x = 700, y = 800, z = 0, kind = "trade" })
+check(partial.ok == true and partial.warning == "radio_unavailable" and root.terminals[partial.id] ~= nil,
+    "a registered terminal discloses that its relay module could not synchronise")
+S.TradeRadio = Rl
+
+-- ---------- 外觀：自有的小喇叭，不是原版那台大 HAM ----------
+-- 造型只是 sprite：裝置仍站在終端自己那格（語音來源座標不變），肩側／機台上緣的位移存在
+-- 128x256 cell 裡（fixPlacedItemRenderOffsets:10213-10249 只重定位 IsoWorldInventoryObject，
+-- 不動 IsoRadio）。這裡要證的是選哪一組、朝向跟不跟得上、舊存檔的大 HAM 會不會換過來，以及
+-- 新 tile 沒載入時會不會偷偷退回大 HAM 或放一台看不見的裝置。
+worldSprites["820,130,0"] = "MinidoracatEconomy_catgirl_3"
+local kitty = cmd(boss, "terminal.register", { x = 820, y = 130, z = 0, kind = "trade" })
+local shoulder = owned(820, 130, 0)[1]
+check(kitty.ok == true and kitty.warning == nil and #owned(820, 130, 0) == 1
+    and shoulder:getSprite():getName() == "MinidoracatEconomy_speaker_catgirl_3"
+    and shoulder:getDeviceData():getChannel() == 101100
+    and shoulder:getDeviceData():getIsTurnedOn() == true,
+    "a catgirl terminal gets the shoulder speaker set facing the way she does, on a real ham device")
+-- 每一種可登錄的終端 tile 都要對到自己那組喇叭的同一個面向：貓娘前綴挑肩側組，自有機台與
+-- 原版主控台（appliances_com_01_52..55、security_01_0..3）挑機台組，面向沿尾碼 % 4。
+local wrong = {}
+for tile, speaker in pairs({
+    MinidoracatEconomy_catgirl_0 = "MinidoracatEconomy_speaker_catgirl_0",
+    MinidoracatEconomy_catgirl_1 = "MinidoracatEconomy_speaker_catgirl_1",
+    MinidoracatEconomy_catgirl_2 = "MinidoracatEconomy_speaker_catgirl_2",
+    MinidoracatEconomy_catgirl_3 = "MinidoracatEconomy_speaker_catgirl_3",
+    MinidoracatEconomy_terminal_0 = "MinidoracatEconomy_speaker_terminal_0",
+    MinidoracatEconomy_terminal_1 = "MinidoracatEconomy_speaker_terminal_1",
+    MinidoracatEconomy_terminal_2 = "MinidoracatEconomy_speaker_terminal_2",
+    MinidoracatEconomy_terminal_3 = "MinidoracatEconomy_speaker_terminal_3",
+    appliances_com_01_52 = "MinidoracatEconomy_speaker_terminal_0",
+    appliances_com_01_55 = "MinidoracatEconomy_speaker_terminal_3",
+    security_01_1 = "MinidoracatEconomy_speaker_terminal_1",
+    security_01_2 = "MinidoracatEconomy_speaker_terminal_2",
+}) do
+    if Rl.radioSprite(tile) ~= speaker then wrong[#wrong + 1] = tile end
+end
+check(#wrong == 0, "every registered terminal tile maps to its own speaker set and keeps its facing")
+
+-- 舊版本存檔留下來的大 HAM：所有權是 deviceName，所以它仍然是我們的，但外觀已經不是現在要的
+-- 那組——走既有的 remove(false) + add 換成喇叭，數量恆為一，旁邊玩家自己那台 HAM 不准被牽連。
+local stale = owned(820, 130, 0)[1]
+stale:setSprite({ getName = function() return "appliances_com_01_3" end })
+local mine = place(820, 130, 0, fakeWorldRadio("appliances_com_01_3"))
+sweep()
+local swapped = owned(820, 130, 0)[1]
+check(#owned(820, 130, 0) == 1 and stale.removed == true and swapped.serial ~= stale.serial
+    and TR.isOwned(swapped) == true and mine.removed == nil
+    and swapped:getSprite():getName() == "MinidoracatEconomy_speaker_catgirl_3"
+    and Rl.state(820, 130, 0) == "active",
+    "a device saved with the old large ham sprite is swapped for the speaker, and the player's own ham beside it stays")
+
+-- 缺 tiledef 時 getSprite 仍可能回非 nil placeholder；必須拒絕建造。
+-- 這不是 client pack/GPU 載入證據，後者由原生解碼與實機畫面分別驗證。
+worldSpriteDeny["MinidoracatEconomy_speaker_catgirl_3"] = true
+swapped:getDeviceData():setTurnedOnRaw(false)
+sweep()
+check(#owned(820, 130, 0) == 0 and swapped.removed == true and mine.removed == nil
+    and Rl.state(820, 130, 0) == "error",
+    "with the speaker tile not loaded the build fails: no fallback to the large ham and no invisible device")
+worldSpriteDeny["MinidoracatEconomy_speaker_catgirl_3"] = nil
+sweep()
+
+SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = nil
+SandboxVars.MinidoracatEconomy.RadioFrequency = nil
+SandboxVars.MinidoracatEconomy.RadioRange = nil
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = nil
+worldSprites, worldObjects, worldLoaded, worldSpriteDeny = {}, {}, {}, {}
+worldRemoveRefuses, worldFault, worldRemoveRefuseAll = {}, {}, false
+onlinePlayers = {}
 end)()
 
 io.write("\n")

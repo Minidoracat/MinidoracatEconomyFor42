@@ -72,7 +72,10 @@ local function changed(id, field, before, after, actor, reason)
     C.emitExchangeConfig()   -- the projection first, then the change record and its audit line
     X.emit("admin.config", { currency = id, field = field, before = before, after = after, actor = actor, reason = reason })
     X.audit({ action = "config", currency = id, field = field, before = before, after = after, admin = actor, reason = reason })
-    S.broadcast("config", { currencies = C.snapshot(), options = C.options(), remoteReadOnly = EC.sandbox("RemoteReadOnly", true) })
+    -- `radio` rides along so a frequency, range or relay change reaches every client's channel
+    -- registration and station text at once, without waiting for a reconnect (hello.ack).
+    S.broadcast("config", { currencies = C.snapshot(), options = C.options(), remoteReadOnly = EC.sandbox("RemoteReadOnly", true),
+        radio = S.Radio and S.Radio.clientInfo() or nil })
 end
 
 -- Runtime option overrides (settings page): config.options[key] wins over the sandbox file for
@@ -256,6 +259,21 @@ function C.setOption(key, value, actor, reason)
     -- These modules load later; publish the changed effective state, not just the options table.
     if spec.group == "rewards" and S.Rewards then S.Rewards.pushAll() end
     if spec.group == "shop" and S.Shop then S.Shop.pushAll() end
+    -- A radio setting change must reach the devices already standing in the world: the relay
+    -- rebuilds them on the new frequency / range, or takes them away when it was switched off.
+    -- The option stays committed either way - it is what this page wrote and what every later
+    -- read returns - but the reply carries the warning instead of implying the world followed.
+    -- A missing relay module is not a success either: nothing reached the devices then.
+    if spec.group == "radio" then
+        local relay = S.TradeRadio
+        local called, synced, syncErr = true, false, "the radio relay is not loaded"
+        if relay then called, synced, syncErr = pcall(relay.onConfigChanged) end
+        if not called or synced ~= true then
+            warning = "radio_unavailable"
+            EC.log("trade radio: setting applied; device sync failed: "
+                .. tostring(called and syncErr or synced))
+        end
+    end
     -- The public board's two rules ride along in the `config` broadcast above (options table);
     -- the board itself is never pushed -- a server-wide ranking must stay a pull per request.
     return true, nil, warning

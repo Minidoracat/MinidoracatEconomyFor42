@@ -335,6 +335,19 @@ option MinidoracatEconomy.RadioIntervalMinutes
     translation = MinidoracatEconomy_RadioIntervalMinutes,
 }
 
+/* The voice / general-chat relay at trade terminals. Off by default and independent of the
+market summary above: an upgrade never starts picking up microphones because the summary is on,
+and setting the summary interval to 0 only stops the summary. On, a real radio at every
+registered trade terminal listens on RadioFrequency within RadioRange; the game's own push-to-
+talk / voice-activation settings still decide whether a voice is transmitted at all. */
+option MinidoracatEconomy.RadioRelayEnabled
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RadioRelayEnabled,
+}
+
 option MinidoracatEconomy.RadioFrequency
 {
     type = integer,

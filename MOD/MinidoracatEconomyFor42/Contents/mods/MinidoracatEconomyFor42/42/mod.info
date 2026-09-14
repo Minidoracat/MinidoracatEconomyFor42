@@ -1,6 +1,7 @@
 name=Minidoracat Economy for B42
 id=MinidoracatEconomyFor42
 description=[B42]提供雙貨幣、交易中心、拍賣場及 Discord 積分兌換的經濟系統。By Minidoracat
+poster=poster.png
 require=MinidoracatUIFor42
 modversion=42.20.4-0.1.0
 versionMin=42.20.4
