@@ -439,7 +439,7 @@
   "IGUI_MinidoracatEconomy_Terminal_Error_unknown_terminal": "找不到这个终端",
   "IGUI_MinidoracatEconomy_Terminal_Error_forbidden": "只有管理员可以登录终端",
   "IGUI_MinidoracatEconomy_Band_AtTerminal": "在终端旁：可购买与领取物品",
-  "IGUI_MinidoracatEconomy_Band_NoTerminals": "服务器尚未设置任何终端，请联系管理员",
+  "IGUI_MinidoracatEconomy_Band_NoTerminals": "尚无已登录终端；请靠近地图上的 ATM，或请管理员设置终端",
   "IGUI_MinidoracatEconomy_Tab_Shop": "商店",
   "IGUI_MinidoracatEconomy_Tab_Mail": "信箱",
   "IGUI_MinidoracatEconomy_Shop_Title": "系统商店",

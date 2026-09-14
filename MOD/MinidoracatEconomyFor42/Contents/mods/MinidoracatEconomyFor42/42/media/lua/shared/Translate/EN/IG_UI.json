@@ -439,7 +439,7 @@
   "IGUI_MinidoracatEconomy_Terminal_Error_unknown_terminal": "Terminal not found",
   "IGUI_MinidoracatEconomy_Terminal_Error_forbidden": "Only admins can register terminals",
   "IGUI_MinidoracatEconomy_Band_AtTerminal": "At a terminal: buying and claiming enabled",
-  "IGUI_MinidoracatEconomy_Band_NoTerminals": "No terminal has been set up on this server yet; ask an admin",
+  "IGUI_MinidoracatEconomy_Band_NoTerminals": "No registered terminals; approach a map ATM or ask an admin to set up a terminal",
   "IGUI_MinidoracatEconomy_Tab_Shop": "Shop",
   "IGUI_MinidoracatEconomy_Tab_Mail": "Mailbox",
   "IGUI_MinidoracatEconomy_Shop_Title": "System shop",

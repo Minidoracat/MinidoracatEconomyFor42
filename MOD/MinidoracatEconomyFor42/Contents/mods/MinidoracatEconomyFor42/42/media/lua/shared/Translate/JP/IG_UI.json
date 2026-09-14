@@ -439,7 +439,7 @@
   "IGUI_MinidoracatEconomy_Terminal_Error_unknown_terminal": "ターミナルが見つかりません",
   "IGUI_MinidoracatEconomy_Terminal_Error_forbidden": "管理者のみ登録できます",
   "IGUI_MinidoracatEconomy_Band_AtTerminal": "ターミナルの近く：購入と受け取りが可能",
-  "IGUI_MinidoracatEconomy_Band_NoTerminals": "このサーバーにはまだターミナルがありません。管理者に連絡してください",
+  "IGUI_MinidoracatEconomy_Band_NoTerminals": "登録済み端末がありません。マップの ATM に近づくか、管理者に端末の設置を依頼してください",
   "IGUI_MinidoracatEconomy_Tab_Shop": "ショップ",
   "IGUI_MinidoracatEconomy_Tab_Mail": "受信箱",
   "IGUI_MinidoracatEconomy_Shop_Title": "システムショップ",

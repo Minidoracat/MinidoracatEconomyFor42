@@ -439,7 +439,7 @@
   "IGUI_MinidoracatEconomy_Terminal_Error_unknown_terminal": "找不到這個終端",
   "IGUI_MinidoracatEconomy_Terminal_Error_forbidden": "只有管理員可以登錄終端",
   "IGUI_MinidoracatEconomy_Band_AtTerminal": "在終端旁：可購買與領取物品",
-  "IGUI_MinidoracatEconomy_Band_NoTerminals": "伺服器尚未設置任何終端，請聯絡管理員",
+  "IGUI_MinidoracatEconomy_Band_NoTerminals": "尚無已登錄終端；請靠近地圖上的 ATM，或請管理員設置終端",
   "IGUI_MinidoracatEconomy_Tab_Shop": "商店",
   "IGUI_MinidoracatEconomy_Tab_Mail": "信箱",
   "IGUI_MinidoracatEconomy_Shop_Title": "系統商店",

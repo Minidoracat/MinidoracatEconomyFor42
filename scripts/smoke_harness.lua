@@ -634,7 +634,7 @@ end }
 -- 時數的，而一具屍體的時數還會繼續往上跑，所以 isDead 必須答得出來——否則「還在活的這條命」
 -- 就會被一個已經死掉的角色一路灌大。
 local function fakePlayer(username)
-    local p = { username = username, x = 100, y = 200, z = 0, hours = 0, dead = false,
+    local p = { __class = "IsoPlayer", username = username, x = 100, y = 200, z = 0, hours = 0, dead = false,
         playerNum = 0, modData = {}, inventory = fakeInventory(20), caps = {} }
     p.getUsername = function() return username end
     p.getX = function() return p.x end
@@ -704,7 +704,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1359   -- 1296 + 59 observable radio lifecycle / failure boundaries + 4 speaker appearance
+local EXPECTED_ASSERTIONS = 1369   -- Includes non-player deaths and automatic vanilla ATM access boundaries.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2563,6 +2563,35 @@ check(lastSent("terminal.demolish").args.ok == true and worldSprites["100,200,0"
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.demolish", boss, { x = 100, y = 200, z = 0 })
 check(lastSent("terminal.demolish").args.error == "no_terminal_object", "demolishing an empty square is refused")
+;(function()
+    local Shop = S.Shop
+    zed.x, zed.y, zed.z = 102, 200, 0
+    L.credit("zed", "survivor", 200, "SYSTEM_MINT", { requestId = "atm-seed", reasonCode = "t" })
+    for i = 64, 67 do
+        worldSprites["100,200,0"] = "location_business_bank_01_" .. i
+        nowMs = nowMs + 650
+        fire("OnClientCommand", EC.COMMAND_MODULE, "shop.buy", zed,
+            { id = "bandage", count = 1, currency = "survivor", revision = Shop.revision(), requestId = "native-atm-" .. i })
+        check(lastSent("shop.buy").args.ok == true and zed.inventory.count("Base.Bandage") == i - 63,
+            "vanilla ATM facing " .. i .. " permits a real purchase without registration")
+    end
+    zed.x = 102.01
+    check(not T.near(zed), "automatic ATM access stops beyond the exact two-tile range")
+    zed.x, zed.z = 101, 1
+    check(not T.near(zed), "automatic ATM access never crosses floors")
+    zed.z = 0
+    worldSprites["100,200,0"] = nil
+    local balance = L.getBalance("zed", "survivor").available
+    nowMs = nowMs + 650
+    fire("OnClientCommand", EC.COMMAND_MODULE, "shop.buy", zed,
+        { id = "bandage", currency = "survivor", revision = Shop.revision(), requestId = "atm-removed" })
+    check(lastSent("shop.buy").args.error == "not_at_terminal" and L.getBalance("zed", "survivor").available == balance,
+        "removing an automatic ATM immediately prevents purchase without debiting")
+    worldSprites["100,200,0"] = "appliances_com_01_52"
+    check(not T.near(zed), "an unregistered computer cabinet is not an automatic ATM")
+    worldSprites["100,200,0"] = nil
+    check(T.count() == 0, "automatic ATMs create no persistent terminals or radio registrations")
+end)()
 onlinePlayers = {}
 end)()
 
@@ -11967,6 +11996,20 @@ tick(); tick()
 check(atDeath.bestHours == 7 and Se.progress("s89-dan").bestHours == 7
     and Se.progress("s89-dan").currentHours == 7,
     "a body is closed exactly once: the second death event for that instance and the hours its corpse keeps collecting add nothing")
+;(function()
+    local reads = 0
+    local nonPlayer = setmetatable({ __class = "IsoZombie" }, {
+        __index = function(_, key)
+            reads = reads + 1
+            error("non-player method accessed: " .. key)
+        end,
+    })
+    fire("OnCharacterDeath", nonPlayer)
+    nonPlayer.__class = "IsoAnimal"
+    fire("OnCharacterDeath", nonPlayer)
+    check(reads == 0 and Se.progress("s89-dan").bestHours == 7,
+        "zombie and animal deaths never call player APIs or change the closed player life")
+end)()
 local live = fakePlayer("s89-eve"); live.hours = 12
 onlinePlayers = { live }
 tick()

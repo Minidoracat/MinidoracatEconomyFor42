@@ -111,7 +111,7 @@ end
 -- browsing), never whether a write needs one (spec 12 stage D position rule).
 function T.near(player)
     local d = T.nearest(player)
-    return d ~= nil and d <= EC.TERMINAL_RANGE
+    return (d ~= nil and d <= EC.TERMINAL_RANGE) or EC.nearMapAtm(player)
 end
 
 -- The client snapshot of the terminal list. Public because the radio relay pushes it as well: a
