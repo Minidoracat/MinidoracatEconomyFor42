@@ -49,5 +49,5 @@ The mod is free and always will be. If you enjoy it, consider buying me a coffee
 
 [b]#Minidoracat[/b]
 
-[b]Workshop ID:[/b] Not assigned
+[b]Workshop ID:[/b] 3801482125
 [b]Mod ID:[/b] MinidoracatEconomyFor42

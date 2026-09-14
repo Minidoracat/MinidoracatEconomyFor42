@@ -6,7 +6,7 @@
 
 ## 發布狀態與功能
 
-目前正在準備首次發布，尚未取得 Workshop ID。以下為已實作功能，不代表所有外部服務已部署；本機驗證與實機驗收的範圍分開記錄。
+已建立 Steam Workshop 項目（ID：3801482125）。以下為已實作功能，不代表所有外部服務已部署；本機驗證與實機驗收的範圍分開記錄。
 
 - 雙貨幣錢包、自訂貨幣名稱與圖示、可用餘額及拍賣保留款。
 - 系統商店售出／收購、分幣價格、每日限購與收購額度。
@@ -18,10 +18,10 @@
 
 ## 安裝
 
-- Steam Workshop：首次建立項目後補上連結；目前不要使用未指派的 ID。
+- Steam Workshop：[Minidoracat Economy for B42](https://steamcommunity.com/sharedfiles/filedetails/?id=3801482125)
 - 必要依賴：[Minidoracat UI Library for B42](https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701)，**API rev ≥6**。只核對 `0.5.0` 版號不夠，需確認實際 API 修訂；伺服器與客戶端都要使用相容版本。
 - 手動安裝：將 `MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42` 整個資料夾複製至遊戲使用者資料的 `mods/`，保留其 `42/` 子目錄；UI 函式庫也需安裝。
-- 服主在 dedicated server 啟用 `MinidoracatUIFor42` 與 `MinidoracatEconomyFor42`，依賴先載入；Steam 伺服器另需設定兩個實際 Workshop ID。不要把尚未取得的 Economy ID 填成範例數字。
+- 服主在 dedicated server 啟用 `MinidoracatUIFor42` 與 `MinidoracatEconomyFor42`，依賴先載入；Workshop ID 分別為 `3789836701` 與 `3801482125`。
 - 伺服器與客戶端更新後同版完整重啟。管理員建造終端，再以右鍵登錄為 ATM 或交易站，玩家即可使用對應經濟介面。
 - 服主另行部署 `companion/`（Node ≥24），使用相同伺服器資料目錄提供保存水位確認；**Workshop 不會自動安裝或啟動 companion**。未提供確認水位時，部分待確認轉移會保留並可能達到保護上限，不應忽略。
 - 基本遊戲交易不要求 Discord；積分兌換需要服主接入外部服務。日報可獨立手動執行，若要每日自動產生，再由服主安裝主機排程，見下方說明。
@@ -183,16 +183,16 @@ npm run report -- --help
 
 ## 發布準備
 
-### 首次發布前檢查
+### 發布與更新檢查
 
-這是發布準備清單，不代表以下步驟已執行，也不授權自動上傳。
+首發項目已由使用者建立，ID 已回填。以下為後續核對清單，不授權自動上傳。
 
-1. 確認本次版本與更新說明；目前保留 `42.20.4-0.1.0`，開發累積仍在 CHANGELOG 的 `Unreleased`，正式定版時再歸入核准版本與實際發布日期。
+1. 首發版本為 `42.20.4-0.1.0`（2026-09-14），對應 tag `v42.20.4-0.1.0`；後續改動另列下一版本，不覆蓋既有 tag。
 2. 先確認 Workshop 訂閱端取得 UI 函式庫 API rev ≥6，再發布 Economy；本機開發版不能代表玩家訂閱到的版本。
 3. 在乾淨的 dedicated server／客戶端組合確認首次安裝、權限與基本交易流程；服主確認 companion 保存水位正常。保留已通過的實測，不以離線圖冒充遊戲截圖。
 4. 提交要發布的日報與文案改動，通過 MOD 閘門與 companion 測試；確認 `.env`、報告、開發工具狀態及私密資料不在上傳內容內。
-5. 執行 `uv run scripts/gen_workshop_txt.py` 同步英文描述；首發前沒有 `id=` 是正常狀態，不手填假 ID。
-6. 由遊戲內 Workshop 上傳器建立項目，取得真實 ID 後回填發布設定、各語描述與 README，重新產生 `workshop.txt`；在 Workshop 設定 UI 函式庫為 Required Items。
+5. 執行 `uv run scripts/gen_workshop_txt.py` 同步英文描述，保留既有 `id=3801482125`，不要重新建立 Workshop 項目。
+6. 核對 Workshop 的 Required Items 已包含 UI 函式庫。遊戲上傳器使用 `preview.png`；網頁動態封面使用 `workshop/preview.gif`，另以發布腳本的 `preview` 模式更新。
 7. 取得明確上傳授權後，依家族流程補齊其他語言描述與動態封面，最後核對公開頁面、依賴及訂閱下載內容。往後更新才使用 `Publish_Workshop.bat`。
 
 ### 發布到 Workshop

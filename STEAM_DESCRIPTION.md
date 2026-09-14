@@ -49,5 +49,5 @@ MOD 永遠免費。喜歡的話可以請我喝杯咖啡，贊助會用在伺服�
 
 [b]#Minidoracat[/b]
 
-[b]Workshop ID:[/b] 尚未指派
+[b]Workshop ID:[/b] 3801482125
 [b]Mod ID:[/b] MinidoracatEconomyFor42

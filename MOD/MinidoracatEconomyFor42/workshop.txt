@@ -1,4 +1,5 @@
 version=1
+id=3801482125
 title=Minidoracat Economy for B42
 description=[h1]💰 Minidoracat Economy for B42[/h1]
 description=[h3]By Minidoracat[/h3]
@@ -51,7 +52,7 @@ description=[url=https://ko-fi.com/minidoracat][img]https://raw.githubuserconten
 description=
 description=[b]#Minidoracat[/b]
 description=
-description=[b]Workshop ID:[/b] Not assigned
+description=[b]Workshop ID:[/b] 3801482125
 description=[b]Mod ID:[/b] MinidoracatEconomyFor42
 tags=Build 42;Interface;Multiplayer
 visibility=public
