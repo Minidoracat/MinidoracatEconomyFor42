@@ -1280,12 +1280,9 @@ function Panel:onShopSearch()
     self:rebuildShop()
 end
 
--- The gate the server re-checks on every write (ECTerminal.near plus the freeze flag). The
--- terminal list is short (a server registers a handful), so the distance test per frame is
--- cheap — and with nothing registered there is nothing to measure against at all.
+-- Mirror the server's write gate: a registered terminal or a nearby vanilla ATM.
 function Panel:tradeAllowed()
     if C.wallet and C.wallet.frozen then return false end
-    if self:remoteReadOnly() and #(C.terminals or {}) == 0 then return false end
     return C.nearTerminal()
 end
 
@@ -3285,8 +3282,8 @@ end
 function Panel:statusBand()
     if C.wallet and C.wallet.frozen then return "Band_Frozen", "errorText" end
     if not self:remoteReadOnly() then return nil end
-    if #(C.terminals or {}) == 0 then return "Band_NoTerminals", "warn" end
     if C.nearTerminal() then return "Band_AtTerminal", "positive" end
+    if #(C.terminals or {}) == 0 then return "Band_NoTerminals", "warn" end
     return "Band_RemoteReadOnly", "warn"
 end
 

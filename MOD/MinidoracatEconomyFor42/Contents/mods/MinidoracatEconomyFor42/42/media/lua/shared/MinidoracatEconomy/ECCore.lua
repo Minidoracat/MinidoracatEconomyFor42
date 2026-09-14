@@ -23,7 +23,7 @@ EC.MODDATA_KEY = "MinidoracatEconomy"          -- Global ModData table name
 EC.PLAYER_MODDATA_KEY = "MinidoracatEconomy"   -- sub-table inside player:getModData() (pending records)
 EC.SANDBOX_PAGE = "MinidoracatEconomy"         -- SandboxVars.MinidoracatEconomy.*
 EC.SCHEMA_VERSION = 1
-EC.VERSION = "0.1.0"
+EC.VERSION = "0.1.1"
 
 -- Static half of the currency registry (spec section 18.1). Runtime overrides
 -- (nameOverride / iconHash / enabled / caps) live in Global ModData `config.currencies[id]`
@@ -57,7 +57,7 @@ EC.BUYBACK_OPTIONS = {
 -- "Terminal" consoles an admin may register in an existing building (appliances_com_01_52-55
 -- CeroSec, security_01_0-3 Security; newtiledefinitions.tiles CustomName=Terminal). Write
 -- commands always need the player within TERMINAL_RANGE tiles (Chebyshev, same level) of a
--- registered terminal; the sandbox option RemoteReadOnly only allows opening the window
+-- registered terminal or a vanilla ATM; the sandbox option RemoteReadOnly only allows opening the window
 -- elsewhere for read-only browsing.
 EC.TERMINAL_SPRITES = {
     MinidoracatEconomy_terminal_0 = true, MinidoracatEconomy_terminal_1 = true,
@@ -69,6 +69,36 @@ EC.TERMINAL_SPRITES = {
 }
 EC.TERMINAL_RANGE = 2
 EC.TERMINAL_KINDS = { atm = true, trade = true }
+
+-- Vanilla floor-standing and wall-mounted ATMs (Tiles2x.pack bank_01 frames 64-67).
+-- These grant nearby access only: no persistent registration, radio, or demolition privilege.
+EC.ATM_SPRITES = {
+    location_business_bank_01_64 = true, location_business_bank_01_65 = true,
+    location_business_bank_01_66 = true, location_business_bank_01_67 = true,
+}
+
+function EC.isAtmSquare(square)
+    if not square then return false end
+    local objects = square:getObjects()
+    for i = 0, objects:size() - 1 do
+        local sprite = objects:get(i):getSprite()
+        if sprite and EC.ATM_SPRITES[sprite:getName()] then return true end
+    end
+    return false
+end
+
+function EC.nearMapAtm(player)
+    local cell = getCell()
+    if not cell then return false end
+    local x, y, z = player:getX(), player:getY(), math.floor(player:getZ())
+    local range = EC.TERMINAL_RANGE
+    for sx = math.ceil(x - range), math.floor(x + range) do
+        for sy = math.ceil(y - range), math.floor(y + range) do
+            if EC.isAtmSquare(cell:getGridSquare(sx, sy, z)) then return true end
+        end
+    end
+    return false
+end
 
 -- Item classes the market can never list, whatever whitelist.json says: their Java-side state
 -- (contents, keys, map markers, worn/attached objects, the animal) is not in the bounded

@@ -409,7 +409,7 @@ function C.nearTerminal()
     for _, t in ipairs(C.terminals or {}) do
         if t.z == pz and math.max(math.abs(px - t.x), math.abs(py - t.y)) <= EC.TERMINAL_RANGE then return true end
     end
-    return false
+    return EC.nearMapAtm(player)
 end
 
 function C.registerTerminal(x, y, z, kind, requestId) send("terminal.register", { x = x, y = y, z = z, kind = kind or "atm", requestId = requestId }) end

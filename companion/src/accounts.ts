@@ -95,7 +95,7 @@ export class Accounts {
     try {
       const wl = path.join(this.stateDir, "whitelist.copy.db");
       if (fs.existsSync(this.whitelistDb) && copyIfQuiet(this.whitelistDb, wl)) {
-        for (const row of readRows(wl, "SELECT username, steamid, lastConnection FROM whitelist")) {
+        for (const row of readRows(wl, "SELECT username, CAST(steamid AS TEXT) AS steamid, lastConnection FROM whitelist")) {
           const username = text(row.username ?? null);
           if (username === null) continue;
           const lastConnection = row.lastConnection ?? null;
@@ -111,7 +111,7 @@ export class Accounts {
       const pl = path.join(this.stateDir, "players.copy.db");
       if (fs.existsSync(this.playersDb) && copyIfQuiet(this.playersDb, pl)) {
         // Never select the `data` blob (the whole character save).
-        for (const row of readRows(pl, "SELECT username, steamid, playerIndex, name, isDead, worldversion FROM networkPlayers")) {
+        for (const row of readRows(pl, "SELECT username, CAST(steamid AS TEXT) AS steamid, playerIndex, name, isDead, worldversion FROM networkPlayers")) {
           const username = text(row.username ?? null);
           if (username === null) continue;
           let rec = byUsername.get(username);

@@ -1215,7 +1215,7 @@ end
 local carryOver = {}
 
 function M.onDeath(character)
-    if not md then return end
+    if not md or not instanceof(character, "IsoPlayer") then return end
     local ok, username = pcall(function() return character:getUsername() end)
     if not ok or type(username) ~= "string" then return end
     local okData, data = pcall(function() return character:getModData()[EC.PLAYER_MODDATA_KEY] end)

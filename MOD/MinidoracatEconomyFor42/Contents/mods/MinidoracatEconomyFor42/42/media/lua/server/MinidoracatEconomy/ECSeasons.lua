@@ -371,6 +371,7 @@ function Se.start(expectedSeason, requestId, actor, reason, ms)
 end
 
 local function onDeath(character)
+    if not instanceof(character, "IsoPlayer") then return end
     -- Only the tracked instance gets one final sample, and never after its season's deadline.
     local ok, username, slot = pcall(readPlayer, character)
     if not ok or not whole(slot, 0, 3) then return end
