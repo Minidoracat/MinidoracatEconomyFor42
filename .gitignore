@@ -46,3 +46,9 @@ scripts/poster/*.bak
 
 # Node（companion 開發依賴）
 companion/node_modules/
+
+# 本機環境設定與含帳戶資訊的日報
+.env
+.env.*
+!.env.example
+companion/reports/

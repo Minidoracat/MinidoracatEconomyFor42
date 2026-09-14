@@ -26,6 +26,8 @@ export interface ParsedModData {
   tables: Map<string, LuaTable>;
 }
 
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
 class Reader {
   pos = 0;
   readonly buf: Buffer;
@@ -44,7 +46,7 @@ class Reader {
     const n = this.int16();
     if (n <= 0) return "";
     this.need(n);
-    const s = this.buf.toString("utf8", this.pos, this.pos + n);
+    const s = UTF8.decode(this.buf.subarray(this.pos, this.pos + n));
     this.pos += n;
     return s;
   }
