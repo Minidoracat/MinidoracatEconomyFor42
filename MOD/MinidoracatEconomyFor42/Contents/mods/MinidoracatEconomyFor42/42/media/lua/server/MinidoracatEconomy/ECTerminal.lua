@@ -29,19 +29,6 @@ T.MAX = 200
 
 local md = nil
 
-local function roleName(player)
-    local ok, role = pcall(function() return player:getRole():getName() end)
-    return ok and type(role) == "string" and role or ""
-end
-
--- Same rule as ECAdmin.isAdmin (that module loads later) plus the engine capability check A11
--- used. The role name is matched exactly, like everywhere else: role lookup is case sensitive
--- (Roles.java:302-305), so a lower-cased comparison would let "Admin" pass an "admin" list.
-local function isAdmin(player)
-    if not EC.roleSet(EC.sandbox("AdminRoles", "admin"))[roleName(player)] then return false end
-    local ok, cap = pcall(function() return player:getRole():hasCapability(Capability.AddItem) end)
-    return ok and cap == true
-end
 
 local function isInt(v)
     return type(v) == "number" and v == math.floor(v)
@@ -153,7 +140,7 @@ local function clearCompanion(x, y, z)
 end
 
 function T.register(player, args)
-    if not isAdmin(player) then return { ok = false, error = "forbidden" } end
+    if not EC.canManageTerminals(player) then return { ok = false, error = "forbidden" } end
     if type(args) ~= "table" or not isInt(args.x) or not isInt(args.y) or not isInt(args.z) then
         return { ok = false, error = "invalid_args" }
     end
@@ -175,7 +162,7 @@ function T.register(player, args)
 end
 
 function T.unregister(player, args)
-    if not isAdmin(player) then return { ok = false, error = "forbidden" } end
+    if not EC.canManageTerminals(player) then return { ok = false, error = "forbidden" } end
     local id = type(args) == "table" and args.id or nil
     local t = type(id) == "string" and md.terminals[id] or nil
     if not t then return { ok = false, error = "unknown_terminal" } end
@@ -197,7 +184,7 @@ end
 -- server pattern) and a registration on that square is dropped with it. Players never get this
 -- path: the entity is not thumpable, not moveable, and the client refuses the sledgehammer.
 function T.demolish(player, args)
-    if not isAdmin(player) then return { ok = false, error = "forbidden" } end
+    if not EC.canManageTerminals(player) then return { ok = false, error = "forbidden" } end
     if type(args) ~= "table" or not isInt(args.x) or not isInt(args.y) or not isInt(args.z) then
         return { ok = false, error = "invalid_args" }
     end
