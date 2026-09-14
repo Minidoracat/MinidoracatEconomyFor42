@@ -629,6 +629,13 @@ ISDeviceMediaAction = { isValid = function(self)
     if self.isRemove then return self.deviceData:hasMedia() end
     return (not self.deviceData:hasMedia()) and self.deviceData:getMediaType() == self.secondaryItem:getMediaType()
 end }
+ISDestroyStuffAction = {
+    isValid = function(self) return self.item ~= nil end,
+    complete = function(self)
+        self.item:getSquare():transmitRemoveItemFromSquare(self.item)
+        return true
+    end,
+}
 
 -- 每個假玩家一個固定的 slot 與一個生死旗標：伺服器是按 getPlayerNum() 分槽去讀自己那份生存
 -- 時數的，而一具屍體的時數還會繼續往上跑，所以 isDead 必須答得出來——否則「還在活的這條命」
@@ -660,6 +667,7 @@ local loaded = {
     ["Moveables/ISMoveableSpriteProps"] = true,
     ["TimedActions/ISDeviceBatteryAction"] = true,
     ["TimedActions/ISDeviceMediaAction"] = true,
+    ["TimedActions/ISDestroyStuffAction"] = true,
 }
 function require(name)
     if loaded[name] then return true end
@@ -674,6 +682,7 @@ function require(name)
     error("require not found: " .. name)
 end
 require("MinidoracatEconomy/ECCore")
+require("MinidoracatEconomy/ECAtmProtection")
 require("MinidoracatEconomy/ECServer")
 require("MinidoracatEconomy/ECLedger")
 require("MinidoracatEconomy/ECExport")
@@ -704,7 +713,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1369   -- Includes non-player deaths and automatic vanilla ATM access boundaries.
+local EXPECTED_ASSERTIONS = 1384   -- Includes native ATM destruction, scrap and administrator boundaries.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -13023,6 +13032,62 @@ SandboxVars.MinidoracatEconomy.RadioRelayEnabled = nil
 worldSprites, worldObjects, worldLoaded, worldSpriteDeny = {}, {}, {}, {}
 worldRemoveRefuses, worldFault, worldRemoveRefuseAll = {}, {}, false
 onlinePlayers = {}
+end)()
+
+;(function()
+    local player = fakePlayer("atm-protection")
+    local function object(name)
+        local obj = { removed = false }
+        local sq = { transmitRemoveItemFromSquare = function(_, target) target.removed = true end }
+        obj.getSprite = function() return { getName = function() return name end } end
+        obj.getSquare = function() return sq end
+        return obj
+    end
+    for i = 64, 67 do
+        local atm = object("location_business_bank_01_" .. i)
+        local action = { character = player, item = atm }
+        check(not ISDestroyStuffAction.isValid(action) and not ISDestroyStuffAction.complete(action) and not atm.removed,
+            "native ATM " .. i .. " refuses both sledgehammer admission and server completion")
+        local props = { object = atm }
+        local result, chance = ISMoveableSpriteProps.canScrapObject(props, player)
+        check(not result.canScrap and chance == 0
+            and ISMoveableSpriteProps.scrapObjectInternal(props, player, {}, atm:getSquare(), atm, {}, 100, nil) == 0
+            and not atm.removed, "native ATM " .. i .. " refuses scrap without removing the object or producing loot")
+    end
+    player.role = "admin"
+    local atm = object("location_business_bank_01_64")
+    local action = { character = player, item = atm }
+    check(ISDestroyStuffAction.isValid(action) and ISDestroyStuffAction.complete(action) and atm.removed,
+        "authorized administrator retains native sledgehammer removal")
+    atm = object("location_business_bank_01_65")
+    check(ISMoveableSpriteProps.canScrapObject({ object = atm }, player).canScrap
+        and ISMoveableSpriteProps.scrapObjectInternal({}, player, {}, atm:getSquare(), atm, {}, 100, nil) == 3
+        and atm.removed, "authorized administrator retains native scrap result and removal")
+    player.role = "user"
+    local cabinet = object("appliances_com_01_52")
+    check(ISDestroyStuffAction.complete({ character = player, item = cabinet }) and cabinet.removed,
+        "ATM protection does not change unrelated furniture removal")
+    player.role = "admin"
+    atm = object("location_business_bank_01_64")
+    action = { character = player, item = atm }
+    local admitted = ISDestroyStuffAction.isValid(action)
+    player.role = "user"
+    check(admitted and not ISDestroyStuffAction.complete(action) and not atm.removed,
+        "revoking permission while queued prevents ATM removal at completion")
+    player.role = "admin"; player.caps[Capability.AddItem] = false
+    check(not ISDestroyStuffAction.complete(action) and not atm.removed,
+        "an admin role without AddItem cannot remove an ATM")
+    local previousOverride = EC.optionOverride
+    EC.optionOverride = function(key)
+        if key == "AdminRoles" then return { "ATM Keeper" } end
+        return previousOverride and previousOverride(key)
+    end
+    player.role = "ATM Keeper"; player.caps[Capability.AddItem] = true
+    check(ISDestroyStuffAction.complete(action) and atm.removed,
+        "configured custom administrator role retains exact-name ATM removal")
+    EC.optionOverride = previousOverride
+    check(EC.AtmProtection.blocked(nil, object("location_business_bank_01_67")),
+        "missing actor never grants ATM removal permission")
 end)()
 
 io.write("\n")

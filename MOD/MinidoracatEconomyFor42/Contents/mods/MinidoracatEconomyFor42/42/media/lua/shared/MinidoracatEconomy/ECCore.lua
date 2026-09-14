@@ -23,7 +23,7 @@ EC.MODDATA_KEY = "MinidoracatEconomy"          -- Global ModData table name
 EC.PLAYER_MODDATA_KEY = "MinidoracatEconomy"   -- sub-table inside player:getModData() (pending records)
 EC.SANDBOX_PAGE = "MinidoracatEconomy"         -- SandboxVars.MinidoracatEconomy.*
 EC.SCHEMA_VERSION = 1
-EC.VERSION = "0.1.1"
+EC.VERSION = "0.1.2"
 
 -- Static half of the currency registry (spec section 18.1). Runtime overrides
 -- (nameOverride / iconHash / enabled / caps) live in Global ModData `config.currencies[id]`
@@ -77,12 +77,16 @@ EC.ATM_SPRITES = {
     location_business_bank_01_66 = true, location_business_bank_01_67 = true,
 }
 
+function EC.isAtmObject(object)
+    local sprite = object and object:getSprite()
+    return sprite ~= nil and EC.ATM_SPRITES[sprite:getName()] == true
+end
+
 function EC.isAtmSquare(square)
     if not square then return false end
     local objects = square:getObjects()
     for i = 0, objects:size() - 1 do
-        local sprite = objects:get(i):getSprite()
-        if sprite and EC.ATM_SPRITES[sprite:getName()] then return true end
+        if EC.isAtmObject(objects:get(i)) then return true end
     end
     return false
 end
@@ -330,6 +334,14 @@ function EC.canManageSettings(player)
     if player == nil then return false end
     local ok, cap = pcall(function() return player:getRole():hasCapability(Capability.RolesWrite) end)
     return ok and cap == true
+end
+
+-- Terminal administration also requires the native AddItem capability.
+function EC.canManageTerminals(player)
+    local ok, role = pcall(function() return player:getRole():getName() end)
+    if not ok or type(role) ~= "string" or not EC.roleSet(EC.sandbox("AdminRoles", "admin"))[role] then return false end
+    local okCap, cap = pcall(function() return player:getRole():hasCapability(Capability.AddItem) end)
+    return okCap and cap == true
 end
 
 -- ---------- time ----------

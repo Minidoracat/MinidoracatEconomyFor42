@@ -24,6 +24,7 @@ end
 if not MinidoracatEconomy.TradeRadio then
     require "MinidoracatEconomy/ECTradeRadio"
 end
+require "MinidoracatEconomy/ECAtmProtection"
 local EC = MinidoracatEconomy
 local C = EC.Client
 local P = C.Panel
@@ -189,6 +190,7 @@ local function guardDestroyCursor()
     ISDestroyCursor.MinidoracatEconomyGuarded = true
     local base = ISDestroyCursor.canDestroy
     ISDestroyCursor.canDestroy = function(self, object)
+        if EC.AtmProtection.blocked(self.character, object) then return false end
         if not isAdmin() and protectedObject(object) then return false end
         return base(self, object)
     end
