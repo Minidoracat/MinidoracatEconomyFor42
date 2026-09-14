@@ -50,3 +50,9 @@ export const config: CompanionConfig = {
   modDataTag: "MinidoracatEconomy",
   maxEventsInMemory: envNumber("MAX_EVENTS_IN_MEMORY", 200000),
 };
+
+// The report is a separate, read-only command; invalid report settings never stop the daemon.
+export const reportConfig = {
+  timeZone: env("REPORT_TIME_ZONE", "Asia/Taipei"),
+  outputDir: path.resolve(env("REPORT_OUTPUT_DIR", "./reports")),
+};
