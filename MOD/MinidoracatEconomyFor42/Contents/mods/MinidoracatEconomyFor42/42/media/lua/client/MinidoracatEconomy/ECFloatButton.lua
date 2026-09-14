@@ -119,6 +119,7 @@ function F.ensure()
     local theme = ui.Theme.create()
     local button = ui.FloatButton.new({
         size = SIZE,
+        alwaysOnTop = false, -- Keep the launcher below later windows and dialogs.
         x = defaultX(),
         y = defaultY(),
         colors = { surface = theme.colors.surface, hover = theme.colors.hover, border = theme.colors.border },

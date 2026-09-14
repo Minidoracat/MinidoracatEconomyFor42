@@ -79,7 +79,7 @@ Shop.QUOTE_FIELDS = { "price", "bidPrice", "enabled", "buyback" }
 Shop.DEFAULT_ITEMS = {
     { id = "bandage", item = "Base.Bandage", qty = 1, dailyCap = 5, category = "medical",
         prices = { survivor = { price = 12, bidPrice = 5 } } },
-    { id = "antibiotics", item = "Base.Antibiotics", qty = 1, dailyCap = 2, category = "medical",
+    { id = "antibiotics", item = "Base.Antibiotics", qty = 1, dailyCap = 2, dailyCapScope = "global", category = "medical",
         prices = { survivor = { price = 60, bidPrice = 25 } } },
     { id = "ripped_sheets", item = "Base.RippedSheets", qty = 5, dailyCap = 5, category = "medical",
         prices = { survivor = { price = 10, bidPrice = 4 } } },
@@ -101,7 +101,7 @@ Shop.DEFAULT_ITEMS = {
         prices = { survivor = { price = 80, bidPrice = 30 } } },
     { id = "saw", item = "Base.Saw", qty = 1, dailyCap = 1, category = "tool",
         prices = { survivor = { price = 90, bidPrice = 35 } } },
-    { id = "axe", item = "Base.Axe", qty = 1, dailyCap = 1, category = "tool",
+    { id = "axe", item = "Base.Axe", qty = 1, dailyCap = 1, dailyCapScope = "global", category = "tool",
         prices = { survivor = { price = 150, bidPrice = 60 } } },
 }
 
