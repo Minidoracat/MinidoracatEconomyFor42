@@ -1,7 +1,11 @@
 {
   "Sandbox_MinidoracatEconomy": "Minidoracat 経済システム",
   "Sandbox_MinidoracatEconomy_RemoteReadOnly": "リモート閲覧を許可",
-  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "有効にすると、プレイヤーはどこからでもホットキーやフロートボタンで経済センターを開けますが、閲覧（カタログ・ウォレット・明細）のみです。取引・出品・受け取りは登録済み端末のそばで行う必要があります。無効にすると端末のそばでしか開けません。",
+  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "有効にすると、ホットキーやフロートボタンでどこからでも経済センターを開いて閲覧できます。取引・出品・受け取りには、登録済み端末または利用が許可されたマップ内 ATM が近くに必要です。無効にすると、これらの端末のそばでしか開けません。",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal": "マップ内 ATM を端末として使用",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal_tooltip": "有効にすると、標準の床置き・壁掛け ATM と同じ階の 2 マス以内で、登録せずに取引や受け取りができます。無効にすると、マップ内 ATM は経済機能の入口になりません。登録済み端末や自作端末には影響せず、ATM の撤去保護も変わりません。初期設定は有効です。",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction": "プレイヤーによる ATM 撤去を許可",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction_tooltip": "有効にすると、一般プレイヤーも通常のゲームルールに従い、大ハンマーや家具の解体で標準 ATM を撤去できます。無効の場合、管理ロールと標準の建築権限を持つ端末管理者だけが撤去できます。ATM の端末利用とは独立しており、自作端末には影響しません。火災・爆発・他 MOD による直接削除は保護対象外です。初期設定は無効です。",
   "Sandbox_MinidoracatEconomy_CheckinAmount": "デイリーチェックイン額（サバイバーコイン）",
   "Sandbox_MinidoracatEconomy_CheckinAmount_tooltip": "チェックイン 1 回で受け取れる固定額。報酬日ごとの回数は「1 日のチェックイン回数」で決まります。報酬日はサーバーの現実時刻で数え、ゲーム内日付ではありません。0 は日次チェックインを完全に停止します（0 は停止であり、無料ではありません）。パネルでは受け取り不可と表示され、0 円の記帳も一切行われません。生存マイルストーンは別の金額で動き続けます。",
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes": "チェックイン初回に必要な接続時間（分）",

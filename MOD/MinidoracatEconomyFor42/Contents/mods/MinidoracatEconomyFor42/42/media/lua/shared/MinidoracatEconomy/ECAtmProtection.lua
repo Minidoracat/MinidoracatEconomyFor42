@@ -12,7 +12,12 @@ if EC.AtmProtection then return end
 local P = {}
 
 function P.blocked(player, object)
-    return EC.isAtmObject(object) and not EC.canManageTerminals(player)
+    if not EC.isAtmObject(object) then return false end
+    local option = isClient() and EC.Client and EC.Client.options and EC.Client.options.MapATMAllowDestruction
+    local allowed
+    if type(option) == "table" and type(option.value) == "boolean" then allowed = option.value
+    else allowed = EC.sandbox("MapATMAllowDestruction", false) end
+    return not allowed and not EC.canManageTerminals(player)
 end
 
 local valid = ISDestroyStuffAction.isValid

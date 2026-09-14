@@ -1,7 +1,11 @@
 {
   "Sandbox_MinidoracatEconomy": "Minidoracat Economy",
   "Sandbox_MinidoracatEconomy_RemoteReadOnly": "Allow remote read-only access",
-  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "When enabled players can open the Economy Center anywhere via hotkey or floating button, but only to browse (catalog, wallet, receipts); every trade, listing and claim still requires standing next to a registered terminal. When disabled the window only opens at a terminal.",
+  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "When enabled, open the Economy Center anywhere via hotkey or floating button to browse. Trading, listing and claiming still require a registered terminal or an enabled map ATM nearby. When disabled, the window only opens near these terminals.",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal": "Use map ATMs as terminals",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal_tooltip": "When enabled, trade and claim items within 2 tiles of a vanilla floor-standing or wall-mounted ATM on the same level, without registration. When disabled, map ATMs no longer provide economy access. Registered and custom terminals are unaffected. Does not change ATM destruction protection. On by default.",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction": "Allow players to remove map ATMs",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction_tooltip": "When enabled, ordinary players may remove vanilla ATMs with a sledgehammer or furniture disassembly under normal game rules. When disabled, only terminal administrators (an admin role with the native building capability) may remove them. Independent of ATM access; custom terminals are unaffected. Does not cover fire, explosions or direct removal by other mods. Off by default.",
   "Sandbox_MinidoracatEconomy_CheckinAmount": "Daily check-in amount (Survivor Coins)",
   "Sandbox_MinidoracatEconomy_CheckinAmount_tooltip": "Fixed amount paid by one check-in claim. How many claims an account gets per reward day is set by Check-in claims per day. Reward days follow the server real-world clock, not the in-game date. 0 turns the daily check-in off entirely (0 is off, not free): the panel shows it as unclaimable and no zero-value entry is ever posted. Survival milestones have their own amounts and keep running.",
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes": "Check-in first claim: minimum connected time (minutes)",

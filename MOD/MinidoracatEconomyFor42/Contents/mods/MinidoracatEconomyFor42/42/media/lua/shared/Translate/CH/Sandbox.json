@@ -1,7 +1,11 @@
 {
   "Sandbox_MinidoracatEconomy": "Minidoracat 經濟系統",
   "Sandbox_MinidoracatEconomy_RemoteReadOnly": "允許遠端開啟唯讀分頁",
-  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "開啟時玩家可在任何地方用快捷鍵或浮動按鈕打開經濟中心，但只能瀏覽（目錄、錢包、收據）；所有交易、刊登、領取仍必須站在已登錄的終端旁。關閉時整個視窗只能在終端旁開啟。",
+  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "開啟時可在任何地方用快捷鍵或浮動按鈕打開經濟中心，但只能瀏覽；交易、刊登與領取仍須在已登錄終端或已開放使用的原生 ATM 旁。關閉時整個視窗只能在這些終端旁開啟。",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal": "原生 ATM 可作為終端",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal_tooltip": "開啟時，玩家可在地圖原生落地式或壁掛式 ATM 同層 2 格內交易與領取，無須登錄。關閉時，原生 ATM 不再提供經濟入口。已登錄與自建終端不受影響；此選項不改變 ATM 防拆設定。預設開啟。",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction": "允許玩家拆除原生 ATM",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction_tooltip": "開啟時，允許一般玩家依原版規則用大錘或家具拆解移除原生 ATM。關閉時，僅終端管理員（列於管理角色且有原生建造能力）可拆除。與 ATM 能否作為終端無關，不影響自建終端，也不涵蓋火災、爆炸或其他模組直接移除。預設關閉。",
   "Sandbox_MinidoracatEconomy_CheckinAmount": "每日簽到金額（倖存幣）",
   "Sandbox_MinidoracatEconomy_CheckinAmount_tooltip": "每次簽到領取的固定金額（倖存幣）。每個獎勵日可領幾次由「簽到每日次數」決定。伺服器獎勵日以伺服器現實時間計算，不是遊戲內日期。0 表示完全停止每日簽到獎勵（0 是停用，不是免費）：面板會顯示為不可領取，也不會產生任何 0 元入帳紀錄；生存里程碑另有自己的金額，不受影響。",
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes": "簽到首次門檻：最低連線時間（分鐘）",

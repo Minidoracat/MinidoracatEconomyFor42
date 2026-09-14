@@ -1,7 +1,11 @@
 {
   "Sandbox_MinidoracatEconomy": "Minidoracat 经济系统",
   "Sandbox_MinidoracatEconomy_RemoteReadOnly": "允许远程打开唯读分页",
-  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "打开时玩家可在任何地方用快捷键或浮动按钮打开经济中心，但只能浏览（目录、钱包、收据）；所有交易、刊登、领取仍必须站在已登录的终端旁。关闭时整个窗口只能在终端旁打开。",
+  "Sandbox_MinidoracatEconomy_RemoteReadOnly_tooltip": "打开时可在任何地方用快捷键或浮动按钮打开经济中心，但只能浏览；交易、刊登与领取仍须在已登记终端或已开放使用的原生 ATM 旁。关闭时整个窗口只能在这些终端旁打开。",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal": "原生 ATM 可作为终端",
+  "Sandbox_MinidoracatEconomy_MapATMAsTerminal_tooltip": "打开时，玩家可在地图原生落地式或壁挂式 ATM 同层 2 格内交易与领取，无须登记。关闭时，原生 ATM 不再提供经济入口。已登记与自建终端不受影响；此选项不改变 ATM 防拆设置。默认打开。",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction": "允许玩家拆除原生 ATM",
+  "Sandbox_MinidoracatEconomy_MapATMAllowDestruction_tooltip": "打开时，允许一般玩家依原版规则用大锤或家具拆解移除原生 ATM。关闭时，仅终端管理员（列于管理角色且有原生建造能力）可拆除。与 ATM 能否作为终端无关，不影响自建终端，也不涵盖火灾、爆炸或其他模组直接移除。默认关闭。",
   "Sandbox_MinidoracatEconomy_CheckinAmount": "每日签到金额（幸存币）",
   "Sandbox_MinidoracatEconomy_CheckinAmount_tooltip": "每次签到领取的固定金额（幸存币）。每个奖励日可领几次由「签到每日次数」决定。服务器奖励日以服务器现实时间计算，不是游戏内日期。0 表示完全停止每日签到奖励（0 是禁用，不是免费）：面板会显示为不可领取，也不会产生任何 0 元入帐纪录；生存里程碑另有自己的金额，不受影响。",
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes": "签到首次门槛：最低连接时间（分钟）",

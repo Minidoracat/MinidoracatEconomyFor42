@@ -91,7 +91,14 @@ function EC.isAtmSquare(square)
     return false
 end
 
+function EC.mapAtmEnabled()
+    local option = isClient() and EC.Client and EC.Client.options and EC.Client.options.MapATMAsTerminal
+    if type(option) == "table" and type(option.value) == "boolean" then return option.value end
+    return EC.sandbox("MapATMAsTerminal", true)
+end
+
 function EC.nearMapAtm(player)
+    if not EC.mapAtmEnabled() then return false end
     local cell = getCell()
     if not cell then return false end
     local x, y, z = player:getX(), player:getY(), math.floor(player:getZ())
@@ -339,7 +346,13 @@ end
 -- Terminal administration also requires the native AddItem capability.
 function EC.canManageTerminals(player)
     local ok, role = pcall(function() return player:getRole():getName() end)
-    if not ok or type(role) ~= "string" or not EC.roleSet(EC.sandbox("AdminRoles", "admin"))[role] then return false end
+    if not ok or type(role) ~= "string" then return false end
+    local option = isClient() and EC.Client and EC.Client.options and EC.Client.options.AdminRoles
+    local roles
+    if type(option) == "table" and (type(option.value) == "string" or type(option.value) == "table") then
+        roles = option.value
+    else roles = EC.sandbox("AdminRoles", "admin") end
+    if not EC.roleSet(roles)[role] then return false end
     local okCap, cap = pcall(function() return player:getRole():hasCapability(Capability.AddItem) end)
     return okCap and cap == true
 end
@@ -634,6 +647,8 @@ EC.OPTIONS = {
     { key = "CatPerAccountDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 5000, page = "Currencies" },
     { key = "CatServerDaily", group = "currency", kind = "int", min = 1, max = 100000000, default = 50000, page = "Currencies" },
     { key = "RemoteReadOnly", group = "general", kind = "bool", default = true },
+    { key = "MapATMAsTerminal", group = "general", kind = "bool", default = true },
+    { key = "MapATMAllowDestruction", group = "general", kind = "bool", default = false },
     { key = "LeaderboardEnabled", group = "general", kind = "bool", default = true },
     { key = "LeaderboardShowAmounts", group = "general", kind = "bool", default = false },
     { key = "ShopBuybackEnabled", group = "shop", kind = "bool", default = false },

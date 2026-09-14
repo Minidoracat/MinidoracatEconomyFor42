@@ -132,18 +132,19 @@ end
 
 local function onFillMenu(playerNum, context, worldobjects, test)
     if test or not isClient() then return end
+    local mapAtmEnabled = EC.mapAtmEnabled()
     local square = nil
     for _, o in ipairs(worldobjects) do
         local ok, sq = pcall(function() return o:getSquare() end)
         if ok and sq then
             square = square or sq
-            if EC.isAtmSquare(sq) then square = sq break end
+            if mapAtmEnabled and EC.isAtmSquare(sq) then square = sq break end
         end
     end
     if not square then return end
     local x, y, z = square:getX(), square:getY(), square:getZ()
     local terminal = C.terminalAt(x, y, z)
-    if terminal or EC.isAtmSquare(square) then
+    if terminal or (mapAtmEnabled and EC.isAtmSquare(square)) then
         -- Explicit registrations keep their existing actions and radio information.
         context:addOption(getText(T .. "Terminal_Use"), nil, useTerminal)
         -- everyone reads the radio of a trade station, admin or not: whether it is listening is

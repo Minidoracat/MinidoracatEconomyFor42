@@ -713,7 +713,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1384   -- Includes native ATM destruction, scrap and administrator boundaries.
+local EXPECTED_ASSERTIONS = 1402   -- Includes live map ATM access, destruction and independent settings.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -13088,6 +13088,88 @@ end)()
     EC.optionOverride = previousOverride
     check(EC.AtmProtection.blocked(nil, object("location_business_bank_01_67")),
         "missing actor never grants ATM removal permission")
+end)()
+
+;(function()
+    modDataStore[EC.MODDATA_KEY] = nil
+    files, sentCommands, worldObjects = {}, {}, {}
+    worldSprites = { ["100,200,0"] = "location_business_bank_01_64" }
+    nowMs = nowMs + 61000
+    fire("OnServerStarted")
+    local boss, player = fakePlayer("atm-owner"), fakePlayer("atm-user")
+    boss.role = "admin"
+    player.x, player.y, player.z = 101, 200, 0
+    onlinePlayers = { boss, player }
+    local T, Shop = S.Terminal, S.Shop
+    local atm = { removed = false }
+    local square = { transmitRemoveItemFromSquare = function(_, obj) obj.removed = true end }
+    atm.getSprite = function() return { getName = function() return "location_business_bank_01_64" end } end
+    atm.getSquare = function() return square end
+    local action = { character = player, item = atm }
+    local function option(who, key, value)
+        nowMs = nowMs + 700
+        fire("OnClientCommand", EC.COMMAND_MODULE, "admin.option", who,
+            { key = key, value = value, requestId = "atm-option-" .. nowMs })
+        return lastSent("admin.option").args
+    end
+    check(T.near(player) and not ISDestroyStuffAction.complete(action) and not atm.removed,
+        "map ATMs default to usable terminals protected from ordinary removal")
+    check(option(player, "MapATMAsTerminal", false).error == "forbidden" and T.near(player),
+        "ordinary players cannot disable automatic ATM access")
+    check(option(player, "MapATMAllowDestruction", true).error == "forbidden"
+        and not ISDestroyStuffAction.complete(action), "ordinary players cannot grant themselves ATM removal")
+    check(option(boss, "MapATMAsTerminal", "false").error == "invalid_args" and T.near(player),
+        "ATM access rejects string booleans")
+    local reply = option(boss, "MapATMAsTerminal", false)
+    check(reply.ok and reply.options.MapATMAsTerminal.value == false and not T.near(player),
+        "administrator disabling ATM access changes the server gate immediately")
+    check(lastSent("config").args.options.MapATMAsTerminal.value == false,
+        "live ATM access denial is published to connected clients")
+    check(not ISDestroyStuffAction.complete(action) and not atm.removed,
+        "disabling ATM access does not disable its independent protection")
+    L.credit("atm-user", "survivor", 100, "SYSTEM_MINT", { requestId = "atm-settings-seed", reasonCode = "t" })
+    nowMs = nowMs + 700
+    fire("OnClientCommand", EC.COMMAND_MODULE, "shop.buy", player,
+        { id = "bandage", currency = "survivor", revision = Shop.revision(), requestId = "atm-disabled-buy" })
+    check(lastSent("shop.buy").args.error == "not_at_terminal"
+        and L.getBalance("atm-user", "survivor").available == 100 and player.inventory.count("Base.Bandage") == 0,
+        "disabled ATM refuses a real purchase without charging or delivering")
+    check(option(boss, "MapATMAllowDestruction", true).ok and not T.near(player)
+        and ISDestroyStuffAction.complete(action) and atm.removed,
+        "removal can be opened while ATM access remains disabled")
+    atm.removed = false
+    check(ISMoveableSpriteProps.canScrapObject({ object = atm }, player).canScrap
+        and ISMoveableSpriteProps.scrapObjectInternal({}, player, {}, square, atm, {}, 100, nil) == 3 and atm.removed,
+        "open removal reaches the original furniture scrap result")
+    atm.removed = false
+    local admitted = ISDestroyStuffAction.isValid(action)
+    check(option(boss, "MapATMAllowDestruction", false).ok and admitted
+        and not ISDestroyStuffAction.complete(action) and not atm.removed,
+        "closing removal blocks an action admitted before the setting changed")
+    worldSprites["100,200,0"] = "MinidoracatEconomy_terminal_0"
+    nowMs = nowMs + 700
+    fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.register", boss, { x = 100, y = 200, z = 0 })
+    local registered = lastSent("terminal.register").args
+    check(registered.ok and T.near(player), "disabling map ATMs leaves registered custom terminals usable")
+    nowMs = nowMs + 700
+    fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.demolish", player, { x = 100, y = 200, z = 0 })
+    check(lastSent("terminal.demolish").args.error == "forbidden", "ATM settings do not grant custom-terminal demolition")
+    nowMs = nowMs + 700
+    fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.unregister", boss, { id = registered.id })
+    worldSprites["100,200,0"] = "location_business_bank_01_64"
+    check(option(boss, "MapATMAsTerminal", nil).ok and T.near(player),
+        "resetting ATM access restores the sandbox default")
+    check(option(boss, "MapATMAllowDestruction", nil).ok and not ISDestroyStuffAction.complete(action),
+        "resetting ATM removal restores protected default")
+    check(option(boss, "MapATMAllowDestruction", 1).error == "invalid_args",
+        "ATM removal rejects numeric booleans")
+    check(option(boss, "MapATMAsTerminal", false).ok and option(boss, "MapATMAllowDestruction", true).ok,
+        "both independent overrides can be stored together")
+    nowMs = nowMs + 61000
+    fire("OnServerStarted")
+    check(not T.near(player) and ISDestroyStuffAction.complete(action) and atm.removed,
+        "reinitialization preserves both stored ATM overrides")
+    onlinePlayers, worldSprites = {}, {}
 end)()
 
 io.write("\n")

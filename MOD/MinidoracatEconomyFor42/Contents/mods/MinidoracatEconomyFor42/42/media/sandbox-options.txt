@@ -12,6 +12,22 @@ option MinidoracatEconomy.RemoteReadOnly
     translation = MinidoracatEconomy_RemoteReadOnly,
 }
 
+option MinidoracatEconomy.MapATMAsTerminal
+{
+    type = boolean,
+    default = true,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MapATMAsTerminal,
+}
+
+option MinidoracatEconomy.MapATMAllowDestruction
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_MapATMAllowDestruction,
+}
+
 /* Public holdings leaderboard (read-only board in the player panel). Enabled shows the board at
    all; ShowAmounts additionally reveals other players' amounts (a player always sees their own).
    Ranks are per currency, total holdings, offline players included. */

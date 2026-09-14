@@ -766,19 +766,6 @@ local function optionToggleColors()
     return toggleColors
 end
 
--- Skin.toggle is a rev >= 3 painter: an older framework has no such key, and the painter itself
--- answers false when it declines the geometry. Both fall back to a labelled pill, so a row keeps
--- its switch either way. `off` = the whole list is disabled (a write is in flight, or the role is
--- read only): the painter dims, the fallback greys its label.
-local function paintToggle(el, x, y, w, h, on, off, label, textY)
-    if U.Skin and U.Skin.toggle then
-        local pok, res = pcall(U.Skin.toggle, el, x, y, w, h, on, optionToggleColors(), off and 0.5 or 1)
-        if pok and res ~= false then return end
-    end
-    fill(el, x, y, w, h, on and "selected" or "well", "pill")
-    border(el, x, y, w, h, off and "border" or "accent", "pill")
-    if label then textCentre(el, label, x + w / 2, textY, off and "textFaint" or "text") end
-end
 
 -- Is this row's control strip dead? Three separate reasons, and they are not the same right:
 -- the whole list freezes while a write is in flight or a dialog is up, the manageOnly options
@@ -791,41 +778,75 @@ local function optionRowOff(list, e)
     return list.denyWrite == true
 end
 
--- One option row: name over description on the left, the control strip on the right. Every
--- string, hit box and y is computed in Admin:optionRow (the row width is known there), so the
--- cell only paints and the click test reads exactly the numbers the paint used.
+local OptionGroupCell = ISPanel:derive("MinidoracatEconomyOptionGroupCell")
+
+function OptionGroupCell:render()
+    local id = self.entry
+    if not id then return end
+    local admin = self.list.admin
+    local total, overrides = admin:optionGroupCount(id)
+    local active = id == admin.setGroup and admin.setQuery == nil
+    U.rowBackground(self)
+    if active then fill(self, 0, 0, 2, self.height, "accent", "rect") end
+    local tail = overrides > 0 and getText(T .. "Admin_Set_OverrideCount", tostring(overrides))
+        or getText(T .. "Admin_Set_Count", tostring(total))
+    local ty = math.floor((self.height - fontH.small) / 2)
+    textRight(self, tail, self.width - PAD, ty, overrides > 0 and "warn" or "textMuted")
+    text(self, fitText(tr("Admin_Set_Group_" .. id), math.max(0, self.width - PAD * 3 - textWidth(tail))),
+        PAD, ty, active and "accent" or "text")
+end
+
+-- One option row: measured text on the left, native pooled action buttons on the right.
 local OptionCell = ISPanel:derive("MinidoracatEconomyOptionCell")
+
+-- Skin.toggle is a rev >= 3 painter: an older framework has no such key, and the painter itself
+-- answers false when it declines the geometry. Both fall back to a labelled pill, so a row keeps
+-- its switch either way. `off` = the whole list is disabled (a write is in flight, or the role is
+-- read only): the painter dims, the fallback greys its label.
+local function renderOptionToggle(button)
+    local e = button.parent.entry
+    if not e then return end
+    local w, h, off = button.width, button.height, not button.enable
+    if U.Skin and U.Skin.toggle then
+        local pok, res = pcall(U.Skin.toggle, button, 0, 0, w, h, e.toggleOn, optionToggleColors(), off and 0.5 or 1)
+        if pok and res ~= false then return end
+    end
+    fill(button, 0, 0, w, h, e.toggleOn and "selected" or "well", "pill")
+    border(button, 0, 0, w, h, off and "border" or "accent", "pill")
+    textCentre(button, e.toggleLabel, w / 2, math.floor((h - fontH.small) / 2), off and "textFaint" or "text")
+end
+
+function OptionCell:prerender()
+    local e = self.entry
+    if not e then R.reset(self); return end
+    U.rowBackground(self)
+    local off = optionRowOff(self.list, e)
+    R.begin(self)
+    for _, hit in ipairs(e.hits) do
+        local button = R.put(self, hit.id, hit.label or e.toggleLabel, hit.x,
+            math.floor((self.height - e.chipH) / 2), hit.w, e.chipH, not off)
+        if hit.id == "toggle" then button.render = renderOptionToggle end
+    end
+    R.finish(self)
+end
 
 function OptionCell:render()
     local e = self.entry
     if not e then return end
-    local w, h = self.width, self.height
-    if self.index % 2 == 0 then fill(self, 0, 0, w, h, "card", "rect") end
-    local off = optionRowOff(self.list, e)
-    if e.prefixText then text(self, e.prefixText, PAD, e.line1Y, "textFaint") end
+    local w = self.width
+    local muted = (self.list:isSelected(self.index) or self:isMouseOver()) and "text" or "textMuted"
+    if e.prefixText then text(self, e.prefixText, PAD, e.line1Y, muted) end
     text(self, e.nameText, e.nameX, e.line1Y, "text")
     if e.overText then text(self, e.overText, PAD, e.line2Y, "warn") end
-    if e.descText ~= "" then text(self, e.descText, e.descX, e.line2Y, "textFaint") end
+    if e.descText ~= "" then text(self, e.descText, e.descX, e.line2Y, muted) end
     if e.runtimeText then text(self, e.runtimeText, e.runtimeX, e.line2Y, "warn") end
-    if e.lockedText then textRight(self, e.lockedText, w - PAD, e.line2Y, "textFaint") end
+    if e.lockedText then textRight(self, e.lockedText, w - PAD, e.line2Y, muted) end
     if e.valueText then
         local token = e.missing and "textFaint" or "accent"
         if e.valueCentre then
             textCentre(self, e.valueText, e.valueX + e.valueW / 2, e.valueY, token)
         else
             textRight(self, e.valueText, e.valueX + e.valueW, e.valueY, token)
-        end
-    end
-    if e.toggle then
-        local th = math.max(20, fontH.small + 6)
-        paintToggle(self, e.toggle.x, math.floor((h - th) / 2), e.toggle.w, th, e.toggleOn, off,
-            e.toggleLabel, e.valueY)
-    end
-    for _, hit in ipairs(e.hits) do
-        if hit.label then
-            local cy = math.floor((h - e.chipH) / 2)
-            border(self, hit.x, cy, hit.w, e.chipH, off and "border" or "accent", "pill")
-            textCentre(self, hit.label, hit.x + hit.w / 2, e.valueY, off and "textFaint" or "text")
         end
     end
 end
@@ -2010,28 +2031,30 @@ function Admin:createChildren()
 
     self.txPage = Transactions.create(self, send, isPending, newRequestId)
     self:addChild(self.txPage)
-
-    -- settings page: search box, the option list, the per-group reset button. The group nav is
-    -- painted (name plus an override count per row) and its clicks are resolved in onMouseDown.
+    -- Native lists keep both the groups and their options scrollable and keyboard-reachable.
     self.setEntry = newEntry(200, entryH(), { maxLen = 32, clear = true, placeholder = tr("Admin_Set_Search") })
     self.setEntry.target = self
     self.setEntry.onTextChangeFunction = Admin.onSettingSearch
     self:addChild(self.setEntry)
     local resetLabel = tr("Admin_Set_ResetGroup")
     self.setResetButton = Button.create(0, 0, textWidth(resetLabel) + 24, 22, resetLabel, self, Admin.onResetGroupClick, "chip")
+    self.settingsNav = U.newTable(OptionGroupCell, lineH() + 8)
+    self.settingsNav.admin = self
+    self.settingsNav:setItems(EC.OPTION_GROUPS)
+    self.settingsNav.onSelect = function(_, group) self:onSettingNav(group) end
+    self:addChild(self.settingsNav)
     self:addChild(self.setResetButton)
     self.settingsList = U.newTable(OptionCell, lineH() * 2 + 12)
-    -- VirtualList hands onSelect the row but not the x it was hit at, and the controls of a row
-    -- sit side by side: remember the x of the click that is about to select.
-    local listDown = self.settingsList.onMouseDown
-    self.settingsList.onMouseDown = function(list, x, y)
-        self.settingClickX = x
-        return listDown(list, x, y)
-    end
     self.settingsList.onSelect = function(_, item)
-        self:onSettingRow(item, self.settingClickX or 0)
+        self:onSettingRow(item)
+    end
+    self.settingsList.onRowAction = function(_, item, action)
+        self:onOptionAction(item, action)
     end
     self:addChild(self.settingsList)
+    self.setMessageButton = Button.create(0, 0, 1, 1, tr("Admin_Tab_Settings"), self, Admin.onSettingMessage, "chip")
+    self.setMessageButton:setVisible(false)
+    self:addChild(self.setMessageButton)
 
     -- last children: the account picker's candidate list paints over the page and takes the
     -- press before the row underneath it (the dialog is added later still, and hides it while
@@ -3175,13 +3198,8 @@ function Admin:onSettingSearch()
     self:updateEnabled()
 end
 
--- Nav rows are painted, so the click is resolved from the row height instead of stored rects.
-function Admin:onSettingNav(y)
-    local g = self.g
-    local rowHeight = g and g.setNavRowH
-    if not rowHeight or y < g.setNavY then return end
-    local index = math.floor((y - g.setNavY) / rowHeight) + 1
-    local group = EC.OPTION_GROUPS[index]
+function Admin:onSettingNav(group)
+    if not self:readAllowed() or self:isModal() then return end
     if not group or group == self.setGroup then return end
     D.close(self)
     self.setGroup = group
@@ -3189,28 +3207,19 @@ function Admin:onSettingNav(y)
     self:updateEnabled()
 end
 
--- A click inside the option list: the row's own hit boxes first, then the value text of an
--- editable row (a wide, obvious target for the dialog).
-function Admin:onSettingRow(item, x)
+-- Row bodies only read; native row buttons own changes for pointer and keyboard alike.
+function Admin:onSettingRow(item)
     if item == nil or not self:readAllowed() or self:isModal() then return end
-    if self.settingsList.optionsDisabled or not self:optionAllowed(item.spec) then
-        self:showDetail("option", item.key, item.plainName, item.detailText)
-        return
-    end
-    for _, hit in ipairs(item.hits) do
-        if x >= hit.x and x < hit.x + hit.w then
-            self:onOptionAction(item, hit.id)
-            return
-        end
-    end
-    if item.editable and x >= item.valueX and x < item.valueX + item.valueW then
-        self:onOptionAction(item, "edit")
-    else
-        self:showDetail("option", item.key, item.plainName, item.detailText)
-    end
+    self:showDetail("option", item.key, item.plainName, item.detailText)
+end
+function Admin:onSettingMessage()
+    if self.tab ~= "Settings" or not self.message or not self:readAllowed() or self:isModal() then return end
+    self:showDetail("settingMessage", "status", tr("Admin_Tab_Settings"), self.message.text)
 end
 
+
 function Admin:onOptionAction(item, id)
+    if self.settingsList.optionsDisabled or self:isModal() then return end
     local spec = item.spec
     if not self:optionAllowed(spec) then return end
     local state = (self.options or {})[spec.key]
@@ -4177,6 +4186,14 @@ function Admin:keyboardTargets()
     elseif self.tab == "System" then
         out[#out + 1] = { kind = "scroll", label = tr("Admin_Sys_State"), control = self.systemReader, focusable = false }
         addGroup(out, tr("Admin_Sys_Paths"), self.copyButtons)
+    elseif self.tab == "Settings" then
+        addTarget(out, "entry", tr("Admin_Set_Search"), self.setEntry)
+        addTarget(out, "list", tr("Admin_Tab_Settings"), self.settingsNav)
+        addTarget(out, "list", tr("Admin_Tab_Settings"), self.settingsList)
+        local selected = self.settingsList:getSelectedItem()
+        addGroup(out, selected and selected.plainName or tr("Admin_Tab_Settings"), R.targets(self.settingsList))
+        addTarget(out, "button", tr("Admin_Set_ResetGroup"), self.setResetButton)
+        addTarget(out, "button", self.setMessageButton.fullTitle, self.setMessageButton)
     end
     return out
 end
@@ -5385,7 +5402,6 @@ function Admin:optionRow(spec, name, desc, snap, searching, width, lh, chipH, va
         item.valueY = item.line1Y
         item.lockedText = fitText(tr("Admin_Set_Locked"), math.max(0, width - PAD - ctrlX))
     elseif spec.kind == "bool" then
-        item.toggle = { x = ctrlX, w = OPTION_TOGGLE_W }
         item.toggleOn = value == true
         item.toggleLabel = tr(item.toggleOn and "Admin_On" or "Admin_Off")
         item.hits[#item.hits + 1] = { id = "toggle", x = ctrlX, w = OPTION_TOGGLE_W }
@@ -5395,7 +5411,6 @@ function Admin:optionRow(spec, name, desc, snap, searching, width, lh, chipH, va
         right = right - bw
         item.hits[#item.hits + 1] = { id = "edit", x = right, w = bw, label = label }
         right = right - 4
-        item.editable = true
         if spec.kind == "int" or spec.kind == "number" then
             item.hits[#item.hits + 1] = { id = "minus", x = ctrlX, w = stepW, label = "-" }
             item.hits[#item.hits + 1] = { id = "plus", x = right - stepW, w = stepW, label = "+" }
@@ -6087,6 +6102,11 @@ function Admin:layout()
     g.bodyH = math.max(60, h - g.bodyY - g.footerH)
     g.footerY = h - g.footerH
     self.g = g
+    self.setMessageButton:setX(0)
+    self.setMessageButton:setY(g.footerY + 1)
+    self.setMessageButton:setWidth(math.max(1, w - PAD * 2))
+    self.setMessageButton:setHeight(g.footerH - 2)
+    U.setButtonTitle(self.setMessageButton, self.setMessageButton.fullTitle)
 
     -- Navigation lives in the window's sidebar; this row only carries freshness and refresh.
     local refreshW = math.min(textWidth(self.refreshButton.fullTitle) + 24, math.floor(w * 0.25))
@@ -6597,6 +6617,8 @@ function Admin:layout()
     g.setNavW = math.max(120, math.min(navNeed, math.floor(w * 0.38)))
     g.setNavRowH = math.max(24, lh + 8)
     g.setNavH = math.max(g.setNavRowH, g.bodyY + g.bodyH - PAD - g.setNavY)
+    self.settingsNav.rowHeight = g.setNavRowH
+    U.placeList(self.settingsNav, settings, PAD, g.setNavY, g.setNavW, g.setNavH)
     g.setContentX = PAD + g.setNavW + PAD
     g.setContentW = math.max(160, w - g.setContentX - PAD)
     g.setHeadY = g.setNavY   -- the group heading; the standing note rides the search row instead
@@ -7364,25 +7386,8 @@ function Admin:drawSettings()
     text(self, fitText(tr("Admin_Set_Note"), math.max(0, self.width - PAD * 2 - g.setCountX - textWidth(countText))),
         g.setCountX, headY, "textFaint")
 
-    -- group nav: name on the left, the override count (else the option count) on the right. The
-    -- rows are painted, so a click is resolved from g.setNavRowH in onMouseDown.
+    -- The group list draws inside this well and owns its scrollbar.
     fill(self, PAD, g.setNavY, g.setNavW, g.setNavH, "well", "rect")
-    local ny = g.setNavY
-    for _, id in ipairs(EC.OPTION_GROUPS) do
-        local total, overrides = self:optionGroupCount(id)
-        local active = id == self.setGroup and not searching
-        if active then
-            fill(self, PAD, ny, g.setNavW, g.setNavRowH, "selected", "rect")
-            fill(self, PAD, ny, 2, g.setNavRowH, "accent", "rect")
-        end
-        local ty = ny + math.floor((g.setNavRowH - fontH.small) / 2)
-        local tail = overrides > 0 and getText(T .. "Admin_Set_OverrideCount", tostring(overrides))
-            or getText(T .. "Admin_Set_Count", tostring(total))
-        textRight(self, tail, PAD + g.setNavW - PAD, ty, overrides > 0 and "warn" or "textFaint")
-        text(self, fitText(tr("Admin_Set_Group_" .. id), math.max(0, g.setNavW - PAD * 3 - textWidth(tail))),
-            PAD * 2, ty, active and "accent" or "text")
-        ny = ny + g.setNavRowH
-    end
 
     -- content column: the group (or "search") as its heading, then the list
     local title = searching and tr("Admin_Set_Search") or tr("Admin_Set_Group_" .. self.setGroup)
@@ -7708,14 +7713,23 @@ function Admin:prerender()
         self:drawSystem()
     end
 
-    -- footer: message on the left, the standing audit note on the right
+    -- Feedback takes the whole footer; the standing audit note must not hide a failed write.
     local fy = g.footerY + 1
-    local note = tr("Admin_AuditNote")
-    local noteW = textWidth(note)
+    local settingMessage = self.tab == "Settings" and self.message ~= nil
+    self.setMessageButton:setVisible(settingMessage)
+    self.setMessageButton:setEnable(settingMessage and not self:isModal())
     if self.message then
-        text(self, fitText(self.message.text, self.width - noteW - PAD * 2), 0, fy, self.message.error and "errorText" or "positive")
+        if settingMessage then
+            if self.setMessageButton.fullTitle ~= self.message.text then
+                U.setButtonTitle(self.setMessageButton, self.message.text)
+            end
+            self.setMessageButton.stateToken = self.message.error and "errorText" or "positive"
+        else
+            text(self, fitText(self.message.text, self.width - PAD * 2), 0, fy, self.message.error and "errorText" or "positive")
+        end
+    else
+        textRight(self, fitText(tr("Admin_AuditNote"), self.width - PAD * 2), self.width, fy, "textFaint")
     end
-    textRight(self, note, self.width, fy, "textFaint")
 end
 
 function Admin:render() end
@@ -7753,12 +7767,6 @@ function Admin:onMouseDown(x, y)
                 self:updateEnabled()
                 return true
             end
-        end
-    elseif self.tab == "Settings" then
-        local g = self.g
-        if g and x >= PAD and x < PAD + (g.setNavW or 0) and y >= (g.setNavY or 0) and y < (g.setNavY or 0) + (g.setNavH or 0) then
-            self:onSettingNav(y)
-            return true
         end
     end
     return true
