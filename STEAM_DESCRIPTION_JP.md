@@ -49,5 +49,5 @@ Build 42 の[b]マルチプレイ専用サーバー[/b]向けの経済システ�
 
 [b]#Minidoracat[/b]
 
-[b]Workshop ID:[/b] 未割り当て
+[b]Workshop ID:[/b] 3801482125
 [b]Mod ID:[/b] MinidoracatEconomyFor42

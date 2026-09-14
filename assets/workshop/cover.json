@@ -22,11 +22,16 @@
     "bytes": 317255
   },
   "apng": {
-    "preview": "MOD/MinidoracatEconomyFor42/preview.png",
     "poster": "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/poster.png",
     "frames": 12,
     "durationMs": 3840,
     "colorType": 2
+  },
+  "previewPng": {
+    "path": "MOD/MinidoracatEconomyFor42/preview.png",
+    "frames": 1,
+    "source": "first frame of the original APNG",
+    "purpose": "static preview for the in-game Workshop uploader"
   },
   "files": [
     {
@@ -46,8 +51,8 @@
     },
     {
       "file": "MOD/MinidoracatEconomyFor42/preview.png",
-      "bytes": 433437,
-      "sha256": "edfebf715628a06dc771d792581911a9bc55ddb7c355f798cfd63e1ec6656437"
+      "bytes": 403424,
+      "sha256": "6cfd21b73b48dd2d3b9a750e78b316058f5faefa1ff3c281eb7f431312391248"
     },
     {
       "file": "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/poster.png",
