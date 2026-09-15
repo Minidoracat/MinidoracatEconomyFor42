@@ -713,7 +713,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1427   -- +25: the lifetime purchase cap (scenario LC).
+local EXPECTED_ASSERTIONS = 1441   -- +14: radio load lifecycle and native failure boundaries.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -13024,6 +13024,137 @@ check(#owned(820, 130, 0) == 0 and swapped.removed == true and mine.removed == n
     "with the speaker tile not loaded the build fails: no fallback to the large ham and no invisible device")
 worldSpriteDeny["MinidoracatEconomy_speaker_catgirl_3"] = nil
 sweep()
+
+-- Load callbacks retain repair throttling, ownership and diagnosable failures.
+do
+local logs = {}
+local realLog = EC.log
+EC.log = function(m) logs[#logs + 1] = tostring(m) end
+local function logged(text)
+    for _, m in ipairs(logs) do if string.find(m, text, 1, true) then return true end end
+    return false
+end
+local realCell = getCell
+local fakeSquares = {}
+getCell = function()
+    return { getGridSquare = function(_, x, y, z)
+        return fakeSquares[worldKey(x, y, z)] or realCell():getGridSquare(x, y, z)
+    end }
+end
+local function fakeSquare(x, y, objects, mode)
+    local sq = { __class = "IsoGridSquare" }
+    sq.getX = function() return x end
+    sq.getY = function() return y end
+    sq.getZ = function() return 0 end
+    sq.getObjects = function()
+        return {
+            size = function() return #objects end,
+            get = function(_, i)
+                if mode == "get" then error("native object list get threw", 0) end
+                return objects[i + 1]
+            end,
+        }
+    end
+    sq.transmitRemoveItemFromSquare = function() return 0 end
+    sq.RecalcProperties = function() end
+    sq.RecalcAllWithNeighbours = function() end
+    fakeSquares[worldKey(x, y, 0)] = sq
+    return sq
+end
+
+worldSprites["640,240,0"] = "MinidoracatEconomy_terminal_1"
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = false
+local cold = cmd(boss, "terminal.register", { x = 640, y = 240, z = 0, kind = "trade" })
+check(cold.ok == true and cold.warning == nil and #owned(640, 240, 0) == 0
+    and Rl.state(640, 240, 0) == "disabled",
+    "a terminal registered while the relay is off is registered with no device and no repair stamp")
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = true
+fire("LoadGridsquare", square(640, 240, 0))
+local built = owned(640, 240, 0)[1]
+check(#owned(640, 240, 0) == 1 and Rl.state(640, 240, 0) == "active"
+    and built:getSprite():getName() == "MinidoracatEconomy_speaker_terminal_1"
+    and built:getDeviceData():getChannel() == 101100
+    and built:getDeviceData():getIsTurnedOn() == true,
+    "the first chunk load of a registered terminal that was never built puts a configured device up at once")
+worldObjects["640,240,0"] = {}                      -- chunk 卸載：裝置跟著世界走了
+nowMs = nowMs + Rl.REPAIR_MS - 1
+fire("LoadGridsquare", square(640, 240, 0))
+check(#owned(640, 240, 0) == 0 and Rl.state(640, 240, 0) == "waiting",
+    "a chunk load inside the repair window rebuilds nothing and reports not ready: loading is not a way around the rate limit")
+nowMs = nowMs + 1                                   -- 剛好踩到界線
+fire("LoadGridsquare", square(640, 240, 0))
+local relit = owned(640, 240, 0)[1]
+check(#owned(640, 240, 0) == 1 and relit ~= nil and relit.serial ~= built.serial
+    and Rl.state(640, 240, 0) == "active",
+    "the same chunk load does build once the repair window has passed")
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = false
+fire("LoadGridsquare", square(640, 240, 0))
+check(#owned(640, 240, 0) == 0 and relit.removed == true and Rl.state(640, 240, 0) == "disabled",
+    "a chunk load while the relay is off takes the registered square's device away instead of putting one back")
+SandboxVars.MinidoracatEconomy.RadioRelayEnabled = true
+
+worldLoaded["641,241,0"] = true
+local keepA = place(641, 241, 0, fakeWorldRadio("appliances_com_01_1", "both"))
+local o1 = place(641, 241, 0, ownedRadio("appliances_com_01_1"))
+local keepB = place(641, 241, 0, fakeWorldRadio("appliances_com_01_1"))
+local o2 = place(641, 241, 0, ownedRadio("MinidoracatEconomy_speaker_terminal_1"))
+fire("LoadGridsquare", square(641, 241, 0))
+check(#owned(641, 241, 0) == 0 and o1.removed == true and o2.removed == true
+    and keepA.removed == nil and keepB.removed == nil
+    and #(worldObjects["641,241,0"] or {}) == 2,
+    "an unregistered square loses every owned device it carries, whatever their sprites, and both vanilla radios stay")
+
+local scanned = place(641, 241, 0, ownedRadio("appliances_com_01_1"))
+local blind = place(641, 241, 0, {
+    __class = "IsoRadio",
+    getDeviceData = function() error("native DeviceData getter threw", 0) end,
+})
+fire("LoadGridsquare", square(641, 241, 0))
+check(scanned.removed == nil and keepA.removed == nil and keepB.removed == nil
+    and #(worldObjects["641,241,0"] or {}) == 4 and logged("native DeviceData getter threw"),
+    "a device-data getter that raised aborts the pass before anything is removed: the owned device ahead of it is not deleted mid-scan")
+table.remove(worldObjects["641,241,0"])             -- 那台讀不到的物件離開了格子
+fire("LoadGridsquare", square(641, 241, 0))
+check(scanned.removed == true and #owned(641, 241, 0) == 0
+    and keepA.removed == nil and keepB.removed == nil,
+    "the same load deletes the orphan once the object that could not be read is gone")
+
+local survivor = place(641, 241, 0, ownedRadio("appliances_com_01_1"))
+worldFault.getObjects = "native getObjects threw"
+fire("LoadGridsquare", square(641, 241, 0))
+check(survivor.removed == nil and #owned(641, 241, 0) == 1
+    and worldFault.getObjects == nil and logged("native getObjects threw"),
+    "a square whose object list could not be read is reported with the engine's own text, not treated as an empty square")
+worldFault.removeItem = "native removal threw"
+fire("LoadGridsquare", square(641, 241, 0))
+check(survivor.removed == nil and #owned(641, 241, 0) == 1
+    and worldFault.removeItem == nil and logged("native removal threw"),
+    "an orphan removal that raised leaves the orphan visible and says so instead of counting the square as cleaned")
+worldRemoveRefuses[survivor] = true
+local beforeRefuse = #logs
+fire("LoadGridsquare", square(641, 241, 0))
+check(survivor.removed == nil and #owned(641, 241, 0) == 1 and #logs > beforeRefuse
+    and keepA.removed == nil and keepB.removed == nil,
+    "a removal the engine refused with -1 is diagnosed rather than believed, and takes no vanilla radio with it")
+worldRemoveRefuses[survivor] = nil
+fire("LoadGridsquare", square(641, 241, 0))
+check(survivor.removed == true and #owned(641, 241, 0) == 0
+    and keepA.removed == nil and keepB.removed == nil,
+    "the orphan is collected by the next load once the engine really removes it: a failed pass loses no orphan")
+local lied = ownedRadio("appliances_com_01_1")
+local lieMate = fakeWorldRadio("appliances_com_01_1")
+local beforeLie = #logs
+fire("LoadGridsquare", fakeSquare(642, 242, { lieMate, lied }, "lie"))
+check(lied.removed == nil and lieMate.removed == nil and #logs > beforeLie,
+    "a removal that answered with a success index while the object is still on the square is a failure, not a cleanup")
+local getOwned = ownedRadio("appliances_com_01_1")
+local beforeGet = #logs
+fire("LoadGridsquare", fakeSquare(643, 243, { getOwned }, "get"))
+check(getOwned.removed == nil and #logs > beforeGet and logged("native object list get threw"),
+    "an object list whose get raised mid-scan removes nothing and is reported")
+getCell = realCell
+EC.log = realLog
+end
 
 SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = nil
 SandboxVars.MinidoracatEconomy.RadioFrequency = nil

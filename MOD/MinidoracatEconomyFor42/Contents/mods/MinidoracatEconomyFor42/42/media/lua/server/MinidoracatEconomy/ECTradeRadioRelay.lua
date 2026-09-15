@@ -327,6 +327,11 @@ end
 
 -- ---------- sync ----------
 
+local function clearLoadedSquare(sq)
+    if sq == nil then return end
+    for _, o in ipairs(TR.ownedOnSquare(sq)) do removeRadio(sq, o) end
+end
+
 -- Drops every owned radio from a square that must not carry one. Used for an unregistered
 -- square, a kind change, the relay being switched off, and orphans found on chunk load. Returns
 -- true only when the square is verified clear - a genuinely unloaded chunk counts, because it
@@ -334,9 +339,7 @@ end
 -- that raised is never reported as "there was nothing there".
 function Rl.clearSquare(x, y, z)
     local ok, err = pcall(function()
-        local sq = squareAt(x, y, z)
-        if sq == nil then return end
-        for _, o in ipairs(TR.ownedOnSquare(sq)) do removeRadio(sq, o) end
+        clearLoadedSquare(squareAt(x, y, z))
     end)
     if not ok then
         EC.log("trade radio: could not clear " .. key(x, y, z) .. ": " .. tostring(err))
@@ -491,10 +494,9 @@ end
 -- 3796-3835), on the server too. Two jobs: bring a registered terminal's device up as soon as
 -- its chunk is there, and delete orphans - an owned device on a square nobody registered any
 -- more. A vanilla radio is never touched, whatever its sprite or its ModData says.
-function Rl.onLoadGridsquare(sq)
-    if not md or sq == nil then return end
-    local ok, x, y, z = pcall(function() return sq:getX(), sq:getY(), sq:getZ() end)
-    if not ok or x == nil then return end
+local function onLoadGridsquare(sq)
+    local x, y, z = sq:getX(), sq:getY(), sq:getZ()
+    if x == nil then error("trade radio: loaded square has no x coordinate") end
     local id = coords[key(x, y, z)]
     if id and md.terminals[id] then
         -- not forced: a chunk load must not become a way around Rl.REPAIR_MS. A square that was
@@ -502,9 +504,17 @@ function Rl.onLoadGridsquare(sq)
         Rl.syncSquare(md.terminals[id], false)
         return
     end
-    local cleared, err = Rl.clearSquare(x, y, z)
-    if not cleared then
-        EC.log("trade radio: orphan cleanup failed at " .. key(x, y, z) .. ": " .. tostring(err))
+    clearLoadedSquare(sq)
+end
+
+function Rl.onLoadGridsquare(sq)
+    if not md or sq == nil then return end
+    -- Reuse the event's loaded square and one closure; retain a protected read/removal boundary.
+    local ok, err = pcall(onLoadGridsquare, sq)
+    if not ok then
+        local located, k = pcall(function() return key(sq:getX(), sq:getY(), sq:getZ()) end)
+        EC.log("trade radio: loaded square cleanup failed at " .. (located and k or "unknown")
+            .. ": " .. tostring(err))
     end
 end
 
