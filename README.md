@@ -177,8 +177,8 @@ npm run report -- --help
 內部模組不反向載入主檔；視窗仍統一持有控制項及請求狀態，不增加第二套頁面框架。
 `uv run scripts/verify_mod.py` 會檢查每個函式的累計 local 預算（≤190），包含所有內層函式。
 
-- `link_workshop.bat`：把 repo 掛載到 `Zomboid\Workshop\` 與 `Zomboid\mods\`（符號連結，repo 改動即時生效）
-- `PZ_Test.bat`：啟動測試（客戶端 / 專用伺服器 / 多客戶端組合）
+- `link_workshop.bat`：手動同步、狀態檢查與歸檔卸載（實體副本，不使用目錄連結）
+- `PZ_Test.bat`：啟動前自動同步 MOD 與家族依賴；Steam／no-Steam／Debug／多開皆保留。資料邊界見 `../pz-family-docs/tools.md`
 
 ## 版本
 
