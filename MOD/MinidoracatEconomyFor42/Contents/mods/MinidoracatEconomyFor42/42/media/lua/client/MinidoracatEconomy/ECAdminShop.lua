@@ -66,11 +66,9 @@
 -- the keyword search, and changing either of them drops the picked set -- a row that scrolled out
 -- of the filter is not something to be edited by accident.
 --
--- A daily cap is a count of *units* (one unit is qty pieces), and its scope says who that count
--- belongs to: "player" (every player has their own) or "global" (one shared count for that SKU
--- alone). A row that never said so is a per-player cap, exactly as the server reads it. The
--- editor says both the units and the pieces they add up to, the remaining count the server
--- reported for the scope in force, and when that count next resets in real local time.
+-- Caps count shares (qty pieces each): player/global reset daily; lifetime does not.
+-- Modes are exclusive and 0 is unlimited. Display draft settings separately from the
+-- server's used/remaining snapshot, which still belongs to the saved mode.
 --
 -- More than one SKU at a time: the picked set is what the editor edits. Ctrl toggles a row into
 -- it, Shift takes the range over the list *as filtered right now*, and a plain pick drops the
@@ -233,20 +231,23 @@ local function shiftDown()
     return gatedDown(isShiftKeyDown)
 end
 
--- A row that never carried a scope is a per-player cap: that is what the server reads it as, so
--- that is what the page shows and sends back.
+-- Missing scope retains the published per-player daily default.
 local function scopeOf(value)
-    return value == "global" and "global" or "player"
+    if value == "global" then return "global" end
+    if value == "lifetime" then return "lifetime" end
+    return "player"
 end
 
 local function scopeText(scope)
-    return tr(scopeOf(scope) == "global" and "Admin_Shop_ScopeGlobal" or "Admin_Shop_ScopePlayer")
+    scope = scopeOf(scope)
+    return tr(scope == "global" and "Admin_Shop_ScopeGlobal"
+        or (scope == "lifetime" and "Admin_Shop_ScopeLifetime" or "Admin_Shop_ScopePlayer"))
 end
 
--- Whose daily count it is, said in full, so no line on this page has to claim "per player, per
--- day" for a count the whole server shares.
 local function scopeDailyText(scope)
-    return tr(scopeOf(scope) == "global" and "Admin_Shop_ScopeDailyGlobal" or "Admin_Shop_ScopeDailyPlayer")
+    scope = scopeOf(scope)
+    return tr(scope == "global" and "Admin_Shop_ScopeDailyGlobal"
+        or (scope == "lifetime" and "Admin_Shop_ScopeDailyLifetime" or "Admin_Shop_ScopeDailyPlayer"))
 end
 
 -- The cap in the two units it is read in: the units the server counts, and the pieces they are.
@@ -829,9 +830,10 @@ function Page:buybackInfo(cur)
     return by[cur]
 end
 
--- When today's share counts next reset, in the host's own local time, with the countdown. The
--- server's own dayEndsMs and nothing computed here: no snapshot said so, no date is invented.
-function Page:resetNote()
+-- Only daily modes use the server's reset time; lifetime has no scheduled reset.
+-- The batch/page overview passes no scope and labels this explicitly as the daily reset.
+function Page:resetNote(scope)
+    if scope ~= nil and scopeOf(scope) == "lifetime" then return tr("Admin_Shop_NoReset") end
     local snap = self.catalog
     local ends = type(snap) == "table" and tonumber(snap.dayEndsMs) or nil
     if ends == nil then return tr("Admin_Shop_ResetUnknown") end
@@ -1391,13 +1393,12 @@ function Page:onToggleEnabled()
     self:layout()
 end
 
--- Whose count the daily cap belongs to. Nothing else about the cap changes with it: switching the
--- scope does not reset today's counts, on the server or on screen.
 function Page:onToggleScope()
     if self.batch ~= nil then return self:cycleBatchValue("dailyCapScope") end
     local d = self.draft
     if d == nil then return end
-    d.dailyCapScope = scopeOf(d.dailyCapScope) == "global" and "player" or "global"
+    local scope = scopeOf(d.dailyCapScope)
+    d.dailyCapScope = scope == "player" and "global" or (scope == "global" and "lifetime" or "player")
     self:layout()
 end
 
@@ -1587,10 +1588,11 @@ end
 
 -- A switch column: press it and it says what it will write. Pressing it IS asking for it -- no
 -- second switch marks the column -- so on a column the picked rows agree on the presses walk
--- between the two states, and on one they disagree on they walk off -> on -> "leave it alone",
--- so the way back to touching nothing is always one more press. A blank can never turn into an
--- accidental activation of the whole set: the first press from "mixed" is the safe state -- off,
--- and the per-player cap.
+-- through its states, and on one they disagree on the walk ends on "leave it alone", so the way
+-- back to touching nothing is always a press away. A blank can never turn into an accidental
+-- activation of the whole set: the first press from "mixed" is the safe state -- off, and the
+-- per-player daily cap. The scope walks all three modes (per player -> whole server -> per
+-- player for good) before it comes back round.
 function Page:cycleBatchValue(key)
     local b = self.batch
     if b == nil then return end
@@ -1599,8 +1601,10 @@ function Page:cycleBatchValue(key)
     local current = self:batchValue(spec)
     local mixed = b.start[key] == nil
     if spec.kind == "scope" then
-        if current == nil then b.value[key] = "player"
-        elseif scopeOf(current) == "player" then b.value[key] = "global"
+        local scope = current ~= nil and scopeOf(current) or nil
+        if scope == nil then b.value[key] = "player"
+        elseif scope == "player" then b.value[key] = "global"
+        elseif scope == "global" then b.value[key] = "lifetime"
         elseif mixed then b.value[key] = MIXED
         else b.value[key] = "player" end
     elseif current == nil then
@@ -2087,11 +2091,10 @@ function Page:rebuildRows()
                     stateText = stateText,
                     buybackText = buybackText,
                     buybackToken = paused and "warn" or "positive",
-                    -- a cap the whole server shares is a different thing from a per-player one:
-                    -- the row says so, because only "global" is the unusual one
                     metaText = fitText(tostring(sku.id) .. "  /  " .. categoryText(sku.category) .. "  /  "
                         .. getText(T .. "Shop_QtyPer", tostring(math.floor(tonumber(sku.qty) or 1)))
-                        .. (scopeOf(sku.dailyCapScope) == "global" and ("  /  " .. tr("Admin_Shop_ScopeGlobal")) or ""),
+                        .. (scopeOf(sku.dailyCapScope) ~= "player"
+                            and ("  /  " .. scopeText(sku.dailyCapScope)) or ""),
                         math.max(20, rightX - nameX - textWidth(stateText) - PAD * 2
                             - (buybackText and textWidth(buybackText) + PAD or 0))),
                 }
@@ -2149,7 +2152,7 @@ function Page:buildDetailText()
         getText(T .. "Admin_Shop_DetailQty", tostring(qty)),
         getText(T .. "Admin_Shop_DetailCategory", categoryText(d.category)),
         capText(cap, qty) .. "  /  " .. scopeDailyText(d.dailyCapScope),
-        self:resetNote(),
+        self:resetNote(d.dailyCapScope),
     }
     -- the master switch, once: the per-currency lines below are the caps and the room the server
     -- reported, never a verdict the switch alone decides
@@ -2181,13 +2184,15 @@ function Page:buildDetailText()
         local why = master == true and self:currencyStatusNote(cur, info) or nil
         if why ~= nil then lines[#lines + 1] = why end
     end
-    -- what the server itself reported is left today, for the scope that is in force. nil means the
-    -- snapshot did not carry one (an unlimited SKU): no line rather than a guessed number.
+    -- What the server itself reported: how much of the count in force is left, and how much of
+    -- it is already spent. nil remaining means the snapshot carried none (an unlimited SKU): no
+    -- line rather than a guessed number, and a snapshot with no spent count says "-", not 0.
     local sku = not d.isNew and self:sku(d.id) or nil
     local remaining = sku and tonumber(sku.remaining) or nil
     if remaining ~= nil then
         lines[#lines + 1] = getText(T .. "Admin_Shop_CapRemaining", tostring(math.floor(remaining)),
-            tostring(math.floor(remaining) * qty), scopeDailyText(sku.dailyCapScope))
+            tostring(math.floor(remaining) * qty), scopeDailyText(sku.dailyCapScope),
+            amountOr(sku.used))
     end
     local skuRoom = sku and tonumber(sku.buybackRemaining) or nil
     if skuRoom ~= nil then
@@ -2317,8 +2322,8 @@ end
 -- for them, so a state is never the thing an admin has to hover to read.
 local FORM_STATES = { "Admin_Shop_Listed", "Shop_Disabled", "Admin_Shop_StateOn",
     "Admin_Shop_StateOff", "Admin_Shop_StatePaused", "Admin_Shop_ScopePlayer",
-    "Admin_Shop_ScopeGlobal", "Admin_Shop_BatchMixed", "Admin_Shop_QuoteNone",
-    "Admin_Shop_QuoteSellOn", "Admin_Shop_QuoteSellOff", "Admin_Shop_QuoteBuyOn",
+    "Admin_Shop_ScopeGlobal", "Admin_Shop_ScopeLifetime", "Admin_Shop_BatchMixed",
+    "Admin_Shop_QuoteNone", "Admin_Shop_QuoteSellOn", "Admin_Shop_QuoteSellOff", "Admin_Shop_QuoteBuyOn",
     "Admin_Shop_QuoteBuyOff" }
 
 -- The states a direction chip inside the quote table may say. One shared width for both
@@ -2758,8 +2763,6 @@ function Page:formGroups()
     end
     groups[#groups + 1] = { head = tr("Admin_Shop_GroupItem"), rows = itemRows, paired = true }
 
-    -- the limits, and beside them only facts: what the cap in the boxes really is and whose count
-    -- it is, what the server says is left of it today, and when today ends
     local limitRows = { self:fieldRow("enabled"), self:fieldRow("dailyCap"),
         self:fieldRow("dailyCapScope"), self:fieldRow("buybackCap") }
     limitRows[#limitRows + 1] = { note = capText(cap, qty) .. "  /  " .. scopeDailyText(d.dailyCapScope),
@@ -2769,9 +2772,11 @@ function Page:formGroups()
     if remaining ~= nil then
         limitRows[#limitRows + 1] = { note = getText(T .. "Admin_Shop_CapRemaining",
             tostring(math.floor(remaining)), tostring(math.floor(remaining) * qty),
-            scopeDailyText(sku.dailyCapScope)), token = "text" }
+            scopeDailyText(sku.dailyCapScope), amountOr(sku.used)), token = "text" }
     end
-    if not self.wide then limitRows[#limitRows + 1] = { note = self:resetNote(), token = "text" } end
+    if not self.wide then
+        limitRows[#limitRows + 1] = { note = self:resetNote(d.dailyCapScope), token = "text" }
+    end
     groups[#groups + 1] = { head = tr("Admin_Shop_GroupLimits"), rows = limitRows, paired = true }
 
     for _, group in ipairs(self:quoteGroups()) do groups[#groups + 1] = group end

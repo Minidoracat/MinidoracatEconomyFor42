@@ -116,8 +116,10 @@ end
 -- The real-world moment the shop's daily counters reset, read in the player's own zone: the
 -- date and time, the zone itself, and how long is left. Daily shares turn over on a wall
 -- clock, not at an in-game dawn, and "today" is never left to guesswork -- so all three are
--- spelled out and the band below wraps them instead of cutting any of them off. Empty while
--- no snapshot has arrived (or the server sends no reset time): an unknown is not a date.
+-- spelled out and the band below wraps them instead of cutting any of them off. It names the
+-- daily limits only: a per-player lifetime cap does not reset and is not part of this note.
+-- Empty while no snapshot has arrived (or the server sends no reset time): an unknown is not a
+-- date.
 local function shopDayNote(self)
     local shop = C.shop
     local ends = shop and tonumber(shop.dayEndsMs) or nil
@@ -602,8 +604,11 @@ function L.layout(self)
     sc.sellW = textWidth(getText(T .. "Shop_Sell", "1,000,000")) + 16
     sc.sellX = math.max(sc.name, sc.buyX - 6 - sc.sellW)
     sc.remainR = sc.sellX - PAD
-    sc.priceR = math.max(sc.name + PAD, sc.remainR
-        - math.max(textWidth(getText(T .. "Shop_Col_Remaining")), textWidth(getText(T .. "Shop_SoldOut"))) - PAD)
+    -- the column has to hold the widest thing it ever paints: the header, and either of the two
+    -- "used up" sentences (a daily cap's and a lifetime cap's are different strings)
+    sc.priceR = math.max(sc.name + PAD, sc.remainR - PAD
+        - math.max(textWidth(getText(T .. "Shop_Col_Remaining")), textWidth(getText(T .. "Shop_SoldOut")),
+            textWidth(getText(T .. "Shop_SoldOutLifetime"))))
     sc.nameW = math.max(0, sc.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - sc.name)
     if self.shopList.width ~= listW or self.shopList.height ~= shopListH then
         self.shopList:resize(listW, shopListH)

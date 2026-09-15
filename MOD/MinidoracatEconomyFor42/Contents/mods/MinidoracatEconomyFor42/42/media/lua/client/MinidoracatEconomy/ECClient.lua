@@ -437,6 +437,8 @@ handlers["shop.stock"] = function(args)
     for _, item in ipairs(C.shop.items or {}) do
         if item.id == args.id then
             item.remaining = args.remaining
+            -- Clear missing used values rather than pairing stale usage with fresh remaining.
+            item.used = tonumber(args.used)
             notify(C.shopListeners, "shop", "stock", args)
             return
         end
@@ -445,7 +447,8 @@ end
 
 -- Reply of one purchase: { ok, error?, requestId, txId?, item, qty, total, currency, delivered,
 -- deliveryError?, deliveredQty, remainingQty, childMailId?, balance, revision,
--- remaining?, unclaimed }. `delivered` stays a boolean; the Qty fields count physical items.
+-- used?, remaining?, unclaimed }. Qty fields count pieces; used/remaining count shares.
+-- The catalog refresh below owns the snapshot; purchase replies do not patch it.
 handlers["shop.buy"] = function(args)
     setUnclaimed(args)
     if args.ok then C.requestWallet() end

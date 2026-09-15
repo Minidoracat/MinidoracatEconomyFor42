@@ -18,9 +18,10 @@
 -- catalog changed underneath (no silent repricing).
 --
 -- A purchase names its currency, burns it (player -> SYSTEM_BURN), counts against the SKU's
--- daily cap (reward day, ECRewards.dayKey; dailyCapScope "player" = one cap per account,
--- "global" = one cap the whole server shares) and puts a mailbox entry in the same tick (rule
--- one). The letter is built and weighed before the debit: an item this server cannot create
+-- cap: dailyCapScope "player"/"global" use the reward day (ECRewards.dayKey), while
+-- "lifetime" counts all this account's purchases since tracking began in this world.
+-- The published dailyCap field still holds the limit in shares; 0 means unlimited.
+-- The letter is built and weighed before the debit: an item this server cannot create
 -- costs nothing, and a purchase that does not fit in the backpack is refused with
 -- mail_confirmation_required (nothing debited, no entry) until the client confirms the mailbox.
 --
@@ -198,10 +199,12 @@ local function validateSku(raw, index)
     if not isInt(qty, 1, Shop.QTY_MAX) then return nil, where .. ": qty must be 1-" .. Shop.QTY_MAX end
     local cap = raw.dailyCap == nil and 0 or raw.dailyCap
     if not isInt(cap, 0, Shop.CAP_MAX) then return nil, where .. ": dailyCap must be 0-" .. Shop.CAP_MAX end
-    -- the cap counts shares (qty * count is items): "player" is per account and per reward day,
-    -- "global" is one pool for the whole server. Older files carry no field: per account.
+    -- Shares, not pieces. Keep the published field names; only the mode determines the period.
+    -- Older catalogs omit the scope and remain per-player, per reward day.
     local scope = raw.dailyCapScope == nil and "player" or raw.dailyCapScope
-    if scope ~= "player" and scope ~= "global" then return nil, where .. ": dailyCapScope must be player or global" end
+    if scope ~= "player" and scope ~= "global" and scope ~= "lifetime" then
+        return nil, where .. ": dailyCapScope must be player, global or lifetime"
+    end
     local category = raw.category == nil and "other" or raw.category
     if type(category) ~= "string" or category == "" or #category > Shop.CATEGORY_MAX or string.find(category, "%c") then
         return nil, where .. ": bad category"
@@ -375,7 +378,7 @@ local function rowDocument(row)
     return {
         id = row.id, item = row.item, qty = row.qty, category = row.category,
         enabled = row.enabled ~= false, dailyCap = row.dailyCap,
-        dailyCapScope = (row.dailyCapScope == "global") and "global" or "player",
+        dailyCapScope = row.dailyCapScope,
         buybackCap = row.buybackCap or 0, prices = prices,
     }
 end
@@ -520,8 +523,8 @@ local function dailyRow(day, username, create)
     return row
 end
 
--- Volatile per-day totals for the global scope. md.shopDaily stays the only persistent source of
--- usage; this only caches "units of this SKU the whole server bought today" so a snapshot does
+-- Volatile per-day totals for the global scope. md.shopDaily is the persistent daily source;
+-- this only caches "shares of this SKU the whole server bought today" so a snapshot does
 -- not walk every account for every SKU. It is rebuilt on demand from shopDaily (which the buy
 -- path has already updated), and a successful buy adds to it only when it is already built for
 -- that day - otherwise the first rebuild after that buy would count it twice. Shop.init clears
@@ -543,11 +546,13 @@ local function globalToday(id, ms)
     return totals.byId[id] or 0
 end
 
--- The one scope-aware read of today's usage, in shares: the snapshot's `remaining`, the cap
--- check in Shop.buy and the buy reply's `remaining` all go through it. Shares are counted per
--- SKU, never per currency: buying the same row in another currency does not reopen its cap.
-function Shop.usedToday(username, id, ms)
+-- Snapshot, purchase guard and reply use the same scope-aware count, always across currencies.
+function Shop.used(username, id, ms)
     local base = type(id) == "string" and file.byId[id] or nil
+    if base and base.dailyCapScope == "lifetime" then
+        local row = md.shopLifetime[username]
+        return row and row[id] or 0
+    end
     if base and base.dailyCapScope == "global" then return globalToday(id, ms) end
     local row = dailyRow(R.dayKey(ms), username, false)
     return row and row[id] or 0
@@ -557,6 +562,15 @@ local function noteBuy(day, username, id, count)
     local row = dailyRow(day, username, true)
     row[id] = (row[id] or 0) + count
     if totals.day == day and totals.byId then totals.byId[id] = (totals.byId[id] or 0) + count end
+    -- Count even unlimited/daily sales so switching modes never grants a fresh lifetime allowance.
+    -- One number per purchased SKU, not a permanent log of individual orders.
+    local lifetime = md.shopLifetime[username]
+    if not lifetime then
+        lifetime = {}
+        md.shopLifetime[username] = lifetime
+    end
+    lifetime[id] = (lifetime[id] or 0) + count
+    return lifetime[id]
 end
 
 -- ---------- buyback day buckets ----------
@@ -670,8 +684,9 @@ function Shop.snapshot(username, ms)
     local items = {}
     for _, base in ipairs(file.items) do
         local sku = Shop.sku(base.id)
+        sku.used = Shop.used(username, sku.id, ms)
         if sku.dailyCap > 0 then
-            sku.remaining = math.max(0, sku.dailyCap - Shop.usedToday(username, sku.id, ms))
+            sku.remaining = math.max(0, sku.dailyCap - sku.used)
         end
         if anyBuyback(sku) then
             -- shares left for this row today, whatever currency they are sold in
@@ -706,10 +721,10 @@ end
 
 -- A global-cap SKU changes for everyone the moment anyone buys it: send that one row's
 -- remaining instead of pushing the whole catalog to every player on every purchase.
-local function pushStock(id, remaining)
+local function pushStock(id, remaining, used)
     local revision = Shop.revision()
     S.forEachOnline(function(p)
-        S.reply(p, "shop.stock", { id = id, remaining = remaining, revision = revision })
+        S.reply(p, "shop.stock", { id = id, remaining = remaining, used = used, revision = revision })
     end)
 end
 
@@ -739,7 +754,7 @@ end
 local function validField(field, value)
     if field == "qty" then return isInt(value, 1, Shop.QTY_MAX) end
     if field == "dailyCap" or field == "buybackCap" then return isInt(value, 0, Shop.CAP_MAX) end
-    if field == "dailyCapScope" then return value == "player" or value == "global" end
+    if field == "dailyCapScope" then return value == "player" or value == "global" or value == "lifetime" end
     if field == "enabled" then return type(value) == "boolean" end
     if field == "category" then
         return type(value) == "string" and value ~= "" and #value <= Shop.CATEGORY_MAX
@@ -1079,8 +1094,9 @@ function Shop.buy(player, args)
     if sku.qty * count > Shop.ITEMS_PER_BUY_MAX then return { ok = false, error = "too_many_items" } end
     local ms = EC.now()
     local day = R.dayKey(ms)
-    if sku.dailyCap > 0 and Shop.usedToday(username, sku.id, ms) + count > sku.dailyCap then
-        return { ok = false, error = "daily_cap" }
+    local used = Shop.used(username, sku.id, ms)
+    if sku.dailyCap > 0 and used + count > sku.dailyCap then
+        return { ok = false, error = sku.dailyCapScope == "lifetime" and "lifetime_cap" or "daily_cap" }
     end
     if not M.hasFreeSlot(username) then return { ok = false, error = "mailbox_full" } end
     local total = quote.price * count
@@ -1101,12 +1117,16 @@ function Shop.buy(player, args)
             unitPrice = quote.price, currency = currency },
     })
     if not res.ok then return { ok = false, error = res.error, currency = currency } end
-    noteBuy(day, username, sku.id, count)
+    local lifetimeUsed = noteBuy(day, username, sku.id, count)
     local entry = M.add(username, { kind = "shop", item = sku.item, qty = sku.qty * count, txId = res.txId,
         price = total, currency = currency })
-    X.emit("shop.purchase", { username = username, sku = sku.id, item = sku.item, qty = sku.qty * count, count = count, total = total, currency = currency, txId = res.txId, mailId = entry.id })
+    X.emit("shop.purchase", {
+        username = username, sku = sku.id, item = sku.item, qty = sku.qty * count, count = count,
+        total = total, currency = currency, txId = res.txId, mailId = entry.id,
+        capScope = sku.dailyCapScope, cap = sku.dailyCap, usedAfter = used + count, lifetimeUsed = lifetimeUsed,
+    })
     if sku.dailyCap > 0 and sku.dailyCapScope == "global" then
-        pushStock(sku.id, math.max(0, sku.dailyCap - Shop.usedToday(username, sku.id, ms)))
+        pushStock(sku.id, math.max(0, sku.dailyCap - used - count), used + count)
     end
     local out = {
         ok = true, txId = res.txId, mailId = entry.id, item = sku.item, qty = sku.qty * count, count = count,
@@ -1389,7 +1409,10 @@ S.handlers["shop.buy"] = function(player, args)
     res.remaining = nil
     if type(args) == "table" and validId(args.id) then
         local sku = Shop.sku(args.id)
-        if sku and sku.dailyCap > 0 then res.remaining = math.max(0, sku.dailyCap - Shop.usedToday(player:getUsername(), sku.id, EC.now())) end
+        if sku then
+            res.used = Shop.used(player:getUsername(), sku.id, EC.now())
+            if sku.dailyCap > 0 then res.remaining = math.max(0, sku.dailyCap - res.used) end
+        end
     end
     res.unclaimed = M.unclaimed(player:getUsername())
     S.reply(player, "shop.buy", res)
@@ -1413,6 +1436,8 @@ end
 function Shop.init(root)
     md = root
     md.shopDaily = md.shopDaily or {}
+    -- No history backfill: old day buckets are incomplete and event files may include rollbacks.
+    md.shopLifetime = md.shopLifetime or {}
     md.shopBuyback = md.shopBuyback or {}
     totals.day, totals.byId = nil, nil
     local ok, err = Shop.load()

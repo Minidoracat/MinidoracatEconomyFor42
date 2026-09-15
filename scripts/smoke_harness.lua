@@ -713,7 +713,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1402   -- Includes live map ATM access, destruction and independent settings.
+local EXPECTED_ASSERTIONS = 1427   -- +25: the lifetime purchase cap (scenario LC).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2654,7 +2654,7 @@ check(pk ~= nil and pk.container == zed.inventory and #pk.add == 2, "one sendAdd
 local dup = cmd(zed, "shop.buy", { id = "bandage", count = 2, revision = rev, requestId = "b1" })
 check(dup.duplicate == true and dup.txId == buy.txId and L.getBalance("zed", "survivor").available == 76, "resending the same requestId returns the first result without a second debit")
 check(cmd(zed, "shop.buy", { id = "bandage", count = 4, revision = rev }).error == "daily_cap", "exceeding the per-account daily cap is refused")
-check(cmd(zed, "shop.buy", { id = "bandage", count = 3, revision = rev }).ok == true and Shop.usedToday("zed", "bandage", nowMs) == 5, "buying up to the cap is fine")
+check(cmd(zed, "shop.buy", { id = "bandage", count = 3, revision = rev }).ok == true and Shop.used("zed", "bandage", nowMs) == 5, "buying up to the cap is fine")
 check(cmd(zed, "shop.buy", { id = "axe", revision = rev }).error == "insufficient_funds" and L.getBalance("zed", "survivor").available == 40, "insufficient funds refuse with zero debit")
 check(cmd(zed, "shop.buy", { id = "nails", count = 6, revision = rev }).error == "too_many_items", "more than 100 items per purchase is refused")
 local rc = L.receipts("zed")
@@ -2750,7 +2750,7 @@ check(added.ok == true and added.count == 2 and addedRow ~= nil and addedRow.ite
 zed.inventory.maxWeight = 50
 local snack = cmd(zed, "shop.buy", { id = "cat_snack", revision = added.revision })
 check(snack.ok == true and snack.total == 20 and snack.delivered == true and zed.inventory.count("MiniFarm.CatSnack") == 2
-    and Shop.usedToday("zed", "cat_snack", nowMs) == 1, "the SKU the admin just added is on sale straight away")
+    and Shop.used("zed", "cat_snack", nowMs) == 1, "the SKU the admin just added is on sale straight away")
 check(cmd(boss, "admin.catalog", { action = "add", id = "cat_snack", item = "Base.Twine", prices = { survivor = { price = 5 } } }).error == "duplicate_sku"
     and Shop.sku("cat_snack").item == "MiniFarm.CatSnack", "an id already in the catalog is refused and the existing row is untouched")
 check(cmd(boss, "admin.catalog", { action = "add", id = "ghost", item = "NoSuchMod.Ghost", prices = { survivor = { price = 5 } } }).error == "unknown_item"
@@ -4578,7 +4578,7 @@ io.write("scenario 39: quotas, consent and bounded batch attempts\n")
     request(a, "shop.buy", { id = "small", count = 2, revision = rev })
     request(b, "shop.buy", { id = "small", count = 1, revision = rev })
     local scoped = request(admin, "admin.catalog", { action = "batch", ids = { "small" }, fields = { dailyCapScope = "global" }, revision = rev })
-    check(scoped.ok and Shop.usedToday("quota-a", "small", nowMs) == 3 and Shop.usedToday("quota-b", "small", nowMs) == 3,
+    check(scoped.ok and Shop.used("quota-a", "small", nowMs) == 3 and Shop.used("quota-b", "small", nowMs) == 3,
         "switching to a global cap includes purchases made while the SKU was per-player")
     local final = request(b, "shop.buy", { id = "small", count = 2, revision = Shop.revision() })
     local capped = request(a, "shop.buy", { id = "small", revision = Shop.revision() })
@@ -4588,19 +4588,19 @@ io.write("scenario 39: quotas, consent and bounded batch attempts\n")
     for _, reply in ipairs(sentCommands) do
         if reply.player == a and reply.command == "shop.stock" then delta = reply.args end
     end
-    check(delta and delta.id == "small" and delta.remaining == 0 and delta.revision == Shop.revision(),
-        "other buyers receive the remaining global stock without a whole-catalog refresh")
+    check(delta and delta.id == "small" and delta.remaining == 0 and delta.used == 5 and delta.revision == Shop.revision(),
+        "other buyers receive the shared row's remaining and used shares without a whole-catalog refresh")
     local switched = request(admin, "admin.catalog", { action = "batch", ids = { "small" }, fields = { dailyCapScope = "player" }, revision = Shop.revision() })
-    check(switched.ok and Shop.usedToday("quota-a", "small", nowMs) == 2 and Shop.usedToday("quota-b", "small", nowMs) == 3,
+    check(switched.ok and Shop.used("quota-a", "small", nowMs) == 2 and Shop.used("quota-b", "small", nowMs) == 3,
         "switching back to per-player limits preserves both players' own usage")
     request(admin, "admin.catalog", { action = "batch", ids = { "small" }, fields = { dailyCapScope = "global" }, revision = Shop.revision() })
     nowMs = nowMs + 1000
     fire("OnServerStarted")
-    check(Shop.usedToday("quota-a", "small", nowMs) == 5, "restart rebuilds the volatile total from the persisted per-player day rows")
+    check(Shop.used("quota-a", "small", nowMs) == 5, "restart rebuilds the volatile total from the persisted per-player day rows")
     nowMs = nowMs + 86400000
-    check(Shop.usedToday("quota-a", "small", nowMs) == 0, "the next reward day starts a fresh shared quota")
+    check(Shop.used("quota-a", "small", nowMs) == 0, "the next reward day starts a fresh shared quota")
     local first = request(a, "shop.buy", { id = "small", revision = Shop.revision() })
-    check(first.ok and first.remaining == 4 and Shop.usedToday("quota-b", "small", nowMs) == 1,
+    check(first.ok and first.remaining == 4 and Shop.used("quota-b", "small", nowMs) == 1,
         "the first purchase after building a new-day total is not counted twice")
     local text = table.concat(files[Shop.FILE].lines, "\n")
     local bad = request(admin, "admin.catalog", { action = "batch", ids = { "small", "tools" }, fields = { prices = { survivor = { price = 1 } } }, revision = Shop.revision() })
@@ -7662,7 +7662,7 @@ zed.inventory.maxWeight = 0
 local parked = cmd(zed, "shop.buy", { id = "pack", count = 1, currency = "survivor", revision = rev, acceptMail = true })
 zed.inventory.maxWeight = 50
 check(parked.ok == true and parked.mailed == true and cmd(zed, "mail.list").entries[1].qty == 2
-    and Shop.usedToday("qty-zed", "pack", nowMs) == 2,
+    and Shop.used("qty-zed", "pack", nowMs) == 2,
     "setup: two shares bought today, one of them still sitting in the mailbox as two pieces")
 local batch = cmd(boss, "admin.catalog", { action = "batch", ids = { "pack", "roll" },
     fields = { qty = 5, category = "food" }, revision = Shop.revision() })
@@ -7670,7 +7670,7 @@ check(batch.ok == true and Shop.sku("pack").qty == 5 and Shop.sku("roll").qty ==
     and Shop.sku("pack").category == "food" and Shop.sku("roll").category == "food"
     and Shop.sku("pack").prices.survivor.price == 10 and Shop.sku("roll").prices.survivor.price == 5,
     "a batch writes only the two fields it was given to every selected row and leaves each row's own prices alone")
-check(Shop.usedToday("qty-zed", "pack", nowMs) == 2 and cmd(zed, "mail.list").entries[1].qty == 2,
+check(Shop.used("qty-zed", "pack", nowMs) == 2 and cmd(zed, "mail.list").entries[1].qty == 2,
     "changing how many pieces a share is does not reset today's shares and does not rewrite a letter already posted")
 local before = table.concat(files[S.Shop.FILE].lines, "\n")
 local bad = cmd(boss, "admin.catalog", { action = "batch", ids = { "pack", "roll" },
@@ -13170,6 +13170,206 @@ end)()
     check(not T.near(player) and ISDestroyStuffAction.complete(action) and atm.removed,
         "reinitialization preserves both stored ATM overrides")
     onlinePlayers, worldSprites = {}, {}
+end)()
+
+-- ===== 情境 LC：每人永久限購（第三種互斥模式）=====
+-- 永久份數不回補舊日桶、不因模式／角色／換季而清零；回滾沿用同一份世界資料。
+-- 本段新增 25 個 check；事件 writer 使用 harness 記憶體檔，不代表原生落盤驗證。
+io.write("scenario LC: a lifetime cap belongs to the account, not to the day\n")
+;(function()
+local Shop, M = S.Shop, S.Mailbox
+local DAY = 86400000
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, writerDeny = {}, {}, {}
+-- 對齊到獎勵日開始後一小時：整段前半要留在同一個獎勵日內，不能剛好壓在日界上
+nowMs = R.nextResetMs(nowMs) + 3600000
+-- 部署現場：這個世界的舊版只記每日份數，永久表還不存在
+modDataStore[EC.MODDATA_KEY] = { shopDaily = { [R.dayKey(nowMs)] = { ["lc-zed"] = { keepsake = 4 } } } }
+files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "keepsake", item = "Base.Bandage", qty = 1, dailyCap = 3, dailyCapScope = "lifetime", category = "medical",
+        prices = { survivor = { price = 10 }, cat = { price = 4 } } },
+    { id = "ration", item = "Base.Nails", qty = 1, dailyCap = 2, category = "food",
+        prices = { survivor = { price = 5 } } },
+    { id = "sand", item = "Base.RippedSheets", qty = 1, dailyCap = 0, category = "medical",
+        prices = { survivor = { price = 5 } } },
+    { id = "crate", item = "Base.Plank", qty = 3, dailyCap = 2, dailyCapScope = "lifetime", category = "tool",
+        prices = { survivor = { price = 30 } } },
+} }) }, opens = 0 }
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("lc-admin"); boss.role = "admin"
+local zed = fakePlayer("lc-zed"); zed.x, zed.y = 101, 200; zed.inventory = fakeInventory(400)
+local kit = fakePlayer("lc-kit"); kit.x, kit.y = 101, 200; kit.inventory = fakeInventory(400)
+onlinePlayers = { boss, zed, kit }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+-- 從事件 writer 輸出的 harness 記憶體檔解碼，不採用 command 回覆當寫檔證據。
+local function purchases(username, sku)
+    proofSettle()
+    local out = {}
+    for _, f in pairs(files) do
+        for _, line in ipairs(f.lines or {}) do
+            if string.find(line, '"type":"shop.purchase"', 1, true) then
+                local row = EC.jsonDecode(line)
+                if type(row) == "table" and row.username == username and row.sku == sku then out[#out + 1] = row end
+            end
+        end
+    end
+    return out
+end
+local function rowOf(snapshot, id)
+    for _, it in ipairs(snapshot.items or {}) do if it.id == id then return it end end
+    return nil
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("lc-zed", "survivor", 500, "SYSTEM_MINT", { requestId = "lc-seed-s", reasonCode = "t" })
+L.credit("lc-zed", "cat", 50, "SYSTEM_MINT", { requestId = "lc-seed-c", reasonCode = "t" })
+L.credit("lc-kit", "survivor", 500, "SYSTEM_MINT", { requestId = "lc-seed-k", reasonCode = "t" })
+check(Shop.sku("keepsake").dailyCapScope == "lifetime" and Shop.used("lc-zed", "keepsake", nowMs) == 0,
+    "a lifetime count starts at zero even in a world where the previous version already wrote day rows")
+local toDaily = cmd(boss, "admin.catalog", { action = "set", id = "keepsake", dailyCapScope = "player", revision = Shop.revision() })
+local dayView = Shop.used("lc-zed", "keepsake", nowMs)
+local back = cmd(boss, "admin.catalog", { action = "set", id = "keepsake", dailyCapScope = "lifetime", revision = Shop.revision() })
+check(toDaily.ok and back.ok and dayView == 4 and Shop.used("lc-zed", "keepsake", nowMs) == 0,
+    "the day rows the old version wrote are still the daily count and are never adopted as a lifetime head start")
+local buyRev = Shop.revision()
+local first = cmd(zed, "shop.buy", { id = "keepsake", count = 2, currency = "survivor", revision = buyRev, requestId = "lc-first" })
+check(first.ok and first.used == 2 and first.remaining == 1 and zed.inventory.count("Base.Bandage") == 2,
+    "the buy reply answers with this account's lifetime shares and the room that is left")
+local kitBuy = cmd(kit, "shop.buy", { id = "keepsake", count = 3, currency = "survivor", revision = buyRev, requestId = "lc-kit-fill" })
+check(kitBuy.ok and kitBuy.used == 3 and kitBuy.remaining == 0 and Shop.used("lc-zed", "keepsake", nowMs) == 2,
+    "one account spending its whole lifetime allowance leaves another account's allowance untouched")
+local paidInCat = cmd(zed, "shop.buy", { id = "keepsake", currency = "cat", revision = buyRev, requestId = "lc-cat" })
+check(paidInCat.ok and paidInCat.currency == "cat" and paidInCat.used == 3 and paidInCat.remaining == 0
+    and L.getBalance("lc-zed", "cat").available == 46,
+    "the last lifetime share can be paid in another currency: the allowance belongs to the row, not to the wallet")
+local surBefore, catBefore = L.getBalance("lc-zed", "survivor").available, L.getBalance("lc-zed", "cat").available
+local mailBefore = M.unclaimed("lc-zed")
+local over = cmd(zed, "shop.buy", { id = "keepsake", currency = "survivor", revision = buyRev, requestId = "lc-over" })
+check(over.error == "lifetime_cap" and over.used == 3 and over.remaining == 0
+    and L.getBalance("lc-zed", "survivor").available == surBefore
+    and L.getBalance("lc-zed", "cat").available == catBefore
+    and M.unclaimed("lc-zed") == mailBefore and zed.inventory.count("Base.Bandage") == 3,
+    "an exhausted lifetime cap has its own refusal code, charges neither wallet and posts no letter")
+check(lastSent("shop.stock") == nil,
+    "one account's personal allowance is never broadcast to the whole server as shared stock")
+local replay = cmd(zed, "shop.buy", { id = "keepsake", count = 2, currency = "survivor", revision = buyRev, requestId = "lc-first" })
+local keepRows = purchases("lc-zed", "keepsake")
+check(replay.duplicate == true and replay.used == 3 and #keepRows == 2
+    and keepRows[2].capScope == "lifetime" and keepRows[2].cap == 3
+    and keepRows[2].usedAfter == 3 and keepRows[2].lifetimeUsed == 3,
+    "a resend is answered from the record: one share, one published purchase, and the event names the mode, the limit and the totals")
+cmd(zed, "shop.buy", { id = "ration", count = 2, currency = "survivor", revision = buyRev, requestId = "lc-ration" })
+local rationRows = purchases("lc-zed", "ration")
+check(#rationRows == 1 and rationRows[1].capScope == "player" and rationRows[1].cap == 2
+    and rationRows[1].usedAfter == 2 and rationRows[1].lifetimeUsed == 2,
+    "a sale under a daily cap publishes that day's total and the account's lifetime total side by side")
+local rationLife = cmd(boss, "admin.catalog", { action = "set", id = "ration", dailyCapScope = "lifetime", revision = Shop.revision() })
+local rationBlocked = cmd(zed, "shop.buy", { id = "ration", currency = "survivor", revision = Shop.revision(), requestId = "lc-ration-2" })
+check(rationLife.ok and Shop.used("lc-zed", "ration", nowMs) == 2 and rationBlocked.error == "lifetime_cap",
+    "shares sold while the row was a daily row are already counted the moment it becomes a lifetime row")
+cmd(zed, "shop.buy", { id = "sand", count = 4, currency = "survivor", revision = Shop.revision(), requestId = "lc-sand" })
+local snap = cmd(zed, "shop.list", {})
+local sandRow, keepRow = rowOf(snap, "sand"), rowOf(snap, "keepsake")
+local sandRows = purchases("lc-zed", "sand")
+check(sandRow.used == 4 and sandRow.remaining == nil and keepRow.used == 3 and keepRow.remaining == 0
+    and #sandRows == 1 and sandRows[1].cap == 0 and sandRows[1].lifetimeUsed == 4,
+    "an unlimited row publishes what the account bought with no room figure at all, and is still counted for good")
+local lowered = cmd(boss, "admin.catalog", { action = "set", id = "sand", dailyCapScope = "lifetime", dailyCap = 3, revision = Shop.revision() })
+local past = cmd(zed, "shop.buy", { id = "sand", currency = "survivor", revision = Shop.revision(), requestId = "lc-sand-2" })
+check(lowered.ok and Shop.used("lc-zed", "sand", nowMs) == 4
+    and past.error == "lifetime_cap" and past.used == 4 and past.remaining == 0,
+    "a limit set below what an account already bought refuses the next share instead of clearing the count")
+local batch = cmd(boss, "admin.catalog", { action = "batch", ids = { "keepsake", "crate" },
+    fields = { qty = 4, dailyCap = 5, dailyCapScope = "lifetime" }, revision = Shop.revision() })
+check(batch.ok and Shop.sku("keepsake").qty == 4 and Shop.sku("crate").dailyCapScope == "lifetime"
+    and Shop.sku("crate").dailyCap == 5 and Shop.used("lc-zed", "keepsake", nowMs) == 3,
+    "a batch that rewrites all three limit columns hands nobody the shares they already spent back")
+local off = cmd(boss, "admin.catalog", { action = "set", id = "keepsake", enabled = false, revision = Shop.revision() })
+local on = cmd(boss, "admin.catalog", { action = "set", id = "keepsake", enabled = true, revision = Shop.revision() })
+check(off.ok and on.ok and Shop.used("lc-zed", "keepsake", nowMs) == 3,
+    "taking the row off the shelf and putting it back on is not a reset either")
+local away = cmd(boss, "admin.catalog", { action = "set", id = "keepsake", dailyCapScope = "player", revision = Shop.revision() })
+local dailySide = Shop.used("lc-zed", "keepsake", nowMs)
+local home = cmd(boss, "admin.catalog", { action = "set", id = "keepsake", dailyCapScope = "lifetime", revision = Shop.revision() })
+check(away.ok and home.ok and dailySide == 7 and Shop.used("lc-zed", "keepsake", nowMs) == 3,
+    "every purchase writes both counters: a mode round trip reads its own number and clears neither")
+local crateRev = Shop.revision()
+zed.inventory.maxWeight = 0
+local refusedMail = cmd(zed, "shop.buy", { id = "crate", currency = "survivor", revision = crateRev, requestId = "lc-crate" })
+local parked = cmd(zed, "shop.buy", { id = "crate", currency = "survivor", revision = crateRev, requestId = "lc-crate", acceptMail = true })
+check(refusedMail.error == "mail_confirmation_required" and refusedMail.used == 0
+    and parked.ok and parked.mailed == true and parked.used == 1,
+    "a purchase refused for capacity spends nothing, while the one parked in the mailbox spends its lifetime share immediately")
+zed.inventory.maxWeight = 400
+local claimed = cmd(zed, "mail.claim", { mailId = parked.mailId })
+check(claimed.ok and zed.inventory.count("Base.Plank") == 4 and Shop.used("lc-zed", "crate", nowMs) == 1,
+    "collecting the letter hands the goods over without spending a second share")
+nowMs = nowMs + 2 * DAY
+local newDay = cmd(zed, "shop.buy", { id = "ration", currency = "survivor", revision = Shop.revision(), requestId = "lc-newday" })
+check(Shop.used("lc-zed", "keepsake", nowMs) == 3 and Shop.used("lc-zed", "ration", nowMs) == 2
+    and newDay.error == "lifetime_cap",
+    "two reward days later a lifetime row is still exhausted: no day boundary hands the allowance back")
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+check(Shop.used("lc-zed", "keepsake", nowMs) == 3 and Shop.used("lc-kit", "keepsake", nowMs) == 3
+    and Shop.used("lc-zed", "sand", nowMs) == 4,
+    "reinitialisation reads every account's lifetime counts back out of the world's own data")
+zed.dead = true
+fire("OnCharacterDeath", zed)
+local reborn = fakePlayer("lc-zed"); reborn.x, reborn.y = 101, 200; reborn.inventory = fakeInventory(400)
+onlinePlayers = { boss, reborn, kit }
+fire("OnNewGame", reborn)
+local rebornRow = rowOf(cmd(reborn, "shop.list", {}), "keepsake")
+check(rebornRow.used == 3 and rebornRow.remaining == 2,
+    "a brand new character on the same account inherits the shares that account already spent")
+zed = reborn
+local seasonBefore = S.Seasons.currentId()
+local rotated = cmd(boss, "admin.seasons", { action = "start", expectedSeason = seasonBefore, reason = "quota isolation" })
+check(rotated.ok and S.Seasons.currentId() ~= seasonBefore and Shop.used("lc-zed", "keepsake", nowMs) == 3,
+    "a real season rotation leaves this account's lifetime purchase allowance unchanged")
+-- 只還原 harness 的假 ModData 世界表（不是原生存檔）：世界回到購買前，錢與份數必須一起回去
+local worldBefore = proofSnapshot()
+local balBefore = L.getBalance("lc-zed", "survivor").available
+local extra = cmd(zed, "shop.buy", { id = "keepsake", currency = "survivor", revision = Shop.revision(), requestId = "lc-extra" })
+local spentAfter = L.getBalance("lc-zed", "survivor").available
+proofRestartFrom(worldBefore)
+check(extra.ok and extra.used == 4 and spentAfter == balBefore - 10
+    and Shop.used("lc-zed", "keepsake", nowMs) == 3
+    and L.getBalance("lc-zed", "survivor").available == balBefore,
+    "a world rolled back to before a purchase takes the lifetime share back together with the money")
+local added = cmd(boss, "admin.catalog", { action = "add", id = "relic", item = "Base.Twine", qty = 1,
+    dailyCap = 1, dailyCapScope = "lifetime", category = "other",
+    prices = { survivor = { price = 6 } }, revision = Shop.revision() })
+local once = cmd(zed, "shop.buy", { id = "relic", currency = "survivor", revision = Shop.revision(), requestId = "lc-relic" })
+local twice = cmd(zed, "shop.buy", { id = "relic", currency = "survivor", revision = Shop.revision(), requestId = "lc-relic-2" })
+check(added.ok and Shop.sku("relic").dailyCapScope == "lifetime" and once.ok and once.remaining == 0
+    and twice.error == "lifetime_cap" and zed.inventory.count("Base.Twine") == 1,
+    "a row added as a lifetime row sells exactly once per account from the moment it appears")
+local disk = table.concat(files[Shop.FILE].lines, "\n")
+local badSet = cmd(boss, "admin.catalog", { action = "set", id = "keepsake", dailyCapScope = "server", revision = Shop.revision() })
+local badBatch = cmd(boss, "admin.catalog", { action = "batch", ids = { "keepsake", "crate" },
+    fields = { dailyCapScope = "daily" }, revision = Shop.revision() })
+check(badSet.error == "invalid_args" and badBatch.error == "invalid_args"
+    and Shop.sku("keepsake").dailyCapScope == "lifetime"
+    and table.concat(files[Shop.FILE].lines, "\n") == disk,
+    "there are exactly three modes: an invented scope is refused by the single edit and by the batch without touching the file")
+files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "keepsake", item = "Base.Bandage", qty = 1, dailyCap = 1, dailyCapScope = "daily",
+        prices = { survivor = { price = 10 } } },
+} }) }, opens = 0 }
+local reload = cmd(boss, "admin.catalog", { action = "reload" })
+check(reload.error == "catalog_invalid" and Shop.sku("keepsake").dailyCap == 5
+    and Shop.sku("keepsake").dailyCapScope == "lifetime" and Shop.used("lc-zed", "keepsake", nowMs) == 3,
+    "a catalog file naming a mode the shop does not have keeps the previous rows instead of becoming unlimited")
+onlinePlayers = {}
 end)()
 
 io.write("\n")

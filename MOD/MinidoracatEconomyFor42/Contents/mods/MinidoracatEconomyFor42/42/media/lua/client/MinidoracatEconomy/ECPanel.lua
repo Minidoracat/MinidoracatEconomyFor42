@@ -1412,6 +1412,16 @@ function Panel:submitBuy(dlg)
         self:buyMessage(shopError("not_at_terminal"))
         return
     end
+    -- Recheck allowance on submit; a reduced order still requires confirmation.
+    local allowed = dlg:maxCount()
+    if allowed < 1 then
+        dlg.message = shopError(dlg.row.dailyCapScope == "lifetime" and "lifetime_cap" or "daily_cap")
+        return
+    end
+    if dlg.count > allowed then
+        dlg:clampCount()
+        return
+    end
     if self:requoteHeld(dlg) then return end
     -- a currency this sku is not quoted in is not an order at all
     if dlg:unitPrice() == nil then
@@ -2212,12 +2222,12 @@ function Panel:detailText(kind, e)
         out[#out + 1] = detailLine("Trade_Currency", e.currencyText)
         out[#out + 1] = detailLine("Shop_Col_Price", W.moneyText(e.price, e.currency))
         out[#out + 1] = detailLine("Shop_Col_Remaining", e.remainText)
-        -- whose share the daily cap counts: per account or the whole server. The row cannot
-        -- say it in its column, and "per player per day" is not a fact for every sku.
+        -- whose share the cap counts (this account per day, the whole server per day, or this
+        -- account for good) and how much of it is already spent. The row cannot say either in
+        -- its column, and "per player per day" is not a fact for every sku.
         if e.dailyCap > 0 then
-            out[#out + 1] = detailLine("Shop_CapScope", getText(T ..
-                ((e.dailyCapScope == "server" or e.dailyCapScope == "global")
-                    and "Shop_Scope_global" or "Shop_Scope_player")))
+            out[#out + 1] = detailLine("Shop_CapScope", e.capScopeText)
+            out[#out + 1] = detailLine("Shop_Used", e.usedText)
         end
         if e.buyback then out[#out + 1] = detailLine("Shop_Col_Bid", W.moneyText(e.bidPrice, e.currency)) end
         -- every currency this sku is quoted in, so the record says what switching would cost

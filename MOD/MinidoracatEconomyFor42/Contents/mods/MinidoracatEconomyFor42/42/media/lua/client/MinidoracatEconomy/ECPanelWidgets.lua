@@ -483,8 +483,10 @@ end
 
 -- One catalog row, in the currency the page is trading in: every string the cell paints is built
 -- here (they change with the snapshot, never per frame), `remaining` keeps the raw number the buy
--- dialog clamps its count with. `buyback` is the snapshot's own buyback block, so the per-currency
--- switch and the shared unit quota are read from the server and never inferred from a price.
+-- dialog clamps its count with and `used` the count already spent against the cap (nil when the
+-- snapshot carried none -- unknown, never 0). `buyback` is the snapshot's own buyback block, so
+-- the per-currency switch and the shared unit quota are read from the server, never inferred
+-- from a price.
 --
 -- A sku that is not quoted in this currency is not free and not zero: it has no price at all, its
 -- buy button is closed and the row says so. The quotes it does carry are named on the second line,
@@ -492,11 +494,20 @@ end
 local function shopRow(it, currency, buyback)
     local cap = tonumber(it.dailyCap) or 0
     local remaining = tonumber(it.remaining)
+    -- Three cap modes share this one column, and the scope is what says which sentence "used
+    -- up" is: a per-day count (this account's or the whole server's) or one that never resets.
+    -- An older snapshot carries no `used` count at all, and none is not zero.
+    local scope = it.dailyCapScope
+    scope = (scope == "global" or scope == "server") and "global"
+        or (scope == "lifetime" and "lifetime" or "player")
+    local used = tonumber(it.used)
     local remainText, remainToken, soldOut = getText(T .. "Shop_Unlimited"), "textMuted", false
     if cap > 0 then
         local left = remaining or cap
         soldOut = left <= 0
-        remainText = soldOut and getText(T .. "Shop_SoldOut") or (tostring(left) .. " / " .. tostring(cap))
+        remainText = soldOut
+            and getText(T .. (scope == "lifetime" and "Shop_SoldOutLifetime" or "Shop_SoldOut"))
+            or (tostring(left) .. " / " .. tostring(cap))
         remainToken = soldOut and "warn" or "text"
     end
     local qty = tonumber(it.qty) or 1
@@ -526,10 +537,20 @@ local function shopRow(it, currency, buyback)
         end
     end
     local qtyText = getText(T .. "Shop_QtyPer", tostring(qty))
+    -- a cap that never resets is the unusual one, and the numeric column has no room to say so:
+    -- the row names it on the same line the lot size is read on
+    if cap > 0 and scope == "lifetime" then
+        qtyText = qtyText .. "   " .. getText(T .. "Shop_Scope_lifetime")
+    end
     if #alt > 0 then qtyText = qtyText .. "   " .. getText(T .. "Shop_AltQuote", table.concat(alt, "  ")) end
     return {
         id = it.id, item = it.item, qty = qty, price = price, hasQuote = hasQuote,
-        dailyCap = cap, dailyCapScope = type(it.dailyCapScope) == "string" and it.dailyCapScope or nil,
+        dailyCap = cap, dailyCapScope = scope,
+        -- whose count this cap is, and how much of it this account has spent: the detail window
+        -- and the buy dialog both read these, so the sentence is built once
+        capScopeText = getText(T .. "Shop_Scope_" .. scope),
+        usedText = used ~= nil and tostring(math.floor(used))
+            or getText(T .. "Shop_NoQuote"),
         remaining = remaining, soldOut = soldOut, currency = currency,
         currencyText = currencyLabel(currency), quotes = quotes,
         name = itemName(it.item), altName = itemBaseName(it.item), texture = itemTexture(it.item),
@@ -547,7 +568,7 @@ local function shopRow(it, currency, buyback)
     }
 end
 
--- Shop row: icon + name over "N per lot", the unit price, today's remaining share, and the two
+-- Shop row: icon + name over "N per lot", the unit price, the share the cap has left, and the two
 -- real action buttons of the row (buy, and sell on a buyback sku). The row body itself only
 -- selects and reads: ECRowActions owns those buttons, so a press is a press and never a
 -- hit-tested area of the row. Column edges come from Panel:layout (list.cols) and

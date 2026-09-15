@@ -234,10 +234,10 @@ local function sellRoom(cand, currency)
     }
 end
 
-
--- Lots per purchase: the server cap, and never more than today's remaining share. Selling: whole
--- SKU units the backpack holds, within every remaining cap the server reported (units for the
--- SKU, coins for the account and the server); 0 when there is nothing to sell.
+-- Lots per purchase: the server cap, and never more than the share the sku has left -- a share
+-- that has run out is 0 lots, not one, whichever of the three cap modes counts it. Selling:
+-- whole SKU units the backpack holds, within every remaining cap the server reported (units for
+-- the SKU, coins for the account and the server); 0 when there is nothing to sell.
 function BuyDialog:maxCount()
     local max = math.max(1, tonumber(C.shop and C.shop.countMax) or 1)
     local row = self.row
@@ -253,7 +253,9 @@ function BuyDialog:maxCount()
         if room.server ~= nil then units = math.min(units, math.floor(room.server / bid)) end
         return math.max(0, math.min(max, units))
     end
-    if row.dailyCap > 0 and row.remaining then max = math.min(max, math.max(1, row.remaining)) end
+    if row.dailyCap > 0 and row.remaining then
+        max = math.min(max, math.max(0, math.floor(row.remaining)))
+    end
     return max
 end
 
@@ -332,6 +334,12 @@ function BuyDialog:summaryLines()
         out[#out + 1] = row.qtyText
         out[#out + 1] = detailLine("Shop_Col_Price", moneyText(unit, cur))
         out[#out + 1] = detailLine("Shop_Col_Remaining", row.remainText)
+        -- a limited sku says which count it is limited by and how much of that count is
+        -- already spent, so an order is never confirmed against a number the row had to cut
+        if row.dailyCap > 0 then
+            out[#out + 1] = detailLine("Shop_CapScope", row.capScopeText)
+            out[#out + 1] = detailLine("Shop_Used", row.usedText)
+        end
         out[#out + 1] = detailLine("Shop_Count", tostring(self.count))
         out[#out + 1] = detailLine("Shop_Total", moneyText(total, cur))
         out[#out + 1] = detailLine("Shop_AfterBalance",
@@ -463,9 +471,8 @@ function BuyDialog:prerender()
     self.plusButton:setEnable(self.count < max and not pending)
     -- the order on the wire owns the currency too: the chips read as shut while it is out
     for _, b in ipairs(self.currencyButtons) do b:setEnable(not pending) end
-    -- no quote in the chosen currency is no order: the confirm stays shut rather than sending a
-    -- price this client invented
-    local ok = total ~= nil and (sell and (max >= 1 and self.count >= 1) or (not sell and after >= 0))
+    -- A fresh zero allowance disables confirmation even if this dialog was already open.
+    local ok = total ~= nil and max >= 1 and self.count >= 1 and (sell or after >= 0)
     self.confirmButton:setEnable(ok and not pending and self.panel:tradeAllowed())
 end
 
