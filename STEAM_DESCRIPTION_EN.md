@@ -45,8 +45,8 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: two currenc
 [/list]
 
 [h2]☕ Support the author[/h2]
-The mod is free and always will be. If you enjoy it, consider buying me a coffee - tips go straight into servers and mod development.
-[url=https://ko-fi.com/minidoracat][img]https://raw.githubusercontent.com/Minidoracat/workshop-resources/refs/heads/main/badges/badge_kofi.png[/img][/url]
+The mod is free and always will be, with the source public on GitHub. If you enjoy it, consider buying me a coffee - tips go straight into servers and mod development.
+[url=https://ko-fi.com/minidoracat][img]https://raw.githubusercontent.com/Minidoracat/workshop-resources/refs/heads/main/badges/badge_kofi.png[/img][/url] [url=https://github.com/Minidoracat/MinidoracatEconomyFor42][img]https://raw.githubusercontent.com/Minidoracat/workshop-resources/refs/heads/main/badges/badge_github.png[/img][/url]
 
 [b]#Minidoracat[/b]
 
