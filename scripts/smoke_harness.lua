@@ -713,7 +713,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1441   -- +14: radio load lifecycle and native failure boundaries.
+local EXPECTED_ASSERTIONS = 1458   -- +17: cumulative check-in thresholds and live settings.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -7818,7 +7818,7 @@ check(missingDay.error == "invalid_args" and badIndex.error == "invalid_args" an
 local tooSoon = claim(nextArgs("multi-toosoon"))
 check(tooSoon.ok ~= true and bal() == 10 and tooSoon.state.blockedReason == "interval_not_elapsed"
     and tooSoon.state.claimedCount == 1,
-    "the next claim is timed from the moment the previous one was paid, not from the start of the day")
+    "the next claim is refused until its cumulative connected-time threshold is reached")
 local st = state()
 check(st.canClaim == false and st.requiredOnlineMs == st.playedMs + st.remainingOnlineMs and st.remainingOnlineMs > 0
     and st.dailyLimit == 3 and st.remainingClaims == 2,
@@ -7849,7 +7849,7 @@ check(wrongDay.ok ~= true and wrongDay.error == "stale_request" and wrongDay.day
     "a claim aimed at another reward day is refused and answered with the day the server is actually on")
 local second = claim({ day = state().day, rewardIndex = 2, requestId = "multi-2" })
 check(second.ok == true and second.rewardIndex == 2 and bal() == 20 and second.state.remainingClaims == 1,
-    "once enough connected time has passed since the last payment the second claim goes through")
+    "once today's connected time reaches the second threshold the second claim goes through")
 dan.hours = 0
 tick(35)
 local third = claim({ day = state().day, rewardIndex = 3, requestId = "multi-3" })
@@ -13500,6 +13500,130 @@ local reload = cmd(boss, "admin.catalog", { action = "reload" })
 check(reload.error == "catalog_invalid" and Shop.sku("keepsake").dailyCap == 5
     and Shop.sku("keepsake").dailyCapScope == "lifetime" and Shop.used("lc-zed", "keepsake", nowMs) == 3,
     "a catalog file naming a mode the shop does not have keeps the previous rows instead of becoming unlimited")
+onlinePlayers = {}
+end)()
+
+-- ===== 累積在線簽到：晚領不推遲門檻，設定即時重算且不重發 =====
+io.write("scenario cumulative check-in: late claims, live settings and payment boundaries\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+SandboxVars.MinidoracatEconomy.RewardDayResetHour = 0
+SandboxVars.MinidoracatEconomy.RewardTimezoneUTC = 8
+SandboxVars.MinidoracatEconomy.CheckinAmount = 30
+SandboxVars.MinidoracatEconomy.CheckinMinPlaytimeMinutes = 15
+SandboxVars.MinidoracatEconomy.CheckinDailyLimit = 2
+SandboxVars.MinidoracatEconomy.CheckinIntervalMinutes = 60
+SandboxVars.MinidoracatEconomy.CheckinServerDailyCap = 0
+nowMs = R.dayStartMs(1788699986478) + 3600000
+fire("OnServerStarted")
+local late, waiting, boss = fakePlayer("cum-late"), fakePlayer("cum-waiting"), fakePlayer("cum-admin")
+boss.role = "admin"
+onlinePlayers = { late, waiting, boss }
+R.observe(late, nowMs)
+R.observe(waiting, nowMs)
+local serial = 0
+local function cmd(player, name, args)
+    serial = serial + 1
+    args = args or {}
+    args.requestId = args.requestId or ("cum-" .. serial)
+    S.handlers[name](player, args)
+    return lastSent(name).args
+end
+local function take(player, index)
+    return cmd(player, "rewards.checkin", { day = R.dayKey(nowMs), rewardIndex = index })
+end
+local function option(key, value)
+    return cmd(boss, "admin.option", { key = key, value = value })
+end
+local function tick(minutes)
+    for _ = 1, minutes do nowMs = nowMs + 60000; fire("OnTickEvenPaused") end
+end
+tick(39)
+local first = take(late, 1)
+check(first.ok and first.state.requiredOnlineMs == 60 * 60000
+    and first.state.remainingOnlineMs == 21 * 60000,
+    "claiming the first reward at minute 39 leaves 21 minutes, not another hour")
+-- 舊存檔的領取基準不再控制資格；重新初始化不能丟失當日時間或已領次數。
+S.modData().claims["cum-late"].claimBasePlayedMs = 39 * 60000
+fire("OnServerStarted")
+local resumed = cmd(late, "rewards.state")
+check(resumed.claimedCount == 1 and resumed.playedMs == 39 * 60000
+    and resumed.requiredOnlineMs == 60 * 60000,
+    "reinitialising an old interval record preserves progress but no longer postpones its next reward")
+local lookup = cmd(boss, "admin.lookup", { username = "cum-late" })
+check(lookup.ok and lookup.rewards.requiredOnlineMs == resumed.requiredOnlineMs,
+    "the administrative read-only view uses the same cumulative threshold as the player")
+R.observe(waiting, nowMs)
+tick(21)
+local deferredFirst, deferredSecond = take(waiting, 1), take(waiting, 2)
+check(deferredFirst.ok and deferredFirst.state.canClaim and deferredSecond.ok
+    and L.getBalance("cum-waiting", "survivor").available == 60,
+    "at minute 60 a player who never claimed can take both earned rewards in order")
+local replay, excess = take(waiting, 1), take(waiting, 3)
+check(replay.error == "stale_request" and excess.error == "daily_limit_reached"
+    and L.getBalance("cum-waiting", "survivor").available == 60,
+    "banked eligibility neither replays a paid index nor bypasses the daily limit")
+local raised = option("CheckinIntervalMinutes", 120)
+local pushed = lastSent("rewards.state").args
+check(raised.ok and pushed.intervalMs == 120 * 60000
+    and R.state("cum-late", nowMs).remainingOnlineMs == 60 * 60000,
+    "raising the cumulative step updates live snapshots and the unpaid threshold immediately")
+check(take(late, 2).error == "interval_not_elapsed" and L.getBalance("cum-late", "survivor").available == 30,
+    "an already open claim is checked against the new longer step without consuming it")
+local lowered = option("CheckinIntervalMinutes", 30)
+local second = take(late, 2)
+check(lowered.ok and second.ok and second.state.requiredOnlineMs == 60 * 60000
+    and L.getBalance("cum-late", "survivor").available == 60,
+    "lowering the step unlocks the unpaid second reward and keeps the third threshold at twice the step")
+local expanded = option("CheckinDailyLimit", 3)
+local third = take(late, 3)
+check(expanded.ok and third.ok and third.state.claimedCount == 3
+    and L.getBalance("cum-late", "survivor").available == 90,
+    "raising today's limit exposes an already earned third reward without restarting its clock")
+local reduced = option("CheckinDailyLimit", 1)
+check(reduced.ok and take(late, 4).error == "daily_limit_reached"
+    and L.getBalance("cum-late", "survivor").available == 90,
+    "lowering the daily limit neither claws back money nor resets paid indices")
+option("CheckinDailyLimit", 3)
+local high = fakePlayer("cum-high")
+onlinePlayers = { high }
+R.observe(high, nowMs)
+option("CheckinMinPlaytimeMinutes", 90)
+tick(60)
+check(take(high, 1).error == "not_enough_playtime",
+    "a first threshold above the step remains a real minimum, not a shortcut through later rewards")
+tick(30)
+local highFirst, highSecond = take(high, 1), take(high, 2)
+check(highFirst.ok and highFirst.state.requiredOnlineMs == 90 * 60000 and highSecond.ok,
+    "later thresholds never fall below the configured first minimum, and time already earned still counts")
+local free = fakePlayer("cum-zero")
+onlinePlayers = { free }
+R.observe(free, nowMs)
+local zero = option("CheckinMinPlaytimeMinutes", 0)
+local immediate = take(free, 1)
+check(zero.ok and immediate.ok and immediate.state.requiredOnlineMs == 30 * 60000
+    and take(free, 2).error == "interval_not_elapsed",
+    "zero permits only the first claim at login; the following claim still needs the configured step")
+local restored = option("CheckinIntervalMinutes", nil)
+check(restored.ok and R.state("cum-zero", nowMs).requiredOnlineMs == 60 * 60000,
+    "clearing the runtime override restores the sandbox step rather than a hardcoded threshold")
+option("CheckinMinPlaytimeMinutes", 15)
+option("CheckinDailyLimit", 2)
+onlinePlayers = { late }
+R.observe(late, nowMs)
+nowMs = R.nextResetMs(nowMs) + 1000
+local newDay = cmd(late, "rewards.state")
+check(newDay.claimedCount == 0 and newDay.playedMs == 1000 and newDay.requiredOnlineMs == 15 * 60000,
+    "a new reward day discards banked eligibility and counts only its own connected time")
+check(take(late, 1).error == "not_enough_playtime" and L.getBalance("cum-late", "survivor").available == 90,
+    "yesterday's unused online time cannot pay today's first reward")
+check(L.conservation("survivor") == 0,
+    "cumulative claims and runtime changes preserve ledger conservation")
+SandboxVars.MinidoracatEconomy.CheckinDailyLimit = nil
+SandboxVars.MinidoracatEconomy.CheckinIntervalMinutes = nil
+SandboxVars.MinidoracatEconomy.CheckinAmount = nil
+SandboxVars.MinidoracatEconomy.CheckinMinPlaytimeMinutes = nil
 onlinePlayers = {}
 end)()
 

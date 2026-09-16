@@ -3,9 +3,9 @@
 --   Daily check-in: up to CheckinDailyLimit claims per account per *server reward day* (real-world
 --   clock; the day flips at RewardDayResetHour in the RewardTimezoneUTC zone, default Taiwan
 --   (UTC+8) 00:00), a fixed amount each. The first claim of a day needs CheckinMinPlaytimeMinutes
---   of connected time; every further claim needs another CheckinIntervalMinutes of connected time
---   counted from the moment the previous claim was paid, so waiting does not bank up extra claims
---   and a day never carries over. No server-wide cap by default (fuse only).
+--   of connected time; claim N >= 2 needs (N - 1) * CheckinIntervalMinutes, never less than the
+--   first threshold. Both use today's total connected time, so late collection does not postpone
+--   later rewards. Nothing carries into another reward day. No server-wide cap by default (fuse only).
 --   Connected time is real time spent online on this server: it stops at logout, continues on the
 --   next login of the same day, survives death / a new character (the account keeps its count),
 --   and a reward-day flip only keeps the part of an interval that falls into the new day.
@@ -233,7 +233,6 @@ local function touchDay(username, c, day)
         c.day = day
         c.playedMs = 0
         c.claimedCount = c.paid[day] or 0    -- back on a day we paid: it keeps what it already got
-        c.claimBasePlayedMs = 0
     end
     if legacy then
         -- A pre-N record paid at most once a day. Today's status comes from the watermark seeded
@@ -245,10 +244,9 @@ local function touchDay(username, c, day)
             markPaid(c, day, 1)
         end
         c.claimedCount = paid and (c.paid[day] or 1) or 0
-        c.claimBasePlayedMs = paid and c.playedMs or 0
         c.checkinDay = nil
     end
-    if c.claimBasePlayedMs == nil then c.claimBasePlayedMs = 0 end
+    c.claimBasePlayedMs = nil    -- retire the old payment-time anchor without changing progress
 end
 
 -- ---------- milestones ----------
@@ -381,6 +379,12 @@ function R.intervalMs()
     return n * 60000
 end
 
+-- Shared with the read-only admin view: current settings, not a saved payment-time anchor.
+function R.requiredOnlineMs(claimed)
+    local firstMs = math.max(0, EC.sandbox("CheckinMinPlaytimeMinutes", 15)) * 60000
+    return math.max(firstMs, claimed * R.intervalMs())
+end
+
 -- One identity per (account, reward day, reward index). The ledger refuses the second post of the
 -- same one, which is what makes a resend, a revisited day key (reset hour / timezone moved) and a
 -- restart idempotent. The pre-N form carried no index; it is read for migration, never written.
@@ -403,11 +407,7 @@ function R.state(username, ms)
     local claimed = c.claimedCount
     local remainingClaims = math.max(0, limit - claimed)
     local intervalMs = R.intervalMs()
-    local firstMs = math.max(0, EC.sandbox("CheckinMinPlaytimeMinutes", 15)) * 60000
-    -- What the *next* claim needs, in today's connected time: the entry threshold for the first
-    -- one, a full interval after the previous payment for every further one. Time played while a
-    -- claim is already available does not shorten the interval after it.
-    local requiredOnlineMs = claimed <= 0 and firstMs or (c.claimBasePlayedMs + intervalMs)
+    local requiredOnlineMs = R.requiredOnlineMs(claimed)
     local remainingOnlineMs = math.max(0, requiredOnlineMs - c.playedMs)
     local amount = EC.sandbox("CheckinAmount", 30)
     local cap = EC.sandbox("CheckinServerDailyCap", 0)
@@ -521,7 +521,6 @@ local function doCheckin(username, ms, args)
         -- and no success; the counter only catches up so the next claim asks for the next index
         -- instead of retrying a paid one forever.
         c.claimedCount = index
-        c.claimBasePlayedMs = c.playedMs
         markPaid(c, st.day, index)
         return {
             ok = false, error = "already_claimed", currency = R.CURRENCY, rewardIndex = index,
@@ -530,7 +529,6 @@ local function doCheckin(username, ms, args)
         }
     end
     c.claimedCount = index
-    c.claimBasePlayedMs = c.playedMs    -- the next interval starts now; nothing banks up
     markPaid(c, st.day, index)          -- durable: never rely on the ledger's LRU alone
     local b = R.rollupCurrency(st.day, R.CURRENCY)
     b.checkinTotal = b.checkinTotal + st.amount

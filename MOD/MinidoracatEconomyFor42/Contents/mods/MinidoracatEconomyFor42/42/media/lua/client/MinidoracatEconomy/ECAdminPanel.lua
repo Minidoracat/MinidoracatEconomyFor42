@@ -6771,12 +6771,12 @@ function Admin:refreshPlayerStatus()
         -- are gone from the reply -- reading them would have shown "not claimed" forever.
         lines[#lines + 1] = getText(T .. "Admin_Player_Claims", numText(rewards.claimedCount),
             numText(rewards.dailyLimit), numText(rewards.remainingClaims))
-        -- Today's total time online against what one claim needs. The server deliberately does
+        -- Today's total time online against the next cumulative threshold. The server deliberately does
         -- not say whether a claim is possible right now (that is the rewards backend's verdict),
         -- so this card states the two figures and never a verdict of its own.
         lines[#lines + 1] = getText(T .. "Admin_Player_OnlineToday", minutesText(rewards.playedMs),
             minutesText(rewards.requiredOnlineMs))
-        -- the gap between two claims only means anything once a day allows more than one
+        -- The cumulative step only matters when a day allows more than one claim.
         local limit = tonumber(rewards.dailyLimit)
         if rewards.intervalMs ~= nil and limit ~= nil and limit > 1 then
             lines[#lines + 1] = getText(T .. "Admin_Player_ClaimInterval", minutesText(rewards.intervalMs))

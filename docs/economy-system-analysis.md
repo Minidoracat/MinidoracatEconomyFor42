@@ -247,12 +247,13 @@ Bshop 公開頁提及 Money／Silver／Gold／StockCertificate 的固定兌值�
 
 #### 每日簽到
 
-- 以 server 計算的 `rewardDayKey` 判斷每日一次：**現實日**（伺服器壁鐘 `getTimestampMs()`），不是遊戲日——遊戲時間在空服暫停（`PauseEmpty=true`）且日長是伺服器選項（預設一個遊戲日約 1 真實小時，A20 實測 0.4 h／分鐘）；時區與重置時刻由沙盒設定：`RewardDayResetHour`（當地小時，預設 0）＋`RewardTimezoneUTC`（UTC 偏移小時，預設 8＝台灣），即預設台灣 00:00 換日；刻意不用主機時區（Kahlua `os.date` 固定 UTC、容器主機常是 UTC），日鍵是當地日期。
-- 玩家先達到最低有效遊玩時間，才可在「獎勵」頁手動領取。
-- 獎勵只發交易幣、金額固定（沙盒，預設 30）。**簽到不設全服每日上限**（2026-09-06 主持人定案）：每帳號每日一次×固定金額，總發放量已被在線人數綁死（`MaxPlayers` × 金額）；沙盒保留 `Economy_CheckinServerDailyCap`（預設 0＝不限）作為緊急保險絲。全服每日上限只用於 Discord 存入與整合 MOD 來源（§18、§21）。
+- 以 server 計算的 `rewardDayKey` 判斷獎勵日，`CheckinDailyLimit` 限制每帳號當日次數（預設 1）。獎勵日使用**現實日**，以 `RewardDayResetHour`＋`RewardTimezoneUTC` 決定重置時刻，預設台灣 00:00；不採遊戲日或主機時區，避免時間倍率、空服暫停與主機設定改變領獎週期。
+- **2026-09-16 累積門檻定案**：第 `N` 次所需當日在線毫秒為 `max(CheckinMinPlaytimeMinutes, (N - 1) × CheckinIntervalMinutes) × 60000`。例：首次 15、後續 60 → 15／60／120／180 分鐘；若首次高於後續門檻，以首次為下限。領取不重設計時，已達門檻可依序手動領取，避免晚按按鈕使已遊玩的時間失去效用。
+- runtime 設定變更沿既有 `rewards.state` 推播重算資格；已領次數、`paid` 水位與帳本冪等不重設，不重發或追回金額。`claimBasePlayedMs` 舊基準在既有讀取邊界移除，不影響既有 `playedMs`。離線不計時，同日重登／換角色延續當日累積，跨獎勵日重新累積且不補領前一天。
+- 獎勵只發倖存幣、每次金額固定（預設 30）。`CheckinServerDailyCap` 預設 0＝不限，保留作為緊急保險絲；每日多次領取仍受帳戶次數上限、凍結、幣別啟用與餘額上限約束。
 - 若保險絲被打開且當日額度已滿：拒絕發放但不消耗該次 claim，當日結束後不追溯補發。
 - 不做連續簽到倍率；漏一天不清空玩家進度，避免 FOMO 與客服爭議。
-- 斷線重連、重複按鈕、request retry 都回傳同一結果，不重複發錢。
+- 請求必須帶當日與下一個領取序號；已付款的舊序號重送回 `stale_request`，不會在後續資格已解鎖時變成下一筆付款。當日付款水位與帳本去重共同防止重複發錢。
 - 一切以 dedicated server 的 `getTimestampMs()` 為準；正式服 `PauseEmpty=true` 時空服會停掉 `EveryOneMinute`，日切與領取資格判定掛在 `OnTickEvenPaused` 節流或玩家連線時補算。
 
 #### 生存里程碑

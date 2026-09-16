@@ -89,7 +89,7 @@ function Se.claim(username)
     if type(username) ~= "string" or username == "" then return nil, "invalid_args" end
     local c = md.claims[username]
     if c == nil then
-        c = { day = nil, playedMs = 0, claimedCount = 0, claimBasePlayedMs = 0,
+        c = { day = nil, playedMs = 0, claimedCount = 0,
             paid = {}, paidDay = nil, milestones = 0 }
         c.season = nil
         md.claims[username] = c
