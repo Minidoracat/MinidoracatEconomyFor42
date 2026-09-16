@@ -2,6 +2,7 @@
   "name": "minidoracat-economy-companion",
   "version": "0.1.1",
   "private": true,
+  "license": "MIT",
   "description": "Sidecar for MinidoracatEconomyFor42: tails the NDJSON event files, derives the durable watermark from global_mod_data.bin, resolves Steam accounts, and serves the intranet HTTP API for Watchcord.",
   "type": "module",
   "engines": { "node": ">=24" },

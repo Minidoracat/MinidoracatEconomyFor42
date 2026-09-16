@@ -216,3 +216,15 @@ uv run --no-project python -B scripts/publish_workshop.py --mode all --dry-run  
 ## 作者
 
 Minidoracat — [Discord](https://discord.gg/Gur2V67)
+
+## 授權
+
+本專案採 [MIT License](LICENSE)（Copyright (c) 2026 Minidoracat）：`MOD/` 的 Lua 與腳本定義、`companion/`、`scripts/`、`docs/`，以及作者自製的圖示與 tile 圖（`assets/tiles/`、`assets/workshop/`、`MOD/**/media/ui/`、`poster.png`、`preview.png`、`preview.gif`）。
+
+MIT 不涵蓋下列項目：
+
+- `MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/MinidoracatEconomy_item_names_en.json`：由 `scripts/build_item_names.py` 從遊戲本體的 `media/lua/shared/Translate/EN/ItemName.json` 擷取而成，內容是 The Indie Stone 的遊戲文本，版權屬原權利人；此處僅為執行搜尋功能而隨附，不以 MIT 轉授權。二次散布請自行確認 Project Zomboid 的條款，或改以本機執行該腳本重新產生。
+- Project Zomboid、Build 42 與 The Indie Stone 的名稱、商標與遊戲素材：相關權利屬原權利人，不由本專案的 MIT 授權轉授；文件中引用的 Java 類別、行號與行為描述僅為相容性說明。
+- 其他 MOD（例如相依的 `MinidoracatUIFor42`）各依其自身授權，不因本檔改變。
+
+圖像素材說明：`assets/tiles/`、`assets/workshop/artwork.png` 與 `docs/design-proposals/images/` 的插圖由作者以 gpt-image-2 產稿後自行後製（部分檔案內嵌 C2PA 生成紀錄）；作者就其持有的權利，隨本專案以 MIT 授權。
