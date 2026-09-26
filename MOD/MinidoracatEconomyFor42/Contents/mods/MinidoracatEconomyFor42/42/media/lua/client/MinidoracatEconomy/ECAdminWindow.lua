@@ -73,6 +73,7 @@ local Nav = C.Navigation
 -- about the turn from one period to the next rather than about a date.
 local ADMIN_ICONS = {
     Player = "users", Recovery = "layers", Dashboard = "chart", Currencies = "coins", Sources = "plug",
+    IntegrationPlans = "sliders",
     Shop = "shop", Whitelist = "shieldCheck", Listings = "tag", Auctions = "auction",
     Transactions = "transactions", Audit = "clipboardCheck", System = "server",
     Settings = "settings", Seasons = "reload",
@@ -415,6 +416,16 @@ function AW.open()
         win:setVisible(true)
     end
     return win
+end
+
+-- The consumer mods' admin shortcut (EC.v1.Client.openAdminPlans): the window, on the integration
+-- plan page, with that product picked once the plans are read. false when the page cannot open.
+function AW.openPlans(sourceMod, productId)
+    local win = AW.open()
+    local admin = win and win.adminPanel
+    if admin == nil then return false end
+    admin:showIntegrationPlan(sourceMod, productId)
+    return true
 end
 
 -- Session reset (a new world): the page is disposed for real here — this is the one place that

@@ -312,6 +312,16 @@ local function validate(tx)
         return "invalid_args"
     end
     if type(tx.reasonCode) ~= "string" or tx.reasonCode == "" then return "invalid_args" end
+    local c = tx.commit
+    if c ~= nil then
+        if type(c) ~= "table" or type(c.into) ~= "table" or type(c.key) ~= "string" or c.key == ""
+            or type(c.value) ~= "table" or type(c.stamps) ~= "table" then
+            return "invalid_args"
+        end
+        for _, stamp in ipairs(c.stamps) do
+            if type(stamp) ~= "table" then return "invalid_args" end
+        end
+    end
 
     local sums = {}
     local seen = {}
@@ -363,9 +373,15 @@ function L.onCommitted(fn)
     listeners[#listeners + 1] = fn
 end
 
--- tx = { kind, requestId, reasonCode, reasonText?, actor?, payload?, allowFrozen?, idemMeta?,
+-- tx = { kind, requestId, reasonCode, reasonText?, actor?, payload?, allowFrozen?, idemMeta?, commit?,
 --        postings = { { account, currency, amount, expectedRev? }, ... } }
 -- idemMeta is a small flat table kept with the idempotency entry (see L.priorResult).
+-- commit = { into, key, value, stamps } is internal data, never code (ECEntitlements through
+-- ECIntegration's private post; the public G.post rebuilds tx from whitelisted fields and never
+-- carries one). `value` and every stamp table were built copy-on-write before this call. After
+-- validation and before any wallet moves, each stamp gets tx/seq/ts/epoch and `value` is
+-- published as into[key] - rawset only, so nothing user-defined runs inside the money step and
+-- the money and the state it pays for switch together.
 -- Returns { ok=true, txId, seq, duplicate=false } or { ok=false, error=code } or the first
 -- result again when requestId was seen before (duplicate=true).
 function L.post(tx)
@@ -383,6 +399,16 @@ function L.post(tx)
     local txId = S.newId()
     local seq = md.meta.seq
     local ts = EC.now()
+    local c = tx.commit
+    if c ~= nil then
+        for _, stamp in ipairs(c.stamps) do
+            rawset(stamp, "tx", txId)
+            rawset(stamp, "seq", seq)
+            rawset(stamp, "ts", ts)
+            rawset(stamp, "epoch", md.meta.epoch)
+        end
+        rawset(c.into, c.key, c.value)
+    end
     local committed = {}
     for _, p in ipairs(tx.postings) do
         local w = wallet(p.account, p.currency, true)

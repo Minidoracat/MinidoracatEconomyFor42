@@ -962,16 +962,28 @@ end
 Events.OnGameStart.Add(onGameStart)
 Events.OnServerCommand.Add(onServerCommand)
 
--- Read-only client half of the integration facade (spec 21.1). Other mods that want to move
--- money go through their own server handler and MinidoracatEconomy.v1 on the server; the
--- client only exposes the wallet snapshot this UI already holds. API_MAJOR lives on the server
--- table on purpose: probing `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
+-- Client half of the integration facade (spec 21.1). Other mods that want to move money go
+-- through their own server handler and MinidoracatEconomy.v1 on the server; the client exposes
+-- the wallet snapshot this UI already holds and, from rev 2, the entitlement transport
+-- (ECEntitlementClient: state / quote / purchase / auto-renew consent / order lookup, all priced
+-- and decided by the server). API_MAJOR lives on the server table on purpose: probing
+-- `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
+require "MinidoracatEconomy/ECEntitlementClient"
 EC.v1 = EC.v1 or {}
 EC.v1.Client = {
     API_MAJOR = 1,
-    API_REVISION = 1,
+    API_REVISION = 2,
+    CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true },
     getWallet = function() return C.wallet end,
     onWalletChanged = C.onWallet,
+    Entitlements = C.Entitlements,
+    -- Opens the Economy admin window on the integration plan page (the price and terms live
+    -- there only). false when this player may not read the admin pages.
+    openAdminPlans = function(sourceMod, productId)
+        local AW = C.AdminWindow
+        if AW == nil or AW.openPlans == nil then return false end
+        return AW.openPlans(sourceMod, productId) == true
+    end,
 }
 
 return C

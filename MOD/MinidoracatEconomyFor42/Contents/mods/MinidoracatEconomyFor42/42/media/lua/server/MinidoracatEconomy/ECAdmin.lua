@@ -313,7 +313,8 @@ end
 -- Returns nil + the trimmed text on success, otherwise an error code. Length is counted in
 -- characters, so a 10-character Chinese reason is a valid reason; surrounding whitespace is not
 -- part of it, and a reason made only of spaces (ASCII or ideographic) is not a reason at all.
-local function reasonError(reason)
+-- The one reason rule of every admin write (ECEntitlements uses it too).
+function A.reasonError(reason)
     if type(reason) ~= "string" then return "reason_too_short" end
     local text = (string.gsub(reason, "^[ \t\r\n]*(.-)[ \t\r\n]*$", "%1"))
     if string.find(text, "%c") then return "reason_invalid" end
@@ -568,7 +569,7 @@ function A.adjust(player, args)
         }
     end
 
-    local rerr, reason = reasonError(args.reason)
+    local rerr, reason = A.reasonError(args.reason)
     if rerr then return { ok = false, error = rerr } end
     -- Adjusting your own account is refused unless this admin's role carries the explicit
     -- self-adjustment grant. The test sits after the idempotency reply above on purpose: a
@@ -639,7 +640,7 @@ function A.freeze(player, args)
     end
     if username == admin then return { ok = false, error = "self_target" } end
     if not accountExists(username) then return { ok = false, error = "unknown_account" } end
-    local rerr, reason = reasonError(args.reason)
+    local rerr, reason = A.reasonError(args.reason)
     if rerr then return { ok = false, error = rerr } end
     local frozen = args.frozen
     if frozen then
@@ -675,7 +676,7 @@ function A.config(player, args)
     if type(args) ~= "table" or type(args.currency) ~= "string" or type(args.field) ~= "string" then
         return { ok = false, error = "invalid_args" }
     end
-    local rerr, reason = reasonError(args.reason)
+    local rerr, reason = A.reasonError(args.reason)
     if rerr then return { ok = false, error = rerr } end
     local ok, err
     if args.field == "name" then
@@ -1054,7 +1055,7 @@ function A.startSeason(player, args, requestId)
     if type(expected) ~= "string" or expected == "" or #expected > 64 or string.find(expected, "%c") then
         return { ok = false, error = "invalid_args" }
     end
-    local bad, reason = reasonError(args.reason)
+    local bad, reason = A.reasonError(args.reason)
     if bad then return { ok = false, error = bad } end
     local res = Se.start(expected, requestId, player:getUsername(), reason, EC.now())
     if type(res) ~= "table" then return { ok = false, error = "not_ready" } end
@@ -2265,7 +2266,7 @@ S.handlers["admin.recovery"] = function(player, args)
     -- The same written-reason gate every other admin write uses (trimmed, non-blank, no control
     -- characters, REASON_MAX characters): one rule, so a two-character Chinese reason an admin
     -- typed is as valid here as it is on an adjustment.
-    local reasonFailure, note = reasonError(args.note)
+    local reasonFailure, note = A.reasonError(args.note)
     if reasonFailure then
         return recoveryRefusal(player, requestId, target, "recovery_reason_required")
     end

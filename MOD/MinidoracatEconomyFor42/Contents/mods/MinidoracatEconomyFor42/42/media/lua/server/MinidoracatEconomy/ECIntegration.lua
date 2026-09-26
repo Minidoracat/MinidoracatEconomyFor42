@@ -18,8 +18,14 @@
 -- tick call budget, mandatory requestId + reasonCode, and idempotency keyed by
 -- mod:<len>:<modId>:<requestId> (a resend returns the first result, consumes no cap).
 --
--- Not here on purpose (spec 21.4): no subscription state machine, no player-to-player transfer
--- (CAPABILITIES.transfer = false), no client-originated third-party commands.
+-- Rev 2 (ECEntitlements, which raises API_REVISION and adds CAPABILITIES.entitlements /
+-- subscriptions once it has loaded): the handle also carries registerProduct, getEntitlement,
+-- quote, purchase, setAutoRenew, getOrder, refund and onEntitlementChanged, all bound to the
+-- source. Entitlement money uses the same post below with a private `internal` argument the facade
+-- can never pass: its own "ent:" idempotency namespace, a copy-on-write commit descriptor that
+-- L.post publishes together with the money, and the bounded reversal of one paid order.
+-- Still not here: no player-to-player transfer (CAPABILITIES.transfer = false), no
+-- client-originated third-party commands.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Rewards then
     require "MinidoracatEconomy/ECRewards"
@@ -132,11 +138,16 @@ local function dailyRow(day, modId, create)
     end
     local row = byDay[modId]
     if not row and create then
-        row = { mint = 0, burn = 0, calls = 0, ok = 0, rejected = {} }
+        row = { mint = 0, burn = 0, refund = 0, calls = 0, ok = 0, rejected = {} }
         byDay[modId] = row
     end
     return row
 end
+
+-- Entitlement methods every handle carries (rev 2). Resolved at call time, so a handle made
+-- before ECEntitlements finished loading still reaches it; each call is bound to the source.
+G.ENTITLEMENT_METHODS = { "registerProduct", "getEntitlement", "quote", "purchase", "setAutoRenew",
+    "getOrder", "refund", "onEntitlementChanged" }
 
 -- Refusals are counted per source per day (panel statistics) and exported as
 -- integration.rejected; before ModData is ready there is nowhere to record them.
@@ -154,7 +165,8 @@ end
 -- ---------- registration ----------
 
 -- spec = { modId, displayName = { CH=, EN=, ... }, currencies = { id... }, reasonCodes = { code... } }
--- Returns a handle bound to the source ({ modId, credit, debit, post }) or nil, error.
+-- Returns a handle bound to the source ({ modId, credit, debit, post } plus the rev 2
+-- G.ENTITLEMENT_METHODS) or nil, error.
 -- Re-registering the same modId replaces the spec (mods are reloaded with the server).
 function G.registerSource(spec)
     if type(spec) ~= "table" or not validModId(spec.modId) then return nil, "invalid_args" end
@@ -192,7 +204,7 @@ function G.registerSource(spec)
             return fn(a, b, c, copy)
         end
     end
-    return {
+    local handle = {
         modId = modId,
         credit = bind(G.credit),
         debit = bind(G.debit),
@@ -203,6 +215,30 @@ function G.registerSource(spec)
             return G.post(copy)
         end,
     }
+    for _, name in ipairs(G.ENTITLEMENT_METHODS) do
+        handle[name] = function(...)
+            local Ent = EC.Entitlements
+            if type(Ent) ~= "table" or type(Ent[name]) ~= "function" then return { ok = false, error = "not_ready" } end
+            return Ent[name](modId, ...)
+        end
+    end
+    return handle
+end
+
+-- Read-only view of a source registered this session (nil otherwise) for ECEntitlements.
+function G.source(modId)
+    local live = validModId(modId) and registry[modId] or nil
+    if not live then return nil end
+    local cfg = md and md.config.sources[modId]
+    return { currencies = live.currencies, reasonCodes = live.reasonCodes, enabled = cfg == nil or cfg.enabled ~= false }
+end
+
+-- One call of this source's per-tick budget for a mutation that moves no money (auto-renew
+-- consent); false when the budget is spent.
+function G.takeCall(modId)
+    local calls = (tickCalls[modId] or 0) + 1
+    tickCalls[modId] = calls
+    return calls <= G.CALLS_PER_TICK
 end
 
 
@@ -211,7 +247,14 @@ end
 -- req = { modId, requestId, reasonCode, reasonText?, ref?, meta?,
 --         postings = { { account, currency, amount }, ... } }
 -- Accounts are player usernames or the source's own MOD:<modId>; per-currency sums must be 0.
-function G.post(req)
+--
+-- `internal` is ECEntitlements' own argument and never reaches the facade (G.post passes nil):
+--   { commit = <L.post commit descriptor>, reversal = <amount>? }
+-- It keys idempotency under "ent:" instead of "mod:", hands the copy-on-write commit to L.post,
+-- and for a reversal of one paid order (at most that order's amount, once - ECEntitlements owns
+-- that bound) counts the mint as `refund` instead of weighing it against dailyMintCap. Budget,
+-- source switch, reason codes, currencies, burn cap and every ledger check are the same code.
+local function post(req, internal)
     if type(req) ~= "table" then return { ok = false, error = "invalid_args" } end
     if not md then return { ok = false, error = "not_ready" } end
     local modId = req.modId
@@ -249,7 +292,7 @@ function G.post(req)
     EC.sortSafe(fingerprint, function(a, b) return a < b end)
     local fp = table.concat(fingerprint, ";")
 
-    local key = "mod:" .. #modId .. ":" .. modId .. ":" .. req.requestId
+    local key = (internal and "ent:" or "mod:") .. #modId .. ":" .. modId .. ":" .. req.requestId
     local prior = L.priorResult(key)
     if prior then
         if not prior.meta or prior.meta.fp ~= fp then return reject(modId, "request_conflict", req) end
@@ -257,10 +300,13 @@ function G.post(req)
     end
 
     -- Daily caps per source, totals across currencies (spec 21.2). A refused call leaves no row.
-    local mint, burn = 0, 0
+    local mint, burn, refund = 0, 0, 0
     for _, delta in pairs(modDelta) do
         if delta < 0 then mint = mint - delta else burn = burn + delta end
     end
+    -- the bounded reversal of one paid order is not new money: it never needs mint headroom
+    local reversal = internal and internal.reversal
+    if mint > 0 and isInteger(reversal) and mint <= reversal then mint, refund = 0, mint end
     local day = R.dayKey(EC.now())
     local today = dailyRow(day, modId, false)
     local usedMint, usedBurn = today and today.mint or 0, today and today.burn or 0
@@ -273,12 +319,23 @@ function G.post(req)
         kind = "mod", requestId = key, reasonCode = req.reasonCode, reasonText = extras.reasonText,
         actor = modId, idemMeta = { fp = fp },
         payload = { sourceMod = modId, reasonCode = req.reasonCode, reasonText = extras.reasonText, ref = extras.ref, meta = extras.meta },
-        postings = postings,
+        postings = postings, commit = internal and internal.commit or nil,
     })
     if not res.ok then return reject(modId, res.error, req) end
     local row = dailyRow(day, modId, true)
     row.mint, row.burn, row.calls, row.ok = row.mint + mint, row.burn + burn, row.calls + 1, row.ok + 1
+    row.refund = (row.refund or 0) + refund
     return { ok = true, txId = res.txId, seq = res.seq, duplicate = false }
+end
+
+function G.post(req)
+    return post(req, nil)
+end
+
+-- ECEntitlements only (never on the facade or a handle). internal = { commit, reversal? }.
+function G.entitlementPost(req, internal)
+    if type(internal) ~= "table" then return { ok = false, error = "invalid_args" } end
+    return post(req, internal)
 end
 
 local function sugar(username, currency, amount, opts, sign)
@@ -338,7 +395,7 @@ function G.sources()
             registeredAt = cfg.registeredAt,
             balance = {},
             today = {
-                mint = today and today.mint or 0, burn = today and today.burn or 0,
+                mint = today and today.mint or 0, burn = today and today.burn or 0, refund = today and today.refund or 0,
                 calls = today and today.calls or 0, ok = today and today.ok or 0,
                 rejected = today and today.rejected or {},
             },

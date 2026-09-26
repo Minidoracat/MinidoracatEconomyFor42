@@ -457,7 +457,7 @@ flowchart LR
 | `ExchangeInboxAdapter` | 節流讀取 companion 寫入的 inbox 檔、以 `discord:<orderId>` 冪等、直接 credit 訂單指定的 `username`、寫 `exchange.deposited/failed` 事件；v1 無玩家提領，反向只有 `AdminService` 的補償 posting（`玩家 → EXTERNAL_DISCORD_<currency>`）；v2 提領才加玩家 command 與 `exchange.withdraw` | 不接受 client command 觸發存入；不自行連網；不信任檔案以外的來源；不改寫 inbox 檔 |
 | `ItemCodec` | 中央託管：只對可重建白名單擷取 bounded snapshot（type、condition、uses、age、允許的 modData 鍵；流體待查證）並以 `InventoryItemFactory.CreateItem` 重建；不在白名單即拒絕刊登 | 不保存任意／無界 ModData；不嘗試完整序列化物品；不承諾任何第三方 MOD 物品 |
 | `TerminalService` | 管理員登錄的 ATM／交易站終端 registry；寫入類指令的「玩家在任一終端相鄰格」驗證；交易站電台廣播排程 | 不以世界物件存在為授權依據；刊登與信箱不綁終端 |
-| `IntegrationApi`（`MinidoracatEconomy.v1`） | 其他 MOD 的 server 端加減錢入口：來源註冊、每來源每日 mint／burn 額度、冪等、rate limit、`MOD:<modId>` 系統帳戶（§21） | 不接受 client 來的第三方指令；不動市場；不內建訂閱狀態機 |
+| `IntegrationApi`（`MinidoracatEconomy.v1`） | 其他 MOD 的 server 端加減錢入口：來源註冊、每來源每日 mint／burn 額度、冪等、rate limit、`MOD:<modId>` 系統帳戶（§21）；API rev2 起另含通用名額權益（買斷、租用、自動續費），現行契約見 [`entitlements-api.md`](entitlements-api.md) | 不接受 client 來的第三方指令；不動市場；不替 consumer 決定名額代表什麼 |
 | `EventExporter` | 每筆 committed mutation 追加一行 NDJSON、`seq` 遞增、日切檔、`open → writeln → close` | 不承載權威狀態；不讀回檔案 |
 | `AdminService` | 參數變更、餘額調整、刊登處理、reason 與 audit | 不信任 client 顯示的 admin flag |
 | `SubscriberSync` | active subscriber、revision、coalescing、heartbeat timeout | 不廣播每筆變更給所有在線玩家 |
@@ -1216,6 +1216,8 @@ EconomyConfig.currencies = {
 
 用例：`MinidoracatMiniMapFor42` 的月租 GPS／自動導航（定期扣款）、成就 MOD 完成成就發錢、`MinidoracatSafehouseFor42` 的地契／租金、`MinidoracatVehicleManagerFor42` 的租車。設計目標：其他 MOD **只碰帳本，不碰市場**；每一筆都走同一條 posting 路徑，因此收據、事件檔、收據檔、Watchcord 副本、管理面板通通看得到「哪個 MOD、為什麼、對應哪個東西」。
 
+> **2026-09-27 更新**：本節是 API rev 1 的歷史研究紀錄。API rev2 已新增通用名額權益（永久買斷、定期租用、自動續費、退款與方案管理），現行唯一契約是 [`entitlements-api.md`](entitlements-api.md)；本節與它衝突時以該文件為準。§21.1–21.3 的 `post/credit/debit` 行為在 rev2 不變。
+
 ### 21.1 形狀：與 UIFor42 同款的版本化 facade（server 端）
 
 ```lua
@@ -1271,7 +1273,9 @@ local res = E.debit("playerA", "survivor", 120, {
 
 ### 21.4 訂閱型服務怎麼用
 
-經濟 MOD **不**內建訂閱狀態機（YAGNI）：MiniMap 自己記「到期日」，到期時在 server 端呼叫 `debit`；`ok=false, error="insufficient_funds"` 就把服務降級並通知玩家。這樣訂閱規則（寬限、提醒、續約）全在 consumer 手上，經濟 MOD 只保證每一筆扣款可追溯、可退（管理員反向調整帶 `reversalOfTxId`）。若日後有三個 consumer 都在重造同一套到期輪詢，再抽 `subscribe` 能力（additive）。
+**已由 API rev2 取代（2026-09-27）**：下段「不內建訂閱狀態機」是 rev 1 的結論，現在不再適用。rev2 由經濟 MOD 提供名額權益的買斷、租用與自動續費（能力探測 `CAPABILITIES.entitlements`／`CAPABILITIES.subscriptions`；舊 `subscribe=false` 不作為新能力的別名），規則見 [`entitlements-api.md`](entitlements-api.md)。以下保留原文作為歷史脈絡：
+
+> 經濟 MOD **不**內建訂閱狀態機（YAGNI）：MiniMap 自己記「到期日」，到期時在 server 端呼叫 `debit`；`ok=false, error="insufficient_funds"` 就把服務降級並通知玩家。這樣訂閱規則（寬限、提醒、續約）全在 consumer 手上，經濟 MOD 只保證每一筆扣款可追溯、可退（管理員反向調整帶 `reversalOfTxId`）。若日後有三個 consumer 都在重造同一套到期輪詢，再抽 `subscribe` 能力（additive）。
 
 ### 21.5 管理面板「整合」子分頁（v1）
 

@@ -703,6 +703,7 @@ require("MinidoracatEconomy/ECTradeRadioRelay")
 require("MinidoracatEconomy/ECAuction")
 require("MinidoracatEconomy/ECExchange")
 require("MinidoracatEconomy/ECAdmin")
+require("MinidoracatEconomy/ECEntitlements")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
@@ -713,7 +714,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1458   -- +17: cumulative check-in thresholds and live settings.
+local EXPECTED_ASSERTIONS = 1458 + 78   -- +78: generic entitlements (scripts/test_entitlements.lua).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -13626,6 +13627,20 @@ SandboxVars.MinidoracatEconomy.CheckinAmount = nil
 SandboxVars.MinidoracatEconomy.CheckinMinPlaytimeMinutes = nil
 onlinePlayers = {}
 end)()
+
+-- ===== 通用權益 rev 2（情境在 scripts/test_entitlements.lua；共用本檔的假全域與 check）=====
+do
+    local run = loadfile("scripts/test_entitlements.lua")
+    if run == nil then
+        check(false, "scripts/test_entitlements.lua loads")
+    else
+        run({ check = check, fire = fire, fakePlayer = fakePlayer, lastSent = lastSent,
+            now = function() return nowMs end, setNow = function(v) nowMs = v end,
+            files = function() return files end, clearFiles = function() files = {} end,
+            writerDeny = function() return writerDeny end, clearSent = function() sentCommands = {} end,
+            setOnline = function(list) onlinePlayers = list end, store = function() return modDataStore end })
+    end
+end
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then
