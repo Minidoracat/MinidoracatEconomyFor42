@@ -707,13 +707,13 @@ end
 -- ---------- market (stage D) ----------
 
 -- Browse page: { page, pages, total, items = { {id, seller, item, name, category, price, at,
--- expiresAt, condition, uses, fluid, fluidAmount}, ... }, categories, currency, sort, category,
+-- expiresAt, state? (ECCodec Codec.preview)}, ... }, categories, currency, sort, category,
 -- query, mine, maxListings, feePercent, taxPercent, priceMin, priceMax, listingDays, atTerminal }.
 C.market = nil
 -- Own listings: { items = { view... (qty >= 1) }, maxListings, atTerminal }.
 C.myListings = nil
 -- Backpack candidates: { items = { {itemId, itemIds = {...}, count, item, ok, reason?,
--- condition?, uses?, category?}, ... }, atTerminal, feePercent, priceMin, priceMax, mine,
+-- state? (Codec.preview), category?}, ... }, atTerminal, feePercent, priceMin, priceMax, mine,
 -- maxListings }. One row per item state: `itemIds` holds every stacked item the server merged
 -- into it and `count` is how many (the picker lists a lot, not a single item).
 C.candidates = nil
@@ -857,8 +857,8 @@ end
 -- so one subscription keeps every server-driven refresh (and market.notice) in one place.
 
 -- Browse page: { page, pages, total, items = { {id, seller, item, name, category, qty,
--- startPrice, bid?, bidder?, bids, at, expiresAt, minNext, mine, leading, condition?, uses?,
--- fluid?, fluidAmount?}, ... }, sort, query, currency, minHours, maxHours, incrementPercent,
+-- startPrice, bid?, bidder?, bids, at, expiresAt, minNext, mine, leading, state? (Codec.preview)},
+-- ... }, sort, query, currency, minHours, maxHours, incrementPercent,
 -- feePercent, taxPercent, maxAuctions, mine, atTerminal }.
 C.auction = nil
 -- Own auctions: { selling = { view... }, bidding = { view... }, atTerminal, maxAuctions }.

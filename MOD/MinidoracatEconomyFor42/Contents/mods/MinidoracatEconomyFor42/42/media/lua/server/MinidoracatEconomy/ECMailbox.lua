@@ -261,6 +261,7 @@ end
 -- one copy, so the client can size the delivery before asking for it. Every listed letter is
 -- claimable: a handover either delivers it, leaves it exactly where it was, or splits off the
 -- part this server confirmed into its own claimed child (see deliver). There is no locked row.
+-- `state` is the item preview of a letter that carries a snapshot (Codec.preview), else nil.
 function M.list(username)
     local out = {}
     local o = owner(username, false)
@@ -269,7 +270,8 @@ function M.list(username)
         if counted(e.state) then
             out[#out + 1] = { id = e.id, kind = e.kind, item = e.item, qty = #availableUnits(e), price = e.price,
                 currency = e.currency, seller = e.seller, txId = e.txId, at = e.at,
-                state = "ready", claimable = true, weight = M.scriptWeight(e.item) }
+                state = type(e.snapshot) == "table" and S.Codec and S.Codec.preview(e.snapshot) or nil,
+                claimable = true, weight = M.scriptWeight(e.item) }
         end
     end
     EC.sortSafe(out, function(a, b) return a.at > b.at end)

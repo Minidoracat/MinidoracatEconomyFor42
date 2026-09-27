@@ -171,14 +171,14 @@ end
 -- `weight` is one copy's estimate: the real weight of the listed item, taken when it was listed,
 -- and the script estimate for a listing that predates the field. It is what lets the buyer see
 -- whether a lot would fit before asking for it. `currency` is the listing's own - a row without
--- one is a held legacy record and says so instead of borrowing another currency's name.
+-- one is a held legacy record and says so instead of borrowing another currency's name. `state` is
+-- the buyer's filtered view of the snapshot (Codec.preview), never the snapshot itself.
 local function view(l)
-    local s = l.snapshot or {}
     return {
         id = l.id, seller = l.seller, item = l.item, name = l.name, category = l.category, qty = l.qty or 1,
         price = l.price, currency = l.currency, blocked = l.blocked, at = l.at, expiresAt = l.expiresAt,
         weight = l.weight or M.scriptWeight(l.item),
-        condition = s.condition, uses = s.uses, fluid = s.fluid and s.fluid.name or nil, fluidAmount = s.fluid and s.fluid.amount or nil,
+        state = Codec.preview(l.snapshot),
     }
 end
 
@@ -302,18 +302,16 @@ function Mk.candidates(player)
             pcall(function() id = it:getID() fullType = it:getFullType() end)
             if id and fullType then
                 local key = fullType .. "|" .. tostring(pass == true) .. "|" .. tostring(reason or "")
-                if pass then key = key .. "|" .. Codec.signature(Codec.snapshot(it)) end
+                local snap = Codec.snapshot(it)
+                if pass then key = key .. "|" .. Codec.signature(snap) end
                 local row = groups[key]
                 if row then
                     row.itemIds[#row.itemIds + 1] = id
                     row.count = row.count + 1
                 else
-                    row = { itemId = id, itemIds = { id }, count = 1, item = fullType, ok = pass == true, reason = (not pass) and reason or nil }
-                    pcall(function()
-                        row.condition = it:getCondition()
-                        row.uses = it:getCurrentUses()
-                        row.category = it:getDisplayCategory()
-                    end)
+                    row = { itemId = id, itemIds = { id }, count = 1, item = fullType, ok = pass == true, reason = (not pass) and reason or nil,
+                        state = Codec.preview(snap) }
+                    pcall(function() row.category = it:getDisplayCategory() end)
                     groups[key] = row
                     out[#out + 1] = row
                 end

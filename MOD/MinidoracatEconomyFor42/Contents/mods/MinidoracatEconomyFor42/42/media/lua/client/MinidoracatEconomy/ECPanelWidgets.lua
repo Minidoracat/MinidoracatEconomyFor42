@@ -233,18 +233,70 @@ local function capacityLines(out, preview)
     return out
 end
 
--- Second row line: whatever of condition / uses / fluid the server sent for this item.
-local function listingStatus(it)
-    local parts = {}
-    local cond = tonumber(it.condition)
-    if cond then parts[#parts + 1] = getText(T .. "Market_Condition", tostring(cond)) end
-    local uses = tonumber(it.uses)
-    if uses then parts[#parts + 1] = getText(T .. "Market_Uses", tostring(uses)) end
-    if type(it.fluid) == "string" and it.fluid ~= "" then
-        parts[#parts + 1] = getText(T .. "Market_Fluid", it.fluid, tostring(tonumber(it.fluidAmount) or 0))
+-- The item's state as the server previewed it (ECCodec Codec.preview: filtered, maxima from a
+-- fresh copy), one translated token per fact in order of importance. Fluid names go through the
+-- Fluid registry's own translated display name (Fluid.java:99, 324-326; FluidDefinitionScript.java:228),
+-- fire modes through vanilla's ContextMenu_FireMode_* (ISInventoryPaneContextMenu.lua:1800).
+local function stateTokens(st)
+    local out = {}
+    if type(st) ~= "table" then return out end
+    local function add(key, ...) out[#out + 1] = getText(T .. key, ...) end
+    local function int(v) return tostring(math.floor((tonumber(v) or 0) + 0.5)) end
+    if type(st.fluid) == "string" and st.fluid ~= "" then
+        local ok, name = pcall(function() return Fluid.Get(st.fluid):getDisplayName() end)
+        if not ok or type(name) ~= "string" or name == "" then name = st.fluid end
+        local amount = string.format("%.2f", tonumber(st.fluidL) or 0)
+        if tonumber(st.fluidCap) then add("Market_State_Fluid", name, amount, string.format("%.2f", tonumber(st.fluidCap)))
+        else add("Market_Fluid", name, amount) end
     end
-    if #parts == 0 then return nil end
-    return table.concat(parts, " / ")
+    local food = type(st.food) == "table" and st.food or nil
+    if food and food.stale then add("Market_State_Stale")
+    elseif food and tonumber(food.freshDays) then add("Market_State_Fresh", string.format("%.1f", tonumber(food.freshDays))) end
+    if tonumber(st.cond) then
+        if tonumber(st.condMax) then add("Market_State_Condition", int(st.cond), int(st.condMax)) else add("Market_Condition", int(st.cond)) end
+    end
+    if tonumber(st.head) and tonumber(st.headMax) then add("Market_State_Head", int(st.head), int(st.headMax)) end
+    if tonumber(st.sharp) then add("Market_State_Sharpness", int(st.sharp)) end
+    if tonumber(st.ammo) and tonumber(st.ammoMax) then add("Market_State_Rounds", int(st.ammo), int(st.ammoMax)) end
+    if tonumber(st.uses) and tonumber(st.usesMax) then add("Market_State_Uses", int(st.uses), int(st.usesMax)) end
+    if (tonumber(st.holes) or 0) > 0 then add("Market_State_Holes", int(st.holes)) end
+    if (tonumber(st.patches) or 0) > 0 then add("Market_State_Patches", int(st.patches)) end
+    if (tonumber(st.blood) or 0) > 0 then add("Market_State_Blood", int(st.blood)) end
+    if (tonumber(st.dirt) or 0) > 0 then add("Market_State_Dirt", int(st.dirt)) end
+    if (tonumber(st.wet) or 0) > 0 then add("Market_State_Wet", int(st.wet)) end
+    if food and food.cooked then add("Market_State_Cooked") end
+    if food and food.burnt then add("Market_State_Burnt") end
+    if food and food.frozen then add("Market_State_Frozen") end
+    if st.clip then add("Market_State_Magazine") end
+    if st.chamber then add("Market_State_Chambered") end
+    if st.jammed then add("Market_State_Jammed") end
+    if type(st.fireMode) == "string" and st.fireMode ~= "" then
+        add("Market_State_FireMode", getTextOrNull("ContextMenu_FireMode_" .. st.fireMode) or st.fireMode)
+    end
+    if (tonumber(st.repaired) or 0) > 0 then add("Market_State_Repaired", int(st.repaired)) end
+    if (tonumber(st.headRepaired) or 0) > 0 then add("Market_State_HeadRepaired", int(st.headRepaired)) end
+    if st.infected then add("Market_State_Infected") end
+    if st.keyed then add("Market_State_Keyed") end
+    if st.paired then add("Market_State_Paired") end
+    if type(st.name) == "string" and st.name ~= "" then add("Market_State_Name", st.name) end
+    return out
+end
+
+-- Second row line: the three most important tokens.
+local function listingStatus(it)
+    local tokens = stateTokens(it.state)
+    if #tokens == 0 then return nil end
+    return table.concat(tokens, " / ", 1, math.min(3, #tokens))
+end
+
+-- The record window's full list, under its heading; food carries the escrow-ageing note.
+local function stateLines(st, out)
+    local tokens = stateTokens(st)
+    if #tokens == 0 then return out end
+    out[#out + 1] = getText(T .. "Market_State_Title")
+    for i = 1, #tokens do out[#out + 1] = "  " .. tokens[i] end
+    if type(st.food) == "table" then out[#out + 1] = getText(T .. "Market_State_FoodAging") end
+    return out
 end
 
 -- Percentages the server quotes are applied the way the server applies them (round up, and a
@@ -360,7 +412,7 @@ local function listingRow(it, username, offsetMin, mine)
         -- one item's own weight, as the server quoted it: the buy dialog's capacity estimate
         -- needs it, and an older reply that carries none must not be guessed at
         weight = tonumber(it.weight),
-        statusText = listingStatus(it), priceText = amountText(price), expiresText = expiresText,
+        statusText = listingStatus(it), state = it.state, priceText = amountText(price), expiresText = expiresText,
         own = own, mine = mine,
         blocked = blocked,
         -- the id of the one action button this row carries, or nil for a row that offers none
@@ -377,7 +429,7 @@ end
 -- for hours, so the "ends" column is always a countdown; the current bid replaces the price
 -- (an auction without a bid quotes its opening price instead) and the bid count is a column of
 -- its own. That extra column costs the seller column: the seller shares the second line with
--- the condition/uses/fluid text, the way the buy dialog already names it.
+-- the item-state text, the way the buy dialog already names it.
 -- `context` picks the action column: "browse" | "selling" | "bidding".
 local function auctionRow(it, context)
     local start = tonumber(it.startPrice) or 0
@@ -443,7 +495,7 @@ local function auctionRow(it, context)
         minNext = math.max(1, math.floor(tonumber(it.minNext) or start)),
         mine = mine, leading = leading, ended = ended, canBid = canBid,
         name = name, nameText = lot and (name .. " " .. lot) or name,
-        altName = alt, texture = itemTexture(it.item), statusText = sub,
+        altName = alt, texture = itemTexture(it.item), statusText = sub, state = it.state,
         priceText = bid and amountText(bid) or getText(T .. "Auction_StartsAt", amountText(start)),
         bidsText = bids > 0 and tostring(bids) or getText(T .. "Auction_NoBids"),
         bidsToken = bids > 0 and "accent" or "textFaint",
@@ -457,7 +509,7 @@ local function auctionRow(it, context)
 end
 
 -- One backpack candidate. The tile itself only has room for the name, so everything else the
--- player may want (the script name, the condition/uses line, and the server's refusal when the
+-- player may want (the script name, the item-state line, and the server's refusal when the
 -- item may not be listed) is joined once here for the picker's status line.
 local function candidateRow(it)
     local ok = it.ok == true
@@ -476,7 +528,7 @@ local function candidateRow(it)
     if reason then detail = detail .. " - " .. reason end
     return {
         itemId = it.itemId, itemIds = ids, count = count, item = it.item, ok = ok,
-        name = name, altName = alt, texture = itemTexture(it.item),
+        name = name, altName = alt, texture = itemTexture(it.item), state = it.state,
         qtyText = lot, detailText = detail,
     }
 end
@@ -700,7 +752,7 @@ function StatementCell:render()
 end
 
 
--- Market row: icon + name over the condition/uses/fluid line, the seller, the price, what is
+-- Market row: icon + name over the item-state line, the seller, the price, what is
 -- left of the listing window, and the row's own action button (buy / cancel / bid / pull back).
 -- The row body only selects and reads: ECRowActions owns those buttons, so there is no
 -- hit-tested area of a row that spends money any more. `list.actionDisabled` closes every
@@ -1137,6 +1189,7 @@ W.shopError = shopError
 W.marketError = marketError
 W.historyError = historyError
 W.capacityLines = capacityLines
+W.stateLines = stateLines
 W.ceilPercent = ceilPercent
 W.listingFee = listingFee
 W.listingRow = listingRow
