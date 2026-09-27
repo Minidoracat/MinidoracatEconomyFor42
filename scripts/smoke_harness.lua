@@ -212,8 +212,35 @@ end } }
 Fluid = { Get = function(name) return { name = name } end }
 -- 假電台：記錄每次 SendTransmission 與頻道登錄（getZomboidRadio 在 dedicated 上非 nil，A14）
 radioSent, radioChannels = {}, {}
+-- ZomboidRadio.devices（ZomboidRadio.java:50、123-125）：世界收音機／電視在 addToWorld 登記、
+-- removeFromWorld 註銷（IsoWaveSignal.java:332-352 -> :936-958）。假世界的 AddSpecialObject／
+-- 刪除／情境的 place 維護它；radioDeviceReads 數 get 次數（每 tick 預算）。radioAbsent＝沒有實例，
+-- getZomboidRadio 回 nil（LuaManager.java:2909-2911）。全域：主函式已逼近 200 個 local。
+radioDevices, radioDeviceReads, radioAbsent = {}, 0, false
+function registerDevice(o, key, sq)
+    o.worldKey, o.square = key, sq
+    for _, d in ipairs(radioDevices) do if d == o then return end end   -- RegisterDevice 的 contains
+    radioDevices[#radioDevices + 1] = o
+end
+function unregisterDevice(o)
+    for i = #radioDevices, 1, -1 do if radioDevices[i] == o then table.remove(radioDevices, i) end end
+end
 function getZomboidRadio()
+    if radioAbsent then return nil end
     return {
+        -- 情境直接清空 worldObjects 來模擬 chunk 卸載；引擎卸載會對每個物件 removeFromWorldToMeta
+        -- -> UnRegisterDevice（IsoChunk.java:3244-3247），所以格子上已經沒有的登記在這裡離開清單。
+        getDevices = function()
+            for i = #radioDevices, 1, -1 do
+                local o, k, present = radioDevices[i], radioDevices[i].worldKey, false
+                if k then
+                    for _, w in ipairs(worldObjects[k] or {}) do if w == o then present = true end end
+                    if not present then table.remove(radioDevices, i) end
+                end
+            end
+            return { size = function() return #radioDevices end,
+                get = function(_, i) radioDeviceReads = radioDeviceReads + 1; return radioDevices[i + 1] end }
+        end,
         SendTransmission = function(_, x, y, channel, msg, guid, codes, r, g, b, strength, isTV)
             radioSent[#radioSent + 1] = { x = x, y = y, channel = channel, msg = msg, strength = strength, isTV = isTV }
         end,
@@ -504,11 +531,6 @@ function getCell()
         sq.getY = function() return y end
         sq.getZ = function() return z end
         sq.getObjects = function() faultCheck("getObjects") return javaList(worldObjectList(key)) end
-        -- IsoGridSquare.specialObjects（:9674-9676）：AddSpecialObject 放進去（:6185-6195），存檔
-        -- 旗標讓讀檔後仍在上面（:2930-2933、:3221-3222、:3304-3310）。這個假世界的 worldObjects
-        -- 全是 IsoRadio——relay 自己放的，或存檔帶回來的——所以兩份清單對它們一致；終端 tile
-        -- 物件（worldSprites）不在上面。
-        sq.getSpecialObjects = function() return javaList(worldObjects[key] or {}) end
         -- AddSpecialObject 先把物件放進 objects／specialObjects，之後才 addToWorld（也就是
         -- ZomboidRadio.RegisterDevice 的入口）與重算（IsoGridSquare.java:6189-6224）。注入點
         -- 刻意在「已經加進去之後」：那正是引擎會留下一個沒註冊、沒發送的真物件的地方。
@@ -516,6 +538,7 @@ function getCell()
             worldObjects[key] = worldObjects[key] or {}
             worldObjects[key][#worldObjects[key] + 1] = o
             faultCheck("addSpecialObject")
+            if o.getDeviceData then registerDevice(o, key, sq) end   -- addToWorld 走完才登記
         end
         -- transmitRemoveItemFromSquare(obj[, safelyRemove])：safelyRemove 預設 true，回被刪物件
         -- 的 index，物件不在清單裡或多格展開失敗回 -1（IsoGridSquare.java:6315-6363）。
@@ -545,7 +568,7 @@ function getCell()
             end
             for _, v in ipairs(victims) do
                 local i = indexOf(v)
-                if i then table.remove(list, i); v.removed = true end
+                if i then table.remove(list, i); v.removed = true; unregisterDevice(v) end
             end
             return at - 1
         end
@@ -636,7 +659,8 @@ end
 radioSerial = 0
 IsoRadio = { new = function(_cell, _square, sprite)
     radioSerial = radioSerial + 1
-    local o = { __class = "IsoRadio", serial = radioSerial, modData = {}, sprite = sprite }
+    local o = { __class = "IsoRadio", serial = radioSerial, modData = {}, sprite = sprite, square = _square }
+    o.getSquare = function() return o.square end
     o.getName = function() return o.name end
     o.setName = function(_, v) o.name = v end
     o.getObjectName = function() return "Radio" end
@@ -818,7 +842,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: chunk-load prefilter (ordinary square not walked, orphan still found); +25: version from mod.info (1), start counter (3), item state across the market (21).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -12779,10 +12803,12 @@ local function option(key, value)
 end
 local function square(x, y, z) return getCell():getGridSquare(x, y, z) end
 local function owned(x, y, z) return TR.ownedOnSquare(square(x, y, z)) end
+-- 存檔帶回來的物件：跟著 chunk 載入 addToWorld，收音機類就登記進 ZomboidRadio.devices
 local function place(x, y, z, obj)
     local k = worldKey(x, y, z)
     worldObjects[k] = worldObjects[k] or {}
     worldObjects[k][#worldObjects[k] + 1] = obj
+    if obj.getDeviceData then registerDevice(obj, k, getCell():getGridSquare(x, y, z)) end
     return obj
 end
 -- 一台「冒牌 owned」：deviceName 是我們的，但不是 relay 放的（重複／孤兒情境用）
@@ -12893,14 +12919,14 @@ check(Rl.state(500, 600, 1) == "waiting" and worldObjects["500,600,1"] == nil
 worldLoaded["900,900,0"] = true
 local orphan = place(900, 900, 0, ownedRadio("appliances_com_01_0"))
 local neighbour = place(900, 900, 0, fakeWorldRadio("appliances_com_01_0", "objectName"))
-fire("LoadGridsquare", square(900, 900, 0))
+sweep()
 check(#owned(900, 900, 0) == 0 and orphan.removed == true and neighbour.removed == nil,
-    "an owned device on a square nobody registered is deleted on chunk load, the vanilla radio beside it is not")
+    "an owned device on a square nobody registered is deleted by the device-registry sweep, the vanilla radio beside it is not")
 worldSprites["500,600,1"] = "appliances_com_01_53"
 worldLoaded["500,600,1"] = true
-fire("LoadGridsquare", square(500, 600, 1))
+sweep()
 check(#owned(500, 600, 1) == 1 and Rl.state(500, 600, 1) == "active",
-    "a registered trade terminal gets its device back as soon as its chunk is loaded again")
+    "a registered trade terminal gets its device back from the registered sweep once its chunk is loaded again")
 local id500 = nil
 for tid, t in pairs(root.terminals) do if t.x == 500 then id500 = tid end end
 check(cmd(boss, "terminal.unregister", { id = id500 }).ok == true and #owned(500, 600, 1) == 0,
@@ -13219,7 +13245,9 @@ check(#owned(820, 130, 0) == 0 and swapped.removed == true and mine.removed == n
 worldSpriteDeny["MinidoracatEconomy_speaker_catgirl_3"] = nil
 sweep()
 
--- Load callbacks retain repair throttling, ownership and diagnosable failures.
+-- Orphans come from the engine's device registry (ZomboidRadio.getDevices), swept a slice per tick;
+-- registered squares stay with the bounded registered sweep. No chunk-load hook: the throttle,
+-- ownership by class and name, and diagnosable failures all have to hold on the sweep alone.
 do
 local logs = {}
 local realLog = EC.log
@@ -13228,6 +13256,7 @@ local function logged(text)
     for _, m in ipairs(logs) do if string.find(m, text, 1, true) then return true end end
     return false
 end
+local function tick() fire("OnTickEvenPaused") end   -- 不推時間：只有 orphan sweep 會動
 local realCell = getCell
 local fakeSquares = {}
 getCell = function()
@@ -13235,16 +13264,14 @@ getCell = function()
         return fakeSquares[worldKey(x, y, z)] or realCell():getGridSquare(x, y, z)
     end }
 end
--- specials：引擎的第二份清單（IsoGridSquare.specialObjects）。預設與 objects 同一批物件（下面的
--- 既有情境全是收音機），但它是另一個清單：注入在物件清單的故障不會連帶出現在這裡。
--- objectReads：getObjects 被呼叫幾次——一般格子在載入時不該走訪物件清單。
-local function fakeSquare(x, y, objects, mode, specials)
-    local sq = { __class = "IsoGridSquare", objectReads = 0 }
+-- 自訂格子：mode "lie" 回成功 index 卻什麼都沒刪；"get" 讓物件清單的 get 拋錯。其他模式真的刪，
+-- 也跟引擎一樣把裝置從登記清單拿掉（removeFromWorld -> UnRegisterDevice）。
+local function fakeSquare(x, y, objects, mode)
+    local sq = { __class = "IsoGridSquare" }
     sq.getX = function() return x end
     sq.getY = function() return y end
     sq.getZ = function() return 0 end
     sq.getObjects = function()
-        sq.objectReads = sq.objectReads + 1
         return {
             size = function() return #objects end,
             get = function(_, i)
@@ -13253,20 +13280,18 @@ local function fakeSquare(x, y, objects, mode, specials)
             end,
         }
     end
-    specials = specials or objects
-    sq.getSpecialObjects = function() return javaList(specials) end
-    -- "lie"：回成功 index 卻什麼都沒刪；其他模式真的把物件從兩份清單拿掉
     sq.transmitRemoveItemFromSquare = function(_, o)
         if mode ~= "lie" then
             for i = #objects, 1, -1 do if objects[i] == o then table.remove(objects, i) end end
-            for i = #specials, 1, -1 do if specials[i] == o then table.remove(specials, i) end end
             o.removed = true
+            unregisterDevice(o)
         end
         return 0
     end
     sq.RecalcProperties = function() end
     sq.RecalcAllWithNeighbours = function() end
     fakeSquares[worldKey(x, y, 0)] = sq
+    for _, o in ipairs(objects) do if o.getDeviceData then registerDevice(o, nil, sq) end end
     return sq
 end
 
@@ -13277,28 +13302,26 @@ check(cold.ok == true and cold.warning == nil and #owned(640, 240, 0) == 0
     and Rl.state(640, 240, 0) == "disabled",
     "a terminal registered while the relay is off is registered with no device and no repair stamp")
 SandboxVars.MinidoracatEconomy.RadioRelayEnabled = true
-fire("LoadGridsquare", square(640, 240, 0))
+sweep(Rl.SWEEP_MS)
 local built = owned(640, 240, 0)[1]
 check(#owned(640, 240, 0) == 1 and Rl.state(640, 240, 0) == "active"
     and built:getSprite():getName() == "MinidoracatEconomy_speaker_terminal_1"
     and built:getDeviceData():getChannel() == 101100
     and built:getDeviceData():getIsTurnedOn() == true,
-    "the first chunk load of a registered terminal that was never built puts a configured device up at once")
+    "the first registered sweep over a terminal that was never built puts a configured device up at once")
 worldObjects["640,240,0"] = {}                      -- chunk 卸載：裝置跟著世界走了
-nowMs = nowMs + Rl.REPAIR_MS - 1
-fire("LoadGridsquare", square(640, 240, 0))
+sweep(Rl.REPAIR_MS - Rl.SWEEP_MS)
 check(#owned(640, 240, 0) == 0 and Rl.state(640, 240, 0) == "waiting",
-    "a chunk load inside the repair window rebuilds nothing and reports not ready: loading is not a way around the rate limit")
-nowMs = nowMs + 1                                   -- 剛好踩到界線
-fire("LoadGridsquare", square(640, 240, 0))
+    "a sweep inside the repair window rebuilds nothing and reports not ready: a reload is not a way around the rate limit")
+sweep(Rl.SWEEP_MS)                                  -- 剛好踩到界線
 local relit = owned(640, 240, 0)[1]
 check(#owned(640, 240, 0) == 1 and relit ~= nil and relit.serial ~= built.serial
     and Rl.state(640, 240, 0) == "active",
-    "the same chunk load does build once the repair window has passed")
+    "the next sweep does build once the repair window has passed")
 SandboxVars.MinidoracatEconomy.RadioRelayEnabled = false
-fire("LoadGridsquare", square(640, 240, 0))
+sweep(Rl.SWEEP_MS)
 check(#owned(640, 240, 0) == 0 and relit.removed == true and Rl.state(640, 240, 0) == "disabled",
-    "a chunk load while the relay is off takes the registered square's device away instead of putting one back")
+    "a sweep while the relay is off takes the registered square's device away instead of putting one back")
 SandboxVars.MinidoracatEconomy.RadioRelayEnabled = true
 
 worldLoaded["641,241,0"] = true
@@ -13306,7 +13329,7 @@ local keepA = place(641, 241, 0, fakeWorldRadio("appliances_com_01_1", "both"))
 local o1 = place(641, 241, 0, ownedRadio("appliances_com_01_1"))
 local keepB = place(641, 241, 0, fakeWorldRadio("appliances_com_01_1"))
 local o2 = place(641, 241, 0, ownedRadio("MinidoracatEconomy_speaker_terminal_1"))
-fire("LoadGridsquare", square(641, 241, 0))
+tick()
 check(#owned(641, 241, 0) == 0 and o1.removed == true and o2.removed == true
     and keepA.removed == nil and keepB.removed == nil
     and #(worldObjects["641,241,0"] or {}) == 2,
@@ -13317,69 +13340,139 @@ local blind = place(641, 241, 0, {
     __class = "IsoRadio",
     getDeviceData = function() error("native DeviceData getter threw", 0) end,
 })
-fire("LoadGridsquare", square(641, 241, 0))
+tick()
 check(scanned.removed == nil and keepA.removed == nil and keepB.removed == nil
     and #(worldObjects["641,241,0"] or {}) == 4 and logged("native DeviceData getter threw"),
-    "a device-data getter that raised aborts the pass before anything is removed: the owned device ahead of it is not deleted mid-scan")
-table.remove(worldObjects["641,241,0"])             -- 那台讀不到的物件離開了格子
-fire("LoadGridsquare", square(641, 241, 0))
+    "a device-data getter that raised aborts the slice before anything is removed: the owned device ahead of it is not deleted mid-scan")
+table.remove(worldObjects["641,241,0"])             -- 那台讀不到的物件離開了世界（也離開登記清單）
+tick()
 check(scanned.removed == true and #owned(641, 241, 0) == 0
     and keepA.removed == nil and keepB.removed == nil,
-    "the same load deletes the orphan once the object that could not be read is gone")
+    "the next pass deletes the orphan once the object that could not be read is gone")
 
 local survivor = place(641, 241, 0, ownedRadio("appliances_com_01_1"))
 worldFault.getObjects = "native getObjects threw"
-fire("LoadGridsquare", square(641, 241, 0))
+tick()
 check(survivor.removed == nil and #owned(641, 241, 0) == 1
     and worldFault.getObjects == nil and logged("native getObjects threw"),
     "a square whose object list could not be read is reported with the engine's own text, not treated as an empty square")
 worldFault.removeItem = "native removal threw"
-fire("LoadGridsquare", square(641, 241, 0))
+tick()
 check(survivor.removed == nil and #owned(641, 241, 0) == 1
     and worldFault.removeItem == nil and logged("native removal threw"),
     "an orphan removal that raised leaves the orphan visible and says so instead of counting the square as cleaned")
 worldRemoveRefuses[survivor] = true
 local beforeRefuse = #logs
-fire("LoadGridsquare", square(641, 241, 0))
+tick()
 check(survivor.removed == nil and #owned(641, 241, 0) == 1 and #logs > beforeRefuse
     and keepA.removed == nil and keepB.removed == nil,
     "a removal the engine refused with -1 is diagnosed rather than believed, and takes no vanilla radio with it")
 worldRemoveRefuses[survivor] = nil
-fire("LoadGridsquare", square(641, 241, 0))
+tick()
 check(survivor.removed == true and #owned(641, 241, 0) == 0
     and keepA.removed == nil and keepB.removed == nil,
-    "the orphan is collected by the next load once the engine really removes it: a failed pass loses no orphan")
+    "the orphan is collected by the next pass once the engine really removes it: a failed pass loses no orphan")
 local lied = ownedRadio("appliances_com_01_1")
 local lieMate = fakeWorldRadio("appliances_com_01_1")
 local beforeLie = #logs
-fire("LoadGridsquare", fakeSquare(642, 242, { lieMate, lied }, "lie"))
-check(lied.removed == nil and lieMate.removed == nil and #logs > beforeLie,
+fakeSquare(642, 242, { lieMate, lied }, "lie")
+tick()
+check(lied.removed == nil and lieMate.removed == nil and #logs > beforeLie
+    and logged("still on the square after its removal"),
     "a removal that answered with a success index while the object is still on the square is a failure, not a cleanup")
+unregisterDevice(lied)
+unregisterDevice(lieMate)
 local getOwned = ownedRadio("appliances_com_01_1")
 local beforeGet = #logs
-fire("LoadGridsquare", fakeSquare(643, 243, { getOwned }, "get"))
+fakeSquare(643, 243, { getOwned }, "get")
+tick()
 check(getOwned.removed == nil and #logs > beforeGet and logged("native object list get threw"),
-    "an object list whose get raised mid-scan removes nothing and is reported")
+    "an object list whose get raised before the removal removes nothing and is reported")
+unregisterDevice(getOwned)
 
--- 一般格子：沒登錄、沒有我們的裝置。載入時只讀座標與特殊物件清單的大小，物件清單一次都不走訪；
--- 門在特殊清單上但不是 IsoRadio，一樣不走訪。舊版每格都 getObjects＋逐物件 instanceof。
-local floorTile = { __class = "IsoObject" }
-local doorTile = { __class = "IsoDoor" }
-local plainSq = fakeSquare(644, 244, { floorTile, { __class = "IsoObject" } }, nil, {})
-local doorSq = fakeSquare(645, 245, { floorTile, doorTile }, nil, { doorTile })
-local beforePlain = #logs
-fire("LoadGridsquare", plainSq)
-fire("LoadGridsquare", doorSq)
-check(plainSq.objectReads == 0 and doorSq.objectReads == 0 and #logs == beforePlain,
-    "a chunk load does not walk the object list of an ordinary square, with or without a door on it")
--- 從未登錄過的格子上的孤兒，client 還把它的 sprite 改成門：格上唯一的收音機，靠類別（不靠 sprite
--- 或位置）在特殊物件清單上被找到並刪掉；同格的門與地板不動。
-local stray = ownedRadio("fixtures_doors_01_0")
-local mixedSq = fakeSquare(646, 246, { floorTile, doorTile, stray }, nil, { doorTile, stray })
-fire("LoadGridsquare", mixedSq)
+-- 載入格子不再進 Lua：Economy 沒有任何 LoadGridsquare handler，一格都不碰。
+local touched = false
+local probe = setmetatable({}, { __index = function() touched = true; return function() end end })
+fire("LoadGridsquare", probe)
+check(touched == false, "a chunk load runs no Economy code: no LoadGridsquare handler reads the square")
+-- 從未登錄過的格子上的孤兒，client 還把它的 sprite 改成門：靠類別與 deviceName（不靠 sprite
+-- 或位置）在登記清單上被找到並刪掉；同格的門與地板不動。
+worldLoaded["646,246,0"] = true
+local floorTile = place(646, 246, 0, { __class = "IsoObject" })
+local doorTile = place(646, 246, 0, { __class = "IsoDoor" })
+local stray = place(646, 246, 0, ownedRadio("fixtures_doors_01_0"))
+tick()
 check(stray.removed == true and doorTile.removed == nil and floorTile.removed == nil
-    and mixedSq.objectReads >= 1,
-    "an orphan on a square never registered, whatever sprite it wears, is still found through the special-object list and deleted; the door and the floor stay")
+    and #(worldObjects["646,246,0"] or {}) == 2,
+    "an orphan on a square never registered, whatever sprite it wears, is found by class in the device registry and deleted; the door and the floor stay")
+
+-- 登記清單裡還有電視與車輛電台（VehicleParts.java:415-440）：就算 deviceName 被寫成我們的，
+-- 類別不是 IsoRadio 就不是我們的，不讀格子、不刪、不記錯。
+worldLoaded["647,247,0"] = true
+local tv = place(647, 247, 0, ownedRadio("appliances_television_01_0"))
+tv.__class = "IsoTelevision"
+local part = ownedRadio("vehicle_radio")
+part.__class = "VehiclePart"
+registerDevice(part, nil, nil)
+local beforeClass = #logs
+tick()
+check(tv.removed == nil and part.removed == nil and #(worldObjects["647,247,0"] or {}) == 1
+    and #logs == beforeClass,
+    "a TV and a vehicle radio part in the device registry are skipped by class, even carrying our device name")
+
+-- 每 tick 最多讀 ORPHAN_BUDGET 筆；游標跨 tick 往前走，排在 2B+5 台原版後面的孤兒第 3 個 tick 才輪到。
+local budget = Rl.ORPHAN_BUDGET
+worldLoaded["648,248,0"] = true
+local crowdTouched = false
+local crowd = {}
+for n = 1, 2 * budget + 5 do crowd[n] = place(648, 248, 0, fakeWorldRadio("appliances_com_01_0")) end
+local tail = place(648, 248, 0, ownedRadio("appliances_com_01_0"))
+local reads, removedAt = {}, nil
+for t = 1, 3 do
+    radioDeviceReads = 0
+    tick()
+    reads[t] = radioDeviceReads
+    if tail.removed and not removedAt then removedAt = t end
+end
+for _, c in ipairs(crowd) do if c.removed then crowdTouched = true end end
+check(reads[1] == budget and reads[2] == budget and reads[3] <= budget and removedAt == 3
+    and crowdTouched == false,
+    "each tick reads at most ORPHAN_BUDGET registry entries, and the cursor carries on where it stopped until the orphan is reached")
+
+-- 刪除會讓清單在游標後方縮一格：游標要跟著退，否則緊跟在後的孤兒會被跳過一整輪。
+Rl.ORPHAN_BUDGET = 2
+worldLoaded["649,249,0"] = true
+local m1 = place(649, 249, 0, ownedRadio("appliances_com_01_0"))
+local v1 = place(649, 249, 0, fakeWorldRadio("appliances_com_01_0"))
+local m2 = place(649, 249, 0, ownedRadio("appliances_com_01_0"))
+local v2 = place(649, 249, 0, fakeWorldRadio("appliances_com_01_0"))
+local m3 = place(649, 249, 0, ownedRadio("appliances_com_01_0"))
+tick()
+tick()
+local afterTwo = m1.removed == true and m2.removed == true and m3.removed == nil
+tick()
+Rl.ORPHAN_BUDGET = budget
+check(afterTwo and m3.removed == true and v1.removed == nil and v2.removed == nil,
+    "a removal that shifts the registry under the cursor skips no orphan: the next slice starts at the entry that moved down")
+
+-- 沒有 ZomboidRadio 實例（LuaManager.java:2909-2911）：記一次、略過，有了之後照常清。
+local function noRadioLogs()
+    local n = 0
+    for _, m in ipairs(logs) do if string.find(m, "no ZomboidRadio instance", 1, true) then n = n + 1 end end
+    return n
+end
+radioAbsent = true
+worldLoaded["650,250,0"] = true
+local lone = place(650, 250, 0, ownedRadio("appliances_com_01_0"))
+local beforeAbsent = noRadioLogs()
+tick()
+tick()
+check(lone.removed == nil and noRadioLogs() == beforeAbsent + 1,
+    "with no ZomboidRadio instance the orphan sweep is skipped and says so once, not every tick")
+radioAbsent = false
+tick()
+check(lone.removed == true, "the sweep picks the orphan up once the radio instance exists")
+unregisterDevice(part)
 getCell = realCell
 EC.log = realLog
 end
@@ -13390,6 +13483,7 @@ SandboxVars.MinidoracatEconomy.RadioRange = nil
 SandboxVars.MinidoracatEconomy.RadioRelayEnabled = nil
 worldSprites, worldObjects, worldLoaded, worldSpriteDeny = {}, {}, {}, {}
 worldRemoveRefuses, worldFault, worldRemoveRefuseAll = {}, {}, false
+radioDevices, radioDeviceReads, radioAbsent = {}, 0, false
 onlinePlayers = {}
 end)()
 
