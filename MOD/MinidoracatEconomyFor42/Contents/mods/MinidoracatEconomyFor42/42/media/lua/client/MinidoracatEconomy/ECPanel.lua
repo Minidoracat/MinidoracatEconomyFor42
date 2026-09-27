@@ -1283,6 +1283,7 @@ function Panel:rebuildMail()
             claimable = e.claimable ~= false,
             claimLabel = claimLabel,
             timeText = stampText(tonumber(e.at) or 0, self.offsetMin),
+            state = type(e.state) == "table" and e.state or nil,
         }
     end
     self.mailRows = rows
@@ -2243,6 +2244,8 @@ function Panel:detailText(kind, e)
     if e.altName and e.altName ~= out[1] then out[#out + 1] = e.altName end
     out[#out + 1] = tostring(e.item)
     if e.statusText and e.statusText ~= "" then out[#out + 1] = e.statusText end
+    -- the whole server preview of the item (condition with its maximum, fluid, wear, food...)
+    W.stateLines(e.state, out)
     if kind == "shop" then
         out[#out + 1] = e.qtyText
         out[#out + 1] = detailLine("Trade_Currency", e.currencyText)

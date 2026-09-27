@@ -186,13 +186,16 @@ knownItems = {
     ["Base.Twine"] = { w = 0.1, cat = "Material", main = "Normal" }, ["Base.Lighter"] = { w = 0.1, cat = "LightSource", main = "Drainable" },
     ["Base.Hammer"] = { w = 1.5, cat = "Tool", main = "Weapon" }, ["Base.Saw"] = { w = 1.5, cat = "Tool", main = "Normal" },
     ["Base.Axe"] = { w = 3, cat = "ToolWeapon", main = "Weapon", weapon = true, head = 10, sharp = true }, ["Base.Heavy"] = { w = 30, cat = "Material", main = "Normal" },
-    ["Base.Apple"] = { w = 0.2, cat = "Food", main = "Food", rots = 8 }, ["Base.Bag_ALICEpack"] = { w = 1, cat = "Bag", main = "Container" },
-    ["Base.PetrolCan"] = { w = 1.5, cat = "VehicleMaintenance", main = "Normal", fluid = true },
+    ["Base.Apple"] = { w = 0.2, cat = "Food", main = "Food", rots = 8, offAge = 3 }, ["Base.Bag_ALICEpack"] = { w = 1, cat = "Bag", main = "Container" },
+    ["Base.PetrolCan"] = { w = 1.5, cat = "VehicleMaintenance", main = "Normal", fluid = true, cap = 10 },
     ["Base.x2Scope"] = { w = 0.3, cat = "WeaponPart", main = "Normal" }, ["Base.BookCarpentry1"] = { w = 0.8, cat = "SkillBook", main = "Literature" },
     ["Base.Notebook"] = { w = 0.1, cat = "Literature", main = "Literature" },
-    ["Base.Pistol"] = { w = 1, cat = "Weapon", main = "Weapon", weapon = true, gun = true }, ["Base.9mmClip"] = { w = 0.1, cat = "Ammo", main = "Normal" },
+    ["Base.Pistol"] = { w = 1, cat = "Weapon", main = "Weapon", weapon = true, gun = true, maxAmmo = 15 }, ["Base.9mmClip"] = { w = 0.1, cat = "Ammo", main = "Normal", maxAmmo = 15 },
     ["Base.RadioRed"] = { w = 1, cat = "Communications", main = "Item", itemType = "RADIO", device = true },
     ["Base.Mov_Chair"] = { w = 5, cat = "Furniture", main = "Item", itemType = "MOVEABLE" },
+    -- 衣物（Clothing.java）：scratch / bite = 腳本 ScratchDefense / BiteDefense；牛仔褲是補丁探針
+    ["Base.Tshirt_DefaultTEXTURE"] = { w = 0.2, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 0, bite = 0 } },
+    ["Base.Trousers_Denim"] = { w = 0.5, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 20, bite = 0 } },
     -- 非 Base 模組物品：伺服器的 ScriptManager 認得就算數（目錄新增不是 Base-only）
     ["MiniFarm.CatSnack"] = { w = 0.2, cat = "Food", main = "Normal" },
 }
@@ -210,6 +213,20 @@ ScriptManager = { instance = { FindItem = function(_, name)
         getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end }
 end } }
 Fluid = { Get = function(name) return { name = name } end }
+-- BloodBodyPartType（BloodBodyPartType.java:10-47，MAX 之前 18 個部位）、ImmutableColor／Color 建構子
+BloodBodyPartType = { MAX = { index = function() return 18 end }, parts = {} }
+for i = 0, 17 do BloodBodyPartType.parts[i] = { index = function() return i end } end
+BloodBodyPartType.FromIndex = function(i) return BloodBodyPartType.parts[i] end
+ImmutableColor = { new = function(r, g, b, a) return { getRedFloat = function() return r end, getGreenFloat = function() return g end,
+    getBlueFloat = function() return b end, getAlphaFloat = function() return a end } end }
+Color = { new = function(r, g, b, a) return { r = r, g = g, b = b, a = a } end }
+-- ClothingPatch(tailorLvl, fabricType, hasHole)：防禦值由等級算出（Clothing.java:1419-1428, 1470-1473）
+FAKE_FABRIC = { [1] = { 5, 0 }, [2] = { 10, 5 }, [3] = { 20, 10 } }
+function fakeClothingPatch(lvl, fabric, hole)
+    local f = FAKE_FABRIC[fabric]
+    return { fabric = fabric, lvl = lvl, hole = hole == true, gain = 0, scratch = math.floor(math.max(1, f[1] * (lvl / 10))),
+        bite = f[2] > 0 and math.floor(math.max(1, f[2] * (lvl / 10))) or 0 }
+end
 -- 假電台：記錄每次 SendTransmission 與頻道登錄（getZomboidRadio 在 dedicated 上非 nil，A14）
 radioSent, radioChannels = {}, {}
 function getZomboidRadio()
@@ -263,6 +280,9 @@ function instanceItem(fullType)
     it.setCondition = function(_, v) it.condition = v end
     it.getCurrentUses = function() return it.uses end
     it.setCurrentUses = function(_, v) it.uses = v end
+    it.getConditionMax = function() return 10 end
+    it.getMaxAmmo = function() return k.maxAmmo or 0 end
+    it.getOffAge = function() return k.offAge or 1000000000 end
     -- 物品層的其他存檔狀態（InventoryItem.save:1739-1782）：預設值 = 原版新物品
     it.infected, it.keyId, it.remoteId, it.remoteRange, it.ammo = false, -1, -1, 0, 0
     it.isInfected = function() return it.infected end
@@ -380,6 +400,7 @@ function instanceItem(fullType)
     it.setName = function(_, v) it.name = v end
     it.isCustomName = function() return it.customName end
     it.setCustomName = function(_, v) it.customName = v; it.modData.customName = it.name end
+    it.getDisplayName = function() return it.name end
     it.getAge = function() return it.age end
     it.setAge = function(_, v) it.age = v end
     it.getHaveBeenRepaired = function() return it.repaired end
@@ -400,7 +421,7 @@ function instanceItem(fullType)
         it.getFluidContainer = function()
             return { Empty = function() it.fluidName, it.fluidAmount = "", 0 end,
                 addFluid = function(_, fl, amount) it.fluidName, it.fluidAmount = fl.name, amount end,
-                getAmount = function() return it.fluidAmount end,
+                getAmount = function() return it.fluidAmount end, getCapacity = function() return k.cap or 10 end,
                 getPrimaryFluid = function() if it.fluidName == "" then return nil end; return { getFluidTypeString = function() return it.fluidName end } end }
         end
     end
@@ -408,6 +429,75 @@ function instanceItem(fullType)
         it.getAllWeaponParts = function() return javaList(it.parts) end
         it.attachWeaponPart = function(_, part) it.parts[#it.parts + 1] = part end
         it.detachWeaponPart = function(_, part) for i = #it.parts, 1, -1 do if it.parts[i] == part then table.remove(it.parts, i) end end end
+    end
+    if k.clothing then
+        -- 每部位一個 byte（ItemVisual.java:502-606）；外觀在第一次 getVisual 時亂數決定（:127-222），
+        -- 這裡用物品 ID 讓每件新衣物外觀不同
+        local vis = { holes = {}, basic = {}, denim = {}, leather = {}, blood = {}, dirt = {},
+            hue = (id % 200) / 100 - 1, tint = ImmutableColor.new((id % 7) / 7, (id % 5) / 5, (id % 3) / 3, 1),
+            base = id % 3, choice = id % 2, decal = "Decal" .. (id % 4) }
+        local function byteOf(v) return math.floor(math.max(0, math.min(1, v)) * 255) end
+        for _, key in ipairs({ "Hole", "BasicPatch", "DenimPatch", "LeatherPatch" }) do
+            local t = ({ Hole = vis.holes, BasicPatch = vis.basic, DenimPatch = vis.denim, LeatherPatch = vis.leather })[key]
+            vis["get" .. key] = function(_, p) return (t[p:index()] or 0) / 255 end
+            vis["set" .. key] = function(_, p) t[p:index()] = 255 end
+        end
+        vis.getBlood = function(_, p) return (vis.blood[p:index()] or 0) / 255 end
+        vis.setBlood = function(_, p, v) vis.blood[p:index()] = byteOf(v) end
+        vis.getDirt = function(_, p) return (vis.dirt[p:index()] or 0) / 255 end
+        vis.setDirt = function(_, p, v) vis.dirt[p:index()] = byteOf(v) end
+        vis.getHue = function() return vis.hue end
+        vis.setHue = function(_, v) vis.hue = math.max(-1, math.min(1, v)) end
+        vis.getTint = function() return vis.tint end
+        vis.setTint = function(_, v) vis.tint = v end
+        vis.getBaseTexture = function() return vis.base end
+        vis.setBaseTexture = function(_, v) vis.base = v end
+        vis.getTextureChoice = function() return vis.choice end
+        vis.setTextureChoice = function(_, v) vis.choice = v end
+        vis.getDecal = function(_, clothingItem) return clothingItem and vis.decal or nil end
+        vis.setDecal = function(_, v) vis.decal = v end
+        it.vis, it.patchMap = vis, {}
+        it.IsClothing = function() return true end
+        it.getClothingItem = function() return { decalGroup = "fake" } end
+        it.getVisual = function() return vis end
+        it.getPatchType = function(_, p)
+            local q = it.patchMap[p:index()]
+            if not q then return nil end
+            return { getFabricType = function() return q.fabric end, getScratchDefense = function() return q.scratch end,
+                getBiteDefense = function() return q.bite end }
+        end
+        it.addPatchForSync = function(_, idx, lvl, fabric, hole) it.patchMap[idx] = fakeClothingPatch(lvl, fabric, hole) end
+        it.copyPatchesTo = function(_, other) other.patchMap = it.patchMap end
+        it.getPatchesNumber = function() local n = 0; for _ in pairs(it.patchMap) do n = n + 1 end; return n end
+        it.getScratchDefense = function() if it.condition <= 0 then return 0 end; return k.clothing.scratch end
+        it.getBiteDefense = function() if it.condition <= 0 then return 0 end; return k.clothing.bite end
+        -- Clothing.getDefForPart（:944-981）：破洞 0；補丁蓋洞＝只算補丁，加襯＝衣物＋補丁
+        it.getDefForPart = function(_, p, bite)
+            if vis:getHole(p) > 0 then return 0 end
+            local q, d = it.patchMap[p:index()], bite and it.getBiteDefense() or it.getScratchDefense()
+            if q then
+                local pd = bite and q.bite or q.scratch
+                if q.hole then d = pd else d = d + pd end
+            end
+            return d
+        end
+        it.bloodLv, it.dirtLv, it.wet = 0, 0, 0
+        it.getBloodLevel = function() return it.bloodLv end
+        it.setBloodLevel = function(_, v) it.bloodLv = math.max(0, math.min(100, v)) end
+        it.getDirtiness = function() return it.dirtLv end
+        it.setDirtiness = function(_, v) it.dirtLv = math.max(0, math.min(100, v)) end
+        it.getWetness = function() return it.wet end
+        it.setWetness = function(_, v) it.wet = math.max(0, math.min(100, v)) end
+        it.customColor, it.col = false, { r = 0.5, g = 0.5, b = 0.5, a = 1 }
+        it.isCustomColor = function() return it.customColor end
+        it.setCustomColor = function(_, v) it.customColor = v end
+        it.getR = function() return it.col.r end
+        it.getG = function() return it.col.g end
+        it.getB = function() return it.col.b end
+        it.getA = function() return it.col.a end
+        it.setColor = function(_, c) it.col = c end
+        -- Clothing.getName 會加「Bloody」等前綴（Clothing.java:440-472），getDisplayName 是原名
+        it.getName = function() if it.bloodLv > 25 then return "Bloody, " .. it.name end; return it.name end
     end
     return it
 end
@@ -818,7 +908,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: chunk-load prefilter (ordinary square not walked, orphan still found); +25: version from mod.info (1), start counter (3), item state across the market (21).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 19   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: chunk-load prefilter (ordinary square not walked, orphan still found); +25: version from mod.info (1), start counter (3), item state across the market (21); +19: clothing state and the buyer preview (28d).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3296,6 +3386,149 @@ check(plain.infected == nil and plain.keyId == nil and plain.remote == nil and p
     "a plain item carries none of these fields")
 end)()
 
+-- ===== 情境二十八之四：衣物帶著完整狀態上架；買家看到過濾後的狀態預覽 =====
+-- 衣物不再是固定拒絕類別：逐部位破洞、血汙、髒污、補丁、整體濕度與外觀都隨快照走。補在破洞上的補丁
+-- 帶不走（conditionGain），照「帶不走就拒絕」處理。預覽只給買家需要的欄位，不給 modData 與鑰匙 ID。
+io.write("scenario 28d: clothing state and the buyer preview\n")
+;(function()
+local Codec, Mk, M = S.Codec, S.Market, S.Mailbox
+local TEE = "Base.Tshirt_DefaultTEXTURE"
+local function part(i) return BloodBodyPartType.FromIndex(i) end
+-- Clothing.addPatch（:1074-1115）：加補丁視覺、蓋洞時記 conditionGain 並補回耐久、清掉破洞
+local function sew(item, idx, fabric, lvl)
+    local p, hole = part(idx), item.vis:getHole(part(idx)) > 0
+    local setter = ({ "setBasicPatch", "setDenimPatch", "setLeatherPatch" })[fabric]
+    item.vis[setter](item.vis, p)
+    local q = fakeClothingPatch(lvl, fabric, hole)
+    if hole then q.gain = 2; item.condition = item.condition + 2 end
+    item.patchMap[idx] = q
+    item.vis.holes[idx] = nil
+end
+local function leaves(t)
+    local n, empty = 0, true
+    for _, v in pairs(t) do
+        empty = false
+        if type(v) == "table" then n = n + leaves(v) else n = n + 1 end
+    end
+    if empty then return 1 end
+    return n
+end
+files["MinidoracatEconomy/whitelist.json"] = nil
+check(Codec.load() == true and select(2, Codec.check(instanceItem(TEE))) == "not_whitelisted"
+    and EC.isFixedType(ScriptManager.instance:FindItem(TEE)) == false and EC.isFixedType(ScriptManager.instance:FindItem("Base.Bag_ALICEpack")) == true,
+    "clothing is no longer a fixed class, but the shipped default list does not open it; bags stay fixed")
+files["MinidoracatEconomy/whitelist.json"] = { lines = { EC.jsonEncode({ categories = { "Clothing" } }) }, opens = 0 }
+check(Codec.load() == true and Codec.check(instanceItem(TEE)) == true, "a host that enables the Clothing category can list a plain shirt")
+local worn = instanceItem(TEE); worn.equipped = true
+check(select(2, Codec.check(worn)) == "equipped", "a worn shirt is refused as equipped")
+local a, b = instanceItem(TEE), instanceItem(TEE)
+local sa, sb = Codec.snapshot(a), Codec.snapshot(b)
+check(sa.cloth == nil and type(sa.look) == "table" and sa.look.hue ~= sb.look.hue and Codec.isCanonical(b, TEE) == true,
+    "two fresh shirts differ only in their rolled look, which the buyback comparison ignores")
+-- 破、補（加襯，不蓋洞）、血、髒、濕、染色、改名
+local tee = instanceItem(TEE)
+tee.condition = 6
+tee.vis:setHole(part(2)); tee.vis:setHole(part(6))
+sew(tee, 7, 2, 5)
+tee.vis:setBlood(part(6), 0.8); tee.vis:setBlood(part(7), 3 / 255); tee.vis:setDirt(part(0), 0.4); tee.vis:setDirt(part(17), 1)
+tee:setBloodLevel(40); tee:setDirtiness(22.5); tee:setWetness(65)
+tee:setCustomColor(true); tee:setColor({ r = 0.1, g = 0.2, b = 0.3, a = 1 })
+tee.name = "Lucky shirt"; tee:setCustomName(true)
+check(Codec.check(tee) == true and tee:getName() == "Bloody, Lucky shirt", "a torn, padded, bloody, dirty, wet, dyed, renamed shirt is listable")
+local snap = Codec.snapshot(tee)
+check(snap.name == "Lucky shirt" and leaves(snap) <= 64,
+    "the snapshot keeps the raw custom name and the whole garment fits in half the journal's 128 leaves")
+local back = Codec.rebuild(snap)
+local same = back.condition == 6 and back.bloodLv == 40 and back.dirtLv == 22.5 and back.wet == 65 and back.customColor == true
+    and back.col.r == 0.1 and back.col.b == 0.3 and back.name == "Lucky shirt" and back:getName() == "Bloody, Lucky shirt"
+for i = 0, 17 do
+    local p = part(i)
+    for _, g in ipairs({ "getHole", "getBasicPatch", "getDenimPatch", "getLeatherPatch", "getBlood", "getDirt" }) do
+        if back.vis[g](back.vis, p) ~= tee.vis[g](tee.vis, p) then same = false end
+    end
+    if back:getDefForPart(p, false) ~= tee:getDefForPart(p, false) or back:getDefForPart(p, true) ~= tee:getDefForPart(p, true) then same = false end
+    local q1, q2 = tee.patchMap[i], back.patchMap[i]
+    if (q1 == nil) ~= (q2 == nil) or (q1 and (q1.fabric ~= q2.fabric or q1.scratch ~= q2.scratch or q1.bite ~= q2.bite or q1.hole ~= q2.hole)) then same = false end
+end
+check(same, "rebuild restores every part's holes, patch visuals, blood and dirt bytes, the patch and its defences, the levels, dye and name")
+check(back.vis.hue == tee.vis.hue and back.vis.tint:getRedFloat() == tee.vis.tint:getRedFloat() and back.vis.base == tee.vis.base
+    and back.vis.choice == tee.vis.choice and back.vis.decal == tee.vis.decal, "the rebuilt shirt keeps the seller's look, not a new roll")
+check(Codec.signature(Codec.snapshot(back)) == Codec.signature(snap) and Codec.isCanonical(tee, TEE) == false,
+    "a rebuilt copy snapshots to the same signature, and a worn shirt is never bought back as new")
+-- 補在破洞上的補丁：conditionGain 帶不走 -> 拒絕（上架與收購共用 stateCheck）
+local patched = instanceItem(TEE)
+patched.vis:setHole(part(4)); sew(patched, 4, 1, 2)
+local okP, whyP = Codec.check(patched)
+check(okP == false and whyP == "clothing_patch" and select(2, Codec.stateCheck(patched)) == "clothing_patch",
+    "a patch sewn over a hole is refused by the market and the buyback")
+-- 預覽：有上限、四捨五入、不含 modData 與鑰匙 ID
+tee.modData.MIC42_t = "someone 491234"
+local pv = Codec.preview(Codec.snapshot(tee))
+check(pv.cond == 6 and pv.condMax == 10 and pv.holes == 2 and pv.patches == 1 and pv.blood == 40 and pv.dirt == 23 and pv.wet == 65
+    and pv.name == "Lucky shirt" and pv.modData == nil and pv.cloth == nil and pv.look == nil,
+    "the preview counts holes and patches, rounds the levels and carries no modData or raw per-part data")
+local keyed = instanceItem("Base.Bandage"); keyed.keyId = 4321; keyed.remoteId = 7; keyed.remoteRange = 12
+local kp = Codec.preview(Codec.snapshot(keyed))
+local leaked = false
+for _, v in pairs(kp) do if v == 4321 or v == 7 then leaked = true end end
+check(kp.keyed == true and kp.paired == true and not leaked, "key and remote pairings are flags; their ids never reach the buyer")
+local can = instanceItem("Base.PetrolCan"); can:getFluidContainer():addFluid(Fluid.Get("Petrol"), 3.456)
+local fp = Codec.preview(Codec.snapshot(can))
+check(fp.fluid == "Petrol" and math.abs(fp.fluidL - 3.46) < 1e-9 and fp.fluidCap == 10, "fluid carries its type key for translation and the amount rounded to 0.01 L of the capacity")
+local axe = instanceItem("Base.Axe"); axe.head = 5; axe.sharpness = 0.3
+local gun = instanceItem("Base.Pistol"); gun.ammo = 7; gun.clip = true; gun.jammed = true
+local ap, gp = Codec.preview(Codec.snapshot(axe)), Codec.preview(Codec.snapshot(gun))
+check(ap.head == 5 and ap.headMax == 10 and ap.sharp == 30 and gp.ammo == 7 and gp.ammoMax == 15 and gp.clip == true and gp.jammed == true and gp.fireMode == "Single",
+    "tools show head and edge against their maxima, guns their rounds, magazine, jam and fire mode")
+local apple = instanceItem("Base.Apple"); apple.age = 1; apple.cooked = true
+local fd = Codec.preview(Codec.snapshot(apple)).food
+apple.age = 4
+check(fd.cooked == true and math.abs(fd.freshDays - 2) < 1e-9 and Codec.preview(Codec.snapshot(apple)).food.stale == true,
+    "food shows how fresh it was when listed, or that it was already stale")
+-- 走真的市場流程：上架 -> 瀏覽看到預覽（舊欄位已移除）-> 購買收到同狀態的衣物
+modDataStore[EC.MODDATA_KEY] = nil
+sentCommands = {}
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local ann = fakePlayer("ann"); ann.x, ann.y = 101, 200; ann.inventory = fakeInventory(50)
+local bob = fakePlayer("bob"); bob.x, bob.y = 101, 201; bob.inventory = fakeInventory(50)
+onlinePlayers = { boss, ann, bob }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("ann", "survivor", 100, "SYSTEM_MINT", { requestId = "cs-ann", reasonCode = "t" })
+L.credit("bob", "survivor", 500, "SYSTEM_MINT", { requestId = "cs-bob", reasonCode = "t" })
+tee.modData.MIC42_t = nil
+ann.inventory:AddItem(tee)
+local cands = cmd(ann, "market.candidates")
+check(cands.items[1].ok == true and cands.items[1].state.holes == 2 and cands.items[1].condition == nil, "the seller's picker previews the same state")
+local listed = cmd(ann, "market.list", { itemId = tee.id, price = 50, requestId = "tee1" })
+local row = cmd(bob, "market.browse", { sort = "time" }).items[1]
+check(listed.ok == true and row.state.holes == 2 and row.state.blood == 40 and row.condition == nil and row.uses == nil and row.fluid == nil and row.fluidAmount == nil,
+    "browse sends the preview and none of the old raw fields")
+local bought = cmd(bob, "market.buy", { listingId = listed.listingId, price = 50, requestId = "teeb" })
+local got = bob.inventory.items[#bob.inventory.items]
+check(bought.ok == true and bought.delivered == true and got.fullType == TEE and got ~= tee and got.condition == 6 and got.vis:getHole(part(6)) > 0
+    and got.patchMap[7] and got.patchMap[7].scratch == tee.patchMap[7].scratch and got.vis.blood[6] == tee.vis.blood[6] and got.wet == 65 and got.vis.decal == tee.vis.decal,
+    "the buyer receives a rebuilt shirt with the listed holes, patch, blood, wetness and look")
+local mail = M.add("bob", { kind = "return", item = TEE, qty = 1, snapshot = snap, txId = "t-cloth" })
+local listedMail = nil
+for _, r in ipairs(M.list("bob")) do if r.id == mail.id then listedMail = r end end
+check(listedMail ~= nil and listedMail.state.holes == 2 and listedMail.state.patches == 1, "a letter that carries a snapshot lists the same preview")
+onlinePlayers = {}
+files["MinidoracatEconomy/whitelist.json"] = nil
+Codec.load()
+end)()
+
 -- ===== 情境二十九：市場全流程（上架、瀏覽、購買、取消、到期、費稅守恆） =====
 io.write("scenario 29: market\n")
 ;(function()
@@ -3347,7 +3580,7 @@ check(pend ~= nil and pend.itemId == axe.id and pend.snapshot.condition == 4 and
 check(cmd(ann, "market.list", { itemId = axe.id, price = 200, requestId = "l1" }).duplicate == true and #Mk.mine("ann") == 1, "resending the same listing request is idempotent")
 -- browse
 local page = cmd(bob, "market.browse", { sort = "time" })
-check(page.total == 1 and page.items[1].id == listed.listingId and page.items[1].seller == "ann" and page.items[1].condition == 4 and page.categories[1] == "ToolWeapon" and page.currency == "survivor",
+check(page.total == 1 and page.items[1].id == listed.listingId and page.items[1].seller == "ann" and page.items[1].state.cond == 4 and page.categories[1] == "ToolWeapon" and page.currency == "survivor",
     "browse lists the listing with its snapshot summary and category")
 check(cmd(bob, "market.browse", { query = "axe" }).total == 1 and cmd(bob, "market.browse", { query = "hammer" }).total == 0 and cmd(bob, "market.browse", { category = "Food" }).total == 0,
     "browse filters by query and category")
@@ -3554,7 +3787,7 @@ proofPump("ann")           -- journal 查詢是非同步的：有界 pump 到該
 check(Mk.hasListing(listed.listingId) and anomalies("listing-restored") == 1 and ann.modData[KEY].pendingOuts[listed.listingId] ~= nil,
     "row 4: a rolled-back listing is rebuilt from the seller's pending record (pending kept until durable)")
 local restored = Mk.mine("ann")[1]
-check(restored.price == 120 and restored.condition == 5 and S.modData().meta.seq >= (select(2, EC.parseId(listed.listingId))), "the rebuilt listing keeps price and snapshot and the seq never goes backwards")
+check(restored.price == 120 and restored.state.cond == 5 and S.modData().meta.seq >= (select(2, EC.parseId(listed.listingId))), "the rebuilt listing keeps price and snapshot and the seq never goes backwards")
 local restoredPend = deepCopy(ann.modData[KEY].pendingOuts[listed.listingId])
 check(restoredPend.epoch == S.modData().meta.epoch, "the pending record now points at the rebuild point")
 -- durable listing: after the next epoch the pending is cleared on login

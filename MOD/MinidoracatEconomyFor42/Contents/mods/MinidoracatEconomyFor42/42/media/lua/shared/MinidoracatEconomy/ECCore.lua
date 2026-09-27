@@ -120,13 +120,15 @@ function EC.nearMapAtm(player)
 end
 
 -- Item classes the market can never list, whatever whitelist.json says: their Java-side state
--- (contents, keys, map markers, worn/attached objects, the animal) is not in the bounded
--- snapshot, so a rebuilt copy would silently lose it. Script items carry their class as an
--- ItemType (Item.java:1375-1385 getItemType/isItemType; the registry names are the static fields
--- of ItemType.java:7-22, exposed to Lua by LuaManager.java:2311). Shared: the server refuses in
--- Codec.check, the admin page hides these classes from the category list. Radios are not here:
--- their DeviceData travels in the snapshot (Codec.snapshot / rebuild).
-EC.LISTING_FIXED_TYPES = { "CONTAINER", "CLOTHING", "KEY", "KEY_RING", "MOVEABLE", "MAP", "ALARM_CLOCK", "ALARM_CLOCK_CLOTHING", "ANIMAL" }
+-- (contents, keys, map markers, attached objects, the animal) is not in the bounded snapshot, so a
+-- rebuilt copy would silently lose it. Script items carry their class as an ItemType
+-- (Item.java:1375-1385 getItemType/isItemType; the registry names are the static fields of
+-- ItemType.java:7-22, exposed to Lua by LuaManager.java:2311). Shared: the server refuses in
+-- Codec.check, the admin page hides these classes from the category list. Radios and clothing are
+-- not here: DeviceData and the per-part wear travel in the snapshot (Codec.snapshot / rebuild);
+-- bags and pockets are CONTAINER, a wristwatch ALARM_CLOCK_CLOTHING, and worn clothing is refused
+-- as equipped by Codec.stateCheck.
+EC.LISTING_FIXED_TYPES = { "CONTAINER", "KEY", "KEY_RING", "MOVEABLE", "MAP", "ALARM_CLOCK", "ALARM_CLOCK_CLOTHING", "ANIMAL" }
 function EC.isFixedType(script)
     if script == nil or ItemType == nil then return false end
     for _, name in ipairs(EC.LISTING_FIXED_TYPES) do

@@ -8,11 +8,13 @@
 -- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
 -- or one item per write, written straight back, refused with whitelist_stale when the file on disk
 -- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
--- the file: none of EC.LISTING_FIXED_TYPES (containers, clothing, keys, maps, moveables, animals;
--- radios travel with their DeviceData), nothing rotten, equipped, favourite or broken, and no modData larger than the snapshot
--- may carry (the data itself travels: vanilla writes customName / condition:* there). State a
--- snapshot cannot carry is refused instead of dropped: a notebook's writing or author lock, applied
--- poison, a prepared dish's ingredients, a fertilized egg.
+-- the file: none of EC.LISTING_FIXED_TYPES (containers, keys, maps, moveables, animals; radios
+-- travel with their DeviceData, clothing with its per-part holes / blood / dirt / patches and its
+-- look), nothing rotten, equipped (worn clothing included) or favourite or broken, and no modData
+-- larger than the snapshot may carry (the data itself travels: vanilla writes customName /
+-- condition:* there). State a snapshot cannot carry is refused instead of dropped: a notebook's
+-- writing or author lock, applied poison, a prepared dish's ingredients, a fertilized egg, a
+-- patch sewn over a hole.
 --
 -- Engine references (snapshot 42.20.4-20260826, all exercised in A7):
 --   instanceItem                    LuaManager.java:5610-5620
@@ -31,6 +33,13 @@
 --   infected / key id / remote pairing              InventoryItem.java:3759-3765, 1739-1748
 --   raw food values (the *Unmodified getters)       Food.java:1767-1785, 1912-2144
 --   writing / author lock                           Literature.java:43-44, 502-521
+--   worn = equipped                                 InventoryItem.java:3426-3434 ; IsoGameCharacter.java:10355-10362
+--   clothing levels / patches                       Clothing.java:741-787, 936-942, 944-981, 995-997, 1065-1072, 1132-1134
+--   per-part holes / blood / dirt / patch visuals   ItemVisual.java:502-606 ; BloodBodyPartType.java:10-47
+--   look (random on first getVisual)                InventoryItem.java:2320-2336 ; ItemVisual.java:127-222, 727-741
+--   custom colour                                   InventoryItem.java:636-646, 3102-3104, 3645-3651
+--   raw custom name (getName adds prefixes)         InventoryItem.java:2428-2479, 3204-3206
+--   preview maxima                                  InventoryItem.java:2502, 2705-2715, 3909-3911 ; FluidContainer.java:530
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Shop then
     require "MinidoracatEconomy/ECShop"
@@ -300,6 +309,192 @@ local function copyModData(md, depth, leaves)
     return copy, leaves
 end
 
+-- ---------- clothing ----------
+-- Per-part state lives in the ItemVisual as one byte per BloodBodyPartType (holes / patch visuals
+-- are 0 or 255, blood / dirt 0-255); the snapshot keeps holes and patch visuals as bit masks and
+-- blood / dirt as two hex digits per part, so a fully torn, bloody, dirty shirt costs a handful of
+-- journal leaves instead of ~90 (ECRecoveryJournal J.PACK_LEAVES_MAX = 128).
+local parts = nil
+local function bodyParts()
+    if parts then return parts end
+    local ok, list = pcall(function()
+        local out = {}
+        for i = 0, BloodBodyPartType.MAX:index() - 1 do out[#out + 1] = BloodBodyPartType.FromIndex(i) end
+        return out
+    end)
+    if ok and type(list) == "table" and #list > 0 then parts = list end
+    return parts
+end
+
+local function hasBit(mask, i)
+    return type(mask) == "number" and math.floor(mask / 2 ^ (i - 1)) % 2 == 1
+end
+
+local function hexByte(text, i)
+    if type(text) ~= "string" then return 0 end
+    return tonumber(string.sub(text, i * 2 - 1, i * 2), 16) or 0
+end
+
+-- ClothingPatch(tailorLvl, fabricType, hasHole) derives its defences from the level
+-- (Clothing.java:1419-1428; fabric maxima :1470-1473). Lua cannot read tailorLvl or hasHole:
+-- only static fields are exposed (LuaJavaClassExposer.java:299-311) and the reflection globals
+-- are debug-only (LuaManager.java:1671-1677). The level is recovered as the lowest one that gives
+-- the same defences (it has no other effect: it is only saved and synced); integer arithmetic
+-- here equals the engine's float arithmetic for every level 0-127 (checked against the JVM).
+local FABRIC = { [1] = { 5, 0 }, [2] = { 10, 5 }, [3] = { 20, 10 } }
+local function patchLevel(fabric, scratch, bite)
+    local f = FABRIC[fabric]
+    if not f then return nil end
+    for lvl = 1, 10 do
+        local s = math.max(1, math.floor(f[1] * lvl / 10))
+        local b = f[2] > 0 and math.max(1, math.floor(f[2] * lvl / 10)) or 0
+        if s == scratch and b == bite then return lvl end
+    end
+    return nil
+end
+
+-- A patch sewn over a hole also remembers the condition it gave back (conditionGain) and takes it
+-- away again when it is removed (Clothing.java:999-1006, 1101-1106). addPatchForSync cannot set
+-- that field (:1065-1072), so a rebuilt copy would lose it - and accepting the loss opens a loop:
+-- patch a hole, list and cancel, remove the patch without losing condition, patch again, the same
+-- free-repair class a17479c closed for heads and edges. Such clothing is refused. Whether a patch
+-- covers a hole is read the one way Lua can: share the patch map with a probe whose own scratch
+-- defence is non-zero (copyPatchesTo only assigns the reference, :1132-1134; nothing is written)
+-- and ask getDefForPart, which returns the patch's defence alone for a hole patch and adds the
+-- garment's own for padding (:944-981). Anything that does not match either is refused too.
+Codec.PATCH_PROBE = "Base.Trousers_Denim"   -- ScratchDefense 20, no neck modifier
+local function patchesCarried(item)
+    local list = bodyParts()
+    if not list then return false end
+    local probe, base = nil, nil
+    for _, part in ipairs(list) do
+        local p = call(item, "getPatchType", part)
+        if p then
+            local scratch = call(p, "getScratchDefense")
+            if not patchLevel(call(p, "getFabricType"), scratch, call(p, "getBiteDefense")) then return false end
+            if not probe then
+                probe = instanceItem(Codec.PATCH_PROBE)
+                if not probe then return false end
+                call(item, "copyPatchesTo", probe)
+                if call(probe, "getPatchType", part) == nil then return false end
+                base = call(probe, "getScratchDefense")
+                if type(base) ~= "number" or base <= 0 then return false end
+            end
+            if call(probe, "getDefForPart", part, false, false) ~= base + scratch then return false end
+        end
+    end
+    return true
+end
+
+local function colorOf(c)
+    if c == nil then return nil end
+    local ok, v = pcall(function() return { r = c:getRedFloat(), g = c:getGreenFloat(), b = c:getBlueFloat(), a = c:getAlphaFloat() } end)
+    if ok then return v end
+    return nil
+end
+
+-- Clothing state that is not the default of a fresh copy, plus its look. The look (hue, tint,
+-- texture choices, decal) is rolled on the first getVisual of every new instance, so it is always
+-- stored, kept apart in s.look and left out of the buyback comparison.
+local function clothSnapshot(item, s)
+    if call(item, "IsClothing") ~= true then return end
+    local c, any = {}, false
+    local vis, list = call(item, "getVisual"), bodyParts()
+    if vis and list then
+        local masks = { holes = "getHole", basic = "getBasicPatch", denim = "getDenimPatch", leather = "getLeatherPatch" }
+        for key, getter in pairs(masks) do
+            local mask = 0
+            for i, part in ipairs(list) do
+                if (call(vis, getter, part) or 0) > 0 then mask = mask + 2 ^ (i - 1) end
+            end
+            if mask > 0 then c[key] = mask; any = true end
+        end
+        for _, key in ipairs({ "blood", "dirt" }) do
+            local getter = key == "blood" and "getBlood" or "getDirt"
+            local hex, set = {}, false
+            for i, part in ipairs(list) do
+                local b = math.floor((call(vis, getter, part) or 0) * 255 + 0.5)
+                hex[i] = string.format("%02x", b)
+                if b > 0 then set = true end
+            end
+            if set then c[key] = table.concat(hex); any = true end
+        end
+        local patches = {}
+        for i, part in ipairs(list) do
+            local p = call(item, "getPatchType", part)
+            if p then
+                local fabric = call(p, "getFabricType")
+                local lvl = patchLevel(fabric, call(p, "getScratchDefense"), call(p, "getBiteDefense"))
+                if lvl then patches[#patches + 1] = (i - 1) .. ":" .. fabric .. ":" .. lvl end
+            end
+        end
+        if #patches > 0 then c.patches = table.concat(patches, ","); any = true end
+        local look = {
+            hue = call(vis, "getHue"),
+            tint = colorOf(call(vis, "getTint")),
+            base = call(vis, "getBaseTexture"),
+            choice = call(vis, "getTextureChoice"),
+            decal = call(vis, "getDecal", call(item, "getClothingItem")),
+        }
+        if type(look.hue) ~= "number" or look.hue ~= look.hue or look.hue == math.huge then look.hue = nil end
+        if type(look.base) == "number" and look.base < 0 then look.base = nil end
+        if type(look.choice) == "number" and look.choice < 0 then look.choice = nil end
+        if type(look.decal) ~= "string" or look.decal == "" or #look.decal > Codec.MODDATA_STRING_MAX then look.decal = nil end
+        s.look = look
+    end
+    for key, getter in pairs({ bloodLv = "getBloodLevel", dirtLv = "getDirtiness", wet = "getWetness" }) do
+        local v = call(item, getter)
+        if type(v) == "number" and v > 0 then c[key] = v; any = true end
+    end
+    if call(item, "isCustomColor") == true then
+        c.color = { r = call(item, "getR"), g = call(item, "getG"), b = call(item, "getB"), a = call(item, "getA") }
+        any = true
+    end
+    if any then s.cloth = c end
+end
+
+-- Order: per-part visuals, then the overall levels (setBlood does not recompute them), then the
+-- patch map, then the look over what the fresh copy rolled. Blood / dirt go back as (b + 0.5) / 255
+-- because the setter truncates amount * 255 (ItemVisual.java:582-606) and b / 255 may land just
+-- under b.
+local function clothRebuild(item, s)
+    local c = type(s.cloth) == "table" and s.cloth or {}
+    local vis, list = call(item, "getVisual"), bodyParts()
+    if vis and list then
+        for i, part in ipairs(list) do
+            if hasBit(c.holes, i) then call(vis, "setHole", part) end
+            if hasBit(c.basic, i) then call(vis, "setBasicPatch", part) end
+            if hasBit(c.denim, i) then call(vis, "setDenimPatch", part) end
+            if hasBit(c.leather, i) then call(vis, "setLeatherPatch", part) end
+            local b, d = hexByte(c.blood, i), hexByte(c.dirt, i)
+            if b > 0 then call(vis, "setBlood", part, (b + 0.5) / 255) end
+            if d > 0 then call(vis, "setDirt", part, (d + 0.5) / 255) end
+        end
+        local look = s.look
+        if type(look) == "table" then
+            if type(look.hue) == "number" then call(vis, "setHue", look.hue) end
+            local t = look.tint
+            if type(t) == "table" and type(t.r) == "number" then
+                pcall(function() vis:setTint(ImmutableColor.new(t.r, t.g, t.b, t.a or 1)) end)
+            end
+            if type(look.base) == "number" then call(vis, "setBaseTexture", look.base) end
+            if type(look.choice) == "number" then call(vis, "setTextureChoice", look.choice) end
+            if type(look.decal) == "string" then call(vis, "setDecal", look.decal) end
+        end
+    end
+    if type(c.bloodLv) == "number" then call(item, "setBloodLevel", c.bloodLv) end
+    if type(c.dirtLv) == "number" then call(item, "setDirtiness", c.dirtLv) end
+    if type(c.wet) == "number" then call(item, "setWetness", c.wet) end
+    for idx, fabric, lvl in string.gmatch(c.patches or "", "(%d+):(%d+):(%d+)") do
+        call(item, "addPatchForSync", tonumber(idx), tonumber(lvl), tonumber(fabric), false)
+    end
+    local col = c.color
+    if type(col) == "table" and type(col.r) == "number" then
+        pcall(function() item:setColor(Color.new(col.r, col.g, col.b, col.a or 1)) end)
+        call(item, "setCustomColor", true)
+    end
+end
+
 -- State an item must not be in to leave a backpack through us, whatever the list says. Returns
 -- ok, reason. Vanilla itself writes modData (customName, condition:<type>,
 -- InventoryItem.java:3253-3256, 3262-3271), so a mod-data key is never a reason by itself: the
@@ -320,6 +515,9 @@ function Codec.stateCheck(item)
     local extra = call(item, "getExtraItems")
     if extra ~= nil and (call(extra, "size") or 0) > 0 then return false, "prepared_dish" end
     if call(item, "isFertilized") == true then return false, "fertilized" end
+    if call(item, "IsClothing") == true and (call(item, "getPatchesNumber") or 0) > 0 and not patchesCarried(item) then
+        return false, "clothing_patch"
+    end
     return true
 end
 
@@ -336,12 +534,13 @@ end
 
 -- The system buys only what it could have handed out itself: the item must look like a freshly
 -- created one of that type in everything the shop pays for (condition, uses, repairs, read
--- pages, food state, fluid, no custom name). Age and modData are not compared: vanilla writes
--- both on ordinary items (planks carry customName, Food.updateAge ticks age; Food.java:774).
+-- pages, food state, fluid, no custom name, clothing wear). Age, modData and a garment's look are
+-- not compared: vanilla writes the first two on ordinary items (planks carry customName,
+-- Food.updateAge ticks age; Food.java:774) and rolls the look for every new copy.
 local canonical = {}
 local function canonicalSignature(s)
     local copy = {}
-    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" then copy[k] = v end end
+    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" and k ~= "look" then copy[k] = v end end
     return Codec.signature(copy)
 end
 
@@ -370,7 +569,9 @@ function Codec.snapshot(item)
         readPages = call(item, "getAlreadyReadPages"),
     }
     if call(item, "isCustomName") == true then
-        local name = call(item, "getName")
+        -- the raw name: getName() prefixes "Bloody, Worn" and the like, which a rebuild would
+        -- then prefix a second time (InventoryItem.java:2428-2479, 3204-3206)
+        local name = call(item, "getDisplayName")
         if type(name) == "string" and name ~= "" and #name <= Codec.MODDATA_STRING_MAX then s.name = name end
     end
     if call(item, "getCategory") == "Food" then
@@ -448,6 +649,7 @@ function Codec.snapshot(item)
             mediaIndex = call(dev, "getMediaIndex"),
         }
     end
+    clothSnapshot(item, s)
     local fluid = fluidOf(item)
     if fluid and fluid.name ~= "" and (fluid.amount or 0) > 0 then s.fluid = { name = fluid.name, amount = fluid.amount } end
     local md = call(item, "getModData")
@@ -528,6 +730,7 @@ function Codec.rebuild(s)
     if type(age) == "number" then call(item, "setAge", age) end
     if type(s.repaired) == "number" then call(item, "setHaveBeenRepaired", s.repaired) end
     if type(s.readPages) == "number" then call(item, "setAlreadyReadPages", s.readPages) end
+    if type(s.cloth) == "table" or type(s.look) == "table" then clothRebuild(item, s) end
     if type(s.name) == "string" then
         call(item, "setName", s.name)
         call(item, "setCustomName", true)
@@ -565,6 +768,89 @@ function Codec.rebuild(s)
         end
     end
     return item
+end
+
+-- ---------- buyer preview ----------
+-- What a buyer sees of a snapshot before paying: filtered, never the snapshot itself. No modData
+-- (owner decision 2026-09-28), no key or remote ids (flags only), no raw per-part bytes. Maxima come
+-- from one fresh copy per fullType, the way isCanonical gets its reference.
+local maxima = {}
+local function maximaOf(fullType)
+    local m = maxima[fullType]
+    if m then return m end
+    m = {}
+    local fresh = instanceItem(fullType)
+    if fresh then
+        m.cond = call(fresh, "getConditionMax")
+        if call(fresh, "hasHeadCondition") == true then m.head = call(fresh, "getHeadConditionMax") end
+        m.sharp = call(fresh, "hasSharpness") == true
+        m.uses = call(fresh, "getCurrentUses")
+        m.ammo = call(fresh, "getMaxAmmo")
+        m.offAge = call(fresh, "getOffAge")
+        local fc = call(fresh, "getFluidContainer")
+        if fc then m.fluidCap = call(fc, "getCapacity") end
+    end
+    maxima[fullType] = m
+    return m
+end
+
+local function num(v) if type(v) == "number" and v == v then return v end; return nil end
+local function round(v, step) return math.floor(v / step + 0.5) * step end
+local function bits(mask)
+    local n = 0
+    for i = 1, 32 do if hasBit(mask, i) then n = n + 1 end end
+    return n
+end
+
+function Codec.preview(s)
+    if type(s) ~= "table" or type(s.type) ~= "string" then return nil end
+    local m = maximaOf(s.type)
+    local p = { cond = num(s.condition), condMax = num(m.cond) }
+    if num(m.head) then p.head, p.headMax = num(s.head) or m.head, m.head end
+    if m.sharp then
+        -- an unstored edge is at its maximum, which the head (or the body) caps (InventoryItem.java:4605-4611)
+        local cap = 1
+        if p.head and p.headMax and p.headMax > 0 then cap = p.head / p.headMax
+        elseif p.cond and p.condMax and p.condMax > 0 then cap = p.cond / p.condMax end
+        p.sharp = math.floor(math.min(num(s.sharpness) or 1, cap, 1) * 100 + 0.5)
+    end
+    if num(s.uses) and (num(m.uses) or 0) > 1 then p.uses, p.usesMax = s.uses, m.uses end
+    if (num(m.ammo) or 0) > 0 then p.ammo, p.ammoMax = num(s.ammo) or 0, m.ammo end
+    if s.clip then p.clip = true end
+    if s.chamber then p.chamber = true end
+    if s.jammed then p.jammed = true end
+    if type(s.fireMode) == "string" and string.match(s.fireMode, "^[%w_]+$") and #s.fireMode <= 32 then p.fireMode = s.fireMode end
+    if (num(s.repaired) or 0) > 0 then p.repaired = s.repaired end
+    if (num(s.headRepaired) or 0) > 0 then p.headRepaired = s.headRepaired end
+    if s.infected then p.infected = true end
+    if s.keyId ~= nil then p.keyed = true end
+    if s.remote ~= nil then p.paired = true end
+    if type(s.name) == "string" then p.name = s.name end
+    local food = s.food
+    if type(food) == "table" then
+        p.food = { cooked = food.cooked == true, burnt = food.burnt == true, frozen = food.frozen == true }
+        -- freshness when it was listed; escrow keeps ageing it (Codec.rebuild), the client says so
+        local age, off = num(s.age), num(m.offAge)
+        if age and off and off < 1000000 then
+            if age < off then p.food.freshDays = round((off - age) / rotSpeed(), 0.1) else p.food.stale = true end
+        end
+    end
+    if type(s.fluid) == "table" and type(s.fluid.name) == "string" then
+        p.fluid = s.fluid.name
+        p.fluidL = round(num(s.fluid.amount) or 0, 0.01)
+        if num(m.fluidCap) then p.fluidCap = round(m.fluidCap, 0.01) end
+    end
+    local c = s.cloth
+    if type(c) == "table" then
+        p.holes = bits(c.holes)
+        local n = 0
+        for _ in string.gmatch(c.patches or "", "%d+:%d+:%d+") do n = n + 1 end
+        p.patches = n
+        p.blood = math.floor((num(c.bloodLv) or 0) + 0.5)
+        p.dirt = math.floor((num(c.dirtLv) or 0) + 0.5)
+        p.wet = math.floor((num(c.wet) or 0) + 0.5)
+    end
+    return p
 end
 
 -- Weapon attachments go back to the seller as their own items (they are WeaponPart items,

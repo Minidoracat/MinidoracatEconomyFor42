@@ -194,9 +194,9 @@ end
 
 -- `weight` is one copy's estimate (the real weight when the lot was created, the script estimate
 -- for an auction that predates the field): a bidder can size the delivery before bidding. It is
--- only that - the auction never promises the winner's future backpack space.
+-- only that - the auction never promises the winner's future backpack space. `state` is the
+-- bidder's filtered view of the snapshot (Codec.preview).
 local function view(a, username)
-    local s = a.snapshot or {}
     return {
         id = a.id, seller = a.seller, item = a.item, name = a.name, category = a.category, qty = a.qty or 1,
         startPrice = a.startPrice, currency = a.currency, blocked = a.blocked,
@@ -204,7 +204,7 @@ local function view(a, username)
         bids = a.bids or 0, at = a.at, expiresAt = a.expiresAt, weight = a.weight or M.scriptWeight(a.item),
         minNext = Au.minNext(a),
         mine = a.seller == username, leading = a.highest ~= nil and a.highest.bidder == username,
-        condition = s.condition, uses = s.uses, fluid = s.fluid and s.fluid.name or nil, fluidAmount = s.fluid and s.fluid.amount or nil,
+        state = Codec.preview(a.snapshot),
     }
 end
 
