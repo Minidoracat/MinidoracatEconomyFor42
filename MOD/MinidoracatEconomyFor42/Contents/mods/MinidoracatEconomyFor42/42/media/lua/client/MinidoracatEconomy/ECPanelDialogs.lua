@@ -1386,8 +1386,11 @@ function TransferDialog:check()
     return nil
 end
 
+-- A refusal of the recipient closes the candidate list: the list opens under the recipient box,
+-- on top of the line that says what was wrong, and editing the name drops the refusal anyway.
 function TransferDialog:setError(field, text)
     self.fieldError = field and { field = field, text = text } or nil
+    if field == "to" then self.picker:close() end
     self.panel:layoutDialog(self)
 end
 
@@ -1485,8 +1488,9 @@ function TransferDialog:summaryLines()
         out[#out + 1] = detailLine("Trade_Currency", currencyLabel(cur))
         out[#out + 1] = detailLine("Transfer_Amount", moneyText(amount, cur))
     end
-    out[#out + 1] = getText(T .. "Transfer_FeeLine", tostring(info.feePercent or "-"), moneyText(fee, cur))
-    out[#out + 1] = detailLine("Transfer_Total", moneyText(total, cur))
+    -- before an amount is typed there is no fee or total yet: a plain dash, not "not provided"
+    out[#out + 1] = getText(T .. "Transfer_FeeLine", tostring(info.feePercent or "-"), fee and moneyText(fee, cur) or "-")
+    out[#out + 1] = detailLine("Transfer_Total", total and moneyText(total, cur) or "-")
     out[#out + 1] = detailLine("Shop_AfterBalance", moneyText(self:available() - (total or 0), cur))
     out[#out + 1] = detailLine("Transfer_RemainingToday", left == nil and getText(T .. "Transfer_Unlimited")
         or amountText(math.max(0, left - (amount or 0))))

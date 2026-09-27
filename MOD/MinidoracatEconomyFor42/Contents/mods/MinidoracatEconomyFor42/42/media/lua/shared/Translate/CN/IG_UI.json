@@ -95,7 +95,7 @@
   "IGUI_MinidoracatEconomy_Transfer_MemoHint": "选填，例：车费",
   "IGUI_MinidoracatEconomy_Transfer_Next": "下一步",
   "IGUI_MinidoracatEconomy_Transfer_ConfirmButton": "转给 %1 %2 %3",
-  "IGUI_MinidoracatEconomy_Transfer_FeeLine": "手续费（%1%%）：%2",
+  "IGUI_MinidoracatEconomy_Transfer_FeeLine": "手续费（%1%%）: %2",
   "IGUI_MinidoracatEconomy_Transfer_Total": "合计扣款",
   "IGUI_MinidoracatEconomy_Transfer_RemainingToday": "转帐后今日还可转出",
   "IGUI_MinidoracatEconomy_Transfer_Unlimited": "无上限",

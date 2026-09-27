@@ -95,7 +95,7 @@
   "IGUI_MinidoracatEconomy_Transfer_MemoHint": "任意（例：運賃）",
   "IGUI_MinidoracatEconomy_Transfer_Next": "次へ",
   "IGUI_MinidoracatEconomy_Transfer_ConfirmButton": "%1 に %2 %3 を送金",
-  "IGUI_MinidoracatEconomy_Transfer_FeeLine": "手数料（%1%%）：%2",
+  "IGUI_MinidoracatEconomy_Transfer_FeeLine": "手数料（%1%%）: %2",
   "IGUI_MinidoracatEconomy_Transfer_Total": "引き落とし合計",
   "IGUI_MinidoracatEconomy_Transfer_RemainingToday": "送金後の本日の残り枠",
   "IGUI_MinidoracatEconomy_Transfer_Unlimited": "上限なし",
