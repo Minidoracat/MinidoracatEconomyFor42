@@ -27,8 +27,9 @@
 -- the framework field's own prerender, so no host ticks it any more.
 --
 -- `context` travels with every request and comes back on the reply, so two pickers may share one
--- command without ever reading each other's answer. Four are known: "player" / "transactions"
--- (the admin account box) and "market" / "auction" (the seller box).
+-- command without ever reading each other's answer. Five are known: "player" / "transactions"
+-- (the admin account box), "market" / "auction" (the seller box) and "transfer" (the recipient
+-- box of the wallet's transfer dialog, over transfer.recipients; ECClient names that reply).
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
@@ -49,10 +50,13 @@ local ACCOUNT_LABELS = { hint = "Admin_Player_Hint", account = "Admin_Player_Acc
     candidates = "Admin_Player_Candidates" }
 local SELLER_LABELS = { hint = "Market_Seller_Hint", account = "Market_Seller",
     candidates = "Market_Seller_Candidates" }
+local RECIPIENT_LABELS = { hint = "Transfer_Recipient_Hint", account = "Transfer_Recipient",
+    candidates = "Transfer_Recipient_Candidates" }
 local CONTEXTS = {
     player = ACCOUNT_LABELS, transactions = ACCOUNT_LABELS,
-    market = SELLER_LABELS, auction = SELLER_LABELS,
+    market = SELLER_LABELS, auction = SELLER_LABELS, transfer = RECIPIENT_LABELS,
 }
+local COMMANDS = { ["market.sellers"] = true, ["transfer.recipients"] = true }
 
 local function tr(key) return getText(T .. key) end
 
@@ -123,9 +127,9 @@ function P.create(owner, send, isPending, newRequestId, onPick, context, command
     o.context = CONTEXTS[context] and context or "player"
     local labels = CONTEXTS[o.context]
     o.accountLabel, o.candidatesLabel = tr(labels.account), tr(labels.candidates)
-    -- the public seller candidates and the admin account candidates are the same box over two
-    -- commands; nothing else in here knows the difference
-    o.command = command == "market.sellers" and "market.sellers" or "admin.players"
+    -- the public seller candidates, the transfer recipients and the admin account candidates are
+    -- the same box over three commands; nothing else in here knows the difference
+    o.command = COMMANDS[command] and command or "admin.players"
     o.targets = {}
     local online = tr("Admin_Player_Online")
     o.ac = U.framework.Autocomplete.new({

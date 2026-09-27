@@ -204,6 +204,12 @@ function Panel:createChildren()
     local filters = getText(T .. "Admin_Tx_Filters")
     self.walletFilterButton = Button.create(0, 0, textWidth(filters) + 22, CHIP_H, filters, self, Panel.onWalletFilters, "chip")
     self:addChild(self.walletFilterButton)
+    -- Player-to-player transfer: only there while the server offers it (Dialogs.transferGate);
+    -- shut, with the reason beside it, while the player may not send from where they stand.
+    local xfer = getText(T .. "Transfer_Button")
+    self.transferButton = Button.create(0, 0, textWidth(xfer) + 22, CHIP_H, xfer, self, Panel.onTransfer, "chip")
+    self.transferButton:setVisible(false)
+    self:addChild(self.transferButton)
     self.list = U.newTable(StatementCell, math.max(ROW, fontH.small + 8))
     -- picking a row reads it: the record opens as the session's own floating window (Detail)
     self.list.onSelect = function(_, item) self:onDetailRow("statement", item) end
@@ -507,7 +513,7 @@ end
 function Panel:updateModalGuard()
     local guard = self.modalGuard
     if guard == nil then return end
-    local top = self.marketDialog or self.buyDialog
+    local top = self.marketDialog or self.buyDialog or self.transferDialog
     if top == nil and self.prefsPopover ~= nil and self.prefsPopover:getIsVisible() then
         top = self.prefsPopover
     end
@@ -589,6 +595,7 @@ function Panel:keyboardTargets()
     if not self.shown or self.isCollapsed then return nil end
     if self.marketDialog then return self.marketDialog:keyboardTargets() end
     if self.buyDialog then return self.buyDialog:keyboardTargets() end
+    if self.transferDialog then return self.transferDialog:keyboardTargets() end
     if self.prefsPopover and self.prefsPopover:getIsVisible() then
         return self.prefsPopover:keyboardTargets()
     end
@@ -640,6 +647,7 @@ function Panel:detailTargets(out)
 end
 
 function Panel:walletTargets(out)
+    out[#out + 1] = { kind = "button", control = self.transferButton, label = self.transferButton.fullTitle }
     out[#out + 1] = { kind = "button", control = self.walletDetailsButton,
         label = getText(T .. "Wallet_Details") }
     out[#out + 1] = { kind = "button", control = self.walletFilterButton, label = self.walletFilterButton.fullTitle }
@@ -770,13 +778,18 @@ function Panel:onFocusShoulder(delta)
 end
 
 function Panel:isModal()
-    return self.marketDialog ~= nil or self.buyDialog ~= nil
+    return self.marketDialog ~= nil or self.buyDialog ~= nil or self.transferDialog ~= nil
         or (self.prefsPopover and self.prefsPopover:getIsVisible())
 end
 
 function Panel:onEscape()
     if self.marketDialog then self:closeMarketDialog(); return true end
     if self.buyDialog then self:closeBuy(); return true end
+    -- the recipient's candidate list folds before the dialog under it closes
+    if self.transferDialog then
+        if self.transferDialog.picker:isOpen() then self.transferDialog.picker:close() else self:closeTransfer() end
+        return true
+    end
     if self.prefsPopover and self.prefsPopover:getIsVisible() then self:showPrefs(false); return true end
     -- the candidate list folds first: Escape walks back out of what it opened, and the page
     -- behind it is left alone
@@ -812,6 +825,7 @@ function Panel:setTab(tab)
         self:closeCombos()
         self:closeBuy()
         self:closeMarketDialog()
+        self:closeTransfer()
         self:unfocusEntries()
         self:cancelAuctionHistory()
         self:showPrefs(false)
@@ -1001,8 +1015,13 @@ local function normalize(e, offsetMin)
     local cp = e.counterparty
     local cpClass = type(cp) == "string" and EC.accountClass(cp) or nil
     local desc = "-"
+    local kind = e.kind or e.type
     if cpClass == "player" then
+        -- a transfer names the other player and, when there is one, the memo both sides wrote
         desc = cp
+        if kind == "transfer" and type(e.reasonText) == "string" and e.reasonText ~= "" then
+            desc = desc .. " - " .. e.reasonText
+        end
     elseif cpClass == "discord" then
         desc = accountName(cp)
     elseif e.sourceMod then
@@ -1016,9 +1035,10 @@ local function normalize(e, offsetMin)
         -- the faucet, the burn drain, a Discord deposit: name what moved the money, not a dash
         desc = accountName(cp)
     end
-    local kind = e.kind or e.type
     local valueText = signedText(amount)
-    local label = kindText(kind)
+    -- a transfer reads as sent or received by its sign; the filter chip still groups both
+    local label = kind == "transfer" and getText(T .. (amount < 0 and "Kind_transfer_out" or "Kind_transfer_in"))
+        or kindText(kind)
     local item = type(e.item) == "string" and e.item or nil
     return {
         recordKey = U.recordKey(e),
@@ -1124,6 +1144,10 @@ end
 function Panel:onWallet(kind, args)
     if kind == "state" then
         self:rebuildList()
+    elseif kind == "transfer" then
+        self:onTransferReply(args)
+    elseif kind == "transfer.info" or kind == "transfer.recipients" then
+        if self.transferDialog then self.transferDialog:onRead(kind, args) end
     elseif kind == "changed" then
         self:rebuildBalances()
         self:loadHistory()
@@ -1404,6 +1428,81 @@ function Panel:layoutDialog(dlg)
 end
 
 function Panel:layoutBuy() self:layoutDialog(self.buyDialog) end
+
+-- ----- player transfer -----
+-- The dialog (Dialogs.TransferDialog) holds the form and sends the write; the window holds the one
+-- transfer in flight (transferPending), so a closed dialog still hears how it ended.
+function Panel:onTransfer()
+    if self:isModal() or self.transferPending ~= nil or Dialogs.transferGate() ~= false then return end
+    local trigger = Keys.focused()
+    local keyboard = Keys.isKeyboardFocused(trigger)
+    local dlg = ISPanel:new(0, 0, 360, 200)
+    setmetatable(dlg, Dialogs.TransferDialog)
+    dlg.background = false
+    dlg.panel = self
+    dlg.returnFocus = keyboard and trigger or nil
+    dlg:initialise()
+    self:addChild(dlg)      -- the controls exist from here on (instantiate -> createChildren)
+    self.transferDialog = dlg
+    dlg:open()
+    self:closeCombos()
+    self:updateModalGuard()
+    self:layoutDialog(dlg)
+    Keys.focusControl(dlg.picker.entry, keyboard)
+end
+
+function Panel:closeTransfer()
+    local dlg = self.transferDialog
+    if not dlg then return end
+    self.transferDialog = nil
+    dlg.picker:dispose()
+    dlg:setVisible(false)
+    self:removeChild(dlg)
+    Keys.invalidate(self)
+    self:updateModalGuard()
+    self.buyReturnFocus = dlg.returnFocus   -- the one focus hand-back slot prerender replays
+end
+
+-- Only the answer to this window's own request: the one in flight, or the one the open dialog
+-- sent and then timed out on (a late answer is still the truth about it).
+function Panel:onTransferReply(args)
+    local pending, dlg = self.transferPending, self.transferDialog
+    local id = args.requestId
+    local mine = pending ~= nil and id == pending.requestId
+    if not mine and not (dlg and dlg.sent and id == dlg.sent.requestId) then return end
+    if mine then self.transferPending = nil end
+    if args.ok then
+        self:closeTransfer()
+        C.toast(getText(T .. "Transfer_Sent", tostring(args.to), W.moneyText(args.amount, args.currency),
+            W.moneyText(args.fee, args.currency)))
+    elseif dlg then
+        dlg:onRefused(args)
+    else
+        C.toast(Dialogs.transferError(args))
+    end
+end
+
+-- Per frame: the button follows the server's switches and the player's position, and a write
+-- that never answers is given up on -- read back, never resent (TransferDialog:onTimeout).
+function Panel:syncTransfer()
+    local gate = Dialogs.transferGate()
+    local b = self.transferButton
+    b:setVisible(gate ~= nil and self.walletDetailsButton:getIsVisible())
+    b:setEnable(gate == false and self.transferPending == nil and not self:isModal())
+    self.transferReason = gate or nil
+    b.tooltip = self.transferReason
+    local pending = self.transferPending
+    if pending and EC.now() - pending.at > TIMEOUT_MS then
+        self.transferPending = nil
+        if self.transferDialog then
+            self.transferDialog:onTimeout()
+        else
+            -- nothing is left to press again: the statement is where the answer is read
+            C.requestWallet()
+            C.toast(getText(T .. "Transfer_TimeoutClosed"))
+        end
+    end
+end
 
 function Panel:closeBuy()
     local dlg = self.buyDialog
@@ -2236,7 +2335,9 @@ function Panel:detailText(kind, e)
         out[5] = detailLine("Wallet_Col_Balance", amountText(e.after))
         if e.rolledBack then out[#out + 1] = getText(T .. "Wallet_RolledBack") end
         if e.txId then out[#out + 1] = detailLine("Detail_TxId", e.txId) end
-        if e.reasonText and e.reasonText ~= "" then out[#out + 1] = detailLine("Admin_Tx_Field_Reason", e.reasonText) end
+        if e.reasonText and e.reasonText ~= "" then
+            out[#out + 1] = detailLine(e.kind == "transfer" and "Transfer_Memo" or "Admin_Tx_Field_Reason", e.reasonText)
+        end
         return out
     end
     if kind == "balance" then
@@ -3390,6 +3491,7 @@ function Panel:prerender()
             C.requestRewards()
         end
     end
+    self:syncTransfer()
     -- One write in flight per page: a server that never answers must not leave the buy dialog
     -- disabled forever (the admin pages use the same window).
     if self.buyPending and EC.now() - self.buyPending.at > TIMEOUT_MS then
@@ -3630,6 +3732,7 @@ function Panel:setVisible(visible)
         self:closeCombos()       -- a dropdown popup lives in the UIManager, not in this window
         self:closeBuy()
         self:closeMarketDialog()
+        self:closeTransfer()
         Detail.close(self)       -- a record of a window that is gone is not a record
         self:unfocusEntries()
         self:cancelAuctionHistory()   -- a closed window asks the server for nothing

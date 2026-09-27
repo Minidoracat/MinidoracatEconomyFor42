@@ -480,7 +480,7 @@ function L.layout(self)
     g.walletHeaderH = math.max(CARD_TITLE_H, fontH.medium + 8)
     -- (the filter bar's own chips take their height from the bar: UI.FilterBar height)
     for _, buttons in ipairs({ self.periodButtons,
-        { self.walletDetailsButton, self.walletFilterButton, self.detailCopyButton,
+        { self.walletDetailsButton, self.walletFilterButton, self.transferButton, self.detailCopyButton,
             self.historyRetryButton, self.mailClaimAllButton } }) do
         for _, button in ipairs(buttons) do
             local height = math.max(CHIP_H, fontH.small + 8)
@@ -536,7 +536,11 @@ function L.layout(self)
     filt.active = sheet
     filt:setVisible(isWallet and not balances and self.walletCompact)
     filt:setX(fold.x - 6 - filt.width); filt:setY(fold.y)
-    g.walletTitleW = (filt:getIsVisible() and filt.x or fold.x) - bx - PAD * 2
+    -- the transfer chip sits left of the header chips; its visibility is the server's (per frame,
+    -- Panel:syncTransfer), so the title keeps only the room left of it
+    local xfer = self.transferButton
+    xfer:setX((filt:getIsVisible() and filt.x or fold.x) - 6 - xfer.width); xfer:setY(fold.y)
+    g.walletTitleW = xfer.x - bx - PAD * 2
     g.walletFilters, g.walletList, g.walletBalances = showFilters, showList, balances
     g.walletChipY = chromeTop
     for _, b in ipairs(self.periodButtons) do b:setVisible(showFilters) end
@@ -916,6 +920,7 @@ function L.layout(self)
     self:updateModalGuard()   -- the window may have been resized or collapsed under a dialog
     self:layoutMarketDialog()
     self:layoutBuy()
+    self:layoutDialog(self.transferDialog)
     self.layoutW, self.layoutH = w, h
     self.layoutCollapsed = self.isCollapsed
     self.layoutBand = band
@@ -1049,8 +1054,16 @@ end
 function L.drawWallet(self)
     local g = self.g
     local bx, bw = g.bodyX, g.bodyW
-    local title = getText(T .. (g.walletBalances and "Wallet_Balances" or "Wallet_Statement"))
-    card(self, bx, g.contentY, bw, g.workH, fitText(title, math.max(0, g.walletTitleW), UIFont.Medium), g.walletHeaderH)
+    local title = fitText(getText(T .. (g.walletBalances and "Wallet_Balances" or "Wallet_Statement")),
+        math.max(0, g.walletTitleW), UIFont.Medium)
+    card(self, bx, g.contentY, bw, g.workH, title, g.walletHeaderH)
+    -- why the transfer chip is shut, in words beside it (Panel:syncTransfer keeps it current)
+    local xfer = self.transferButton
+    if self.transferReason and xfer:getIsVisible() then
+        local left = bx + PAD * 3 + textWidth(title, UIFont.Medium)
+        textRight(self, fitText(self.transferReason, math.max(0, xfer.x - 6 - left)), xfer.x - 6,
+            xfer.y + math.floor((xfer.height - fontH.small) / 2), "warn")
+    end
     if g.walletBalances then return end
     if g.walletFilters then
         text(self, getText(T .. "Wallet_Period"), bx + PAD,
