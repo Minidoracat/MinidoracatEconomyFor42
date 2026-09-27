@@ -432,6 +432,72 @@ option MinidoracatEconomy.AuctionMinIncrementPercent
     translation = MinidoracatEconomy_AuctionMinIncrementPercent,
 }
 
+option MinidoracatEconomy.TransferEnabled
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_TransferEnabled,
+}
+
+option MinidoracatEconomy.TransferRemote
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_TransferRemote,
+}
+
+option MinidoracatEconomy.TransferFeePercent
+{
+    type = integer,
+    min = 0,
+    max = 50,
+    default = 5,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_TransferFeePercent,
+}
+
+option MinidoracatEconomy.TransferMin
+{
+    type = integer,
+    min = 1,
+    max = 1000000,
+    default = 1,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_TransferMin,
+}
+
+option MinidoracatEconomy.TransferMaxPerTx
+{
+    type = integer,
+    min = 1,
+    max = 100000000,
+    default = 5000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_TransferMaxPerTx,
+}
+
+option MinidoracatEconomy.TransferDailyPerAccount
+{
+    type = integer,
+    min = 0,
+    max = 1000000000,
+    default = 10000,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_TransferDailyPerAccount,
+}
+
+option MinidoracatEconomy.TransferMinAccountDays
+{
+    type = integer,
+    min = 0,
+    max = 365,
+    default = 3,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_TransferMinAccountDays,
+}
+
 option MinidoracatEconomy.ShopBuybackEnabled
 {
     type = boolean,

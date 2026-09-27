@@ -24,7 +24,10 @@
 -- source. Entitlement money uses the same post below with a private `internal` argument the facade
 -- can never pass: its own "ent:" idempotency namespace, a copy-on-write commit descriptor that
 -- L.post publishes together with the money, and the bounded reversal of one paid order.
--- Still not here: no player-to-player transfer (CAPABILITIES.transfer = false), no
+-- Rev 3 (ECTransfer, which raises API_REVISION and sets CAPABILITIES.transfer once it has
+-- loaded): src.transfer(from, to, currency, amount, opts) / E.transfer(..., opts with modId)
+-- moves money player -> player through the same rules as a player transfer (minus the terminal
+-- and the memo), only for a source the host marked allowTransfer. Still not here: no
 -- client-originated third-party commands.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Rewards then
@@ -214,6 +217,12 @@ function G.registerSource(spec)
             copy.modId = modId
             return G.post(copy)
         end,
+        transfer = function(from, to, currency, amount, opts)
+            local copy = {}
+            if type(opts) == "table" then for k, v in pairs(opts) do copy[k] = v end end
+            copy.modId = modId
+            return G.transfer(from, to, currency, amount, copy)
+        end,
     }
     for _, name in ipairs(G.ENTITLEMENT_METHODS) do
         handle[name] = function(...)
@@ -230,7 +239,8 @@ function G.source(modId)
     local live = validModId(modId) and registry[modId] or nil
     if not live then return nil end
     local cfg = md and md.config.sources[modId]
-    return { currencies = live.currencies, reasonCodes = live.reasonCodes, enabled = cfg == nil or cfg.enabled ~= false }
+    return { currencies = live.currencies, reasonCodes = live.reasonCodes, enabled = cfg == nil or cfg.enabled ~= false,
+        allowTransfer = cfg ~= nil and cfg.allowTransfer == true }
 end
 
 -- One call of this source's per-tick budget for a mutation that moves no money (auto-renew
@@ -364,6 +374,50 @@ function G.debit(username, currency, amount, opts)
     return sugar(username, currency, amount, opts, -1)
 end
 
+-- transfer: player -> player (rev 3, ECTransfer). opts = { modId, requestId, reasonCode,
+-- reasonText?, ref?, meta? }. The source must be enabled and marked allowTransfer by the host;
+-- the money rules (switches, recipient, freezes, age, range, daily limit, caps, fee) are
+-- ECTransfer's. Shares the source's "mod:" idempotency namespace with post, so one requestId is
+-- one operation of that source whatever it was. -> { ok, txId, fee, duplicate } | { ok=false, error }
+function G.transfer(from, to, currency, amount, opts)
+    if type(opts) ~= "table" then return { ok = false, error = "invalid_args" } end
+    if not md then return { ok = false, error = "not_ready" } end
+    local modId = opts.modId
+    local source = validModId(modId) and registry[modId] or nil
+    if not source then return reject(nil, "unknown_source", opts) end
+    local calls = (tickCalls[modId] or 0) + 1
+    tickCalls[modId] = calls
+    if calls > G.CALLS_PER_TICK then return reject(modId, "rate_limited", opts) end
+    local cfg = configRow(modId, true)
+    if cfg.enabled == false then return reject(modId, "source_disabled", opts) end
+    if cfg.allowTransfer ~= true then return reject(modId, "transfer_not_allowed", opts) end
+    if not shortString(opts.requestId, G.REQUEST_ID_MAX) then return reject(modId, "invalid_args", opts) end
+    if type(opts.reasonCode) ~= "string" or not source.reasonCodes[opts.reasonCode] then
+        return reject(modId, "invalid_args", opts)
+    end
+    local extras, extrasErr = cleanExtras(opts)
+    if not extras then return reject(modId, extrasErr, opts) end
+    if type(from) ~= "string" or type(to) ~= "string" or not isInteger(amount) or amount <= 0
+        or not EC.CURRENCIES[currency] then
+        return reject(modId, "invalid_args", opts)
+    end
+    if not source.currencies[currency] then return reject(modId, "currency_not_allowed", opts) end
+    local Tr = EC.Transfer
+    if type(Tr) ~= "table" or type(Tr.execute) ~= "function" then return reject(modId, "not_ready", opts) end
+    local res = Tr.execute({
+        from = from, to = to, currency = currency, amount = amount,
+        key = "mod:" .. #modId .. ":" .. modId .. ":" .. opts.requestId,
+        reasonCode = opts.reasonCode, reasonText = extras.reasonText, actor = modId,
+        payload = { sourceMod = modId, ref = extras.ref, meta = extras.meta },
+    })
+    if not res.ok then return reject(modId, res.error, opts) end
+    if not res.duplicate then
+        local row = dailyRow(R.dayKey(EC.now()), modId, true)
+        row.calls, row.ok = row.calls + 1, row.ok + 1
+    end
+    return { ok = true, txId = res.txId, fee = res.fee, duplicate = res.duplicate == true }
+end
+
 -- Read-only; never creates a wallet. nil for an unknown currency.
 function G.getBalance(username, currency)
     if not md or type(username) ~= "string" or not EC.CURRENCIES[currency] then return nil end
@@ -391,6 +445,7 @@ function G.sources()
             loaded = live ~= nil,
             enabled = cfg.enabled ~= false,
             dailyMintCap = cfg.dailyMintCap or 0,
+            allowTransfer = cfg.allowTransfer == true,
             dailyBurnCap = cfg.dailyBurnCap,
             registeredAt = cfg.registeredAt,
             balance = {},
@@ -408,7 +463,7 @@ function G.sources()
     return out
 end
 
--- values = { dailyMintCap?, dailyBurnCap? (false = unlimited), enabled? }; each change is audited.
+-- values = { dailyMintCap?, dailyBurnCap? (false = unlimited), enabled?, allowTransfer? }; each change is audited.
 function G.setSource(modId, values, actor, reason)
     if not md or not validModId(modId) or type(values) ~= "table" then return false, "invalid_args" end
     local cfg = configRow(modId, false)
@@ -431,6 +486,10 @@ function G.setSource(modId, values, actor, reason)
     if values.enabled ~= nil then
         if type(values.enabled) ~= "boolean" then return false, "invalid_args" end
         changes[#changes + 1] = { "enabled", cfg.enabled ~= false, values.enabled }
+    end
+    if values.allowTransfer ~= nil then
+        if type(values.allowTransfer) ~= "boolean" then return false, "invalid_args" end
+        changes[#changes + 1] = { "allowTransfer", cfg.allowTransfer == true, values.allowTransfer }
     end
     for _, c in ipairs(changes) do
         local field, before, after = c[1], c[2], c[3]

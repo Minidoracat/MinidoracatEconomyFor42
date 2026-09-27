@@ -139,6 +139,7 @@ local function charCount(s)
     end
     return n
 end
+A.charCount = charCount   -- ECTransfer's memo bound uses the same character count
 
 -- ---------- roles ----------
 
@@ -684,6 +685,9 @@ function A.config(player, args)
     elseif args.field == "enabled" then
         if type(args.value) ~= "boolean" then return { ok = false, error = "invalid_args" } end
         ok, err = Cfg.setEnabled(args.currency, args.value, admin, reason)
+    elseif args.field == "directTransfer" then
+        if type(args.value) ~= "boolean" then return { ok = false, error = "invalid_args" } end
+        ok, err = Cfg.setDirectTransfer(args.currency, args.value, admin, reason)
     elseif args.field == "exchange" then
         -- a malformed value is refused, never coerced to {}: an empty table is a silent no-op
         -- that the panel would report as an applied change
@@ -895,7 +899,7 @@ S.handlers["admin.icons"] = function(player, args)
 end
 
 -- admin.sources {action = "list"} (read gate) | {action = "set", modId, dailyMintCap?, dailyBurnCap?
--- (false = unlimited), enabled?, reason} (write gate): per-source integration caps (spec 21.5).
+-- (false = unlimited), enabled?, allowTransfer?, reason} (write gate): per-source integration caps (spec 21.5).
 S.handlers["admin.sources"] = function(player, args)
     local set = type(args) == "table" and args.action == "set"
     if not gate(player, "admin.sources", set) then return end
@@ -905,7 +909,8 @@ S.handlers["admin.sources"] = function(player, args)
         if type(reason) ~= "string" or charCount((string.gsub(reason, "^%s*(.-)%s*$", "%1"))) < 1 or #reason > A.REASON_MAX * 3 then
             res = { ok = false, error = "reason_too_short" }
         else
-            local ok, err = G.setSource(args.modId, { dailyMintCap = args.dailyMintCap, dailyBurnCap = args.dailyBurnCap, enabled = args.enabled },
+            local ok, err = G.setSource(args.modId, { dailyMintCap = args.dailyMintCap, dailyBurnCap = args.dailyBurnCap, enabled = args.enabled,
+                allowTransfer = args.allowTransfer },
                 player:getUsername(), reason)
             if not ok then res = { ok = false, error = err } end
         end
@@ -2533,7 +2538,7 @@ end
 
 A.TX_GROUPS = {
     all = true, shop_buy = true, shop_sell = true, market = true, auction = true,
-    rewards = true, admin = true, mod = true, exchange = true, other = true,
+    rewards = true, admin = true, mod = true, exchange = true, transfer = true, other = true,
 }
 
 -- tx.kind -> the group the panel filters on. An unmapped kind lands in "other" instead of
@@ -2541,7 +2546,7 @@ A.TX_GROUPS = {
 local function txGroup(kind)
     if kind == "shop_buy" or kind == "shop_sell" then return kind end
     if kind == "checkin" or kind == "milestone" then return "rewards" end
-    if kind == "mod" then return "mod" end
+    if kind == "mod" or kind == "transfer" then return kind end
     local prefix = type(kind) == "string" and string.match(kind, "^(%a+)_") or nil
     if prefix == "market" or prefix == "auction" or prefix == "admin" or prefix == "exchange" then
         return prefix
