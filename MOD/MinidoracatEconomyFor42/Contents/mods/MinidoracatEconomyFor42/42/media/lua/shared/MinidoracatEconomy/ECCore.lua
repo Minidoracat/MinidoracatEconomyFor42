@@ -23,7 +23,15 @@ EC.MODDATA_KEY = "MinidoracatEconomy"          -- Global ModData table name
 EC.PLAYER_MODDATA_KEY = "MinidoracatEconomy"   -- sub-table inside player:getModData() (pending records)
 EC.SANDBOX_PAGE = "MinidoracatEconomy"         -- SandboxVars.MinidoracatEconomy.*
 EC.SCHEMA_VERSION = 1
-EC.VERSION = "0.1.2"
+-- mod.info is the one place a release writes its version ("<PZ build>-<mod semver>"); logs, events
+-- and the admin page read the mod's part from it (getModInfoByID LuaManager.java:5368;
+-- Mod.getModVersion ChooseGameInfo.java:696; vanilla ModInfoPanelParam.lua:23) instead of a
+-- second copy that a release can forget to bump.
+EC.VERSION = (function()
+    local ok, v = pcall(function() return getModInfoByID(EC.MOD_ID):getModVersion() end)
+    if not ok or type(v) ~= "string" or v == "" then return "unknown" end
+    return string.match(v, "^[^%-]+%-(.+)$") or v
+end)()
 
 -- Static half of the currency registry (spec section 18.1). Runtime overrides
 -- (nameOverride / iconHash / enabled / caps) live in Global ModData `config.currencies[id]`

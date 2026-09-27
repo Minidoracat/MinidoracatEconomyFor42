@@ -10,7 +10,9 @@
 -- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
 -- the file: none of EC.LISTING_FIXED_TYPES (containers, clothing, keys, maps, moveables, animals;
 -- radios travel with their DeviceData), nothing rotten, equipped, favourite or broken, and no modData larger than the snapshot
--- may carry (the data itself travels: vanilla writes customName / condition:* there).
+-- may carry (the data itself travels: vanilla writes customName / condition:* there). State a
+-- snapshot cannot carry is refused instead of dropped: a notebook's writing or author lock, applied
+-- poison, a prepared dish's ingredients, a fertilized egg.
 --
 -- Engine references (snapshot 42.20.4-20260826, all exercised in A7):
 --   instanceItem                    LuaManager.java:5610-5620
@@ -24,6 +26,11 @@
 --   HandWeapon getAllWeaponParts/detachWeaponPart  HandWeapon.java:1690-1692, 1807-1809
 --   getCategory (main type) / getDisplayCategory   InventoryItem.java:681-683, 3135-3137
 --   script daysTotallyRotten (1e9 = never rots)    Item.java:90-91, 594-596
+--   head condition / head repairs / sharpness       InventoryItem.java:3167-3183, 4589-4641, 4789-4823
+--   rounds, magazine, chamber, jam, fire mode       InventoryItem.java:3917-3923 ; HandWeapon.java:2064-2141, 2252-2258
+--   infected / key id / remote pairing              InventoryItem.java:3759-3765, 1739-1748
+--   raw food values (the *Unmodified getters)       Food.java:1767-1785, 1912-2144
+--   writing / author lock                           Literature.java:43-44, 502-521
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Shop then
     require "MinidoracatEconomy/ECShop"
@@ -304,6 +311,15 @@ function Codec.stateCheck(item)
     if call(item, "isRotten") == true then return false, "perishable" end
     local md = call(item, "getModData")
     if type(md) == "table" and copyModData(md, 0, 0) == nil then return false, "moddata_too_big" end
+    -- Refused, not dropped: pages of up to 16 384 characters and their lock, applied poison, a
+    -- dish's ingredient list (its sickness value has no raw getter, Food.java:2081-2096) and an
+    -- egg's genome would all vanish in the rebuild.
+    if call(item, "isEmptyPages") == false or call(item, "getLockedBy") ~= nil then return false, "written" end
+    local poison = call(item, "getPoisonPower")
+    if type(poison) == "number" and poison > 0 then return false, "poisoned" end
+    local extra = call(item, "getExtraItems")
+    if extra ~= nil and (call(extra, "size") or 0) > 0 then return false, "prepared_dish" end
+    if call(item, "isFertilized") == true then return false, "fertilized" end
     return true
 end
 
@@ -358,15 +374,63 @@ function Codec.snapshot(item)
         if type(name) == "string" and name ~= "" and #name <= Codec.MODDATA_STRING_MAX then s.name = name end
     end
     if call(item, "getCategory") == "Food" then
+        -- raw values: the plain getters add the burnt / stale / cooked modifiers, and writing those
+        -- back would apply them a second time
         s.food = {
             hunger = call(item, "getHungChange"),
-            thirst = call(item, "getThirstChange"),
+            thirst = call(item, "getThirstChangeUnmodified") or call(item, "getThirstChange"),
             cooked = call(item, "isCooked") == true,
             burnt = call(item, "isBurnt") == true,
             frozen = call(item, "isFrozen") == true,
             freezing = call(item, "getFreezingTime"),
             listedHours = worldHours(),
+            calories = call(item, "getCalories"),
+            proteins = call(item, "getProteins"),
+            lipids = call(item, "getLipids"),
+            carbs = call(item, "getCarbohydrates"),
+            baseHunger = call(item, "getBaseHunger"),
+            unhappy = call(item, "getUnhappyChangeUnmodified"),
+            boredom = call(item, "getBoredomChangeUnmodified"),
+            stress = call(item, "getStressChangeUnmodified"),
+            endurance = call(item, "getEnduranceChangeUnmodified"),
+            fatigue = call(item, "getFatigueChange"),
+            pain = call(item, "getPainReduction"),
+            flu = call(item, "getFluReduction"),
+            cookingTime = call(item, "getCookingTime"),
         }
+        if call(item, "isCookedInMicrowave") == true then s.food.microwave = true end
+        local chef = call(item, "getChef")
+        if type(chef) == "string" and chef ~= "" and #chef <= Codec.MODDATA_STRING_MAX then s.food.chef = chef end
+    end
+    -- A fresh copy starts at the script's full head and edge: only a worn head, a dull edge or a
+    -- repaired head is stored, so new copies keep one signature (and one listing).
+    if call(item, "hasHeadCondition") == true then
+        local head, max = call(item, "getHeadCondition"), call(item, "getHeadConditionMax")
+        if type(head) == "number" and type(max) == "number" and head < max then s.head = head end
+    end
+    if call(item, "hasTimesHeadRepaired") == true then
+        local repairs = call(item, "getTimesHeadRepaired")
+        if type(repairs) == "number" and repairs > 0 then s.headRepaired = repairs end
+    end
+    if call(item, "hasSharpness") == true then
+        local sharp, max = call(item, "getSharpness"), call(item, "getMaxSharpness")
+        if type(sharp) == "number" and type(max) == "number" and sharp < max then s.sharpness = sharp end
+    end
+    -- rounds are a count on the gun or the magazine, and an inserted magazine is a flag: none of
+    -- them is an item of its own
+    local ammo = call(item, "getCurrentAmmoCount")
+    if type(ammo) == "number" and ammo > 0 then s.ammo = ammo end
+    if call(item, "isContainsClip") == true then s.clip = true end
+    if call(item, "isRoundChambered") == true then s.chamber = true end
+    if call(item, "isJammed") == true then s.jammed = true end
+    local mode = call(item, "getFireMode")
+    if type(mode) == "string" and mode ~= "" then s.fireMode = mode end
+    if call(item, "isInfected") == true then s.infected = true end
+    local keyId = call(item, "getKeyId")
+    if type(keyId) == "number" and keyId ~= -1 then s.keyId = keyId end
+    local remoteId, remoteRange = call(item, "getRemoteControlID"), call(item, "getRemoteRange")
+    if (type(remoteId) == "number" and remoteId ~= -1) or (type(remoteRange) == "number" and remoteRange ~= 0) then
+        s.remote = { id = remoteId, range = remoteRange }
     end
     -- radio / walkie-talkie: the tuned state lives in DeviceData (Radio.java:46; getters and the
     -- side-effect-free *Raw setters DeviceData.java:382-604, 1314-1326)
@@ -415,6 +479,21 @@ function Codec.rebuild(s)
     local item = instanceItem(s.type)
     if not item then return nil, "item_unavailable" end
     if type(s.condition) == "number" then call(item, "setCondition", s.condition) end
+    -- head before edge: the edge is capped by the head's share of its maximum
+    if type(s.head) == "number" then call(item, "setHeadCondition", s.head) end
+    if type(s.headRepaired) == "number" then call(item, "setTimesHeadRepaired", s.headRepaired) end
+    if type(s.sharpness) == "number" then call(item, "setSharpness", s.sharpness) end
+    if type(s.ammo) == "number" then call(item, "setCurrentAmmoCount", s.ammo) end
+    if s.clip then call(item, "setContainsClip", true) end
+    if s.chamber then call(item, "setRoundChambered", true) end
+    if s.jammed then call(item, "setJammed", true) end
+    if type(s.fireMode) == "string" then call(item, "setFireMode", s.fireMode) end
+    if s.infected then call(item, "setInfected", true) end
+    if type(s.keyId) == "number" then call(item, "setKeyId", s.keyId) end
+    if type(s.remote) == "table" then
+        if type(s.remote.id) == "number" then call(item, "setRemoteControlID", s.remote.id) end
+        if type(s.remote.range) == "number" then call(item, "setRemoteRange", s.remote.range) end
+    end
     if type(s.uses) == "number" then call(item, "setCurrentUses", s.uses) end
     local age = s.age
     local food = s.food
@@ -430,6 +509,21 @@ function Codec.rebuild(s)
         if food.burnt then call(item, "setBurnt", true) end
         if type(food.freezing) == "number" then call(item, "setFreezingTime", food.freezing) end
         if food.frozen then call(item, "setFrozen", true) end
+        if type(food.calories) == "number" then call(item, "setCalories", food.calories) end
+        if type(food.proteins) == "number" then call(item, "setProteins", food.proteins) end
+        if type(food.lipids) == "number" then call(item, "setLipids", food.lipids) end
+        if type(food.carbs) == "number" then call(item, "setCarbohydrates", food.carbs) end
+        if type(food.baseHunger) == "number" then call(item, "setBaseHunger", food.baseHunger) end
+        if type(food.unhappy) == "number" then call(item, "setUnhappyChange", food.unhappy) end
+        if type(food.boredom) == "number" then call(item, "setBoredomChange", food.boredom) end
+        if type(food.stress) == "number" then call(item, "setStressChange", food.stress) end
+        if type(food.endurance) == "number" then call(item, "setEnduranceChange", food.endurance) end
+        if type(food.fatigue) == "number" then call(item, "setFatigueChange", food.fatigue) end
+        if type(food.pain) == "number" then call(item, "setPainReduction", food.pain) end
+        if type(food.flu) == "number" then call(item, "setFluReduction", food.flu) end
+        if type(food.cookingTime) == "number" then call(item, "setCookingTime", food.cookingTime) end
+        if food.microwave then call(item, "setCookedInMicrowave", true) end
+        if type(food.chef) == "string" then call(item, "setChef", food.chef) end
     end
     if type(age) == "number" then call(item, "setAge", age) end
     if type(s.repaired) == "number" then call(item, "setHaveBeenRepaired", s.repaired) end

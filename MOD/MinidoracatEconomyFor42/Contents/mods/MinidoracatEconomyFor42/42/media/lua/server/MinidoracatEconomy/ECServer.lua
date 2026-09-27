@@ -86,6 +86,10 @@ end
 -- reported: until a save lands, every restart rolls the same epochs back again, and the journal
 -- must not repeat the epoch.rolledback line each time (seen live: 10 kill-restarts = 45 lines).
 -- Kept in ECServer because it must run before ECExport initialises.
+-- `n` counts starts: one more than the largest `n` already in the file, and server.started
+-- carries the same number (S.startIndex). Trimming drops only the oldest lines and keeps their
+-- numbers, so a reader can prove an epoch missing from this file is older than its first line
+-- (trimmed) and not a lost line in between; old lines without `n` are pre-counter history.
 S.EPOCHS_FILE = "MinidoracatEconomy/epochs.json"
 S.EPOCHS_KEEP = 60
 
@@ -100,7 +104,8 @@ local function readEpochLines()
             if line == nil then break end
             local rec = EC.jsonDecode(line)
             if type(rec) == "table" and type(rec.epoch) == "string" and type(rec.loadedSeq) == "number" then
-                out[#out + 1] = { epoch = rec.epoch, loadedSeq = rec.loadedSeq, flagged = type(rec.flagged) == "table" and rec.flagged or nil }
+                local n = type(rec.n) == "number" and rec.n >= 1 and rec.n == math.floor(rec.n) and rec.n or nil
+                out[#out + 1] = { epoch = rec.epoch, loadedSeq = rec.loadedSeq, n = n, flagged = type(rec.flagged) == "table" and rec.flagged or nil }
             end
         end
     end)
@@ -117,7 +122,7 @@ local function writeEpochLines(lines, append)
     end
     pcall(function()
         for _, h in ipairs(lines) do
-            writer:writeln(EC.jsonEncode({ epoch = h.epoch, loadedSeq = h.loadedSeq, flagged = h.flagged }))
+            writer:writeln(EC.jsonEncode({ epoch = h.epoch, loadedSeq = h.loadedSeq, n = h.n, flagged = h.flagged }))
         end
     end)
     pcall(function() writer:close() end)
@@ -176,7 +181,12 @@ function S.initModData()
         startedAt = EC.now(),
         history = history,
     }
-    local mine = { epoch = md.meta.epoch, loadedSeq = prevSeq, flagged = #flagged > 0 and flagged or nil }
+    local lastN = 0
+    for _, h in ipairs(fileLines) do
+        if h.n and h.n > lastN then lastN = h.n end
+    end
+    S.startIndex = lastN + 1
+    local mine = { epoch = md.meta.epoch, loadedSeq = prevSeq, n = S.startIndex, flagged = #flagged > 0 and flagged or nil }
     if #fileLines >= S.EPOCHS_KEEP then
         local keep = {}
         for i = #fileLines - math.floor(S.EPOCHS_KEEP / 2) + 1, #fileLines do keep[#keep + 1] = fileLines[i] end

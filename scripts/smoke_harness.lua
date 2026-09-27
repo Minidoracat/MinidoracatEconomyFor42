@@ -185,10 +185,12 @@ knownItems = {
     ["Base.Plank"] = { w = 3, cat = "MaterialWeapon", main = "Weapon" }, ["Base.Rope"] = { w = 0.5, cat = "Material", main = "Normal" },
     ["Base.Twine"] = { w = 0.1, cat = "Material", main = "Normal" }, ["Base.Lighter"] = { w = 0.1, cat = "LightSource", main = "Drainable" },
     ["Base.Hammer"] = { w = 1.5, cat = "Tool", main = "Weapon" }, ["Base.Saw"] = { w = 1.5, cat = "Tool", main = "Normal" },
-    ["Base.Axe"] = { w = 3, cat = "ToolWeapon", main = "Weapon", weapon = true }, ["Base.Heavy"] = { w = 30, cat = "Material", main = "Normal" },
+    ["Base.Axe"] = { w = 3, cat = "ToolWeapon", main = "Weapon", weapon = true, head = 10, sharp = true }, ["Base.Heavy"] = { w = 30, cat = "Material", main = "Normal" },
     ["Base.Apple"] = { w = 0.2, cat = "Food", main = "Food", rots = 8 }, ["Base.Bag_ALICEpack"] = { w = 1, cat = "Bag", main = "Container" },
     ["Base.PetrolCan"] = { w = 1.5, cat = "VehicleMaintenance", main = "Normal", fluid = true },
     ["Base.x2Scope"] = { w = 0.3, cat = "WeaponPart", main = "Normal" }, ["Base.BookCarpentry1"] = { w = 0.8, cat = "SkillBook", main = "Literature" },
+    ["Base.Notebook"] = { w = 0.1, cat = "Literature", main = "Literature" },
+    ["Base.Pistol"] = { w = 1, cat = "Weapon", main = "Weapon", weapon = true, gun = true }, ["Base.9mmClip"] = { w = 0.1, cat = "Ammo", main = "Normal" },
     ["Base.RadioRed"] = { w = 1, cat = "Communications", main = "Item", itemType = "RADIO", device = true },
     ["Base.Mov_Chair"] = { w = 5, cat = "Furniture", main = "Item", itemType = "MOVEABLE" },
     -- 非 Base 模組物品：伺服器的 ScriptManager 認得就算數（目錄新增不是 Base-only）
@@ -224,6 +226,15 @@ function getModFileReader(modId, path, create)
     return { readLine = function() local line = f:read("*l"); return line and (line:gsub("\r$", "")) end,
         close = function() f:close() end }
 end
+-- getModInfoByID(id):getModVersion()（LuaManager.java:5368、ChooseGameInfo.java:696）：讀真的 mod.info
+function getModInfoByID(modId)
+    local f = io.open("MOD/" .. modId .. "/Contents/mods/" .. modId .. "/42/mod.info", "rb")
+    if not f then return nil end
+    local text = f:read("*a")
+    f:close()
+    local v = string.match(text, "modversion=([^\r\n]+)")
+    return { getModVersion = function() return v or "" end }
+end
 worldHours = 1000                -- getGameTime():getWorldAgeHours() 的假值（全域：主函式已逼近 200 個 local）
 function getGameTime() return { getWorldAgeHours = function() return worldHours end } end
 -- RolesWrite 是原版角色編輯器自己的閘門（ISRolesList.lua:20/110、RolesEditPacket.java:19）
@@ -252,13 +263,94 @@ function instanceItem(fullType)
     it.setCondition = function(_, v) it.condition = v end
     it.getCurrentUses = function() return it.uses end
     it.setCurrentUses = function(_, v) it.uses = v end
+    -- 物品層的其他存檔狀態（InventoryItem.save:1739-1782）：預設值 = 原版新物品
+    it.infected, it.keyId, it.remoteId, it.remoteRange, it.ammo = false, -1, -1, 0, 0
+    it.isInfected = function() return it.infected end
+    it.setInfected = function(_, v) it.infected = v end
+    it.getKeyId = function() return it.keyId end
+    it.setKeyId = function(_, v) it.keyId = v end
+    it.getRemoteControlID = function() return it.remoteId end
+    it.setRemoteControlID = function(_, v) it.remoteId = v end
+    it.getRemoteRange = function() return it.remoteRange end
+    it.setRemoteRange = function(_, v) it.remoteRange = v end
+    it.getCurrentAmmoCount = function() return it.ammo end
+    it.setCurrentAmmoCount = function(_, v) it.ammo = v end
+    -- B42 屬性：刀頭耐久與銳利度（InventoryItem.java:4593-4641, 4789-4823）；銳利度讀取時以
+    -- 刀頭（或本體）耐久比例為上限，新物品是腳本預設的滿值
+    if k.head then
+        it.head, it.headMax, it.headRepaired = k.head, k.head, 0
+        it.hasHeadCondition = function() return true end
+        it.getHeadCondition = function() return it.head end
+        it.getHeadConditionMax = function() return it.headMax end
+        it.setHeadCondition = function(_, v) it.head = math.max(0, math.min(it.headMax, v)) end
+        it.hasTimesHeadRepaired = function() return true end
+        it.getTimesHeadRepaired = function() return it.headRepaired end
+        it.setTimesHeadRepaired = function(_, v) it.headRepaired = v end
+    end
+    if k.sharp then
+        it.sharpness = 1.0
+        it.hasSharpness = function() return true end
+        it.getMaxSharpness = function() if k.head then return it.head / it.headMax end; return it.condition / 10 end
+        it.getSharpness = function() return math.min(it.sharpness, it.getMaxSharpness()) end
+        it.setSharpness = function(_, v) it.sharpness = math.max(0, math.min(v, it.getMaxSharpness(), 1.0)) end
+    end
+    if k.gun then
+        it.clip, it.chamber, it.jammed, it.fireMode = false, false, false, "Single"
+        it.isContainsClip = function() return it.clip end
+        it.setContainsClip = function(_, v) it.clip = v end
+        it.isRoundChambered = function() return it.chamber end
+        it.setRoundChambered = function(_, v) it.chamber = v end
+        it.isJammed = function() return it.jammed end
+        it.setJammed = function(_, v) it.jammed = v end
+        it.getFireMode = function() return it.fireMode end
+        it.setFireMode = function(_, v) it.fireMode = v end
+    end
     if k.main == "Food" then
         it.rotten, it.hunger, it.thirst, it.cooked, it.burnt, it.frozen, it.freezing = false, -10, 0, false, false, false, 0
         it.isRotten = function() return it.rotten end
         it.getHungChange = function() return it.hunger end
         it.setHungChange = function(_, v) it.hunger = v end
-        it.getThirstChange = function() return it.thirst end
+        it.getThirstChange = function() if it.burnt then return it.thirst / 5 end; return it.thirst end
+        it.getThirstChangeUnmodified = function() return it.thirst end
         it.setThirstChange = function(_, v) it.thirst = v end
+        -- 原始值（Food.save:918-1105）；情緒類 getter 會依燒焦／過期加減，只有 *Unmodified 是原值
+        it.calories, it.proteins, it.lipids, it.carbs, it.baseHunger = 100, 1, 1, 20, -10
+        it.unhappy, it.boredom, it.stress, it.endurance, it.fatigue, it.pain, it.flu = 0, 0, 0, 0, 0, 0, 0
+        it.cookingTime, it.microwave, it.chef, it.poison, it.extra, it.fertilized = 0, false, nil, 0, nil, false
+        it.getCalories = function() return it.calories end
+        it.setCalories = function(_, v) it.calories = v end
+        it.getProteins = function() return it.proteins end
+        it.setProteins = function(_, v) it.proteins = v end
+        it.getLipids = function() return it.lipids end
+        it.setLipids = function(_, v) it.lipids = v end
+        it.getCarbohydrates = function() return it.carbs end
+        it.setCarbohydrates = function(_, v) it.carbs = v end
+        it.getBaseHunger = function() return it.baseHunger end
+        it.setBaseHunger = function(_, v) it.baseHunger = v end
+        it.getBoredomChange = function() if it.burnt then return it.boredom + 20 end; return it.boredom end
+        it.getBoredomChangeUnmodified = function() return it.boredom end
+        it.setBoredomChange = function(_, v) it.boredom = v end
+        it.getUnhappyChangeUnmodified = function() return it.unhappy end
+        it.setUnhappyChange = function(_, v) it.unhappy = v end
+        it.getStressChangeUnmodified = function() return it.stress end
+        it.setStressChange = function(_, v) it.stress = v end
+        it.getEnduranceChangeUnmodified = function() return it.endurance end
+        it.setEnduranceChange = function(_, v) it.endurance = v end
+        it.getFatigueChange = function() return it.fatigue end
+        it.setFatigueChange = function(_, v) it.fatigue = v end
+        it.getPainReduction = function() return it.pain end
+        it.setPainReduction = function(_, v) it.pain = v end
+        it.getFluReduction = function() return it.flu end
+        it.setFluReduction = function(_, v) it.flu = v end
+        it.getCookingTime = function() return it.cookingTime end
+        it.setCookingTime = function(_, v) it.cookingTime = v end
+        it.isCookedInMicrowave = function() return it.microwave end
+        it.setCookedInMicrowave = function(_, v) it.microwave = v end
+        it.getChef = function() return it.chef end
+        it.setChef = function(_, v) it.chef = v end
+        it.getPoisonPower = function() return it.poison end
+        it.getExtraItems = function() if it.extra then return javaList(it.extra) end; return nil end
+        it.isFertilized = function() return it.fertilized end
         it.isCooked = function() return it.cooked end
         it.setCooked = function(_, v) it.cooked = v end
         it.isBurnt = function() return it.burnt end
@@ -295,6 +387,13 @@ function instanceItem(fullType)
     if k.main == "Literature" then
         it.getAlreadyReadPages = function() return it.readPages end
         it.setAlreadyReadPages = function(_, v) it.readPages = v end
+        -- 寫字內容與上鎖者（Literature.java:43-44, 502-521）；新本子沒有內容
+        it.pages, it.lockedBy = nil, nil
+        it.isEmptyPages = function()
+            for _, text in pairs(it.pages or {}) do if text ~= "" then return false end end
+            return true
+        end
+        it.getLockedBy = function() return it.lockedBy end
     end
     if k.fluid then
         it.fluidName, it.fluidAmount = "", 0
@@ -719,7 +818,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: chunk-load prefilter (ordinary square not walked, orphan still found).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: chunk-load prefilter (ordinary square not walked, orphan still found); +25: version from mod.info (1), start counter (3), item state across the market (21).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -940,6 +1039,9 @@ io.write("scenario 1: server start + hello handshake\n")
 fire("OnServerStarted")
 local md = S.modData()
 check(md ~= nil and md.schemaVersion == EC.SCHEMA_VERSION, "ModData root created with schemaVersion")
+check(string.match(EC.VERSION, "^%d+%.%d+%.%d+") ~= nil
+    and string.sub(getModInfoByID(EC.MOD_ID):getModVersion(), -#EC.VERSION - 1) == "-" .. EC.VERSION,
+    "EC.VERSION is the mod's own semver taken from mod.info, not a second copy")
 local epoch1 = md.meta.epoch
 
 local alice = fakePlayer("alice")
@@ -2215,6 +2317,41 @@ check(lastSent("admin.players").args.error == "forbidden", "a plain player canno
 onlinePlayers = {}
 end)()
 
+-- ===== 情境二十三之二：epochs.json 的啟動序號（n）與 server.started.startIndex =====
+-- 日報靠它證明「journal 裡找不到的舊 epoch 是被修剪掉的，不是遺失」：序號從檔案本身來，
+-- 修剪只砍前面的行、保留序號；崩潰重啟也照樣接續。
+io.write("scenario 23b: start counter in epochs.json and server.started\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+for _ = 1, 3 do nowMs = nowMs + 1000; fire("OnServerStarted") end
+local ef = files["MinidoracatEconomy/epochs.json"]
+local ns = {}
+for i, l in ipairs(ef and ef.lines or {}) do ns[i] = (EC.jsonDecode(l) or {}).n end
+check(#ns == 3 and ns[1] == 1 and ns[2] == 2 and ns[3] == 3, "every start appends the next start counter")
+local idx = {}
+for _, f in pairs(files) do
+    for _, l in ipairs(f.lines) do
+        if string.find(l, '"type":"server.started"', 1, true) then idx[#idx + 1] = EC.jsonDecode(l).startIndex end
+    end
+end
+table.sort(idx)
+check(#idx == 3 and idx[1] == 1 and idx[3] == 3, "server.started carries the same counter")
+-- 修剪保留留下來那些行的序號；一行舊版（沒有 n）的紀錄不會讓序號歸零
+local lines = {}
+for i = 1, 60 do
+    lines[i] = EC.jsonEncode({ epoch = tostring(1700000000000 + i), loadedSeq = 0, n = (i > 1) and i or nil })
+end
+files["MinidoracatEconomy/epochs.json"] = { lines = lines, opens = 0 }
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+ef = files["MinidoracatEconomy/epochs.json"]
+local first, last = EC.jsonDecode(ef.lines[1]), EC.jsonDecode(ef.lines[#ef.lines])
+check(#ef.lines == 31 and first.n == 31 and last.n == 61 and S.startIndex == 61,
+    "a trimmed journal keeps the kept lines' counters and the new start continues after the largest")
+end)()
+
 -- ===== 情境二十四：設定頁的 runtime 選項覆寫 =====
 io.write("scenario 24: runtime option overrides\n")
 ;(function()
@@ -3089,6 +3226,74 @@ check(wcmd(boss, { action = "set", fullType = "GoneMod.Relic", mode = "allow" })
     and table.concat(files["MinidoracatEconomy/whitelist.json"].lines, "\n") == wlText,
     "an unknown item still cannot be allowed and a fullType that is not a string is refused without rewriting the file")
 onlinePlayers = {}
+end)()
+
+-- ===== 情境二十八之三：B42 物品狀態跟著快照走；帶不走的拒絕上架 =====
+-- 市場與拍賣是「存快照、重建新物品」：沒存進快照的狀態會變回腳本預設。刀頭與銳利度變回滿值
+-- 等於上架再取消就免費修好／磨利；槍與彈匣的子彈、本子的字會直接消失。
+io.write("scenario 28c: item state the rebuild must not reset\n")
+;(function()
+local Codec = S.Codec
+files["MinidoracatEconomy/whitelist.json"] = nil
+check(Codec.load() == true, "the default whitelist is back for the item-state checks")
+local fresh = instanceItem("Base.Axe")
+local freshSnap = Codec.snapshot(fresh)
+check(freshSnap.head == nil and freshSnap.headRepaired == nil and freshSnap.sharpness == nil,
+    "a pristine tool carries no head or sharpness fields, so fresh copies still merge into one lot")
+local dull = instanceItem("Base.Axe"); dull.head = 4; dull.headRepaired = 2; dull.sharpness = 0.3
+check(Codec.check(dull) == true, "a worn tool is still listable")
+local dullSnap = Codec.snapshot(dull)
+local dullBack = Codec.rebuild(dullSnap)
+check(dullBack.head == 4 and dullBack.headRepaired == 2 and math.abs(dullBack:getSharpness() - 0.3) < 1e-9,
+    "rebuild keeps the worn head, its repair count and the dull edge (no free repair or sharpening)")
+check(Codec.signature(dullSnap) ~= Codec.signature(freshSnap), "a worn tool never merges with a new one")
+check(Codec.isCanonical(fresh, "Base.Axe") == true and Codec.isCanonical(dull, "Base.Axe") == false,
+    "buyback treats a worn head or a dull edge as not like new")
+local gun = instanceItem("Base.Pistol"); gun.ammo = 7; gun.clip = true; gun.chamber = true; gun.jammed = true; gun.fireMode = "Auto"
+check(Codec.check(gun) == true, "a loaded gun is listable")
+local gunBack = Codec.rebuild(Codec.snapshot(gun))
+check(gunBack.ammo == 7 and gunBack.clip == true and gunBack.chamber == true and gunBack.jammed == true and gunBack.fireMode == "Auto",
+    "rebuild keeps the inserted magazine, its rounds, the chambered round, the jam and the fire mode")
+local mag = instanceItem("Base.9mmClip"); mag.ammo = 12
+check(Codec.rebuild(Codec.snapshot(mag)).ammo == 12, "a loaded magazine keeps its rounds")
+local note = instanceItem("Base.Notebook")
+check(Codec.check(note) == true, "a blank notebook is listable")
+note.pages = { [1] = "the car is at the gas station" }
+local okW, whyW = Codec.check(note)
+check(okW == false and whyW == "written", "a notebook with writing is refused (its text cannot travel)")
+note.pages = nil; note.lockedBy = "alice"
+local okL, whyL = Codec.check(note)
+check(okL == false and whyL == "written", "a locked notebook is refused too")
+local corn = instanceItem("Base.CannedCorn"); corn.poison = 3
+local okP, whyP = Codec.check(corn)
+check(okP == false and whyP == "poisoned" and select(2, Codec.stateCheck(corn)) == "poisoned",
+    "poisoned food is refused by the market and by the buyback")
+corn.poison = 0; corn.extra = { "Base.Carrots" }
+local okD, whyD = Codec.check(corn)
+check(okD == false and whyD == "prepared_dish", "a dish with added ingredients is refused")
+corn.extra = nil; corn.fertilized = true
+local okF, whyF = Codec.check(corn)
+check(okF == false and whyF == "fertilized", "a fertilized egg is refused")
+local half = instanceItem("Base.CannedCorn")
+half.hunger = -5; half.calories = 50; half.proteins = 0.5; half.lipids = 0.25; half.carbs = 10
+half.thirst = 5; half.burnt = true; half.boredom = 3; half.unhappy = 2; half.stress = -1; half.endurance = 0.1
+half.fatigue = 0.2; half.pain = 4; half.flu = 1; half.cookingTime = 12; half.microwave = true; half.chef = "bob"
+check(Codec.check(half) == true, "half-eaten plain food is listable")
+local halfBack = Codec.rebuild(Codec.snapshot(half))
+check(halfBack.hunger == -5 and halfBack.calories == 50 and halfBack.proteins == 0.5 and halfBack.lipids == 0.25 and halfBack.carbs == 10,
+    "nutrition keeps what was left instead of refilling to a new can")
+check(halfBack.thirst == 5 and halfBack:getThirstChange() == 1 and halfBack.boredom == 3 and halfBack.unhappy == 2 and halfBack.stress == -1
+    and halfBack.endurance == 0.1 and halfBack.fatigue == 0.2 and halfBack.pain == 4 and halfBack.flu == 1,
+    "raw effects are restored, so a burnt item is not divided again")
+check(halfBack.cookingTime == 12 and halfBack.microwave == true and halfBack.chef == "bob" and halfBack.burnt == true,
+    "cooking progress and who cooked it travel too")
+local pad = instanceItem("Base.Bandage"); pad.infected = true; pad.keyId = 4321; pad.remoteId = 7; pad.remoteRange = 12
+local padBack = Codec.rebuild(Codec.snapshot(pad))
+check(padBack.infected == true and padBack.keyId == 4321 and padBack.remoteId == 7 and padBack.remoteRange == 12,
+    "infection, key id and remote pairing are restored")
+local plain = Codec.snapshot(instanceItem("Base.Bandage"))
+check(plain.infected == nil and plain.keyId == nil and plain.remote == nil and plain.ammo == nil,
+    "a plain item carries none of these fields")
 end)()
 
 -- ===== 情境二十九：市場全流程（上架、瀏覽、購買、取消、到期、費稅守恆） =====

@@ -405,7 +405,8 @@ function X.init(root)
     local ms = EC.now()
     lastDay = EC.dayKey(ms)
     X.enqueue(eventsPath(ms), fileHeader(ms))
-    X.emit("server.started", { loadedSeq = md.meta.loadedSeq, schemaVersion = md.schemaVersion, version = EC.VERSION })
+    X.emit("server.started", { loadedSeq = md.meta.loadedSeq, schemaVersion = md.schemaVersion, version = EC.VERSION,
+        startIndex = S.startIndex })
     -- Epochs that crashed before their first save (ECServer epochs.json): the journal states the
     -- rolled-back range itself so a reader does not need the save to know it. The line belongs to
     -- the current epoch; the crashed one is a payload field.
