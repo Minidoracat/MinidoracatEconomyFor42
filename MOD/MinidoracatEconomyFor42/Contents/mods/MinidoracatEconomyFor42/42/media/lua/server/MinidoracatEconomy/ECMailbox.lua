@@ -16,7 +16,9 @@
 -- entry stays `ready`, everything still in there = a plain `claimed`, and part of it stuck in the
 -- backpack is the exception the operator approved (19, 2026-09-11): that confirmed subset is
 -- re-stamped onto its own `claimed` child letter (same claim seq, its own witness) and the parent
--- keeps only the rest as `ready`. Nothing is ever decided by "the player relogged" or "the player
+-- keeps only the rest as `ready`. A letter the backpack cannot hold whole is claimed by count
+-- (2026-09-28): the whole units that fit go through that same split, the rest stays `ready`.
+-- Nothing is ever decided by "the player relogged" or "the player
 -- died": what was delivered is what this server saw in the container at that moment. Nothing here
 -- is network-atomic: the durable pair is the item stamp plus the claim witness, and the login
 -- reconcile is the convergence.
@@ -29,6 +31,8 @@
 --   inv:AddItem + sendAddItemsToContainer  ItemContainer.java:458 ; LuaManager.java:12316,
 --                                   GameServer.java:2407 (A8: the send only ships the packet)
 --   inv:hasRoomFor(chr, weight)     ItemContainer.java:233-237
+--   inv:getFreeCapacity(chr) / getEffectiveCapacity(chr)  ItemContainer.java:268-270 / 195-208
+--                                   (capacity 50 by default, :87; traits scale it)
 --   item:getModData()               InventoryItem.java:433-437 (saved with the item, :1695-1696)
 --   player:getModData()/transmitModData  saved with the player blob (A9/A10)
 --   OnCharacterDeath                IsoGameCharacter.java:4866-4867 (OnPlayerDeath never fires here)
@@ -360,7 +364,7 @@ function M.prepare(player, entryLike)
     local inv = player:getInventory()
     if not inv then return nil, "no_inventory" end
     local n = math.max(1, math.min(M.ITEMS_MAX, tonumber(entryLike.qty) or 1))
-    local items, total = {}, 0
+    local items, weights, total, heaviest = {}, {}, 0, 0
     for i = 1, n do
         local ok, item, err = pcall(build, entryLike)
         if not ok then
@@ -373,15 +377,37 @@ function M.prepare(player, entryLike)
             EC.log("mailbox prepare " .. tostring(entryLike.item) .. ": no usable weight")
             return nil, "item_unavailable"
         end
-        items[i] = item
+        items[i], weights[i] = item, w
         total = total + w
+        if w > heaviest then heaviest = w end
     end
     local okRoom, room = pcall(function() return inv:hasRoomFor(player, total) end)
     if not okRoom or type(room) ~= "boolean" then
         EC.log("mailbox prepare " .. tostring(entryLike.item) .. ": hasRoomFor gave no answer")
         return nil, "item_unavailable"
     end
-    return { item = entryLike.item, qty = n, items = items, totalWeight = total, fits = room }
+    return { item = entryLike.item, qty = n, items = items, weights = weights, totalWeight = total,
+        unitWeight = heaviest, fits = room }
+end
+
+-- The room numbers a player can act on: what one unit weighs, what is free in the main inventory
+-- right now (ItemContainer.getFreeCapacity, ItemContainer.java:268-270 - the same effective
+-- capacity and weight hasRoomFor compares, :233-264) and the most that inventory holds when empty
+-- (getEffectiveCapacity, :195-208: 50 by default, traits move it). `needWeight` is what has to be
+-- freed for `wanted` more weight to fit. A reading the engine does not give is left out, never
+-- guessed.
+function M.roomFields(out, player, unitWeight, wanted)
+    out.unitWeight = unitWeight
+    local ok, free, cap = pcall(function()
+        local inv = player:getInventory()
+        return inv:getFreeCapacity(player), inv:getEffectiveCapacity(player)
+    end)
+    if ok and finiteWeight(free) then
+        out.freeCapacity = free
+        if finiteWeight(wanted) then out.needWeight = math.max(0, wanted - free) end
+    end
+    if ok and finiteWeight(cap) then out.capacity = cap end
+    return out
 end
 
 -- Native identity membership is the postcondition (ItemContainer.java:630-632). Only the
@@ -436,11 +462,18 @@ end
 
 -- Hand the letter over. The whole letter is built and weighed before anything is added, AddItem
 -- has to give back the very object it was handed, and the container itself is what says whether
--- the objects arrived. Returns one of:
---   { ok = true, qty }              every object of the attempt is confirmed in the inventory
+-- the objects arrived. When the whole letter does not fit, only as many whole units as the room
+-- test accepts are attempted (claim by count, operator decision 2026-09-28): a letter heavier than
+-- an empty backpack is still claimable a part at a time, and the rest stays in the letter.
+-- Returns one of:
+--   { ok = true, qty }              every object of the letter is confirmed in the inventory
 --   { ok = false, error }           nothing of this attempt is in the inventory any more
---   { ok = false, error, kept }     part of it could not be taken back: exactly those objects
---                                   are in the backpack, and the caller settles that subset
+--                                   (backpack_full: not one unit fits; unitWeight rides along)
+--   { ok = false, error, kept }     exactly those objects are in the backpack and the caller
+--                                   settles that subset: `fitted` = the room only took that many
+--                                   (not yet announced to the client: the split re-stamps, then
+--                                   sends), otherwise part of a failed attempt could not be taken
+--                                   back
 -- sendAddItemsToContainer only ships the packet (A8): the durable half is the item stamp plus
 -- the claim witness, and the login reconcile is what converges. This is not a network-atomic
 -- handover and does not pretend to be one.
@@ -459,24 +492,39 @@ local function deliver(player, entry, claimSeq, prepared)
         if not letter then return { ok = false, error = err or "item_unavailable" } end
     end
     letter.used = true
+    local fit = n
     local okRoom, room = pcall(function() return inv:hasRoomFor(player, letter.totalWeight) end)
-    if not okRoom or room ~= true then return { ok = false, error = "backpack_full" } end
-    local items = letter.items
+    if not okRoom or room ~= true then
+        -- the room test is monotonic in weight: the longest prefix of whole units it accepts
+        fit = 0
+        local sum = 0
+        for i = 1, n do
+            local okOne, one = pcall(function() return inv:hasRoomFor(player, sum + letter.weights[i]) end)
+            if not okOne or one ~= true then break end
+            sum, fit = sum + letter.weights[i], i
+        end
+        if fit < 1 then return { ok = false, error = "backpack_full", unitWeight = letter.unitWeight } end
+    end
+    local items = {}
+    for i = 1, fit do items[i] = letter.items[i] end
     local list = ArrayList.new()
     local ok, perr = pcall(function()
-        for i = 1, n do
+        for i = 1, fit do
             items[i]:getModData()[EC.PLAYER_MODDATA_KEY] = stampFor(entry, claimSeq, tokens[i])
             if inv:AddItem(items[i]) ~= items[i] then error("AddItem gave back another object") end
             list:add(items[i])
         end
-        sendAddItemsToContainer(inv, list)
+        if fit == n then sendAddItemsToContainer(inv, list) end
     end)
     if ok then
         local complete = true
         for _, item in ipairs(items) do
             if not inv:contains(item) then complete = false; break end
         end
-        if complete then return { ok = true, qty = n } end
+        if complete and fit == n then return { ok = true, qty = n } end
+        if complete then
+            return { ok = false, error = "delivery_partial", kept = items, fitted = true, unitWeight = letter.unitWeight }
+        end
     end
     EC.log("mailbox deliver " .. tostring(entry.id) .. " incomplete: " .. tostring(perr))
     local kept = removeAll(inv, items)
@@ -485,7 +533,7 @@ local function deliver(player, entry, claimSeq, prepared)
         sendItems(inv, kept)
         return { ok = true, qty = n, forced = true }
     end
-    return { ok = false, error = "delivery_partial", kept = kept }
+    return { ok = false, error = "delivery_partial", kept = kept, unitWeight = letter.unitWeight }
 end
 
 local function anomaly(username, mailId, resolution, extra)
@@ -545,7 +593,10 @@ local function splitDelivered(player, o, entry, claimSeq, kept, ms, inPlace)
 end
 
 -- Returns { ok = true, mailId, item, qty, deliveredQty, remainingQty } or
--- { ok = false, error, deliveredQty, remainingQty, childMailId? }.
+-- { ok = false, error, deliveredQty, remainingQty, childMailId? } plus, when the room decided it
+-- (backpack_full, or a delivery_partial that took what fit), the numbers the player can act on:
+-- unitWeight, freeCapacity, capacity and needWeight - for backpack_full what one more unit
+-- needs, for delivery_partial what the rest of the letter needs (M.roomFields).
 -- Item counts accompany, and never replace, the boolean delivery result.
 -- `prepared` is an M.prepare result for this same letter made earlier in the same synchronous
 -- handler (a purchase prepares before it debits): its objects are reused instead of built twice.
@@ -579,12 +630,25 @@ function M.claim(player, mailId, prepared)
         local child = splitDelivered(player, o, entry, claimSeq, res.kept, ms)
         X.emit("mail.claimed", { mailId = child.id, username = username, item = child.item, qty = child.qty,
             price = child.price, currency = child.currency, txId = child.txId, mailKind = child.kind, partialOf = mailId })
-        anomaly(username, mailId, "delivery-partial", { child = child.id, delivered = child.qty, remaining = entry.qty })
-        return { ok = false, error = "delivery_partial", mailId = mailId, childMailId = child.id,
-            item = entry.item, qty = total, deliveredQty = child.qty, remainingQty = entry.qty }
+        -- a claim the room cut short is an ordinary claim by count; only a failed take-back is an anomaly
+        if not res.fitted then
+            anomaly(username, mailId, "delivery-partial", { child = child.id, delivered = child.qty, remaining = entry.qty })
+        end
+        return M.roomFields({ ok = false, error = "delivery_partial", mailId = mailId, childMailId = child.id,
+            item = entry.item, qty = total, deliveredQty = child.qty, remainingQty = entry.qty },
+            player, res.unitWeight, (res.unitWeight or 0) * entry.qty)
     end
     entry.state = "ready"
-    return { ok = false, error = res.error, deliveredQty = 0, remainingQty = total }
+    local out = { ok = false, error = res.error, mailId = mailId, item = entry.item, deliveredQty = 0, remainingQty = total }
+    if res.error == "backpack_full" then M.roomFields(out, player, res.unitWeight, res.unitWeight) end
+    return out
+end
+
+-- The room numbers ride along with every copy of a claim result (reply, batch row, notice).
+local ROOM_KEYS = { "unitWeight", "freeCapacity", "needWeight", "capacity" }
+local function copyRoom(out, claim)
+    for _, k in ipairs(ROOM_KEYS) do out[k] = claim[k] end
+    return out
 end
 
 -- Copy a claim result onto a reply or a notice. `delivered` stays the boolean it always was and
@@ -600,13 +664,14 @@ function M.deliveryFields(out, claim, qty)
     out.deliveredQty = claim.deliveredQty
     out.remainingQty = claim.remainingQty
     out.childMailId = claim.childMailId
-    return out
+    return copyRoom(out, claim)
 end
 
--- One bounded synchronous chunk of the ids the client fixed when its batch started. A normal
--- claim takes the whole envelope (never a part of it); one that does not fit is skipped with its
--- own error and the next is still tried, and so is one whose handover ended in the partial
--- exception - only the ids that were never looked at come back as `more`. At most
+-- One bounded synchronous chunk of the ids the client fixed when its batch started. Each letter
+-- is an ordinary M.claim: whole when it fits, the whole units that fit when it does not (the rest
+-- stays in the letter, delivery_partial with the room numbers), backpack_full when not one unit
+-- fits - and in every case the next id is still tried. Only the ids that were never looked at
+-- come back as `more`. At most
 -- CLAIM_ALL_ENTRIES_MAX entries are looked at and CLAIM_ALL_ITEMS_MAX items are *prepared* per
 -- call (a letter that failed spent its share of that budget all the same), and the first
 -- claimable entry is always processed (ITEMS_MAX <= CLAIM_ALL_ITEMS_MAX), so a big letter can
@@ -644,9 +709,9 @@ function M.claimAll(player, mailIds)
         else
             items = items + qty
             local res = M.claim(player, mailId)
-            results[#results + 1] = { mailId = mailId, ok = res.ok == true, error = (not res.ok) and res.error or nil,
+            results[#results + 1] = copyRoom({ mailId = mailId, ok = res.ok == true, error = (not res.ok) and res.error or nil,
                 item = res.item, qty = res.qty, deliveredQty = res.deliveredQty, remainingQty = res.remainingQty,
-                childMailId = res.childMailId }
+                childMailId = res.childMailId }, res)
         end
     end
     return { ok = true, results = results, more = more }

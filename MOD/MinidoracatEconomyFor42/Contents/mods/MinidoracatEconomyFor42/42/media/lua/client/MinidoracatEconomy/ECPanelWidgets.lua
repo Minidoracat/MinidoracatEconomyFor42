@@ -610,8 +610,9 @@ function ShopCell:render()
     R.finish(self)
 end
 
--- Mailbox row: icon + name x count over its source, the timestamp, and the row's own claim
--- button. A click on the row body only reads it (reading a record must never take anything);
+-- Mailbox row: icon + name x count over its source and the letter's weight, the timestamp, and
+-- the row's own claim button. A click on the row body only reads it (reading a record must never
+-- take anything);
 -- the button is the one claim path a single letter has, and the toolbar's own chip claims every
 -- ready letter at once. Every listed letter is claimable: the server either delivers a letter,
 -- leaves it exactly where it was, or splits off the part it confirmed into its own claimed
@@ -634,7 +635,14 @@ function MailCell:render()
         local altW = cols.name + cols.nameW - altX
         if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, faint) end
     end
-    text(self, fitText(e.fromText, cols.nameW), cols.name, half + 2, faint)
+    -- the letter's weight closes the source line, so a row says before any press whether it
+    -- will fit; the source gives way to it, never the other way round
+    local fromW = cols.nameW
+    if e.weightText then
+        textRight(self, e.weightText, cols.name + cols.nameW, half + 2, faint)
+        fromW = math.max(0, fromW - textWidth(e.weightText) - 8)
+    end
+    text(self, fitText(e.fromText, fromW), cols.name, half + 2, faint)
     textRight(self, e.timeText, cols.timeR, math.floor((h - fontH.small) / 2), faint)
     R.begin(self)
     R.put(self, "claim", e.claimLabel, cols.claimX, math.floor((h - CHIP_H) / 2), cols.claimW, CHIP_H,

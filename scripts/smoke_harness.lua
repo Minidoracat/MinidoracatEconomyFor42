@@ -459,6 +459,11 @@ function fakeInventory(maxWeight)
     local inv = { items = {}, maxWeight = maxWeight or 20 }
     inv.weight = function() local w = 0; for _, it in ipairs(inv.items) do w = w + it:getUnequippedWeight() end; return w end
     inv.hasRoomFor = function(_, _, w) return inv.weight() + w <= inv.maxWeight end
+    -- ItemContainer.getFreeCapacity / getEffectiveCapacity（ItemContainer.java:268-270, 195-208）。
+    -- maxWeight 是「還放得下多少」的模型（小 maxWeight＝背包已被其他東西佔滿）；空背包上限是另一回事：
+    -- 預設 50（:87），比 maxWeight 大時取 maxWeight，要測上限就直接設 inv.capacity。
+    inv.getFreeCapacity = function() return math.max(0, inv.maxWeight - inv.weight()) end
+    inv.getEffectiveCapacity = function() return inv.capacity or math.max(50, inv.maxWeight) end
     inv.AddItem = function(_, it)
         if not it then return nil end
         for _, old in ipairs(inv.items) do if old.id ~= nil and old.id == it.id then return old end end
@@ -842,7 +847,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -5100,6 +5105,186 @@ check(byId2[a1].ok == true and byId2[a1].deliveredQty == 1 and byId2[a2].error =
     "resending the same fixed ids hands over only what is still in the letter - never the settled subset again - and answers already_claimed for the rest")
 onlinePlayers = {}
 instanceItem, sendAddItemsToContainer = realInstance, realPacket
+end)()
+io.write("scenario MC: a letter the backpack cannot hold whole is claimed by count\n")
+;(function()
+local M, Shop = S.Mailbox, S.Shop
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, sentItemPackets = {}, {}, {}
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local mc = fakePlayer("mc"); mc.x = 101; mc.inventory = fakeInventory(50)
+onlinePlayers = { boss, mc }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function near(a, b) return type(a) == "number" and math.abs(a - b) < 1e-6 end
+local function planks() return mc.inventory.count("Base.Plank") end
+local function claims() return mc.modData[EC.PLAYER_MODDATA_KEY].claims end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+local anomalies = {}
+local realEmit = X.emit
+X.emit = function(kind, fields)
+    if kind == "ledger.anomaly" then anomalies[#anomalies + 1] = fields.resolution end
+    return realEmit(kind, fields)
+end
+
+-- ---- 1. twenty planks (60) into an empty 50 backpack: sixteen go, four stay ----
+local heavy = M.add("mc", { kind = "shop", item = "Base.Plank", qty = 20, txId = "tx-mc" })
+local heavyId = heavy.id
+local packets = #sentItemPackets
+local part = cmd(mc, "mail.claim", { mailId = heavyId })
+local child = part.childMailId
+check(part.ok == false and part.error == "delivery_partial" and part.deliveredQty == 16 and part.remainingQty == 4
+    and type(child) == "string" and planks() == 16 and M.unclaimed("mc") == 1,
+    "a letter heavier than an empty backpack hands over the whole units that fit and keeps the rest in the letter")
+check(part.unitWeight == 3 and near(part.freeCapacity, 2) and near(part.needWeight, 10) and part.capacity == 50,
+    "the partial reply names the unit weight, the room left, the empty capacity and what the rest still needs")
+local childEntry = M.entryOf("mc", child)
+check(childEntry.state == "claimed" and #childEntry.units == 16 and childEntry.units[1] == heavyId .. "#1"
+    and childEntry.units[16] == heavyId .. "#16" and #heavy.units == 4 and heavy.units[1] == heavyId .. "#17"
+    and heavy.qty == 4 and heavy.state == "ready",
+    "the claimed child inherits exactly the tokens it took and the parent owes only the rest")
+local stamped = true
+for _, it in ipairs(mc.inventory.items) do
+    local st = it.modData[EC.PLAYER_MODDATA_KEY]
+    if not st or st.mailId ~= child or st.parentMailId ~= heavyId or st.seq ~= claims()[child].seq then stamped = false end
+end
+check(stamped and claims()[heavyId] == nil and childEntry.claimSeq == claims()[child].seq,
+    "every delivered unit is stamped onto the child under the child's own witness; the parent gets none")
+local last = sentItemPackets[#sentItemPackets]
+check(#sentItemPackets == packets + 1 and #last.add == 16 and last.add[1].modData[EC.PLAYER_MODDATA_KEY].mailId == child,
+    "the client hears the handed-over units once, already carrying the child's stamp")
+check(#anomalies == 0, "a claim the room cut short is not reported as a delivery anomaly")
+
+-- ---- 2. not one unit fits: nothing moves, and the reply says how much to free ----
+local full = cmd(mc, "mail.claim", { mailId = heavyId })
+check(full.ok == false and full.error == "backpack_full" and full.unitWeight == 3 and near(full.freeCapacity, 2)
+    and near(full.needWeight, 1) and full.capacity == 50 and full.remainingQty == 4 and full.deliveredQty == 0
+    and planks() == 16 and heavy.qty == 4 and heavy.state == "ready" and claims()[heavyId] == nil,
+    "a zero-fit claim hands over nothing and names the unit weight, the free room and the weight to free")
+
+-- ---- 3. room freed: the rest comes through once, and the two halves add up to the letter ----
+for _ = 1, 10 do mc.inventory:Remove(mc.inventory.items[#mc.inventory.items]) end
+-- the whole-letter test says no, then every per-unit test throws: a throw is never read as room
+local realRoom, roomCalls = mc.inventory.hasRoomFor, 0
+mc.inventory.hasRoomFor = function()
+    roomCalls = roomCalls + 1
+    if roomCalls <= 2 then return false end
+    error("the container has no answer")
+end
+local mute = cmd(mc, "mail.claim", { mailId = heavyId })
+mc.inventory.hasRoomFor = realRoom
+check(mute.error == "backpack_full" and roomCalls == 3 and planks() == 6 and heavy.qty == 4 and heavy.state == "ready",
+    "a per-unit room test that gives no answer is never read as room: nothing is handed over")
+local rest = cmd(mc, "mail.claim", { mailId = heavyId })
+check(rest.ok == true and rest.deliveredQty == 4 and rest.remainingQty == 0 and planks() == 10
+    and heavy.state == "claimed" and claims()[heavyId] ~= nil and M.unclaimed("mc") == 0,
+    "after the player frees room the remainder is claimed as an ordinary whole letter")
+check(cmd(mc, "mail.claim", { mailId = heavyId }).error == "already_claimed" and planks() == 10,
+    "the finished letter cannot be claimed a second time")
+
+-- ---- 4. the shop refuses a unit no backpack of this player can ever hold, before the debit ----
+L.credit("mc", "survivor", 1000, "SYSTEM_MINT", { requestId = "mc-seed", reasonCode = "t" })
+local rev = Shop.revision()
+local purse = L.getBalance("mc", "survivor").available
+mc.inventory = fakeInventory(2); mc.inventory.capacity = 2
+local tooHeavy = cmd(mc, "shop.buy", { id = "plank", count = 1, revision = rev, acceptMail = true })
+check(tooHeavy.ok == false and tooHeavy.error == "unit_too_heavy" and tooHeavy.unitWeight == 3 and tooHeavy.capacity == 2
+    and L.getBalance("mc", "survivor").available == purse and M.unclaimed("mc") == 0,
+    "a unit heavier than the empty backpack is refused before any debit, with both numbers, and no letter is written")
+mc.inventory = fakeInventory(3); mc.inventory.capacity = 3
+local boundary = cmd(mc, "shop.buy", { id = "plank", count = 1, revision = rev, acceptMail = true })
+check(boundary.ok == true and boundary.mailed == true and L.getBalance("mc", "survivor").available == purse - 30,
+    "a unit exactly as heavy as the empty backpack can still be bought and parked")
+local one = cmd(mc, "mail.claim", { mailId = boundary.mailId })
+check(one.error == "delivery_partial" and one.deliveredQty == 1 and one.remainingQty == 4 and planks() == 1,
+    "and that parked lot is then claimed one unit at a time")
+
+-- ---- 5. the reported lot: sixty weight parked, claimed by count from an empty backpack ----
+mc.inventory = fakeInventory(50)
+local lot = cmd(mc, "shop.buy", { id = "plank", count = 4, revision = rev, acceptMail = true })
+check(lot.ok == true and lot.mailed == true and lot.qty == 20,
+    "a lot heavier than an empty backpack is paid and parked once the player accepts the mailbox")
+local lotClaim = cmd(mc, "mail.claim", { mailId = lot.mailId })
+check(lotClaim.error == "delivery_partial" and lotClaim.deliveredQty == 16 and lotClaim.remainingQty == 4 and planks() == 16,
+    "the parked lot is no longer stuck: the units that fit come out at once")
+
+-- ---- 6. a batch counts a partial letter, keeps going, and every row carries its numbers ----
+mc.inventory = fakeInventory(7)
+local big = M.add("mc", { kind = "shop", item = "Base.Plank", qty = 5 }).id
+local small = M.add("mc", { kind = "shop", item = "Base.Plank", qty = 1 }).id
+local light = M.add("mc", { kind = "shop", item = "Base.Bandage", qty = 1 }).id
+local batch = cmd(mc, "mail.claimAll", { mailIds = { big, small, light } })
+local byId = {}
+for _, r in ipairs(batch.results or {}) do byId[r.mailId] = r end
+check(batch.ok == true and batch.more == false and #batch.results == 3
+    and byId[big].error == "delivery_partial" and byId[big].deliveredQty == 2 and byId[big].remainingQty == 3
+    and near(byId[big].needWeight, 8) and byId[small].error == "backpack_full" and near(byId[small].needWeight, 2)
+    and byId[light].ok == true and planks() == 2 and mc.inventory.count("Base.Bandage") == 1,
+    "a batch hands over what fits of a heavy letter, still tries the rest, and each row says what it needs")
+X.emit = realEmit
+
+-- ---- 7. a room-limited split survives the same three rollbacks as the exception split ----
+local function copy(value)
+    if type(value) ~= "table" then return value end
+    local out = {}
+    for key, v in pairs(value) do out[key] = copy(v) end
+    return out
+end
+for _, rollback in ipairs({ "world-before-claim", "player-before-claim", "world-before-mail" }) do
+    modDataStore[EC.MODDATA_KEY] = nil
+    files, sentCommands = {}, {}
+    nowMs = nowMs + 61000
+    fire("OnServerStarted")
+    local p = fakePlayer("mc-roll")
+    p.inventory = fakeInventory(9)
+    onlinePlayers = { p }
+    local beforeMail = copy(S.modData())
+    local parent = M.add(p:getUsername(), { item = "Base.Plank", qty = 5, kind = "shop" })
+    local beforeClaim = copy(S.modData())
+    local beforePlayer = copy(p.modData)
+    local result = M.claim(p, parent.id)
+    check(result.error == "delivery_partial" and result.deliveredQty == 3 and parent.qty == 2 and p.inventory.count("Base.Plank") == 3,
+        "room-limited setup: three whole units settled before " .. rollback)
+    if rollback == "player-before-claim" then
+        -- the older player save has neither the units nor the witness, and room for only two
+        p.inventory, p.modData = fakeInventory(6), beforePlayer
+    else
+        modDataStore[EC.MODDATA_KEY] = rollback == "world-before-claim" and beforeClaim or beforeMail
+        nowMs = nowMs + 1000
+        fire("OnServerStarted")
+    end
+    M.reconcile(p)
+    if rollback == "world-before-mail" then
+        check(p.inventory.count("Base.Plank") == 0 and M.unclaimed(p:getUsername()) == 0,
+            "a room-limited child below the purchase rollback is taken back without inventing a letter")
+    else
+        if rollback == "player-before-claim" then
+            check(p.inventory.count("Base.Plank") == 2 and M.unclaimed(p:getUsername()) == 2,
+                "redelivering the lost child into a small backpack splits it again by count and keeps its last unit ready")
+        end
+        p.inventory.maxWeight = 100
+        for _, row in ipairs(M.list(p:getUsername())) do M.claim(p, row.id) end
+        local tokens, distinct = {}, 0
+        for _, it in ipairs(p.inventory.items) do
+            local unit = it.modData[EC.PLAYER_MODDATA_KEY].unit
+            if not tokens[unit] then tokens[unit], distinct = true, distinct + 1 end
+        end
+        check(p.inventory.count("Base.Plank") == 5 and distinct == 5 and tokens[parent.id .. "#1"] and tokens[parent.id .. "#5"]
+            and M.unclaimed(p:getUsername()) == 0,
+            "the halves converge to exactly the letter's five tokens after " .. rollback)
+    end
+end
+onlinePlayers = {}
 end)()
 io.write("scenario 41: partial claims across independent saves\n")
 ;(function()
