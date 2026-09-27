@@ -1206,7 +1206,7 @@
   "IGUI_MinidoracatEconomy_Delivery_ConfirmMail": "It will be kept in your mailbox instead; press confirm again to accept",
   "IGUI_MinidoracatEconomy_Delivery_Failed": "The hand-over did not complete: %1 (%2 letters waiting in the mailbox)",
   "IGUI_MinidoracatEconomy_Delivery_NoRoom": "No room in the backpack: each unit weighs %1 and %2 is free. Free up %3 more to claim one unit (%4 letters waiting in the mailbox)",
-  "IGUI_MinidoracatEconomy_Delivery_TooHeavy": "Each unit weighs %1, more than your backpack can ever hold (%2): this letter cannot be claimed into the backpack",
+  "IGUI_MinidoracatEconomy_Delivery_TooHeavy": "Each unit weighs %1, more than your backpack can ever hold (%2): this letter cannot be claimed into the backpack. Please contact an admin",
   "IGUI_MinidoracatEconomy_Delivery_TooHeavyBuy": "Each unit weighs %1, more than your backpack can ever hold (%2), so it cannot be bought. Nothing was charged",
   "IGUI_MinidoracatEconomy_Delivery_FreeToFinish": "Free up %1 more to claim the rest.",
   "IGUI_MinidoracatEconomy_Mail_Weight": "Wt %1",

@@ -11,7 +11,7 @@
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes": "签到首次门槛：最低连接时间（分钟）",
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes_tooltip": "当日在服务器上累计连接满这个分钟数后，才能领取第一次签到；后续累积门槛也不低于此值。只计实际连接的现实时间，脱机不累加、当日重登延续，死亡或换角色不归零。0 表示登录即可领取第一次。",
   "Sandbox_MinidoracatEconomy_CheckinServerDailyCap": "签到全服每日上限（保险丝）",
-  "Sandbox_MinidoracatEconomy_CheckinServerDailyCap_tooltip": "全服务器每个奖励日签到发放总额的上限。0 表示不限制（预设）。额度用完时拒绝发放、不消耗该次领取，隔日不补发。开放每日多次签到时建议重新评估这条保险丝。",
+  "Sandbox_MinidoracatEconomy_CheckinServerDailyCap_tooltip": "全服务器每个奖励日签到发放总额的上限。0 表示不限制（预设）。额度用完时拒绝发放、不消耗该次领取，隔日不补发。建议参考管理页「仪表板」的每日签到发放量，设为平常的 2～3 倍；开放每日多次签到时请重新评估。",
   "Sandbox_MinidoracatEconomy_RewardDayResetHour": "奖励日重置时刻（当地小时）",
   "Sandbox_MinidoracatEconomy_RewardDayResetHour_tooltip": "每日签到与每日上限在该时区的这个整点重置（缺省 0＝午夜 00:00）。时区由下方「奖励日时区」决定，与服务器主机的时区设置无关。",
   "Sandbox_MinidoracatEconomy_RewardTimezoneUTC": "奖励日时区（UTC 偏移小时）",

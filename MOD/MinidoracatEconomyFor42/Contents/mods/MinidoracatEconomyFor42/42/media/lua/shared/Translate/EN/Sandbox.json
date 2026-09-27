@@ -11,7 +11,7 @@
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes": "Check-in first claim: minimum connected time (minutes)",
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes_tooltip": "Total minutes connected today needed for the first check-in. Later cumulative thresholds cannot be lower than this minimum. Only real time connected to this server counts: offline time is excluded, same-day logins continue the total, and death or a new character does not reset it. 0 allows the first claim at login.",
   "Sandbox_MinidoracatEconomy_CheckinServerDailyCap": "Check-in server daily cap (fuse)",
-  "Sandbox_MinidoracatEconomy_CheckinServerDailyCap_tooltip": "Total check-in amount the whole server can pay out per reward day. 0 means unlimited (default). When the cap is reached the claim is refused without being consumed and is not paid retroactively. Worth revisiting when more than one claim per day is allowed.",
+  "Sandbox_MinidoracatEconomy_CheckinServerDailyCap_tooltip": "Total check-in amount the whole server can pay out per reward day. 0 means unlimited (default). When the cap is reached the claim is refused without being consumed and is not paid retroactively. A good value is 2-3 times the usual daily check-in total on the admin Dashboard; revisit it when more than one claim per day is allowed.",
   "Sandbox_MinidoracatEconomy_RewardDayResetHour": "Reward day reset hour (local)",
   "Sandbox_MinidoracatEconomy_RewardDayResetHour_tooltip": "Daily check-in and daily caps reset at this hour in that timezone (default 0 = midnight). The timezone comes from \"Reward day timezone\" below, independent of the host machine timezone.",
   "Sandbox_MinidoracatEconomy_RewardTimezoneUTC": "Reward day timezone (UTC offset hours)",

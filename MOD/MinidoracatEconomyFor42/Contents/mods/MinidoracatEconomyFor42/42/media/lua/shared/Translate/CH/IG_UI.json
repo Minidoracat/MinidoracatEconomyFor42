@@ -1206,7 +1206,7 @@
   "IGUI_MinidoracatEconomy_Delivery_ConfirmMail": "空間不足會寄存到信箱，請再按一次確認",
   "IGUI_MinidoracatEconomy_Delivery_Failed": "交付未完成：%1（信箱尚有 %2 封待領）",
   "IGUI_MinidoracatEconomy_Delivery_NoRoom": "背包放不下：每件重 %1，背包剩餘 %2，再騰出 %3 即可領取 1 件（信箱尚有 %4 封待領）",
-  "IGUI_MinidoracatEconomy_Delivery_TooHeavy": "每件重 %1，超過背包的容量上限 %2，這封信無法領進背包",
+  "IGUI_MinidoracatEconomy_Delivery_TooHeavy": "每件重 %1，超過背包的容量上限 %2，這封信無法領進背包，請聯絡管理員處理",
   "IGUI_MinidoracatEconomy_Delivery_TooHeavyBuy": "每件重 %1，超過背包的容量上限 %2，放不進背包，因此無法購買；沒有扣款",
   "IGUI_MinidoracatEconomy_Delivery_FreeToFinish": "再騰出 %1 即可領完其餘物品。",
   "IGUI_MinidoracatEconomy_Mail_Weight": "重 %1",

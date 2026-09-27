@@ -11,7 +11,7 @@
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes": "チェックイン初回に必要な接続時間（分）",
   "Sandbox_MinidoracatEconomy_CheckinMinPlaytimeMinutes_tooltip": "本日の累計接続時間がこの分数に達すると、1 回目を受け取れます。2 回目以降の累計条件もこの値を下回りません。このサーバーに接続していた現実時間だけを数え、オフライン中は加算せず、同日の再ログインで継続します。死亡やキャラクター変更でもリセットしません。0 ならログイン直後に 1 回目を受け取れます。",
   "Sandbox_MinidoracatEconomy_CheckinServerDailyCap": "チェックインのサーバー日次上限（ヒューズ）",
-  "Sandbox_MinidoracatEconomy_CheckinServerDailyCap_tooltip": "サーバー全体が報酬日ごとに支払うチェックイン総額の上限。0 は無制限（既定）。上限に達すると受け取りは消費されずに拒否され、翌日に補填されません。1 日複数回を開放する場合は見直してください。",
+  "Sandbox_MinidoracatEconomy_CheckinServerDailyCap_tooltip": "サーバー全体が報酬日ごとに支払うチェックイン総額の上限。0 は無制限（既定）。上限に達すると受け取りは消費されずに拒否され、翌日に補填されません。管理画面の「ダッシュボード」にある普段の 1 日のログイン報酬支払額の 2～3 倍が目安です。1 日複数回を開放する場合は見直してください。",
   "Sandbox_MinidoracatEconomy_RewardDayResetHour": "報酬日のリセット時刻（現地時）",
   "Sandbox_MinidoracatEconomy_RewardDayResetHour_tooltip": "デイリーチェックインと日次上限はそのタイムゾーンのこの時刻にリセットされます（既定 0＝深夜 0:00）。タイムゾーンは下の「報酬日のタイムゾーン」で決まり、サーバー機の設定とは無関係です。",
   "Sandbox_MinidoracatEconomy_RewardTimezoneUTC": "報酬日のタイムゾーン（UTC 補正時）",
