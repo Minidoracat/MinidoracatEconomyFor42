@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
+import type http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { parseGlobalModData, economyWatermark, encodeGlobalModData, type LuaTable } from "../src/bin.ts";
 import { EventStore, type Logger } from "../src/events.ts";
@@ -172,4 +174,58 @@ test("http: empty secret is refused off-loopback and tolerated on loopback", () 
   assert.throws(() => createServer({ config: { hmacSecret: "", bind: "0.0.0.0" }, store, accounts, watermark: noWatermark, log: silent }));
   const s = createServer({ config: { hmacSecret: "", bind: "127.0.0.1" }, store, accounts, watermark: noWatermark, log: silent });
   assert.ok(s);
+});
+
+async function listen(secret: string): Promise<{ server: http.Server; port: number }> {
+  const dir = tmpdir();
+  const store = new EventStore({ economyDir: dir, stateDir: path.join(dir, "state"), log: silent });
+  const accounts: AccountSource = { refreshedAt: 0, stats: () => ({}), forSteam: () => [], forUsername: () => null };
+  const server = createServer({ config: { hmacSecret: secret, bind: "127.0.0.1" }, store, accounts, watermark: noWatermark, log: silent });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  return { server, port: address.port };
+}
+
+/** Sends raw bytes and resolves with the reply once its header block arrived (or the socket ended). */
+function rawRequest(port: number, text: string): Promise<string> {
+  // Promise.withResolvers is outside this tsconfig's lib. Keep-alive on purpose: on Windows a
+  // Connection: close reply is intermittently reset before its bytes can be read.
+  return new Promise((resolve) => {
+    const socket = net.connect(port, "127.0.0.1", () => socket.write(text));
+    let reply = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (d: string) => {
+      reply += d;
+      if (reply.includes("\r\n\r\n")) socket.destroy();
+    });
+    socket.on("close", () => resolve(reply));
+    socket.on("error", () => resolve(reply));
+  });
+}
+
+test("http: a malformed request-target is answered and does not kill the server", async () => {
+  const { server, port } = await listen("");
+  try {
+    const reply = await rawRequest(port, "GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert.match(reply, /^HTTP\/1\.1 400 /);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+  } finally {
+    server.close();
+  }
+});
+
+test("http: a 64-char non-hex signature is 401 and does not kill the server", async () => {
+  const secret = "s3cret";
+  const { server, port } = await listen(secret);
+  try {
+    const ts = Math.floor(Date.now() / 1000);
+    const bad = await fetch(`http://127.0.0.1:${port}/health`, { headers: { "x-timestamp": String(ts), "x-signature": "z".repeat(64) } });
+    assert.equal(bad.status, 401);
+    assert.deepEqual(await bad.json(), { error: "unauthorized" });
+    const ok = await fetch(`http://127.0.0.1:${port}/health`, { headers: { "x-timestamp": String(ts), "x-signature": sign(secret, ts, "GET", "/health") } });
+    assert.equal(ok.status, 200);
+  } finally {
+    server.close();
+  }
 });

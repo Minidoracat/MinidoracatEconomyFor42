@@ -346,3 +346,107 @@ test("report: later startup proof cannot make an earlier bin contain a newer wal
     assert.ok(report.coverage.issues.some((i) => i.account === "bob" && i.code.startsWith("snapshot_")));
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
 });
+
+function started(epoch: string, loadedSeq: number, startIndex?: number, ts = at - 100) {
+  return { type: "server.started", realmId: "realm-test", epoch, seq: loadedSeq, loadedSeq, ts, ...(startIndex === undefined ? {} : { startIndex }) };
+}
+function writeJournal(economyDir: string, lines: object[]): void {
+  fs.writeFileSync(path.join(economyDir, "epochs.json"), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+}
+const orderIssues = (issues: { code: string; epochs?: string[] }[]) => issues.filter((i) => i.code === "epoch_order_unproven");
+
+test("report: a counter chain proves order although the journal trimmed older legacy starts", async () => {
+  const f = fixture();
+  try {
+    f.writeEvents([
+      started("100", 0), tx("100", 1, [posting("SYSTEM_MINT", -100, 0, -100), posting("alice", 100, 0, 100)]),
+      started("200", 1), tx("200", 2, [posting("alice", -10, 100, 90), posting("SYSTEM_BURN", 10, 0, 10)]),
+      started("300", 1, 1), tx("300", 2, [posting("alice", -10, 100, 90), posting("SYSTEM_BURN", 10, 0, 10)]),
+      started("400", 2, 2),
+    ]);
+    // "100" was trimmed; "200" is a kept legacy line, which may not be joined to "300" while a legacy start is missing.
+    writeJournal(f.economyDir, [{ epoch: "200", loadedSeq: 1 }, { epoch: "300", loadedSeq: 1, n: 1 }, { epoch: "400", loadedSeq: 2, n: 2 }]);
+    f.save(2, 90, 0, "400", { 1: { epoch: "100", loadedSeq: 1 } }, 10);
+    const source = await readReportSource(f.options);
+    assert.deepEqual(source.epochOrder, ["300", "400"]);
+    assert.deepEqual(orderIssues(source.issues), []);
+    const status = (txId: string) => source.transactions.find((t) => t.txId === txId)?.status;
+    assert.equal(status("100:1"), "durable");
+    assert.equal(status("200:2"), "unknown", "legacy adjacency to the first counted line stays unproven");
+    assert.equal(status("300:2"), "durable", "adjacent counted lines give the cutoff");
+    assert.deepEqual(source.transactions.map((t) => t.epoch), ["100", "200", "300"]);
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("report: a counted line lost inside the journal withdraws the order", async () => {
+  const f = fixture();
+  try {
+    const mint = tx("300", 1, [posting("SYSTEM_MINT", -100, 0, -100), posting("alice", 100, 0, 100)]);
+    writeJournal(f.economyDir, [{ epoch: "300", loadedSeq: 0, n: 1 }, { epoch: "500", loadedSeq: 1, n: 3 }]);
+    f.save(1, 100, 0, "500");
+    f.writeEvents([started("300", 0, 1), mint, started("400", 1, 2), started("500", 1, 3)]);
+    const seen = await readReportSource(f.options);
+    assert.equal(seen.epochOrder, undefined);
+    assert.equal(seen.transactions.find((t) => t.txId === "300:1")?.status, "unknown", "300 may not be joined to 500");
+    assert.ok(orderIssues(seen.issues).some((i) => i.epochs?.includes("400")));
+    f.writeEvents([started("300", 0, 1), mint, started("500", 1, 3)]);
+    const unseen = await readReportSource(f.options);
+    assert.equal(unseen.epochOrder, undefined);
+    assert.equal(unseen.transactions.find((t) => t.txId === "300:1")?.status, "unknown");
+    assert.ok(orderIssues(unseen.issues).some((i) => i.epochs?.includes("300") && i.epochs.includes("500")));
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("report: two starts claiming one startIndex make the counter untrusted", async () => {
+  const f = fixture();
+  try {
+    const events = [started("300", 0, 5), tx("300", 1, [posting("SYSTEM_MINT", -100, 0, -100), posting("alice", 100, 0, 100)]), started("400", 1, 6)];
+    writeJournal(f.economyDir, [{ epoch: "300", loadedSeq: 0, n: 5 }, { epoch: "400", loadedSeq: 1, n: 6 }]);
+    f.save(1, 100, 0, "400");
+    f.writeEvents([started("250", 0, 2), ...events]);
+    const clean = await readReportSource(f.options);
+    assert.deepEqual(clean.epochOrder, ["300", "400"]);
+    assert.equal(clean.transactions.find((t) => t.txId === "300:1")?.status, "durable");
+    f.writeEvents([started("250", 0, 2), started("260", 0, 2), ...events]);
+    const duplicated = await readReportSource(f.options);
+    assert.equal(duplicated.epochOrder, undefined);
+    assert.equal(duplicated.transactions.find((t) => t.txId === "300:1")?.status, "unknown");
+    assert.ok(orderIssues(duplicated.issues).some((i) => i.epochs?.includes("250") && i.epochs.includes("260")));
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("report: a legacy journal line after counted lines breaks the chain", async () => {
+  const f = fixture();
+  try {
+    f.writeEvents([started("300", 0, 1), tx("300", 1, [posting("SYSTEM_MINT", -100, 0, -100), posting("alice", 100, 0, 100)]), started("400", 1)]);
+    writeJournal(f.economyDir, [{ epoch: "300", loadedSeq: 0, n: 1 }, { epoch: "400", loadedSeq: 1 }]);
+    f.save(1, 100, 0, "400");
+    const source = await readReportSource(f.options);
+    assert.equal(source.epochOrder, undefined);
+    assert.equal(source.transactions.find((t) => t.txId === "300:1")?.status, "unknown");
+    assert.ok(orderIssues(source.issues).some((i) => i.epochs?.includes("400")));
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("report: evidence gaps of epochs without transactions that day stay out of that day's coverage", async () => {
+  const f = fixture();
+  try {
+    const prior = "2024-12-31";
+    const priorAt = Date.parse(`${prior}T04:00:00Z`);
+    // "50" has no journal line and no save evidence: the legacy order is unproven and 50:1 has no verdict.
+    f.writeEvents([started("50", 0, undefined, priorAt), { ...tx("50", 1, [posting("SYSTEM_MINT", -5, 0, -5), posting("bob", 5, 0, 5)]), ts: priorAt + 1 }], prior);
+    f.writeEvents([f.start, f.mint]);
+    f.save(1, 100);
+    const source = await readReportSource(f.options);
+    const today = buildDailyReport(source, { date: day, timeZone: "UTC", ...reportPeriod(day, "UTC") });
+    assert.deepEqual(today.coverage.issues, []);
+    assert.equal(today.coverage.complete, true);
+    assert.deepEqual(today.issues, []);
+    assert.equal(today.statusCounts.durable, 1);
+    assert.ok(today.limits.some((l) => l.includes("epoch_order_unproven") && l.includes("epoch_evidence_missing")));
+    const before = buildDailyReport(source, { date: prior, timeZone: "UTC", ...reportPeriod(prior, "UTC") });
+    assert.equal(before.coverage.complete, false);
+    assert.ok(before.coverage.issues.some((i) => i.code === "epoch_evidence_missing" && i.epochs?.includes("50")));
+    assert.ok(before.coverage.issues.some((i) => i.code === "epoch_order_unproven" && i.epochs?.includes("50")));
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});

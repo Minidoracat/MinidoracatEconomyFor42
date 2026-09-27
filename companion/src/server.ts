@@ -86,8 +86,9 @@ function verify(req: http.IncomingMessage, url: URL, body: string, secret: strin
   const ts = Number(header(req, "x-timestamp"));
   const sig = header(req, "x-signature");
   if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > SKEW_SECONDS) return false;
+  if (!/^[0-9a-fA-F]{64}$/.test(sig)) return false;
   const expected = sign(secret, ts, req.method ?? "GET", url.pathname + url.search, body);
-  return sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
+  return crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
 }
 
 function json(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -186,17 +187,25 @@ export function createServer({ config, store, accounts, watermark, orders, log =
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
-      const body = Buffer.concat(chunks).toString("utf8");
-      const url = new URL(req.url ?? "/", "http://companion");
-      if (!authOptional && !verify(req, url, body, config.hmacSecret)) {
-        json(res, 401, { error: "unauthorized" });
-        return;
-      }
+      // Nothing thrown here may escape: an uncaught throw kills the whole process.
       try {
+        const body = Buffer.concat(chunks).toString("utf8");
+        let url: URL;
+        try {
+          url = new URL(req.url ?? "/", "http://companion");
+        } catch {
+          json(res, 400, { error: "invalid_url" });
+          return;
+        }
+        if (!authOptional && !verify(req, url, body, config.hmacSecret)) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
         route(req, url, res, body);
       } catch (err) {
         log.error(`request failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
-        json(res, 500, { error: "internal" });
+        if (!res.headersSent) json(res, 500, { error: "internal" });
+        else res.destroy();
       }
     });
   });

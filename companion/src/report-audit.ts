@@ -503,12 +503,31 @@ function missingDayFiles(source: ReportSource, fromMs: number, toMs: number): st
 export function buildDailyReport(source: ReportSource, options: DailyReportOptions): DailyReport {
   const { date, timeZone, fromMs, toMs } = options;
   const issues: ReportIssue[] = [];
-  const coverage: ReportIssue[] = [...source.issues];
-  const sink: Sink = { issues, coverage };
   const limits: string[] = [];
 
   const inDay = (tx: ReportTransaction): boolean =>
     Number.isFinite(tx.ts) && tx.ts >= fromMs && tx.ts < toMs;
+
+  // An issue about particular epochs belongs to the days that have transactions of one of them.
+  // The rest are summarized in limits, not coverage, so they neither make this day incomplete
+  // nor drive the CLI to exit 2: whatever such a gap costs this day's transactions (no verdict,
+  // no afterSave, a withdrawn order, an unordered cross-epoch comparison) is raised again by an
+  // issue of this day's own - epoch_evidence_missing, status_unknown, chain_gap_unordered,
+  // snapshot_mismatch_unverifiable. Verdicts are untouched: only where the issue is listed moves.
+  const scope = new Set(source.transactions.filter(inDay).map((tx) => tx.epoch));
+  const coverage: ReportIssue[] = [];
+  const elsewhere = new Map<string, number>();
+  for (const issue of source.issues) {
+    if (issue.epochs === undefined || issue.epochs.some((epoch) => scope.has(epoch))) coverage.push(issue);
+    else elsewhere.set(issue.code, (elsewhere.get(issue.code) ?? 0) + 1);
+  }
+  if (elsewhere.size > 0) {
+    const count = [...elsewhere.values()].reduce((a, b) => a + b, 0);
+    const codes = [...elsewhere].sort(([a], [b]) => (a < b ? -1 : 1)).map(([code, n]) => `${code}×${n}`).join("、");
+    limits.push(`來源另有 ${count} 項只涉及本日沒有交易的 epoch 的證據缺口（${codes}），不列入本日 coverage；`
+      + "它們若影響本日交易的判定或排序，會以本日自己的項目列出。");
+  }
+  const sink: Sink = { issues, coverage };
 
   const chain: Chain = {
     anchors: new Map(), unproven: new Set(), touched: new Set(), order: source.epochOrder,

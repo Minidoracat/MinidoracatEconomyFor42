@@ -4,9 +4,11 @@
 //   {economyDir}/events-YYYYMMDD.json   NDJSON transaction record (ECExport.onCommitted writes
 //                                       tx.committed; X.emit writes server.started /
 //                                       epoch.rolledback / ledger.anomaly / file.header)
-//   {economyDir}/epochs.json            one {epoch, loadedSeq, flagged?} line per server start,
+//   {economyDir}/epochs.json            one {epoch, loadedSeq, n?, flagged?} line per server start,
 //                                       appended in startup order (ECServer.S.EPOCHS_FILE).
-//                                       Carries no realmId.
+//                                       n is the start counter (absent on legacy lines). The mod
+//                                       trims the file to its newest lines, so it is a suffix of
+//                                       the real start sequence. Carries no realmId.
 //   global_mod_data.bin                 the save: meta{epoch, seq, realmId} is the durable
 //                                       watermark, meta.history{[i]={epoch, loadedSeq}} the
 //                                       rollback point of every epoch that reached a save
@@ -25,7 +27,8 @@
 // Event file names are NEVER used to order epochs: a missing day file or a clock that went
 // backwards would make two unrelated starts look adjacent and forge durability. One damaged line
 // anywhere in epochs.json disables the whole journal order, because two lines that are no longer
-// provably adjacent may not be connected.
+// provably adjacent may not be connected. The start counter (journal n, server.started
+// startIndex) is what lets a trimmed journal still prove order: see resolveEvidence.
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -44,6 +47,11 @@ export interface ReportIssue {
   txId?: string;
   account?: string;
   currency?: string;
+  /**
+   * The epochs this issue is about. A daily report carries it only when one of them has
+   * transactions in the report's period; issues without it concern every report.
+   */
+  epochs?: string[];
 }
 
 export interface ReportPosting {
@@ -91,7 +99,9 @@ export interface ReportSource {
   /** Saved balances from the .bin: account -> currency -> balance (system accounts included). */
   wallets: Map<string, Map<string, ReportWalletBalance>>;
   /**
-   * Startup order that the intact epochs.json journal proves, earliest first. Absent when the
+   * Startup order the epochs.json journal proves, earliest first. It may be only the counter
+   * part of the journal, when older (trimmed or legacy) starts cannot be placed; those are then
+   * proven to precede every epoch listed here, but not ordered among themselves. Absent when the
    * journal is damaged or contradicts the event stream: there is then no proven epoch order at
    * all, and none is guessed from timestamps or file names.
    */
@@ -127,7 +137,7 @@ export function walletKey(account: string, currency: string): string {
   return `${account.length}:${account}${currency}`;
 }
 
-type Where = Pick<ReportIssue, "file" | "line" | "txId" | "account" | "currency">;
+type Where = Pick<ReportIssue, "file" | "line" | "txId" | "account" | "currency" | "epochs">;
 
 function issue(code: string, message: string, where: Partial<Where> = {}): ReportIssue {
   return { code, message, ...where };
@@ -416,8 +426,13 @@ async function readBin(
 
 // ---------------------------------------------------------------- epochs.json
 
+interface JournalLine extends EpochStart {
+  /** The start counter; null on a line written before the mod had one. */
+  n: number | null;
+}
+
 interface Journal {
-  entries: EpochStart[];
+  entries: JournalLine[];
   /** false when any line was unusable: two lines are then no longer provably adjacent. */
   intact: boolean;
 }
@@ -425,7 +440,7 @@ interface Journal {
 function readJournal(economyDir: string, files: { name: string; size: number }[], issues: ReportIssue[]): Journal {
   const file = EPOCHS_FILE;
   const full = path.join(economyDir, EPOCHS_FILE);
-  const entries: EpochStart[] = [];
+  const entries: JournalLine[] = [];
   let intact = true;
   let scan: LineScan;
   try {
@@ -447,12 +462,14 @@ function readJournal(economyDir: string, files: { name: string; size: number }[]
       const record = objectOf(doc);
       const epoch = record === null ? null : text(record, "epoch");
       const loadedSeq = record === null ? null : integer(record, "loadedSeq");
-      if (epoch === null || loadedSeq === null || loadedSeq < 0) {
-        issues.push(issue("epochs_line_invalid", "epochs.json 該行缺少可用的 epoch/loadedSeq", { file, line }));
+      // A present but unusable n reads as 0 and makes the line damaged: it is never trusted.
+      const n = record !== null && "n" in record ? (integer(record, "n") ?? 0) : null;
+      if (epoch === null || loadedSeq === null || loadedSeq < 0 || (n !== null && n < 1)) {
+        issues.push(issue("epochs_line_invalid", "epochs.json 該行缺少可用的 epoch/loadedSeq，或 n 不是正整數", { file, line }));
         intact = false;
         return true;
       }
-      entries.push({ epoch, loadedSeq });
+      entries.push({ epoch, loadedSeq, n });
       return true;
     });
   } catch (err) {
@@ -479,6 +496,8 @@ function readJournal(economyDir: string, files: { name: string; size: number }[]
 
 interface Startup extends EpochStart {
   realmId: string | null;
+  /** The start counter this start wrote to epochs.json; null on a legacy record. */
+  startIndex: number | null;
 }
 
 interface Rollback {
@@ -733,12 +752,14 @@ function ingest(record: object, file: string, line: number, stream: EventStream,
     case "server.started": {
       const epoch = text(record, "epoch");
       const loadedSeq = integer(record, "loadedSeq");
-      if (epoch === null || loadedSeq === null || loadedSeq < 0) {
+      // Like the journal n: present but unusable reads as 0, and the record is refused.
+      const startIndex = "startIndex" in record ? (integer(record, "startIndex") ?? 0) : null;
+      if (epoch === null || loadedSeq === null || loadedSeq < 0 || (startIndex !== null && startIndex < 1)) {
         issues.push(issue("startup_record_invalid",
-          "server.started 缺少可用的 epoch/loadedSeq，這次啟動無法佐證任何回滾點", { file, line }));
+          "server.started 缺少可用的 epoch/loadedSeq，或 startIndex 不是正整數，這次啟動無法佐證任何回滾點或順序", { file, line }));
         return;
       }
-      stream.startups.push({ epoch, loadedSeq, realmId });
+      stream.startups.push({ epoch, loadedSeq, realmId, startIndex });
       return;
     }
     case "epoch.rolledback": {
@@ -786,6 +807,8 @@ interface EpochVerdict {
 interface Evidence {
   verdicts: Map<string, EpochVerdict>;
   epochOrder: string[] | null;
+  /** Epochs proven to have started before every epoch of epochOrder; empty without an order. */
+  older: Set<string>;
 }
 
 function resolveEvidence(
@@ -797,50 +820,109 @@ function resolveEvidence(
   realm: string | null,
   issues: ReportIssue[],
 ): Evidence {
-  // The loadedSeq each epoch of this realm reported on its own start. This is what makes a
-  // journal line trustworthy: the line and the event stream must say the same thing.
-  const observed = new Map<string, number>();
+  // What each epoch of this realm reported on its own start. This is what makes a journal line
+  // trustworthy: the line and the event stream must say the same thing.
+  const observed = new Map<string, Startup>();
   const contested = new Set<string>();
   for (const startup of stream.startups) {
     if (realm === null || startup.realmId !== realm) continue;
     const previous = observed.get(startup.epoch);
-    if (previous === undefined) observed.set(startup.epoch, startup.loadedSeq);
-    else if (previous !== startup.loadedSeq) contested.add(startup.epoch);
+    if (previous === undefined) observed.set(startup.epoch, startup);
+    else if (previous.loadedSeq !== startup.loadedSeq || previous.startIndex !== startup.startIndex) contested.add(startup.epoch);
   }
   for (const epoch of contested) {
     issues.push(issue("startup_loaded_seq_conflict",
-      `epoch ${epoch} 有兩筆 server.started 說出不同的 loadedSeq，這個 epoch 的啟動證據不予採用`));
+      `epoch ${epoch} 有兩筆 server.started 說出不同的 loadedSeq 或 startIndex，這個 epoch 的啟動證據不予採用`, { epochs: [epoch] }));
   }
   const corroborated = (entry: EpochStart): boolean =>
-    !contested.has(entry.epoch) && observed.get(entry.epoch) === entry.loadedSeq;
+    !contested.has(entry.epoch) && observed.get(entry.epoch)?.loadedSeq === entry.loadedSeq;
 
   // The journal is the only proof of epoch order, and it only counts when nothing in it was
-  // damaged, every line it holds is confirmed by a same-realm server.started, and it holds a
-  // line for every start we saw. A line that vanished would leave two unrelated epochs looking
-  // adjacent - journal A,C while the stream shows A,B,C must never yield "A survived to C".
+  // damaged, every line it holds is confirmed by a same-realm server.started, and every start we
+  // saw either has a line or is proven older than the lines kept. A line that vanished would
+  // leave two unrelated epochs looking adjacent - journal A,C while the stream shows A,B,C must
+  // never yield "A survived to C".
   let orderTrusted = journal.intact;
   if (!journal.intact) {
     issues.push(issue("epoch_order_unproven",
       "epochs.json 有損毀、未完成或讀取中被改寫的行：兩側的 epoch 不再可證明相鄰，整段啟動順序停用"));
   }
+  const unproven = (message: string, epochs: string[]): void => {
+    orderTrusted = false;
+    issues.push(issue("epoch_order_unproven", message, { epochs }));
+  };
+  const entries = journal.entries;
   const listed = new Set<string>();
-  for (const entry of journal.entries) {
+  for (const entry of entries) {
     listed.add(entry.epoch);
     if (corroborated(entry)) continue;
-    orderTrusted = false;
-    const seen = observed.get(entry.epoch);
-    issues.push(issue("epoch_order_unproven",
-      `epochs.json 的 ${entry.epoch} loadedSeq=${entry.loadedSeq} 沒有同 realm server.started 佐證`
-      + `（事件流觀察到的是 ${contested.has(entry.epoch) ? "互相矛盾的值" : seen ?? "無"}），啟動順序不予採用`));
+    const seen = observed.get(entry.epoch)?.loadedSeq;
+    unproven(`epochs.json 的 ${entry.epoch} loadedSeq=${entry.loadedSeq} 沒有同 realm server.started 佐證`
+      + `（事件流觀察到的是 ${contested.has(entry.epoch) ? "互相矛盾的值" : seen ?? "無"}），啟動順序不予採用`, [entry.epoch]);
   }
-  for (const epoch of observed.keys()) {
+
+  // The start counter. The mod writes n = previous highest n + 1 (1 on a file without one) and
+  // trims by keeping the newest lines, so the counted lines must be a contiguous tail of the file
+  // counting up by exactly 1, starting at 1 when legacy lines are still kept ahead of them.
+  const firstCounted = entries.findIndex((entry) => entry.n !== null);
+  const legacy = firstCounted < 0 ? entries : entries.slice(0, firstCounted);
+  const counted = firstCounted < 0 ? [] : entries.slice(firstCounted);
+  const head = counted[0];
+  const firstN = head?.n ?? null;
+  if (head !== undefined && legacy.length > 0 && firstN !== 1) {
+    unproven(`epochs.json 舊格式行之後的第一個計數行 n=${firstN}（${head.epoch}）不是 1：兩者之間有計數行遺失`, [head.epoch]);
+  }
+  const countedEpochs = new Set<string>();
+  let previous: JournalLine | undefined;
+  for (const entry of counted) {
+    if (entry.n === null) {
+      unproven(`epochs.json 在計數行之後又出現沒有 n 的舊格式行（${entry.epoch}）：計數鏈不成立`, [entry.epoch]);
+    } else {
+      if (previous !== undefined && previous.n !== null && entry.n !== previous.n + 1) {
+        unproven(`epochs.json 的計數 n 從 ${previous.n}（${previous.epoch}）跳到 ${entry.n}（${entry.epoch}）：中間有行遺失或順序錯亂`,
+          [previous.epoch, entry.epoch]);
+      }
+      if (countedEpochs.has(entry.epoch)) unproven(`epoch ${entry.epoch} 在 epochs.json 有多個計數行`, [entry.epoch]);
+      countedEpochs.add(entry.epoch);
+      const seen = observed.get(entry.epoch)?.startIndex ?? null;
+      if (seen !== null && seen !== entry.n) {
+        unproven(`epoch ${entry.epoch} 的 server.started startIndex=${seen} 與 epochs.json n=${entry.n} 不符`, [entry.epoch]);
+      }
+    }
+    previous = entry;
+  }
+  const byIndex = new Map<number, string>();
+  for (const [epoch, start] of observed) {
+    if (start.startIndex === null) continue;
+    const other = byIndex.get(start.startIndex);
+    if (other === undefined) byIndex.set(start.startIndex, epoch);
+    else unproven(`epoch ${other} 與 ${epoch} 的 server.started 都是第 ${start.startIndex} 次啟動：計數互相矛盾`, [other, epoch]);
+  }
+
+  // A start the journal no longer holds is proven trimmed - older than every counted line -
+  // only through the counter: its startIndex is below the first n kept, or it has none because
+  // it ran legacy code, which only ever ran before the first counted line. Anything else may be
+  // a lost line.
+  const older = new Set<string>();
+  let legacyComplete = true;
+  for (const [epoch, start] of observed) {
     if (listed.has(epoch)) continue;
-    orderTrusted = false;
-    issues.push(issue("epoch_order_unproven",
-      `事件流觀察到 epoch ${epoch} 的 server.started，epochs.json 卻沒有這一行：可能整行遺失，`
-      + "其餘行的相鄰關係不可信，啟動順序整段停用（存檔 history 與明確 epoch.rolledback 仍然有效）"));
+    if (firstN !== null && !contested.has(epoch) && (start.startIndex === null || start.startIndex < firstN)) {
+      older.add(epoch);
+      if (start.startIndex === null) legacyComplete = false;
+      continue;
+    }
+    unproven(`事件流觀察到 epoch ${epoch} 的 server.started（startIndex=${start.startIndex ?? "無"}），epochs.json 卻沒有這一行，`
+      + "計數也無法證明它早於保留的最舊一行：可能整行遺失，啟動順序整段停用（存檔 history 與明確 epoch.rolledback 仍然有效）",
+    [epoch]);
   }
-  const ordered = orderTrusted ? [...new Set(journal.entries.map((entry) => entry.epoch))] : [];
+  // Legacy lines keep the strict rule: they (and the last of them next to the first counted
+  // line) are only adjacent when no legacy start is missing from the journal. Otherwise the proven
+  // order is the counted lines alone, and the kept legacy lines are merely older than it.
+  const chain = legacyComplete ? entries : counted;
+  if (!orderTrusted) older.clear();
+  else if (!legacyComplete) for (const entry of legacy) older.add(entry.epoch);
+  const ordered = orderTrusted ? [...new Set(chain.map((entry) => entry.epoch))] : [];
   const epochOrder = ordered.length > 0 ? ordered : null;
 
   // cutoff candidates: epoch -> value -> the sources that state it
@@ -861,9 +943,9 @@ function resolveEvidence(
     addCutoff(rollback.epoch, rollback.fromSeq - 1, "epoch.rolledback");
   }
   if (orderTrusted) {
-    for (let i = 0; i + 1 < journal.entries.length; i++) {
-      const current = journal.entries[i];
-      const next = journal.entries[i + 1];
+    for (let i = 0; i + 1 < chain.length; i++) {
+      const current = chain[i];
+      const next = chain[i + 1];
       if (current === undefined || next === undefined || current.epoch === next.epoch) continue;
       if (!corroborated(current) || !corroborated(next)) continue;
       // The next start loaded a save ending at its loadedSeq: the previous epoch survived to it.
@@ -883,24 +965,24 @@ function resolveEvidence(
     if (values.length > 1) {
       const detail = values.map((value) => `${value}(${[...(byValue?.get(value) ?? [])].join(",")})`).sort().join(" / ");
       issues.push(issue("epoch_cutoff_conflict",
-        `epoch ${tx.epoch} 的回滾點有互相衝突的證據：${detail}；此 epoch 的交易一律標為無法判斷`));
+        `epoch ${tx.epoch} 的回滾點有互相衝突的證據：${detail}；此 epoch 的交易一律標為無法判斷`, { epochs: [tx.epoch] }));
       verdicts.set(tx.epoch, { cutoff: null, durableTo, afterSave, unresolved: true });
       continue;
     }
     const cutoff = values[0] ?? null;
     if (cutoff !== null && durableTo !== null && durableTo > cutoff) {
       issues.push(issue("epoch_evidence_conflict",
-        `epoch ${tx.epoch} 的存檔水位 seq=${durableTo} 高於其回滾點 ${cutoff}，兩份證據矛盾；此 epoch 的交易一律標為無法判斷`));
+        `epoch ${tx.epoch} 的存檔水位 seq=${durableTo} 高於其回滾點 ${cutoff}，兩份證據矛盾；此 epoch 的交易一律標為無法判斷`, { epochs: [tx.epoch] }));
       verdicts.set(tx.epoch, { cutoff: null, durableTo: null, afterSave, unresolved: true });
       continue;
     }
     if (cutoff === null && durableTo === null && !afterSave) {
       issues.push(issue("epoch_evidence_missing",
-        `epoch ${tx.epoch} 不在存檔 meta/history 內，也沒有可信的回滾點或啟動順序證據：此 epoch 的交易只能標為無法判斷`));
+        `epoch ${tx.epoch} 不在存檔 meta/history 內，也沒有可信的回滾點或啟動順序證據：此 epoch 的交易只能標為無法判斷`, { epochs: [tx.epoch] }));
     }
     verdicts.set(tx.epoch, { cutoff, durableTo, afterSave, unresolved: false });
   }
-  return { verdicts, epochOrder };
+  return { verdicts, epochOrder, older };
 }
 
 function statusOf(verdict: EpochVerdict | undefined, seq: number): ReportStatus {
@@ -913,8 +995,10 @@ function statusOf(verdict: EpochVerdict | undefined, seq: number): ReportStatus 
 
 /**
  * seq is monotonic inside an epoch, so a group may always be ordered by it. Epoch groups are
- * reordered only when the caller passes a proven order covering every epoch present; otherwise
- * they keep the order they were physically recorded in, and nothing is inferred from timestamps.
+ * reordered only when the caller passes a proven order covering every epoch present, except
+ * epochs proven older than all of it: those sort ahead of it (indexOf -1), in the order they
+ * were physically recorded. Without an order every group keeps that physical order, and nothing
+ * is inferred from timestamps.
  */
 function inRecordOrder(transactions: ReportTransaction[], epochOrder: string[] | null): ReportTransaction[] {
   const groups = new Map<string, ReportTransaction[]>();
@@ -1010,17 +1094,19 @@ export async function readReportSource(options: ReadReportSourceOptions): Promis
     if (!tx.valid) tx.status = "unknown";
   }
 
-  // An epoch the proven order does not cover means the records cannot be laid out in a proven
-  // order at all. Publishing the order anyway would let a consumer treat the last row it walks
-  // as the newest one, so the proof is withdrawn together with the sorting.
+  // An epoch the proven order does not cover (and that is not proven older than all of it) means
+  // the records cannot be laid out in a proven order at all. Publishing the order anyway would
+  // let a consumer treat the last row it walks as the newest one, so the proof is withdrawn
+  // together with the sorting.
   const proven = evidence.epochOrder;
-  const covers = proven !== null && stream.transactions.every((tx) => proven.includes(tx.epoch));
-  if (proven !== null && !covers) {
+  const uncovered = proven === null ? []
+    : [...new Set(stream.transactions.map((tx) => tx.epoch))].filter((epoch) => !proven.includes(epoch) && !evidence.older.has(epoch));
+  if (uncovered.length > 0) {
     issues.push(issue("epoch_order_unproven",
-      "有交易的 epoch 不在可信啟動順序內（未知或屬於其他世界），交易退回實體紀錄順序，"
-      + "本次不輸出 epochOrder：跨 epoch 的先後一律視為未證明"));
+      `有 ${uncovered.length} 個有交易的 epoch 不在可信啟動順序內（未知或屬於其他世界），交易退回實體紀錄順序，`
+      + "本次不輸出 epochOrder：跨 epoch 的先後一律視為未證明", { epochs: uncovered }));
   }
-  const epochOrder = covers ? proven : null;
+  const epochOrder = uncovered.length === 0 ? proven : null;
 
   // The same trust boundary as durability: a snapshot that cannot be proven to describe this
   // world is not handed out for reconciliation either.
