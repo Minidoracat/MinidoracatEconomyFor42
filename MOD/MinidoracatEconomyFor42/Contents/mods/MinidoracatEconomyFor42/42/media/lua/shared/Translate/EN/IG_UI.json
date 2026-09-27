@@ -603,7 +603,7 @@
   "IGUI_MinidoracatEconomy_Shop_Error_prepared_dish": "Dishes made with added ingredients cannot be sold",
   "IGUI_MinidoracatEconomy_Shop_Error_fertilized": "Fertilized eggs cannot be sold",
   "IGUI_MinidoracatEconomy_Mail_Title": "Mailbox",
-  "IGUI_MinidoracatEconomy_Mail_Note": "Purchases, market buys, auction wins and returns arrive here; claim them at a terminal or ATM. What does not fit stays in the letter",
+  "IGUI_MinidoracatEconomy_Mail_Note": "Purchases, market buys, auction wins and returns arrive here; claim them at a terminal or ATM. What does not fit stays in the letter.",
   "IGUI_MinidoracatEconomy_Mail_Empty": "Nothing to claim",
   "IGUI_MinidoracatEconomy_Mail_Claimed": "Claimed %1 x%2",
   "IGUI_MinidoracatEconomy_Mail_Count": "%1 waiting",

@@ -1386,11 +1386,8 @@ function TransferDialog:check()
     return nil
 end
 
--- A refusal of the recipient closes the candidate list: the list opens under the recipient box,
--- on top of the line that says what was wrong, and editing the name drops the refusal anyway.
 function TransferDialog:setError(field, text)
     self.fieldError = field and { field = field, text = text } or nil
-    if field == "to" then self.picker:close() end
     self.panel:layoutDialog(self)
 end
 
@@ -1532,18 +1529,23 @@ function TransferDialog:watchEdits()
     if moved then self:setError(nil) end
 end
 
+-- The refusal of `field`, wrapped, from `y` down. Returns the y below it.
+function TransferDialog:placeError(field, y, w)
+    local err = self.fieldError
+    if not (err and err.field == field) then return y end
+    self.errField, self.errY = field, y
+    self.errLines = U.wrapText(err.text, w - PAD * 2, 3)
+    return y + #self.errLines * (fontH.small + 2) + 4
+end
+
 -- One labelled row: the control on the right, the label in what is left (fitted when painted),
--- and the refusal of this field, wrapped, on the lines under it. Returns the y below it.
+-- and the refusal of this field on the lines under it. The recipient's refusal goes above its
+-- box instead: the candidate list opens under that box and would cover it. Returns the y below.
 function TransferDialog:placeRow(field, y, h, w)
     self.rowY[field] = y
     y = y + h + 6
-    local err = self.fieldError
-    if err and err.field == field then
-        self.errField, self.errY = field, y
-        self.errLines = U.wrapText(err.text, w - PAD * 2, 3)
-        y = y + #self.errLines * (fontH.small + 2) + 4
-    end
-    return y
+    if field == "to" then return y end
+    return self:placeError(field, y, w)
 end
 
 function TransferDialog:layoutInside(maxW, maxH)
@@ -1564,6 +1566,7 @@ function TransferDialog:layoutInside(maxW, maxH)
     self.labelW = fieldX - PAD * 2
     if fillStep then
         local entryH = self.picker.entry.height
+        y = self:placeError("to", y, w)
         self.picker:layout(fieldX, y, fieldW, math.max(60, maxH - y - entryH - PAD))
         y = self:placeRow("to", y, entryH, w)
         local chipsH = math.max(self.currencyButtons[1] and self.currencyButtons[1].height or CHIP_H,

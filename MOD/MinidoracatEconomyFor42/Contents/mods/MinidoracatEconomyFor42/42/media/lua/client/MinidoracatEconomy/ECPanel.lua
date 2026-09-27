@@ -1688,7 +1688,7 @@ function Panel:finishMailBatch(code)
         C.toast(getText(T .. "Mail_BatchPartial", tostring(batch.partial),
             tostring(batch.partDone), tostring(batch.partLeft)))
     end
-    if batch.need ~= nil then C.toast(getText(T .. "Mail_BatchNeed", C.weightText(batch.need, true))) end
+    if batch.need ~= nil then C.toast(getText(T .. "Mail_BatchNeed", C.weightText(batch.need, "up"))) end
     if batch.lastError ~= nil then C.toast(shopError(batch.lastError)) end
     if code ~= nil then C.toast(shopError(code)) end
 end
@@ -2422,7 +2422,7 @@ function Panel:detailText(kind, e)
                 out[#out + 1] = getText(T .. "Mail_DetailPartial", tostring(fit), tostring(qty - fit))
             else
                 out[#out + 1] = getText(T .. "Mail_DetailNoRoom",
-                    C.weightText(math.max(0, preview.totalWeight / qty - preview.freeCapacity), true))
+                    C.weightText(math.max(0, preview.totalWeight / qty - preview.freeCapacity), "up"))
             end
         end
     end

@@ -603,7 +603,7 @@
   "IGUI_MinidoracatEconomy_Shop_Error_prepared_dish": "加入食材做成的料理不能賣",
   "IGUI_MinidoracatEconomy_Shop_Error_fertilized": "受精蛋不能賣",
   "IGUI_MinidoracatEconomy_Mail_Title": "信箱",
-  "IGUI_MinidoracatEconomy_Mail_Note": "購買、市場、拍賣與退回的物品會寄到這裡，可在終端或 ATM 旁領取；背包放不下時先交付放得下的件數",
+  "IGUI_MinidoracatEconomy_Mail_Note": "購買、市場、拍賣與退回的物品會寄到這裡，可在終端或 ATM 旁領取；背包放不下時先交付放得下的件數。",
   "IGUI_MinidoracatEconomy_Mail_Empty": "沒有待領取的物品",
   "IGUI_MinidoracatEconomy_Mail_Claimed": "已領取 %1 ×%2",
   "IGUI_MinidoracatEconomy_Mail_Count": "%1 件待領取",

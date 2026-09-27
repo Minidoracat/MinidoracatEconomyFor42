@@ -631,11 +631,13 @@ end
 local DELIVERY_CODES = { mailbox = true, backpack_full = true, delivery_failed = true, delivery_partial = true,
     unit_too_heavy = true }
 
--- A weight as the player reads it (one decimal, like the buy dialog). `up` rounds up: an amount
--- to free is never shown smaller than what the server asked for.
-function C.weightText(value, up)
+-- A weight as the player reads it (one decimal, like the buy dialog). `round` = "up" for an
+-- amount to free (never shown smaller than the server asked for), "down" for room left (never
+-- shown larger than there is, so "weight - room = what to free" adds up on screen), nil = nearest.
+function C.weightText(value, round)
     local v = tonumber(value) or 0
-    if up then v = math.ceil(v * 10 - 1e-6) / 10 end
+    if round == "up" then v = math.ceil(v * 10 - 1e-6) / 10
+    elseif round == "down" then v = math.floor(v * 10 + 1e-6) / 10 end
     return string.format("%.1f", v)
 end
 
@@ -656,7 +658,7 @@ function C.deliveryText(args)
     if code == "delivery_partial" then
         local text = getText(key .. "Delivery_Partial", tostring(math.floor(done or 0)),
             tostring(math.floor(tonumber(args.remainingQty) or 0)), left)
-        if need ~= nil and need > 0 then text = text .. " " .. getText(key .. "Delivery_FreeToFinish", C.weightText(need, true)) end
+        if need ~= nil and need > 0 then text = text .. " " .. getText(key .. "Delivery_FreeToFinish", C.weightText(need, "up")) end
         return text
     end
     if code == "delivery_failed" then
@@ -666,7 +668,7 @@ function C.deliveryText(args)
         return getText(key .. "Delivery_TooHeavy", C.weightText(unit), C.weightText(cap))
     end
     if code == "backpack_full" and unit ~= nil and free ~= nil and need ~= nil then
-        return getText(key .. "Delivery_NoRoom", C.weightText(unit), C.weightText(free), C.weightText(need, true), left)
+        return getText(key .. "Delivery_NoRoom", C.weightText(unit), C.weightText(free, "down"), C.weightText(need, "up"), left)
     end
     return getText(key .. "Shop_Parked", left)
 end

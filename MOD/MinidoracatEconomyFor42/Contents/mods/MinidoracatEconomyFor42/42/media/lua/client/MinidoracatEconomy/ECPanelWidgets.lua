@@ -223,7 +223,7 @@ local function capacityLines(out, preview)
     out[#out + 1] = detailLine("Delivery_Fits", getText(T .. "Delivery_FitsCount", tostring(fit), tostring(qty)))
     out[#out + 1] = detailLine("Delivery_Weight", getText(T .. "Delivery_WeightPair",
         string.format("%.1f", tonumber(preview.totalWeight) or 0),
-        string.format("%.1f", tonumber(preview.freeCapacity) or 0)))
+        string.format("%.1f", math.floor((tonumber(preview.freeCapacity) or 0) * 10 + 1e-6) / 10)))
     local limit = tonumber(preview.encumbranceLimit)
     if limit ~= nil then
         out[#out + 1] = detailLine("Delivery_Carried", getText(T .. "Delivery_WeightPair",

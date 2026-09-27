@@ -603,7 +603,7 @@
   "IGUI_MinidoracatEconomy_Shop_Error_prepared_dish": "材料を加えて作った料理は売れません",
   "IGUI_MinidoracatEconomy_Shop_Error_fertilized": "受精卵は売れません",
   "IGUI_MinidoracatEconomy_Mail_Title": "受信箱",
-  "IGUI_MinidoracatEconomy_Mail_Note": "購入・マーケット・オークション・返却の品はここに届きます。ターミナルかATMの近くで受け取れ、入りきらない分は手紙に残ります",
+  "IGUI_MinidoracatEconomy_Mail_Note": "購入・マーケット・オークション・返却の品はここに届きます。ターミナルかATMの近くで受け取れ、入りきらない分は手紙に残ります。",
   "IGUI_MinidoracatEconomy_Mail_Empty": "受け取る物はありません",
   "IGUI_MinidoracatEconomy_Mail_Claimed": "%1 ×%2 を受け取りました",
   "IGUI_MinidoracatEconomy_Mail_Count": "未受取 %1件",
