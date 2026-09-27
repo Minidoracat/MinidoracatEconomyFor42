@@ -155,6 +155,8 @@ local function optionValue(options, key)
     local option = options and options[key]
     if type(option) == "table" then return option.value end
 end
+-- The live value of one server option, from the snapshot hello.ack and every `config` push carry.
+function C.option(key) return optionValue(C.options, key) end
 
 -- Runtime currency changes (name override, enabled, rates) pushed by the server.
 handlers["config"] = function(args)
@@ -378,6 +380,48 @@ function C.requestHistory(month, requestId)
     requestId = requestId or C.newRequestId()
     send("wallet.history", { month = month, requestId = requestId })
     return requestId
+end
+
+-- ---------- player transfer ----------
+-- Transport only: the wallet page's transfer dialog matches every reply against the requestId it
+-- sent. transfer.info { requestId, ok, enabled, remote, atTerminal, feePercent, min, maxPerTx,
+-- dailyLimit, sentToday, remainingToday? (nil = unlimited), readyAt? (ms), currencies };
+-- transfer.recipients { requestId, query, items = { {username, online}, ... } };
+-- wallet.transfer { requestId, ok, error?, to, currency, amount, fee, total, txId?, balance?,
+-- sentToday?, remainingToday?, duplicate?, feeNow?, availableAt?, needed?, min?, max? }.
+handlers["transfer.info"] = function(args)
+    notify(C.walletListeners, "wallet", "transfer.info", args)
+end
+
+-- The candidate box (ECPlayerPicker) reads the shape admin.players / market.sellers answer in;
+-- this command is its own context, so the reply is named for it here.
+handlers["transfer.recipients"] = function(args)
+    args.context, args.players = "transfer", args.items
+    notify(C.walletListeners, "wallet", "transfer.recipients", args)
+end
+
+handlers["wallet.transfer"] = function(args)
+    if args.ok then C.requestWallet() end
+    notify(C.walletListeners, "wallet", "transfer", args)
+end
+
+-- Pushed to an online payee only: { from, currency, amount, memo?, txId, balance }. The wallet
+-- push that comes with it repaints the balance; this is the toast, whatever page is open.
+handlers["wallet.transferReceived"] = function(args)
+    local money = C.UI and C.UI.amountText or tostring
+    local memo = type(args.memo) == "string" and args.memo ~= "" and args.memo or nil
+    local key = "IGUI_MinidoracatEconomy_Transfer_Received" .. (memo and "Memo" or "")
+    C.toast(getText(key, tostring(args.from), money(args.amount), C.currencyName(args.currency), memo or ""))
+    notify(C.walletListeners, "wallet", "transferReceived", args)
+end
+
+function C.requestTransferInfo(requestId) send("transfer.info", { requestId = requestId }) end
+function C.requestTransferRecipients(query, requestId)
+    send("transfer.recipients", { query = query, requestId = requestId })
+end
+function C.transfer(to, currency, amount, fee, memo, requestId)
+    send("wallet.transfer", { to = to, currency = currency, amount = amount, fee = fee, memo = memo,
+        requestId = requestId })
 end
 
 -- ---------- terminals / shop / mailbox (stage C) ----------

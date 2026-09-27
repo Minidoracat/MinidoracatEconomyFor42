@@ -1,9 +1,11 @@
--- MinidoracatEconomyFor42 — Economy Center modal dialogs (client). The two panels the player
--- pages add over themselves: the shop buy / sell dialog, and the one market / auction dialog
--- that carries every step of both trade pages (purchase, cancel, backpack picker, pricing,
--- bid, create). Both are plain child panels of the window: the window owns them, sizes them
--- against the band it gave them (Panel:layoutDialog) and confirms them through its own
--- submitBuy / submitSell / submitMarket / submitAuction. Nothing here reaches for C.Panel.
+-- MinidoracatEconomyFor42 — Economy Center modal dialogs (client). The panels the player pages
+-- add over themselves: the shop buy / sell dialog, the one market / auction dialog that carries
+-- every step of both trade pages (purchase, cancel, backpack picker, pricing, bid, create), and
+-- the wallet's two-step transfer dialog. All are plain child panels of the window: the window
+-- owns them, sizes them against the band it gave them (Panel:layoutDialog) and confirms the
+-- trades through its own submitBuy / submitSell / submitMarket / submitAuction; the transfer
+-- dialog sends its own write and leaves the in-flight marker on the window (transferPending), so
+-- an answer that lands after it closed is still toasted. Nothing here reaches for C.Panel.
 --
 -- Controls, row builders and the reader / summary helpers come from the page toolkit
 -- (ECPanelWidgets), the drawing and formatting primitives from ECWidgets — no copies here.
@@ -15,6 +17,7 @@ if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEco
 end
 require "MinidoracatEconomy/ECKeyboard"
 require "MinidoracatEconomy/ECPanelWidgets"
+require "MinidoracatEconomy/ECPlayerPicker"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -1152,8 +1155,513 @@ function MarketDialog:onMouseDown() return true end
 function MarketDialog:onMouseUp() return true end
 function MarketDialog:onMouseMove() return true end
 
+-- ---------- transfer dialog ----------
+-- Player-to-player transfer (design player-transfer.md section 4), the BuyDialog shape in two
+-- steps. Fill: the recipient (candidates over transfer.recipients: online players and recent
+-- counterparties; an offline account is typed in full and matched exactly by the server), the
+-- currency, the amount, an optional memo, and a live preview of what it costs. Confirm: every
+-- value spelled out -- the whole account name included, whatever its length -- and a primary
+-- button that states the consequence. The server re-checks everything; the client only asks.
+local TransferDialog = ISPanel:derive("MinidoracatEconomyTransferDialog")
+local MEMO_MAX = 64
+local READ_GAP_MS = 650       -- the server drops a second command inside 500 ms, and never answers it
+local READ_TIMEOUT_MS = 8000
+-- The field a refusal is shown next to; every other code is about the request as a whole.
+local TRANSFER_ERROR_FIELDS = { unknown_recipient = "to", self_transfer = "to", recipient_frozen = "to",
+    recipient_cap = "amount", amount_range = "amount", daily_limit = "amount",
+    insufficient_funds = "amount", currency_not_transferable = "currency", request_too_long = "memo" }
+
+-- The wallet's transfer button: nil when the feature is off or no currency may be sent (the
+-- button is not there at all), else false when it is open or the reason it is shut. A mirror of
+-- the server's own gates for the button's sake; the server checks them all again.
+function D.transferGate()
+    if C.option("TransferEnabled") ~= true then return nil end
+    local any = false
+    for _, cur in ipairs(C.currencies or {}) do
+        if cur.directTransfer == true and cur.enabled ~= false then any = true end
+    end
+    if not any then return nil end
+    if C.wallet and C.wallet.frozen then return getText(T .. "Transfer_Error_account_frozen") end
+    if C.option("TransferRemote") ~= true and not C.nearTerminal() then
+        return getText(T .. "Transfer_Error_not_at_terminal")
+    end
+    return false
+end
+
+-- One refusal, worded with its way out. `args` is the server's reply, or a local check shaped
+-- like one; `currency` names the money when the reply does not.
+function D.transferError(args, currency)
+    local code = tostring(args.error or "")
+    local cur = args.currency or currency
+    if code == "insufficient_funds" then
+        return getText(T .. "Transfer_Error_insufficient_funds", moneyText(args.needed, cur))
+    elseif code == "daily_limit" then
+        return getText(T .. "Transfer_Error_daily_limit", amountOrDash(args.remainingToday))
+    elseif code == "fee_changed" then
+        return getText(T .. "Transfer_Error_fee_changed", moneyText(args.feeNow, cur))
+    elseif code == "amount_range" then
+        return getText(T .. "Transfer_Error_amount_range", amountOrDash(args.min), amountOrDash(args.max))
+    elseif code == "account_too_new" then
+        return getText(T .. "Transfer_Error_account_too_new", amountOrDash(C.option("TransferMinAccountDays")),
+            U.stampText(tonumber(args.availableAt), U.localOffsetMinutes()))
+    end
+    return getTextOrNull(T .. "Transfer_Error_" .. code) or getText(T .. "Transfer_Error_other", code)
+end
+
+function TransferDialog:createChildren()
+    local bh = math.max(28, fontH.medium + 10)
+    local nextLabel = getText(T .. "Transfer_Next")
+    self.confirmButton = Button.create(0, 0, math.max(120, textWidth(nextLabel, UIFont.Medium) + 40), bh,
+        nextLabel, self, TransferDialog.onConfirm, "primary")
+    self.confirmButton.font = UIFont.Medium
+    self:addChild(self.confirmButton)
+    local cancel = getText(T .. "Admin_Cancel")
+    self.cancelButton = Button.create(0, 0, textWidth(cancel) + 30, bh, cancel, self, TransferDialog.onCancel, "chip")
+    self:addChild(self.cancelButton)
+    self.currencyButtons = newCurrencyChips(self, TransferDialog.onCurrency)
+    local eh = math.max(26, fontH.small + 12)
+    self.amountEntry = newEntry(140, eh, nil, true)
+    self:addChild(self.amountEntry)
+    self.memoEntry = U.newEntry(200, eh, { maxLen = MEMO_MAX, clear = true,
+        placeholder = getText(T .. "Transfer_MemoHint") })
+    self:addChild(self.memoEntry)
+    -- every value of the transfer, scrolling: at the largest UI font there is no room to stack
+    -- them as lines, and none of them -- the full account name least of all -- may be cut
+    self.summaryBox = newReader(self, 240, fontH.small * 2 + 12)
+    -- last, so its candidate list drops over every field under the box
+    self.picker = C.PlayerPicker.create(self, function(_, args) return self:sendRecipients(args) end,
+        function() return self.recipientsAt ~= nil end, C.newRequestId,
+        function() end, "transfer", "transfer.recipients")
+    self.picker:setVisible(true)
+end
+
+-- The window opened the dialog: the currency starts on the first one that may be sent, and the
+-- limits, the fee and the day's allowance are asked for.
+function TransferDialog:open()
+    self.step = "fill"
+    self:syncCurrency()
+    self.infoWanted = true
+end
+
+function TransferDialog:transferable(id)
+    local cur = C.currency(id)
+    if not (cur and cur.directTransfer == true and cur.enabled ~= false) then return false end
+    local list = self.info and self.info.currencies
+    if type(list) ~= "table" then return true end
+    for _, v in ipairs(list) do
+        if v == id then return true end
+    end
+    return false
+end
+
+-- Keep the chosen currency while it may still be sent, else move to the first one that may.
+function TransferDialog:syncCurrency()
+    if self.currency == nil or not self:transferable(self.currency) then
+        self.currency = nil
+        for _, b in ipairs(self.currencyButtons) do
+            if self.currency == nil and self:transferable(b.internal) then self.currency = b.internal end
+        end
+    end
+    for _, b in ipairs(self.currencyButtons) do b.active = b.internal == self.currency end
+end
+
+function TransferDialog:onCurrency(button)
+    if self.panel.transferPending ~= nil or self.currency == button.internal then return end
+    self.currency = button.internal
+    for _, b in ipairs(self.currencyButtons) do b.active = b.internal == self.currency end
+end
+
+function TransferDialog:onCancel() self.panel:closeTransfer() end
+
+-- The candidate read: one in flight, and never inside the server's own command window (a
+-- dropped command is never answered). false keeps the box's query armed for the next frame.
+function TransferDialog:sendRecipients(args)
+    local now = EC.now()
+    if self.recipientsAt ~= nil or (self.recipientsSentAt and now - self.recipientsSentAt < READ_GAP_MS) then
+        return false
+    end
+    self.recipientsAt, self.recipientsSentAt, self.recipientsId = now, now, args.requestId
+    C.requestTransferRecipients(args.query, args.requestId)
+    return true
+end
+
+-- The two reads this dialog asked for; anything it did not ask for is left alone.
+function TransferDialog:onRead(kind, args)
+    if kind == "transfer.recipients" then
+        if args.requestId == self.recipientsId then self.recipientsAt, self.recipientsId = nil, nil end
+        self.picker:onReply(args)
+        return
+    end
+    if args.requestId == nil or args.requestId ~= self.infoId then return end
+    self.infoId, self.infoAt = nil, nil
+    if args.ok == false then
+        self.infoError = args.error or "other"
+    else
+        self.info, self.infoError = args, nil
+        self:syncCurrency()
+    end
+    self.panel:layoutDialog(self)
+end
+
+-- Reads are safe to repeat: a lost transfer.info is simply asked again, paced like every read.
+function TransferDialog:pumpReads()
+    local now = EC.now()
+    if self.infoId ~= nil and now - self.infoAt > READ_TIMEOUT_MS then
+        self.infoId, self.infoAt, self.infoWanted, self.infoError = nil, nil, true, "timeout"
+    end
+    if self.infoWanted and self.infoId == nil and now - (self.infoSentAt or 0) >= READ_GAP_MS then
+        self.infoWanted = nil
+        self.infoId, self.infoAt, self.infoSentAt = C.newRequestId(), now, now
+        C.requestTransferInfo(self.infoId)
+    end
+    if self.recipientsAt ~= nil and now - self.recipientsAt > READ_TIMEOUT_MS then
+        self.recipientsAt, self.recipientsId = nil, nil
+        self.picker:onTimeout()
+    end
+end
+
+function TransferDialog:recipient() return self.picker:getText() end
+
+-- Whole numbers only: the entry filters the keyboard, this filters a paste.
+function TransferDialog:amountValue()
+    local raw = string.match(entryText(self.amountEntry), "^%s*(.-)%s*$")
+    if not string.match(raw, "^%d+$") then return nil end
+    local n = tonumber(raw)
+    if not n or n <= 0 then return nil end
+    return math.floor(n)
+end
+
+function TransferDialog:memo()
+    local m = string.match(entryText(self.memoEntry), "^%s*(.-)%s*$")
+    return m ~= "" and m or nil
+end
+
+-- The server's own fee for this very amount once it has named one (fee_changed), else the
+-- percentage it last stated, rounded up the way the server rounds (at least 1 when it is on).
+function TransferDialog:fee(amount)
+    if amount == nil then return nil end
+    local q = self.feeQuote
+    if q and q.amount == amount and q.currency == self.currency and q.fee then return q.fee end
+    local p = tonumber(self.info and self.info.feePercent) or tonumber(C.option("TransferFeePercent"))
+    if p == nil then return nil end
+    return ceilPercent(amount, p)
+end
+
+function TransferDialog:available()
+    local bal = self.currency and C.wallet and C.wallet.balances and C.wallet.balances[self.currency]
+    return bal and tonumber(bal.available) or 0
+end
+
+-- The account-age gate: the moment it opens, or nil when it is open already.
+function TransferDialog:readyAt()
+    local at = tonumber(self.info and self.info.readyAt)
+    if at and at > EC.now() then return at end
+    return nil
+end
+
+-- The checks the client can make before anything goes out: field, text -- or nil when none fails.
+function TransferDialog:check()
+    local info = self.info
+    if info == nil then return "general", getText(T .. "Transfer_Loading") end
+    local ready = self:readyAt()
+    if ready then return "general", D.transferError({ error = "account_too_new", availableAt = ready }) end
+    local to = self:recipient()
+    if to == "" then return "to", getText(T .. "Transfer_Error_no_recipient") end
+    local player = getPlayer()
+    if player and to == player:getUsername() then return "to", D.transferError({ error = "self_transfer" }) end
+    if self.currency == nil then return "currency", D.transferError({ error = "currency_not_transferable" }) end
+    local amount = self:amountValue()
+    local min, max = tonumber(info.min) or 1, tonumber(info.maxPerTx)
+    if amount == nil or amount < min or (max ~= nil and amount > max) then
+        return "amount", D.transferError({ error = "amount_range", min = min, max = max })
+    end
+    local left = tonumber(info.remainingToday)
+    if left ~= nil and amount > left then
+        return "amount", D.transferError({ error = "daily_limit", remainingToday = left })
+    end
+    local short = amount + (self:fee(amount) or 0) - self:available()
+    if short > 0 then
+        return "amount", D.transferError({ error = "insufficient_funds", needed = short }, self.currency)
+    end
+    return nil
+end
+
+function TransferDialog:setError(field, text)
+    self.fieldError = field and { field = field, text = text } or nil
+    self.panel:layoutDialog(self)
+end
+
+-- One button, two meanings: on the fill step it checks and moves on, on the confirm step it
+-- sends. Enter on it therefore only ever sends from the confirm step.
+function TransferDialog:onConfirm()
+    if self.panel.transferPending ~= nil then return end
+    local field, msg = self:check()
+    local gate = D.transferGate()
+    if gate then field, msg = "general", gate end
+    if field then
+        if field ~= "general" then self.step = "fill" end
+        self:setError(field, msg)
+        Keys.invalidate(self.panel)
+        return
+    end
+    if self.step == "fill" then
+        local keyboard = Keys.isKeyboardFocused(Keys.focused())
+        self.step = "confirm"
+        self.picker:close()
+        self.picker:blur()
+        self:setError(nil)
+        Keys.invalidate(self.panel)
+        Keys.focusControl(self.confirmButton, keyboard)
+        return
+    end
+    self:submit()
+end
+
+function TransferDialog:submit()
+    local to, amount, cur, memo = self:recipient(), self:amountValue(), self.currency, self:memo()
+    local fee = self:fee(amount)
+    local key = table.concat({ to, cur, tostring(amount), tostring(fee), memo or "" }, "\1")
+    -- A press after a timeout carries the very request that timed out: the server answers a
+    -- repeated id with the result it recorded (duplicate) instead of moving the money twice.
+    -- Anything the player changed since is a new request with a new id.
+    if not (self.sent and self.sent.key == key) then
+        self.sent = { key = key, requestId = C.newRequestId() }
+    end
+    self:setError(nil)
+    self.panel.transferPending = { requestId = self.sent.requestId, at = EC.now() }
+    C.transfer(to, cur, amount, fee, memo, self.sent.requestId)
+end
+
+-- The server answered and refused: the next press is a new request. A fee that moved keeps the
+-- confirm step (the new fee is on it, and one more press accepts it); a refusal that belongs to
+-- a field goes back to that field. The limits behind the refusal are read again either way.
+function TransferDialog:onRefused(args)
+    self.sent = nil
+    local code = tostring(args.error or "")
+    local field = "general"
+    if code == "fee_changed" then
+        self.feeQuote = { amount = tonumber(args.amount) or self:amountValue(),
+            currency = args.currency or self.currency, fee = tonumber(args.feeNow) }
+    else
+        field = TRANSFER_ERROR_FIELDS[code] or "general"
+        if field ~= "general" then self.step = "fill" end
+    end
+    self.infoWanted = true
+    self:setError(field, D.transferError(args, self.currency))
+    Keys.invalidate(self.panel)
+end
+
+-- No answer: the write may or may not have landed, so nothing is resent on its own. The balance
+-- and the day's allowance are read back; a press of the confirm carries the same requestId.
+function TransferDialog:onTimeout()
+    self.infoWanted = true
+    C.requestWallet()
+    self:setError("general", getText(T .. "Transfer_Error_timeout"))
+end
+
+-- Every value of the transfer, in reading order; the refusal (or the gate) comes first, because
+-- the reader scrolls back to the top whenever its text changes.
+function TransferDialog:summaryLines()
+    local out = {}
+    local err, info = self.fieldError, self.info
+    if self.gateText then out[#out + 1] = self.gateText; out[#out + 1] = "" end
+    if err and err.field == "general" then out[#out + 1] = err.text; out[#out + 1] = "" end
+    if self.panel.transferPending ~= nil then out[#out + 1] = getText(T .. "Transfer_Sending"); out[#out + 1] = "" end
+    if info == nil then
+        local key = "Transfer_Loading"
+        if self.infoError == "timeout" then key = "Transfer_InfoRetry" end
+        out[#out + 1] = self.infoError and self.infoError ~= "timeout"
+            and D.transferError({ error = self.infoError }) or getText(T .. key)
+        return out
+    end
+    local ready = self:readyAt()
+    if ready then out[#out + 1] = D.transferError({ error = "account_too_new", availableAt = ready }); out[#out + 1] = "" end
+    local cur, amount = self.currency, self:amountValue()
+    local fee = self:fee(amount)
+    local total = amount and fee and (amount + fee) or nil
+    local left = tonumber(info.remainingToday)
+    if self.step == "confirm" then
+        out[#out + 1] = detailLine("Transfer_Recipient", self:recipient())
+        out[#out + 1] = detailLine("Trade_Currency", currencyLabel(cur))
+        out[#out + 1] = detailLine("Transfer_Amount", moneyText(amount, cur))
+    end
+    out[#out + 1] = getText(T .. "Transfer_FeeLine", tostring(info.feePercent or "-"), moneyText(fee, cur))
+    out[#out + 1] = detailLine("Transfer_Total", moneyText(total, cur))
+    out[#out + 1] = detailLine("Shop_AfterBalance", moneyText(self:available() - (total or 0), cur))
+    out[#out + 1] = detailLine("Transfer_RemainingToday", left == nil and getText(T .. "Transfer_Unlimited")
+        or amountText(math.max(0, left - (amount or 0))))
+    if self.step == "confirm" then
+        out[#out + 1] = detailLine("Transfer_Memo", self:memo() or "-")
+        out[#out + 1] = ""
+        out[#out + 1] = getText(T .. "Transfer_Final")
+    else
+        out[#out + 1] = getText(T .. "Transfer_Range", amountOrDash(info.min), amountOrDash(info.maxPerTx))
+    end
+    return out
+end
+
+-- Cheap guard first: nothing is rebuilt while none of the values the reader names has moved.
+function TransferDialog:syncSummary()
+    local to, memo = self:recipient(), self:memo()
+    local pending = self.panel.transferPending ~= nil
+    if not summaryMoved(self, self:amountValue(), self:available(), self.fieldError, self.info, self.gateText)
+        and self.sumCur == self.currency and self.sumTo == to and self.sumMemo == memo
+        and self.sumPending == pending and self.sumStep == self.step and self.sumQuote == self.feeQuote
+        and self.sumInfoError == self.infoError then return end
+    self.sumCur, self.sumTo, self.sumMemo, self.sumPending = self.currency, to, memo, pending
+    self.sumStep, self.sumQuote, self.sumInfoError = self.step, self.feeQuote, self.infoError
+    setSummary(self, self:summaryLines())
+end
+
+-- A field the player edits drops the refusal shown next to it (the IME can change a box without
+-- a callback, so the values are compared rather than waiting for one).
+function TransferDialog:watchEdits()
+    local to, amountRaw, memo = self:recipient(), entryText(self.amountEntry), entryText(self.memoEntry)
+    if to == self.editTo and amountRaw == self.editAmount and memo == self.editMemo
+        and self.currency == self.editCur then return end
+    local err = self.fieldError
+    local moved = (err ~= nil) and ((err.field == "to" and to ~= self.editTo)
+        or (err.field == "amount" and amountRaw ~= self.editAmount)
+        or (err.field == "memo" and memo ~= self.editMemo)
+        or (err.field == "currency" and self.currency ~= self.editCur))
+    self.editTo, self.editAmount, self.editMemo, self.editCur = to, amountRaw, memo, self.currency
+    if moved then self:setError(nil) end
+end
+
+-- One labelled row: the control on the right, the label in what is left (fitted when painted),
+-- and the refusal of this field, wrapped, on the lines under it. Returns the y below it.
+function TransferDialog:placeRow(field, y, h, w)
+    self.rowY[field] = y
+    y = y + h + 6
+    local err = self.fieldError
+    if err and err.field == field then
+        self.errField, self.errY = field, y
+        self.errLines = U.wrapText(err.text, w - PAD * 2, 3)
+        y = y + #self.errLines * (fontH.small + 2) + 4
+    end
+    return y
+end
+
+function TransferDialog:layoutInside(maxW, maxH)
+    local fillStep = self.step == "fill"
+    local w = math.max(360, math.min(maxW, 560))
+    local buttonH = self.cancelButton.height
+    local y = PAD
+    self.titleY = y
+    y = y + fontH.medium + PAD
+    self.rowY = {}
+    self.errField, self.errY, self.errLines = nil, nil, nil
+    self.picker:setVisible(fillStep)
+    self.amountEntry:setVisible(fillStep)
+    self.memoEntry:setVisible(fillStep)
+    for _, b in ipairs(self.currencyButtons) do b:setVisible(fillStep and self:transferable(b.internal)) end
+    local fieldW = math.max(160, math.floor((w - PAD * 3) * 0.62))
+    local fieldX = w - PAD - fieldW
+    self.labelW = fieldX - PAD * 2
+    if fillStep then
+        local entryH = self.picker.entry.height
+        self.picker:layout(fieldX, y, fieldW, math.max(60, maxH - y - entryH - PAD))
+        y = self:placeRow("to", y, entryH, w)
+        local chipsH = math.max(self.currencyButtons[1] and self.currencyButtons[1].height or CHIP_H,
+            chipsHeight(self.currencyButtons, fieldX, w - PAD))
+        placeChips(self.currencyButtons, fieldX, y, w - PAD, 0)
+        y = self:placeRow("currency", y, chipsH, w)
+        for _, pair in ipairs({ { "amount", self.amountEntry }, { "memo", self.memoEntry } }) do
+            local box = pair[2]
+            box:setX(fieldX); box:setY(y); box:setWidth(fieldW)
+            y = self:placeRow(pair[1], y, box.height, w)
+        end
+        self.rowH = { to = entryH, currency = chipsH, amount = self.amountEntry.height, memo = self.memoEntry.height }
+    end
+    -- the reader takes what the rows leave, and never more than its own text needs
+    local lines = self:summaryLines()
+    local boxW = w - PAD * 2
+    local room = maxH - y - (PAD + buttonH + PAD)
+    local box = self.summaryBox
+    box:setX(PAD); box:setY(y); box:setWidth(boxW)
+    box:setHeight(math.max(fontH.small + 12, math.min(readerHeight(lines, boxW), room)))
+    setSummary(self, lines)
+    y = y + box.height + PAD
+    -- The primary button states the consequence on the confirm step: "Send <account> <total>
+    -- <currency>". A name too long for the row is cut on the button (the tooltip keeps it whole)
+    -- and is spelled out in full in the reader above it.
+    local label = getText(T .. "Transfer_Next")
+    if not fillStep then
+        local amount = self:amountValue()
+        local fee = self:fee(amount)
+        label = getText(T .. "Transfer_ConfirmButton", self:recipient(),
+            amountOrDash(amount and fee and (amount + fee) or nil), currencyLabel(self.currency))
+    end
+    local room2 = w - PAD * 3 - self.cancelButton.width
+    self.confirmButton:setWidth(math.max(120, math.min(room2, textWidth(label, UIFont.Medium) + 40)))
+    U.setButtonTitle(self.confirmButton, label, UIFont.Medium)
+    self.buttonY = y
+    self:setWidth(w)
+    self:setHeight(y + buttonH + PAD)
+    self.confirmButton:setX(w - PAD - self.confirmButton.width)
+    self.confirmButton:setY(y)
+    self.cancelButton:setX(self.confirmButton.x - 8 - self.cancelButton.width)
+    self.cancelButton:setY(y)
+    self:syncSummary()      -- the text is already written: this only primes the change guard
+end
+
+function TransferDialog:keyboardTargets()
+    local out = {}
+    if self.step == "fill" then
+        for _, desc in ipairs(self.picker:keyboardTargets()) do out[#out + 1] = desc end
+        out[#out + 1] = { kind = "group", controls = self.currencyButtons, label = getText(T .. "Trade_Currency") }
+        out[#out + 1] = { kind = "entry", control = self.amountEntry, label = getText(T .. "Transfer_Amount") }
+        out[#out + 1] = { kind = "entry", control = self.memoEntry, label = getText(T .. "Transfer_Memo") }
+    end
+    -- the reader holds every value of the transfer: the ring scrolls it, and never focuses it
+    out[#out + 1] = { kind = "scroll", control = self.summaryBox, focusable = false, label = getText(T .. "Kb_Detail") }
+    out[#out + 1] = { kind = "group", controls = { self.confirmButton, self.cancelButton },
+        label = getText(T .. "Kb_Dialog_Actions") }
+    return out
+end
+
+local TRANSFER_ROW_LABELS = { to = "Transfer_Recipient", currency = "Trade_Currency",
+    amount = "Transfer_Amount", memo = "Transfer_Memo" }
+
+function TransferDialog:prerender()
+    local w, h = self.width, self.height
+    self:pumpReads()
+    fill(self, 0, 0, w, h, "surface")
+    border(self, 0, 0, w, h, "accent")
+    text(self, fitText(getText(T .. (self.step == "fill" and "Transfer_Title" or "Transfer_ConfirmTitle")),
+        w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
+    for field, rowY in pairs(self.rowY or {}) do
+        text(self, fitText(getText(T .. TRANSFER_ROW_LABELS[field]), self.labelW), PAD,
+            rowY + math.floor((self.rowH[field] - fontH.small) / 2), "textMuted")
+    end
+    if self.errY then
+        for i, line in ipairs(self.errLines) do
+            text(self, line, PAD, self.errY + (i - 1) * (fontH.small + 2), "errorText")
+        end
+    end
+    self:watchEdits()
+    -- the gate can close under an open dialog (the player walked off, an admin froze the account)
+    local gate = D.transferGate()
+    local gateText = gate or nil
+    if gateText ~= self.gateText then
+        self.gateText = gateText
+        self.panel:layoutDialog(self)
+    end
+    self:syncSummary()
+    local pending = self.panel.transferPending ~= nil
+    for _, b in ipairs(self.currencyButtons) do b:setEnable(not pending) end
+    self.confirmButton:setEnable(not pending and gate == false and self.info ~= nil and self:readyAt() == nil)
+end
+
+function TransferDialog:render() end
+
+function TransferDialog:onMouseDown() return true end
+function TransferDialog:onMouseUp() return true end
+function TransferDialog:onMouseMove() return true end
+
 D.BuyDialog = BuyDialog
 D.MarketDialog = MarketDialog
+D.TransferDialog = TransferDialog
 D.AUCTION_MODES = AUCTION_MODES
 
 return D

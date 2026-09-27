@@ -1824,6 +1824,9 @@ function Admin:createChildren()
     self:addChild(self.rateButton)
     self.balanceMaxButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_EditBalanceMax"), self, Admin.onBalanceMaxClick, "chip")
     self:addChild(self.balanceMaxButton)
+    -- whether players may send this currency to each other (admin.config field directTransfer)
+    self.curTransferButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_TransferAllow"), self, Admin.onCurrencyTransferClick, "chip")
+    self:addChild(self.curTransferButton)
     self.iconsButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_ReloadIcons"), self, Admin.onIconsClick, "chip")
     self:addChild(self.iconsButton)
     -- The two buyback caps of the selected currency. Both edit the very sandbox option the
@@ -1869,6 +1872,9 @@ function Admin:createChildren()
     self:addChild(self.srcCapsButton)
     self.srcToggleButton = Button.create(0, 0, 120, btnH(), tr("Admin_Src_Disable"), self, Admin.onSourceToggleClick, "chip")
     self:addChild(self.srcToggleButton)
+    -- whether this integration may move money between players (admin.sources allowTransfer)
+    self.srcTransferButton = Button.create(0, 0, 120, btnH(), tr("Admin_Src_TransferAllow"), self, Admin.onSourceTransferClick, "chip")
+    self:addChild(self.srcTransferButton)
     self.currencyReader = U.newReader(self, 100, 100)
     self.sourceReader = U.newReader(self, 100, 100)
     self.systemReader = U.newReader(self, 100, 100)
@@ -2774,6 +2780,7 @@ function Admin:refreshCurrencyReader(id, def)
             lines[1] = type(def.nameOverride) == "string" and def.nameOverride ~= ""
                 and getText(T .. "Admin_Cur_Override", def.nameOverride) or tr("Admin_Cur_NoOverride")
             lines[#lines + 1] = getText(T .. (def.balanceMaxOverride and "Admin_Cur_BalanceMaxOverride" or "Admin_Cur_BalanceMaxDefault"), amountText(def.balanceMax or 0))
+            addReaderLine(lines, tr("Admin_Cur_Transfer"), def.directTransfer == true and tr("Admin_On") or tr("Admin_Off"))
             if EC.isIconHash(def.iconHash) and type(def.iconBytes) == "number" then
                 lines[#lines + 1] = getText(T .. "Admin_Cur_IconCustom", def.iconHash, tostring(math.floor((def.iconBytes + 1023) / 1024)))
             else
@@ -2869,6 +2876,7 @@ function Admin:refreshSourceReader(selected)
             local today = selected.today or {}
             addReaderLine(lines, tr("Admin_Src_Col_Mint"), amountText(today.mint or 0) .. " / " .. amountText(selected.dailyMintCap or 0))
             addReaderLine(lines, tr("Admin_Src_Col_Burn"), amountText(today.burn or 0) .. " / " .. capText(selected.dailyBurnCap))
+            addReaderLine(lines, tr("Admin_Src_Transfer"), selected.allowTransfer == true and tr("Admin_On") or tr("Admin_Off"))
             local balances = selected.balance or {}
             for _, currency in ipairs(EC.CURRENCY_ORDER) do
                 addReaderLine(lines, getText(T .. "Admin_Src_Balance", currencyName(currency)), amountText(balances[currency] or 0))
@@ -3019,6 +3027,24 @@ function Admin:onToggleClick()
     })
 end
 
+-- Player-to-player transfer of the selected currency. A currency players can buy with Discord
+-- points (it has an exchange rate) gets the laundering warning on top: opening it lets points
+-- change hands directly between players (design player-transfer.md 2.1).
+function Admin:onCurrencyTransferClick()
+    local id = self:selectedCurrency()
+    local def = currencyDef(id)
+    local target = not (def ~= nil and def.directTransfer == true)
+    local warn = tr(target and "Admin_Cur_TransferWarnOn" or "Admin_Cur_TransferWarnOff")
+    if target and def ~= nil and type(def.exchange) == "table" then
+        warn = tr("Admin_Cur_TransferWarnExchange") .. "\n" .. warn
+    end
+    self:openDialog("directTransfer", {
+        currency = id, enabledTarget = target,
+        title = getText(T .. "Admin_Cur_TransferTitle", currencyName(id)),
+        confirm = tr("Admin_Enable_Confirm"), warn = warn,
+    })
+end
+
 function Admin:onBalanceMaxClick()
     local id = self:selectedCurrency()
     local def = currencyDef(id)
@@ -3103,6 +3129,18 @@ function Admin:onSourceToggleClick()
         title = getText(T .. (target and "Admin_Src_EnableTitle" or "Admin_Src_DisableTitle"), tostring(src.modId)),
         confirm = tr(target and "Admin_Src_EnableConfirm" or "Admin_Src_DisableConfirm"),
         warn = (not target) and tr("Admin_Src_DisableWarn") or nil,
+    })
+end
+
+function Admin:onSourceTransferClick()
+    local src = self:selectedSource()
+    if not src then return end
+    local target = src.allowTransfer ~= true
+    self:openDialog("sourceTransfer", {
+        modId = src.modId, enabledTarget = target,
+        title = getText(T .. "Admin_Src_TransferTitle", tostring(src.modId)),
+        confirm = tr("Admin_Enable_Confirm"),
+        warn = tr(target and "Admin_Src_TransferWarnOn" or "Admin_Src_TransferWarnOff"),
     })
 end
 
@@ -4164,12 +4202,12 @@ function Admin:keyboardTargets()
         addGroup(out, tr("Admin_Dash_ViewHolders"), self.dashHolderButtons)
     elseif self.tab == "Currencies" then
         out[#out + 1] = { kind = "scroll", label = tr("Admin_Cur_Title"), control = self.currencyReader, focusable = false }
-        addGroup(out, tr("Admin_Cur_Title"), { self.renameButton, self.toggleButton, self.rateButton, self.balanceMaxButton })
+        addGroup(out, tr("Admin_Cur_Title"), { self.renameButton, self.toggleButton, self.rateButton, self.balanceMaxButton, self.curTransferButton })
         addGroup(out, tr("Admin_Cur_Actions"), { self.buybackAccountButton, self.buybackServerButton,
             self.curHoldersButton, self.iconsButton })
     elseif self.tab == "Sources" then
         out[#out + 1] = { kind = "scroll", label = tr("Admin_Src_Title"), control = self.sourceReader, focusable = false }
-        addGroup(out, tr("Admin_Src_Title"), { self.srcCapsButton, self.srcToggleButton })
+        addGroup(out, tr("Admin_Src_Title"), { self.srcCapsButton, self.srcToggleButton, self.srcTransferButton })
     elseif self.tab == "System" then
         out[#out + 1] = { kind = "scroll", label = tr("Admin_Sys_State"), control = self.systemReader, focusable = false }
         addGroup(out, tr("Admin_Sys_Paths"), self.copyButtons)
@@ -4417,7 +4455,7 @@ function Admin:submitDialog(dlg)
             return self:dialogError(dlg, tr("Admin_Throttled"))
         end
         self.pendingFreeze = { username = self.lookupUser, frozen = dlg.frozenTarget == true }
-    elseif dlg.mode == "sourceCaps" or dlg.mode == "sourceEnabled" then
+    elseif dlg.mode == "sourceCaps" or dlg.mode == "sourceEnabled" or dlg.mode == "sourceTransfer" then
         if type(dlg.modId) ~= "string" or dlg.modId == "" then
             return self:dialogError(dlg, errorText("invalid_args"))
         end
@@ -4440,6 +4478,8 @@ function Admin:submitDialog(dlg)
                 end
                 payload.dailyBurnCap = burn
             end
+        elseif dlg.mode == "sourceTransfer" then
+            payload.allowTransfer = dlg.enabledTarget == true
         else
             payload.enabled = dlg.enabledTarget == true
         end
@@ -4468,6 +4508,9 @@ function Admin:submitDialog(dlg)
             end
         elseif dlg.mode == "enabled" then
             field = "enabled"
+            value = dlg.enabledTarget == true
+        elseif dlg.mode == "directTransfer" then
+            field = "directTransfer"
             value = dlg.enabledTarget == true
         elseif dlg.mode == "balanceMax" then
             field = "balanceMax"
@@ -5921,6 +5964,8 @@ function Admin:updateEnabled()
     U.setButtonTitle(self.toggleButton, (def == nil or def.enabled ~= false) and tr("Admin_Cur_Disable") or tr("Admin_Cur_Enable"))
     self.rateButton:setEnable(cfgWrite and def ~= nil and type(def.exchange) == "table")
     self.balanceMaxButton:setEnable(cfgWrite)
+    self.curTransferButton:setEnable(cfgWrite and def ~= nil)
+    U.setButtonTitle(self.curTransferButton, tr((def ~= nil and def.directTransfer == true) and "Admin_Cur_TransferStop" or "Admin_Cur_TransferAllow"))
     self.iconsButton:setEnable(write and not modal and not isPending("admin.icons") and self.iconsRecheckAt == nil)
     local curId = self:selectedCurrency()
     -- A cap is edited through the option command, so the chip follows *that* write, not
@@ -5941,6 +5986,8 @@ function Admin:updateEnabled()
     self.srcCapsButton:setEnable(srcWrite)
     self.srcToggleButton:setEnable(srcWrite)
     U.setButtonTitle(self.srcToggleButton, (src == nil or src.enabled ~= false) and tr("Admin_Src_Disable") or tr("Admin_Src_Enable"))
+    self.srcTransferButton:setEnable(srcWrite)
+    U.setButtonTitle(self.srcTransferButton, tr((src ~= nil and src.allowTransfer == true) and "Admin_Src_TransferStop" or "Admin_Src_TransferAllow"))
 
     setEntryEditable(self.auditEntry, read and not modal)
     setEntryEditable(self.auditActorEntry, read and not modal)
@@ -6369,7 +6416,8 @@ function Admin:layout()
     local toggleFull = math.max(textWidth(tr("Admin_Cur_Disable")), textWidth(tr("Admin_Cur_Enable"))) + 30
     local cfgItems = { { self.renameButton, textWidth(self.renameButton.fullTitle) + 30 },
         { self.toggleButton, toggleFull }, { self.rateButton, textWidth(self.rateButton.fullTitle) + 30 },
-        { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 } }
+        { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 },
+        { self.curTransferButton, math.max(textWidth(tr("Admin_Cur_TransferAllow")), textWidth(tr("Admin_Cur_TransferStop"))) + 30 } }
     fairShareButtons(cfgItems, currencies, g.cfgDetailX, cfgBtnY, g.cfgDetailW, actionH)
     local cfgItems2 = { { self.buybackAccountButton, textWidth(self.buybackAccountButton.fullTitle) + 30 },
         { self.buybackServerButton, textWidth(self.buybackServerButton.fullTitle) + 30 },
@@ -6392,7 +6440,8 @@ function Admin:layout()
     g.srcButtonY = g.bodyY + g.bodyH - actionH
     local srcToggleFull = math.max(textWidth(tr("Admin_Src_Disable")), textWidth(tr("Admin_Src_Enable"))) + 30
     local srcItems = { { self.srcCapsButton, textWidth(self.srcCapsButton.fullTitle) + 30 },
-        { self.srcToggleButton, srcToggleFull } }
+        { self.srcToggleButton, srcToggleFull },
+        { self.srcTransferButton, math.max(textWidth(tr("Admin_Src_TransferAllow")), textWidth(tr("Admin_Src_TransferStop"))) + 30 } }
     fairShareButtons(srcItems, sources, g.srcDetailX, g.srcButtonY, g.srcDetailW, actionH)
     local sourceY = g.bodyY + CARD_TITLE_H + 4
     self.sourceReader:setVisible(sources)

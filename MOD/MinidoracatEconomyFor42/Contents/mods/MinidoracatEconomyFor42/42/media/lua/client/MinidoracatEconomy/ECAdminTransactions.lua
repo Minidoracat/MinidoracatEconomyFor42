@@ -91,7 +91,7 @@ local newReader = U.newReader
 -- The sources the server sorts every committed transaction into: a fixed enumeration, never what
 -- a reply happened to carry, so a search that matched nothing still offers every other source to
 -- switch to. "all" is the filter row's own first chip.
-local TX_GROUPS = { "shop_buy", "shop_sell", "market", "auction", "rewards", "admin", "mod", "exchange", "other" }
+local TX_GROUPS = { "shop_buy", "shop_sell", "market", "auction", "transfer", "rewards", "admin", "mod", "exchange", "other" }
 local TX_MATCH_MODES = { "contains", "exact" }
 local TX_RANGE_MAX_MS = 62 * 86400000   -- the span one read may cover; the server enforces the same
 local TX_DEBOUNCE_MS = 650              -- typing (a word or a day) costs one command per pause
