@@ -127,9 +127,9 @@ end
 
 -- The companion device has to go before the registration does: the relay's bounded sweep only
 -- visits registered squares, so dropping the entry first and failing afterwards would leave a
--- listening device standing with nothing left that would ever retry it. Returns nil when the
--- square is verified clear - a genuinely unloaded chunk included, since the next chunk load
--- collects orphans - or the failure's own text.
+-- listening device standing until the orphan sweep reached it, and the caller would be told it
+-- was gone. Returns nil when the square is verified clear - a genuinely unloaded chunk included,
+-- since the orphan sweep collects a leftover once its chunk is loaded - or the failure's own text.
 local function clearCompanion(x, y, z)
     local relay = S.TradeRadio
     if not relay then return "the radio relay is not loaded" end

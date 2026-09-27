@@ -53,9 +53,9 @@
 --   * a logged-in client may send device state packets (channel, volume, power, turned off) for a
 --     world device; nothing in the engine locks that. The answer here is a bounded sweep that
 --     puts the device back to the configured values, at most once per Rl.REPAIR_MS (30 s) per
---     square, plus an immediate sync on registration and on an admin setting change. A chunk
---     load is not forced either: loading and unloading a chunk must not become a client-driven
---     way around that rate limit.
+--     square, plus an immediate sync on registration and on an admin setting change. Nothing
+--     here runs on a chunk load, so loading and unloading a chunk is no client-driven way around
+--     that rate limit.
 --   * placing the device cannot be made atomic with the registration: the terminal may be
 --     registered while the device fails. The registration result is reported as it happened and
 --     carries warning = "radio_unavailable"; the sweep retries later.
@@ -104,13 +104,15 @@ Rl.SWEEP_BUDGET = 8              -- registered squares examined per sweep (<= T.
 local md = nil
 local states = {}                -- "x,y,z" -> { state, at = ms, err, needsReplace = true|nil }
 -- x -> y -> z -> terminal id (rebuilt on every registration change). Numbers, not the "x,y,z"
--- string: a chunk load looks every square up by the engine's own coordinates, and building that
--- string (three tostring calls) for each of them was the hot spot of the load callback.
+-- string: the orphan sweep looks a device's square up by the engine's own coordinates.
 local coordIds = {}
 local queue = {}                 -- the current sweep cycle, T.list() order
 local queueAt = 1
 local lastSweepAt = 0
 local dirty = false              -- a reported state changed: push the terminal list once per sweep
+local deviceAt = 0               -- orphan sweep cursor: 0-based index into ZomboidRadio.getDevices()
+local scanAt = 0                 -- the entry the current orphan scan is reading
+local noRadioLogged = false      -- "no ZomboidRadio instance" is logged once per init
 
 local function key(x, y, z)
     return tostring(x) .. "," .. tostring(y) .. "," .. tostring(z)
@@ -316,9 +318,6 @@ local function createRadio(sq, terminalSpriteName, freq, range)
         if data == nil then error("could not clone the device data of " .. tostring(Rl.ITEM)) end
         obj:setDeviceData(data)
         applyDeviceData(obj:getDeviceData(), freq, range)
-        -- AddSpecialObject is also what puts the device on the square's special-object list:
-        -- the chunk-load orphan pass looks there and nowhere else (mayCarryRadio). Adding it any
-        -- other way would make an orphan invisible to that pass.
         sq:AddSpecialObject(obj)
         obj:transmitCompleteItemToClients()
         sq:RecalcProperties()
@@ -348,7 +347,7 @@ local function clearLoadedSquare(sq)
 end
 
 -- Drops every owned radio from a square that must not carry one. Used for an unregistered
--- square, a kind change, the relay being switched off, and orphans found on chunk load. Returns
+-- square, a kind change and the relay being switched off. Returns
 -- true only when the square is verified clear - a genuinely unloaded chunk counts, because it
 -- holds nothing the caller can act on - or false plus the engine's own text. A read or a removal
 -- that raised is never reported as "there was nothing there".
@@ -431,7 +430,7 @@ local function sync(t, k, force)
 end
 
 -- The one entry every path goes through. `force` skips the repair throttle (registration and
--- admin setting changes are allowed to act at once; the tick sweep and a chunk load are not).
+-- admin setting changes are allowed to act at once; the tick sweep is not).
 -- Returns the square's state: "active" | "waiting" | "error" | "disabled". "active" means the
 -- device stands here configured as asked - see the header: not that anybody was heard, and not
 -- that every client received it.
@@ -486,7 +485,7 @@ function Rl.onTerminalsChanged(x, y, z)
     -- No registration here any more. The state record is this square's only entry in the
     -- bounded sweep, so it is dropped only once the square really is clear. ECTerminal refuses
     -- to give up a registration whose device would not go, so arriving here with a leftover
-    -- means a race, and the next chunk load's orphan pass is what collects it.
+    -- means a race, and the orphan sweep over the engine's device registry is what collects it.
     local cleared, err = Rl.clearSquare(x, y, z)
     if not cleared then return setState(k, "error", err) end
     states[k] = nil
@@ -510,64 +509,105 @@ function Rl.state(x, y, z)
     return "waiting"
 end
 
--- ---------- events ----------
+-- ---------- orphan sweep ----------
+--
+-- An orphan is an owned device on a square nobody registered any more (a world rollback: Global
+-- ModData goes back, the chunk does not). It is found through the engine's own device registry,
+-- not through a chunk-load hook: every world radio and TV joins ZomboidRadio.devices when it is
+-- added to the world and leaves it when it is removed or its chunk unloads
+-- (IsoWaveSignal.java:332-352 -> ZomboidRadio.RegisterDevice/UnRegisterDevice :936-958; chunk
+-- load IsoChunk.java:3800-3803, unload :3244-3247 -> IsoObject.removeFromWorldToMeta :4527-4534;
+-- removal RemoveItemFromSquarePacket.java:173), and vehicle radio parts do the same
+-- (VehicleParts.java:415-440). A device a chunk load brings in is appended at the end of the list
+-- (ArrayList.add), so a cursor walking to the end always reaches it.
+--
+-- Cost: LoadGridsquare fired a Lua call, a pcall and three or more Java calls for every square
+-- with objects of every chunk load (IsoChunk.java:3796-3835) - 10^5 to 10^6 squares in a load
+-- spike, and 2.1% of the production main thread on 2026-09-28. This reads at most ORPHAN_BUDGET
+-- registry entries per tick: get + instanceof, plus getDeviceData + getDeviceName for an IsoRadio,
+-- so at most 3 + 4 * 32 Java calls a tick whatever the players load (an owned device adds its
+-- square and coordinates, and its removal - both rare). A full cycle over N devices
+-- takes ceil(N / 32) ticks: at the dedicated server's 10 ticks a second (GameServer.java:229, 826)
+-- 2,000 devices are covered in under 7 s, and a new orphan is removed at most one cycle after its
+-- chunk loaded.
+Rl.ORPHAN_BUDGET = 32
 
--- Could this square be carrying one of our devices? Every owned device entered the world through
--- AddSpecialObject (createRadio is its only builder, and has been since the relay existed), which
--- puts it on the square's special-object list (IsoGridSquare.java:6185-6195); a chunk save keeps
--- that membership and the load puts the object back on the list (:2930-2933 save,
--- :3221-3222 and :3304-3310 load). This asks nothing about where the square is, so an orphan
--- is found wherever it stands. The class is checked, never the sprite - a client can give any
--- object any sprite (GameServer.java:1879-1907) but not another class - and the owner check
--- itself stays with TR.ownedOnSquare, over every object. The list only holds doors, windows,
--- thumpables, radios and the like, so it is empty on most squares a chunk load streams in, and
--- those squares end here without their object list being walked.
-local function mayCarryRadio(sq)
-    local specials = sq:getSpecialObjects()
-    for i = 0, specials:size() - 1 do
-        if instanceof(specials:get(i), "IsoRadio") then return true end
+-- The scan half: read only, and it raises on the first getter that fails. The class is checked
+-- first and never the sprite (TR.isOwned): a client can give any object any sprite
+-- (GameServer.java:1879-1907), not another class, so a TV and a vehicle part end at instanceof.
+-- scanAt is module state so the caller knows which entry raised.
+local function scanDevices(radio, out)
+    local devices = radio:getDevices()                -- ZomboidRadio.java:123-125, the live list
+    local size = devices:size()
+    if deviceAt >= size then deviceAt = 0 end          -- a cycle ended (or the list shrank): start over
+    scanAt = deviceAt
+    local stop = math.min(size, deviceAt + Rl.ORPHAN_BUDGET)
+    while scanAt < stop do
+        local o = devices:get(scanAt)
+        if TR.isOwned(o) then
+            local sq = o:getSquare()                   -- IsoObject.java:1006-1008
+            if sq == nil then error("trade radio: a registered device has no square") end
+            local x, y, z = sq:getX(), sq:getY(), sq:getZ()
+            local id = coordId(x, y, z)
+            -- a registered square belongs to the registered sweep, duplicates and all
+            if not (id and md.terminals[id]) then out[#out + 1] = { obj = o, sq = sq, k = key(x, y, z) } end
+        end
+        scanAt = scanAt + 1
     end
-    return false
 end
 
--- Fires once per loaded square that has objects, after every object's addToWorld (IsoChunk.java:
--- 3796-3835), on the server too, and for every square of every chunk load, not just new ones:
--- this is the one relay path whose cost grows with how much of the map players walk through.
--- Two jobs: bring a registered terminal's device up as soon as its chunk is there, and delete
--- orphans - an owned device on a square nobody registered any more. A vanilla radio is never
--- touched, whatever its sprite or its ModData says. An ordinary square costs its x coordinate,
--- one table read and the size of its special-object list.
-local function onLoadGridsquare(sq)
-    local x = sq:getX()
-    if x == nil then error("trade radio: loaded square has no x coordinate") end
-    if coordIds[x] ~= nil then     -- the x column decides for nearly every square: y and z unread
-        local id = coordId(x, sq:getY(), sq:getZ())
-        if id and md.terminals[id] then
-            -- not forced: a chunk load must not become a way around Rl.REPAIR_MS. A square that
-            -- was never built carries no stamp, so a first load still brings its device up at once.
-            Rl.syncSquare(md.terminals[id], false)
-            return
+-- The registry says the device is in the world; its square has to say so too before anything is
+-- removed, and an unreadable object list is a failure, not an empty square.
+local function removeOrphan(sq, obj)
+    if not onSquare(sq, obj) then error("trade radio: the device is not on its square") end
+    removeRadio(sq, obj)
+end
+
+-- One slice per tick. Orphans are collected first and removed after the scan: a removal
+-- unregisters the device and shifts the list under the cursor, and a getter that raises aborts
+-- the slice before anything in it is removed. A vanilla device is never touched, and an orphan
+-- that is not removed stays in the list, so the next cycle finds it again.
+-- ponytail: a getter that raises on every read blocks the orphans scanned ahead of it in the
+-- same slice until the list shifts (any chunk load or unload does); skip the bad entry by
+-- identity if that ever shows up in the logs.
+local function sweepOrphans()
+    local radio = getZomboidRadio()                    -- nil without an instance: LuaManager.java:2909-2911
+    if radio == nil then
+        if not noRadioLogged then
+            noRadioLogged = true
+            EC.log("trade radio: no ZomboidRadio instance, the orphan sweep waits for one")
+        end
+        return
+    end
+    local orphans = {}
+    scanAt = deviceAt
+    local ok, err = pcall(scanDevices, radio, orphans)
+    if not ok then
+        EC.log("trade radio: orphan sweep could not read registry entry " .. tostring(scanAt) .. ": " .. tostring(err))
+        deviceAt = scanAt + 1
+        return
+    end
+    deviceAt = scanAt
+    for _, f in ipairs(orphans) do
+        local removed, removeErr = pcall(removeOrphan, f.sq, f.obj)
+        if removed then
+            deviceAt = deviceAt - 1   -- it left the list behind the cursor: what follows moved down one
+        else
+            EC.log("trade radio: could not remove the orphan at " .. f.k .. ": " .. tostring(removeErr))
         end
     end
-    if mayCarryRadio(sq) then clearLoadedSquare(sq) end
 end
 
-function Rl.onLoadGridsquare(sq)
-    if not md or sq == nil then return end
-    -- Reuse the event's loaded square and one closure; retain a protected read/removal boundary.
-    local ok, err = pcall(onLoadGridsquare, sq)
-    if not ok then
-        local located, k = pcall(function() return key(sq:getX(), sq:getY(), sq:getZ()) end)
-        EC.log("trade radio: loaded square cleanup failed at " .. (located and k or "unknown")
-            .. ": " .. tostring(err))
-    end
-end
+-- ---------- tick ----------
 
 -- Bounded rotating sweep: at most SWEEP_BUDGET registered squares per second, so a full cycle
 -- over the 200 terminals a server may register costs 25 seconds of one small square lookup each.
--- Unloaded squares cost a nil lookup and are left alone.
+-- That is also the longest a registered device waits to come up after its chunk loaded: 25 s,
+-- plus Rl.REPAIR_MS when an earlier attempt on that square failed. Unloaded squares cost a nil
+-- lookup and are left alone. The orphan sweep runs first, every tick, on its own budget.
 function Rl.onTick()
     if not md then return end
+    sweepOrphans()
     local now = EC.now()
     if now - lastSweepAt < Rl.SWEEP_MS then return end
     lastSweepAt = now
@@ -589,7 +629,7 @@ function Rl.onTick()
         local entry = t.id and md.terminals[t.id] or nil   -- unregistered mid-cycle: skip it
         if entry then Rl.syncSquare(entry, false) end
     end
-    -- A state that changed outside a registration change - a repair, a chunk load, a failure -
+    -- A state that changed outside a registration change - a repair, a failure -
     -- would otherwise only reach a client on hello or on its next request, so an open window
     -- would show the old state indefinitely. One aggregated push per sweep second through the
     -- list every other caller already sends: not one broadcast per square, and no new command.
@@ -608,9 +648,11 @@ function Rl.init(root)
     queueAt = 1
     lastSweepAt = 0
     dirty = false
+    deviceAt = 0
+    noRadioLogged = false
     rebuildCoords()
     -- boot: most chunks are not loaded yet, so this mostly records "waiting" and costs one
-    -- square lookup per registered terminal. The sweep and chunk loading do the rest.
+    -- square lookup per registered terminal. The two sweeps do the rest.
     Rl.syncAll(true)
     EC.log("trade radio relay: " .. (relayOn() and "on" or "off")
         .. ", " .. tostring(EC.countKeys(md.terminals)) .. " terminals, range "
@@ -621,5 +663,4 @@ end
 S.TradeRadio = Rl
 S.onInit(Rl.init)
 Events.OnTickEvenPaused.Add(Rl.onTick)
-Events.LoadGridsquare.Add(Rl.onLoadGridsquare)
 return Rl
