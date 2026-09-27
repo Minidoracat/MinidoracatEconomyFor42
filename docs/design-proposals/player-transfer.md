@@ -1,6 +1,6 @@
 # 設計稿：玩家之間轉帳
 
-- 狀態：Draft（待服主回覆第 7 節後實作）
+- 狀態：Accepted（服主 2026-09-28 回覆第 7 節；伺服器端已實作，形狀見第 3 節）
 - 日期：2026-09-28
 - 目標版本：MinidoracatEconomyFor42 下一個次版本；Project Zomboid Build 42.20.4+，只支援 dedicated server
 - 取代：`economy-system-analysis.md` 與設計稿 A／C 裡「不提供玩家轉帳」的第一版決策；每個幣別各自開關，建議只開倖存幣（見 2.1）
@@ -25,10 +25,12 @@
 | 鍵 | 預設 | 意義 |
 |---|---|---|
 | `TransferEnabled` | `false` | 總開關；關閉時整個轉帳按鈕不顯示 |
-| `TransferFeePercent` | `5` | 手續費百分比，無條件進位，開啟時最少 1；由付款人另外支付並全額銷毀 |
+| `TransferRemote` | `false` | 允許在終端／ATM 以外送出轉帳（第 7 節決定 1） |
+| `TransferFeePercent` | `5` | 手續費百分比（0–50），無條件進位，開啟時最少 1；由付款人另外支付並全額銷毀 |
 | `TransferMin` | `1` | 單筆最少 |
 | `TransferMaxPerTx` | `5000` | 單筆最多 |
-| `TransferDailyPerAccount` | `10000` | 每個帳號每個獎勵日最多轉出（只算本金，不含手續費）；日界沿用 `RewardDayResetHour`／`RewardTimezoneUTC` |
+| `TransferDailyPerAccount` | `10000` | 每個帳號每個獎勵日最多轉出（只算本金，不含手續費），`0`＝不限；日界沿用 `RewardDayResetHour`／`RewardTimezoneUTC` |
+| `TransferMinAccountDays` | `3` | 新帳號門檻（0–365 現實天，`0`＝不限；第 7 節決定 3） |
 
 不另設「每日收款上限」：收款人不需要同意也能收到錢，擋收款只會讓付款失敗、讓人猜得出對方餘額。收款仍受幣別的 `BalanceMax`，會超過時拒絕並告訴付款人「對方目前無法收這個金額」，不寫出對方餘額。
 
@@ -36,7 +38,9 @@
 
 - 付款人與收款人都不能是凍結帳號；不能轉給自己；收款人必須是經濟系統已知的玩家帳號（與統計、排行榜同一份名單：有錢包、領獎紀錄、凍結紀錄或目前在線），系統帳戶、`MOD:`、`EXTERNAL_` 帳戶一律拒絕。
 - 帳號名稱精確比對（大小寫與空白都算），不做模糊匹配直接送出；確認步驟寫出伺服器比對到的完整帳號名。
-- 寫入指令沿用現有規則：一律要站在已登錄終端或原版 ATM 的 2 格內（`RemoteReadOnly` 只決定能不能在終端外開視窗瀏覽）。要不要讓轉帳成為唯一可遠端執行的寫入，見第 7 節待決定事項。
+- 寫入指令沿用現有規則：預設要站在已登錄終端或原版 ATM 的 2 格內（`RemoteReadOnly` 只決定能不能在終端外開視窗瀏覽）。`TransferRemote` 打開時，轉帳是唯一可以在任何地方送出的寫入，其餘檢查不變。
+- 新帳號門檻：伺服器在 `hello` 記下每個帳號第一次出現的時間（`md.firstSeen[username]`），`readyAt = firstSeen + TransferMinAccountDays × 86400000`。沒有紀錄的帳號（沒送過 `hello`）視為還沒開始起算，跳過 `hello` 不能跳過等待。
+- 既有帳號豁免：第一次載入含本功能的版本、`md.firstSeen` 還不存在時，把經濟系統當下已知的帳號（錢包、領獎紀錄、凍結紀錄；與 ECStats 同一份名單，系統帳戶除外）一律記成 `0`，升級不會把老玩家鎖住。回滾的互動：這份表隨世界存檔保存，崩潰回滾到「升級前」的存檔會再跑一次遷移，名單只會是那份存檔的帳號（相同或更少）；在被回滾的分支裡才出現的新帳號沒有紀錄，下次 `hello` 以較晚的時間重新起算。降版再升版時表還在、不會重跑，降版期間新建的帳號同樣從升版後第一次登入起算。所有路徑只會讓等待變長，不會變短。
 
 ### 2.4 不可撤回
 
@@ -47,14 +51,24 @@
 ### 3.1 指令
 
 ```text
+transfer.info { requestId }
+  -> { requestId, ok, enabled, remote, atTerminal, feePercent, min, maxPerTx, dailyLimit, sentToday,
+       remainingToday (不限時 nil), readyAt (ms；nil 或 <= now 代表可轉), currencies = { 現在可轉的幣別 } }
+transfer.recipients { query, requestId }
+  -> { requestId, query, items = { { username, online }, ... } }   -- 最多 20 筆
 wallet.transfer { to, currency, amount, fee, memo?, requestId }
-  -> { ok, error?, txId?, to, currency, amount, fee, balance, sentToday, dailyLimit, requestId }
-transfer.recipients { query, requestId }        -- 候選：目前在線的玩家與自己最近的轉帳對象，最多 20 筆
+  -> { requestId, ok, error?, to, currency, amount, fee, total, txId?, balance?, sentToday?, remainingToday?,
+       duplicate?, feeNow?, availableAt?, needed?, min?, max? }
+wallet.transferReceived (推播給在線收款人) { from, currency, amount, memo?, txId, balance }
 ```
+
+候選：名稱包含查詢字串（不分大小寫）的在線玩家、自己最近 10 個轉帳對象（雙向都算），以及大小寫完全相符的已知帳號；不列自己與系統帳戶，功能關閉時回空清單。
+
+錯誤碼：`invalid_args`、`request_too_long`、`request_conflict`、`transfer_disabled`、`currency_not_transferable`、`unknown_recipient`（含系統帳戶）、`self_transfer`、`account_frozen`、`recipient_frozen`、`not_at_terminal`、`account_too_new`（附 `availableAt`）、`amount_range`（附 `min`／`max`）、`fee_changed`（附 `feeNow`）、`daily_limit`（附 `remainingToday`）、`recipient_cap`（不附對方餘額）、`insufficient_funds`（附 `needed`＝還差多少）、`not_ready`。玩家端另受每人每指令 500 ms 節流（逾越的請求不回覆）。
 
 `fee` 是介面顯示給玩家確認的手續費。伺服器重算；兩者不同就回 `fee_changed` 並附上新手續費，不以玩家沒確認過的金額扣款（與商店的報價版本檢查同一個原則）。
 
-檢查順序（任何一步失敗都不動帳）：形狀 → 冪等鍵 `transfer:<付款人>:<requestId>` 已有結果就原樣回覆、內容不同回 `request_conflict` → 功能與幣別開關 → 收款人存在且不是自己 → 雙方凍結 → 終端 → 金額範圍 → 手續費一致 → 今日已轉出額度 → 收款人 `BalanceMax` → 付款人餘額（本金＋手續費）→ 記帳。
+檢查順序（任何一步失敗都不動帳）：形狀 → 冪等鍵 `transfer:<付款人>:<requestId>` 已有結果就原樣回覆（`duplicate=true`）、內容不同回 `request_conflict` → 功能與幣別開關 → 不是自己 → 收款人存在 → 雙方凍結 → 終端（`TransferRemote` 關閉時）→ 新帳號門檻 → 金額範圍 → 手續費一致 → 今日已轉出額度 → 收款人 `BalanceMax` → 付款人餘額（本金＋手續費）→ 記帳。
 
 ### 3.2 記帳
 
@@ -66,14 +80,18 @@ transfer.recipients { query, requestId }        -- 候選：目前在線的玩�
 | 收款人 | ＋本金 |
 | `SYSTEM_BURN` | ＋手續費 |
 
-`payload = { from, to, memo }`。整筆在同一個 `L.post` 裡完成，和其他帳目一起存進世界存檔；沒有物品移動，所以崩潰回滾時雙方餘額一起回到上次存檔，不會出現一邊扣了、一邊沒收到的狀態。今日已轉出額度存在 `md.transferDaily[day][username]`，沿用商店每日桶的 31 天清理。
+`reasonCode = "player_transfer"`、`reasonText = 備註`、`payload = { from, to, memo }`。手續費為 0 時省略銷毀分錄。整筆在同一個 `L.post` 裡完成，和其他帳目一起存進世界存檔；沒有物品移動，所以崩潰回滾時雙方餘額一起回到上次存檔，不會出現一邊扣了、一邊沒收到的狀態。今日已轉出額度存在 `md.transferDaily[day][username]`，沿用商店每日桶的 31 天清理；最近對象存在 `md.transferRecent[username]`（最多 10 筆）。
 
 ### 3.3 紀錄與通知
 
 - 雙方收據都記對方帳號與備註；錢包對帳單新增「轉出」「轉入」兩種類型，可用對方帳號或備註搜尋。
 - 帳目沿用 `tx.committed{kind="transfer", payload}`，日報與管理頁金流自動涵蓋，不另設事件；金流頁的類型篩選多一個「轉帳」。
-- 收款人在線時推送 `wallet.changed` 與一則通知：「收到 花生 的轉帳 +1,500 倖存幣（車費）」。不在線就在下次登入時從對帳單看到。
-- 備註比照整合 API 的 `reasonText`，最多 64 字；只給交易雙方與管理員看，不進公開排行榜或電台。
+- 收款人在線時推送 `wallet.transferReceived` 與一般的 `wallet.changed`，介面據此顯示一則通知：「收到 花生 的轉帳 +1,500 倖存幣（車費）」。不在線就在下次登入時從對帳單看到。
+- 備註比照整合 API 的 `reasonText`，最多 64 字、不可含控制字元；只給交易雙方與管理員看，不進公開排行榜或電台。
+
+### 3.4 整合 API（第 7 節決定 4）
+
+`MinidoracatEconomy.v1` 在 `ECTransfer` 載入後升為 `API_REVISION = 3`、`CAPABILITIES.transfer = true`：`src.transfer(from, to, currency, amount, opts)` 或頂層 `E.transfer(..., opts 含 modId)`。`opts` 與 credit／debit 相同（必填 `requestId`、`reasonCode`，選填 `reasonText`、`ref`、`meta`）。來源必須啟用，且服主在管理頁「整合」打開 `allowTransfer`（`admin.sources{action="set", modId, allowTransfer, reason}`，預設關、有稽核）；幣別也要在來源註冊的清單裡。其餘沿用玩家轉帳的全部檢查，只是不檢查終端、沒有備註；冪等鍵與同來源的 `post` 共用 `mod:<len>:<modId>:<requestId>`。回傳 `{ ok, txId, fee, duplicate }` 或 `{ ok=false, error }`（多了 `unknown_source`、`rate_limited`、`source_disabled`、`transfer_not_allowed`、`currency_not_allowed`）。帳目 `kind = "transfer"`、`reasonCode` 為來源自己的代碼、`payload.sourceMod = modId`。
 
 ## 4. 介面
 
@@ -88,19 +106,19 @@ transfer.recipients { query, requestId }        -- 候選：目前在線的玩�
 
 ## 5. 管理
 
-- 設定頁多一個「轉帳」群組（上表五項）；貨幣設定每個幣別多一個「允許玩家轉帳」開關，貓幣旁註明積分代購的風險。
+- 設定頁多一個「轉帳」群組（上表七項）；貨幣設定每個幣別多一個「允許玩家轉帳」開關（`admin.config{currency, field="directTransfer", value, reason}`，寫入權限、有稽核），貓幣旁註明積分代購的風險；整合頁每個來源多一個「允許轉帳」開關。
 - 金流頁可篩選 `transfer`；單筆明細顯示雙方、手續費與備註。
 - 異常處理沿用凍結帳號：凍結後立即不能轉出也不能收款。不提供管理員撤銷轉帳，更正一律用調帳。
 
 ## 6. 測試與驗收
 
-- harness：成功轉帳的三條分錄與守恆、雙方收據與事件；冪等重送、`request_conflict`；自己、系統帳戶、不存在帳號、凍結的付款人或收款人、關閉的功能或幣別、金額邊界、手續費進位與最少 1、`fee_changed`、今日額度剛好用完與超過一元、收款人 `balance_cap`、餘額剛好等於本金＋手續費、終端閘門；每個拒絕都證明零變更。
+- harness：成功轉帳的三條分錄與守恆、雙方收據與事件；冪等重送、`request_conflict`；自己、系統帳戶、不存在帳號、凍結的付款人或收款人、關閉的功能或幣別、金額邊界、手續費進位與最少 1、`fee_changed`、今日額度剛好用完與超過一元、換日歸零、收款人 `recipient_cap`、餘額剛好等於本金＋手續費、終端閘門與 `TransferRemote`、新帳號門檻與豁免遷移（含回滾重跑）、API 的 `allowTransfer`／停用來源／每 tick 上限、玩家端節流；每個拒絕都證明零變更。
 - 介面離線情境：四語系 × 四字級的填寫與確認步驟、長帳號、錯誤列、鍵盤與手把走訪。
-- 實機 E2E：雙客戶端（`--clients 2`）真網路轉帳、收款通知、對帳單兩側、事件與收據落檔、重開伺服器後餘額一致。
+- 實機 E2E（`transfer-mp`）：單一客戶端經真網路送出成功轉帳與數種拒絕，收款人是 fixture 建立的離線帳號；雙客戶端的收款通知與兩側對帳單另行驗收。
 
-## 7. 待服主決定
+## 7. 服主決定（2026-09-28）
 
-1. **要不要允許在終端外轉帳？** 付車資、帶路費通常不在 ATM 旁邊。建議：轉帳可在任何地方送出，其他寫入仍需終端；伺服器仍檢查玩家在線與帳號狀態。若維持終端限制，規則最一致，但玩家要約在 ATM 付款。
-2. 手續費 5%、單筆 5,000、每日 10,000 的預設值是否合適。以 2026-09-28 正式服資料（215 個玩家錢包，中位數 450、九成在 1,173 以下、最高 2,971），這組上限不會擋到正常付款，但一天內能移動的金額有上限。
-3. **要不要設新帳號門檻**（例如錢包建立滿 3 天才能轉出），擋剛建立的分身帳號當人頭。錢包目前沒有建立時間，要新增欄位；上線前已存在的錢包只能從上線那天起算。
-4. 是否要讓其他 MOD 透過整合 API 轉帳（例如安全屋租金付給屋主）。建議先不開，等玩家轉帳上線穩定後再開放 API rev 3。
+1. **終端外轉帳**：做成選項 `TransferRemote`，預設關閉（維持終端限制，服主可自行打開）。
+2. **預設值**：維持手續費 5%、單筆 5,000、每日 10,000；整個功能預設關閉（`TransferEnabled=false`），每個幣別的 `directTransfer` 也預設關閉。
+3. **新帳號門檻**：做成選項 `TransferMinAccountDays`，預設 3 天，`0`＝不限；上線前已存在的帳號豁免（見 2.3）。
+4. **其他 MOD 轉帳**：開放 API rev 3，但每個來源要由服主打開 `allowTransfer`，預設關閉（見 3.4）。

@@ -623,6 +623,15 @@ EC.OPTIONS = {
     { key = "AuctionMaxHours", group = "auction", kind = "int", min = 1, max = 168, step = 1, default = 72, unit = "hour" },
     { key = "AuctionMaxPerPlayer", group = "auction", kind = "int", min = 1, max = 50, step = 1, default = 3 },
     { key = "AuctionMinIncrementPercent", group = "auction", kind = "int", min = 1, max = 100, step = 1, default = 5, unit = "percent" },
+    -- player-to-player transfer (docs/design-proposals/player-transfer.md): off until the host
+    -- opens it, and a currency must also carry directTransfer on the currency page
+    { key = "TransferEnabled", group = "transfer", kind = "bool", default = false },
+    { key = "TransferRemote", group = "transfer", kind = "bool", default = false },
+    { key = "TransferFeePercent", group = "transfer", kind = "int", min = 0, max = 50, step = 1, default = 5, unit = "percent", zeroOff = true },
+    { key = "TransferMin", group = "transfer", kind = "int", min = 1, max = 1000000, step = 1, default = 1, unit = "coin" },
+    { key = "TransferMaxPerTx", group = "transfer", kind = "int", min = 1, max = 100000000, step = 100, default = 5000, unit = "coin" },
+    { key = "TransferDailyPerAccount", group = "transfer", kind = "int", min = 0, max = 1000000000, step = 1000, default = 10000, unit = "coin", zeroUnlimited = true },
+    { key = "TransferMinAccountDays", group = "transfer", kind = "int", min = 0, max = 365, step = 1, default = 3, unit = "days", zeroOff = true },
     { key = "RadioIntervalMinutes", group = "radio", kind = "int", min = 0, max = 120, step = 5, default = 10, unit = "minutes", zeroOff = true },
     -- the voice/chat relay is its own switch: an upgrade must never start picking up microphones
     -- next to a trade terminal because the market summary happened to be on (spec 17.3, radio
@@ -632,7 +641,7 @@ EC.OPTIONS = {
     { key = "RadioRange", group = "radio", kind = "int", min = 0, max = 5000, step = 50, default = 500, unit = "tiles", zeroUnlimited = true },
     { key = "RadioLanguage", group = "radio", kind = "text", default = "auto", unit = "lang" },
 }
-EC.OPTION_GROUPS = { "rewards", "seasons", "admin", "currency", "shop", "market", "auction", "radio", "general" }
+EC.OPTION_GROUPS = { "rewards", "seasons", "admin", "currency", "shop", "market", "auction", "transfer", "radio", "general" }
 EC.OPTION_BY_KEY = {}
 for _, o in ipairs(EC.OPTIONS) do EC.OPTION_BY_KEY[o.key] = o end
 

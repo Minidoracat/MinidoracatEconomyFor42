@@ -116,9 +116,9 @@ ctx.clearSent()
 advance(61000)
 fire("OnServerStarted")
 
-check(V.API_REVISION == 2 and V.CAPABILITIES.entitlements == true and V.CAPABILITIES.subscriptions == true
-    and V.CAPABILITIES.post == true and V.CAPABILITIES.transfer == false,
-    "the facade is rev 2 with entitlements; the rev 1 capabilities are unchanged")
+check(V.API_REVISION >= 2 and V.CAPABILITIES.entitlements == true and V.CAPABILITIES.subscriptions == true
+    and V.CAPABILITIES.post == true,
+    "the facade is at least rev 2 with entitlements; the rev 1 capabilities are unchanged")
 
 local REASONS = { "entitlement_purchase", "entitlement_renewal", "entitlement_refund" }
 local vm = V.registerSource({ modId = "TestVM", currencies = { "survivor", "cat" }, reasonCodes = REASONS })

@@ -1,7 +1,7 @@
 -- MinidoracatEconomyFor42 — currency registry runtime half (server authority, spec section 18).
 --
 -- Static half: EC.CURRENCIES (ECCore). Runtime half lives in Global ModData
--- `config.currencies[id] = { nameOverride, enabled, iconHash, balanceMax, exchange = {...} }`.
+-- `config.currencies[id] = { nameOverride, enabled, directTransfer, iconHash, balanceMax, exchange = {...} }`.
 -- Exchange numbers (Discord points -> coins) are owned in-game: sandbox gives the boot default,
 -- admins override at runtime, every change bumps `rateVersion` and emits `admin.config` so the
 -- companion can project `GET /currencies` for Watchcord (persistence spec 5.4).
@@ -299,6 +299,9 @@ function C.currency(id)
     local static = EC.CURRENCIES[id]
     if not static then return nil end
     local e = md.config.currencies[id] or {}
+    -- player-to-player transfer switch (ECTransfer): the runtime override, else the static flag
+    local directTransfer = static.directTransfer == true
+    if type(e.directTransfer) == "boolean" then directTransfer = e.directTransfer end
     return {
         id = id,
         sortOrder = static.sortOrder,
@@ -308,7 +311,7 @@ function C.currency(id)
         iconHash = e.iconHash,
         iconBytes = e.iconBytes,
         marketUnit = static.marketUnit,
-        directTransfer = static.directTransfer,
+        directTransfer = directTransfer,
         enabled = e.enabled ~= false,
         balanceMax = type(e.balanceMax) == "number" and e.balanceMax or EC.sandbox("BalanceMax", C.DEFAULT_BALANCE_MAX),
         balanceMaxOverride = type(e.balanceMax) == "number" and e.balanceMax or nil,
@@ -348,6 +351,18 @@ function C.setEnabled(id, enabled, actor, reason)
     if before == enabled then return true end
     e.enabled = enabled
     changed(id, "enabled", before, enabled, actor, reason)
+    return true
+end
+
+-- Whether players may send this currency to each other (ECTransfer).
+function C.setDirectTransfer(id, value, actor, reason)
+    if not EC.CURRENCIES[id] then return false, "unknown_currency" end
+    if type(value) ~= "boolean" then return false, "invalid_args" end
+    local e = entry(id)
+    local before = C.currency(id).directTransfer
+    if before == value then return true end
+    e.directTransfer = value
+    changed(id, "directTransfer", before, value, actor, reason)
     return true
 end
 

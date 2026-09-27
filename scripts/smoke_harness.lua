@@ -837,6 +837,7 @@ require("MinidoracatEconomy/ECAuction")
 require("MinidoracatEconomy/ECExchange")
 require("MinidoracatEconomy/ECAdmin")
 require("MinidoracatEconomy/ECEntitlements")
+require("MinidoracatEconomy/ECTransfer")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
@@ -847,7 +848,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2074,7 +2075,7 @@ files = {}
 sentCommands = {}
 onlinePlayers = { boss, mod, joe }
 nowMs = nowMs + 61000
-check(V and V.API_MAJOR == 1 and V.API_REVISION >= 1 and V.CAPABILITIES.post == true and V.CAPABILITIES.transfer == false,
+check(V and V.API_MAJOR == 1 and V.API_REVISION >= 1 and V.CAPABILITIES.post == true,
     "facade is versioned like UIFor42 and declares its capabilities")
 
 -- 未初始化：註冊可以，記帳回 not_ready
@@ -14147,6 +14148,380 @@ do
             setOnline = function(list) onlinePlayers = list end, store = function() return modDataStore end })
     end
 end
+
+-- ===== 玩家之間轉帳（ECTransfer；docs/design-proposals/player-transfer.md §2–§3）=====
+-- 每個拒絕都用 state() 證明零變更：餘額＋rev、每日桶、最近對象與 meta.seq（任何 L.post 都會推進它）。
+;(function()
+io.write("scenario: player-to-player transfer\n")
+local Tr, G, V, A = EC.Transfer, EC.Integration, EC.v1, EC.Admin
+local SV = SandboxVars.MinidoracatEconomy
+local savedRoles = SV.AdminRoles
+SV.AdminRoles = "admin"
+SV.RewardDayResetHour, SV.RewardTimezoneUTC = 4, 8
+modDataStore[EC.MODDATA_KEY] = nil
+files, writerDeny, sentCommands = {}, {}, {}
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+nowMs = 1788699986478                         -- 2026-09-06 13:46 台灣；換日 20:00 UTC
+fire("OnServerStarted")
+local admin = fakePlayer("xf-admin"); admin.role = "admin"
+local ann, cat, newbie = fakePlayer("xf-ann"), fakePlayer("xf-cat"), fakePlayer("xf-new")
+onlinePlayers = { admin, ann, cat, newbie }
+local function cmd(p, command, args)
+    nowMs = nowMs + 700
+    local before = #sentCommands
+    fire("OnClientCommand", EC.COMMAND_MODULE, command, p, args or {})
+    for i = before + 1, #sentCommands do
+        local r = sentCommands[i]
+        if r.player == p and r.command == command then return r.args end
+    end
+    return nil
+end
+local function bal(u) return L.getBalance(u, "survivor").available end
+local function state()
+    local md = S.modData()
+    local parts = {}
+    for _, u in ipairs({ "xf-ann", "xf-bob", "xf-cat", "xf-new", "xf-rich", "SYSTEM_BURN" }) do
+        local b = L.getBalance(u, "survivor")
+        parts[#parts + 1] = u .. "=" .. b.available .. "/" .. b.rev
+    end
+    parts[#parts + 1] = EC.jsonEncode(md.transferDaily)
+    parts[#parts + 1] = EC.jsonEncode(md.transferRecent)
+    parts[#parts + 1] = tostring(md.meta.seq)
+    return table.concat(parts, ";")
+end
+local serial = 0
+local function send(p, to, amount, fee, extra)
+    serial = serial + 1
+    local args = { to = to, currency = "survivor", amount = amount, fee = fee, requestId = "xf-" .. serial }
+    for k, v in pairs(extra or {}) do args[k] = v end
+    return cmd(p, "wallet.transfer", args)
+end
+-- refused with `code` and nothing changed
+local function refused(res, code, before)
+    return res ~= nil and res.ok == false and res.error == code and state() == before
+end
+
+check(V.API_REVISION == 3 and V.CAPABILITIES.transfer == true and type(V.transfer) == "function"
+    and V.CAPABILITIES.entitlements == true and V.CAPABILITIES.post == true,
+    "the facade is rev 3 with transfer once ECTransfer has loaded; rev 1 and rev 2 capabilities stay")
+
+-- 1. 遷移：這一版第一次開機前經濟已知的帳號（錢包、領獎紀錄、凍結紀錄）一律視為夠老
+L.credit("xf-ann", "survivor", 2000, "SYSTEM_MINT", { requestId = "xf-seed-ann", reasonCode = "t" })
+L.credit("xf-bob", "survivor", 100, "SYSTEM_MINT", { requestId = "xf-seed-bob", reasonCode = "t" })
+S.modData().claims["xf-claimer"] = { day = nil, playedMs = 0, claimedCount = 0, paid = {}, milestones = 0 }
+S.modData().frozen["xf-iced"] = { at = nowMs, by = "xf-admin" }
+S.modData().firstSeen = nil                  -- 存檔來自沒有轉帳的舊版
+local preVersion = proofSnapshot()
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local seen = S.modData().firstSeen
+check(seen["xf-ann"] == 0 and seen["xf-bob"] == 0 and seen["xf-claimer"] == 0 and seen["xf-iced"] == 0
+    and seen.SYSTEM_MINT == nil and seen["xf-new"] == nil,
+    "the first boot of this build grandfathers wallets, claim records and freeze marks, never a system account")
+cmd(ann, "hello"); cmd(cat, "hello")
+local firstNew = nowMs + 700
+cmd(newbie, "hello")
+check(seen["xf-ann"] == 0 and seen["xf-new"] == firstNew and seen["xf-cat"] == firstNew - 700,
+    "hello starts the clock of an account the economy did not know, and never resets a grandfathered one")
+cmd(admin, "terminal.register", { x = 100, y = 200, z = 0 })
+
+-- 2. 預設全關：功能關、幣別關都拒絕，且不動帳
+local info0 = cmd(ann, "transfer.info", { requestId = "i0" })
+check(info0.requestId == "i0" and info0.enabled == false and #info0.currencies == 0 and info0.feePercent == 5
+    and info0.min == 1 and info0.maxPerTx == 5000 and info0.dailyLimit == 10000 and info0.remote == false,
+    "transfer.info reports the defaults: off, 5%, 1..5000, 10000 a day, terminal required")
+local s0 = state()
+check(refused(send(ann, "xf-bob", 100, 5), "transfer_disabled", s0), "the feature is off by default and a refusal changes nothing")
+SV.TransferEnabled = true
+check(refused(send(ann, "xf-bob", 100, 5), "currency_not_transferable", s0),
+    "with the feature on, a currency whose directTransfer is off still refuses")
+check(cmd(ann, "admin.config", { currency = "survivor", field = "directTransfer", value = true, reason = "x" }).error == "forbidden"
+    and Cfg.currency("survivor").directTransfer == false,
+    "only the write role may open a currency for transfers")
+check(cmd(admin, "admin.config", { currency = "survivor", field = "directTransfer", value = "yes", reason = "x" }).error == "invalid_args",
+    "directTransfer takes a boolean only")
+local opened = cmd(admin, "admin.config", { currency = "survivor", field = "directTransfer", value = true, reason = "open", requestId = "c1" })
+proofSettle()
+local auditLine = false
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do
+    if string.find(l, '"field":"directTransfer"', 1, true) and string.find(l, '"action":"config"', 1, true) then auditLine = true end
+end end
+check(opened.ok and opened.requestId == "c1" and opened.currencies[1].directTransfer == true and opened.currencies[2].directTransfer == false
+    and Cfg.currency("survivor").directTransfer == true and auditLine,
+    "admin.config directTransfer is applied per currency, reported in the snapshot and audited")
+local info1 = cmd(ann, "transfer.info")
+check(info1.enabled and #info1.currencies == 1 and info1.currencies[1] == "survivor" and info1.atTerminal == true
+    and info1.sentToday == 0 and info1.remainingToday == 10000 and info1.readyAt == nil,
+    "transfer.info lists only transferable currencies and a grandfathered account is ready")
+
+-- 3. 成功：三條分錄、守恆、雙方收據、只推給收款人
+sentCommands = {}
+local ok1 = send(ann, "xf-cat", 100, 5, { memo = "fare", requestId = "pay-1" })
+check(ok1.ok and ok1.requestId == "pay-1" and ok1.to == "xf-cat" and ok1.amount == 100 and ok1.fee == 5 and ok1.total == 105
+    and ok1.balance == 1895 and ok1.sentToday == 100 and ok1.remainingToday == 9900 and bal("xf-cat") == 100
+    and bal("SYSTEM_BURN") == 5,
+    "a transfer moves amount+fee from the payer, the amount to the payee and burns the fee")
+check(L.conservation("survivor") == 0, "conservation holds after a transfer")
+proofSettle()
+local tx = nil
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do
+    local row = string.find(l, ok1.txId, 1, true) and EC.jsonDecode(l)
+    if type(row) == "table" and row.type == "tx.committed" then tx = row end
+end end
+check(tx and tx.kind == "transfer" and tx.reasonCode == "player_transfer" and tx.reasonText == "fare" and #tx.postings == 3
+    and tx.postings[1].account == "xf-ann" and tx.postings[1].amount == -105
+    and tx.postings[2].account == "xf-cat" and tx.postings[2].amount == 100
+    and tx.postings[3].account == "SYSTEM_BURN" and tx.postings[3].amount == 5
+    and tx.payload.from == "xf-ann" and tx.payload.to == "xf-cat" and tx.payload.memo == "fare",
+    "one tx.committed of kind transfer with payer, payee, burn postings in that order and the memo in the payload")
+local ra, rc = L.receipts("xf-ann"), L.receipts("xf-cat")
+check(ra[#ra].kind == "transfer" and ra[#ra].counterparty == "xf-cat" and ra[#ra].amount == -105 and ra[#ra].reasonText == "fare"
+    and rc[#rc].counterparty == "xf-ann" and rc[#rc].amount == 100 and rc[#rc].reasonText == "fare",
+    "both receipts name the other party and carry the memo")
+local pushed, pushedToPayer = nil, false
+for _, r in ipairs(sentCommands) do
+    if r.command == "wallet.transferReceived" then
+        if r.player == cat then pushed = r.args else pushedToPayer = true end
+    end
+end
+check(pushed and pushed.from == "xf-ann" and pushed.amount == 100 and pushed.memo == "fare" and pushed.txId == ok1.txId
+    and pushed.balance == 100 and pushed.currency == "survivor" and not pushedToPayer and lastSent("wallet.changed") ~= nil,
+    "the online recipient alone gets wallet.transferReceived, next to the usual wallet.changed push")
+
+-- 4. 冪等：同 requestId 同內容回原結果；換內容回 request_conflict
+local s1 = state()
+local dup = send(ann, "xf-cat", 100, 5, { memo = "fare", requestId = "pay-1" })
+check(dup.ok and dup.duplicate == true and dup.txId == ok1.txId and dup.fee == 5 and dup.total == 105 and state() == s1,
+    "a resend returns the recorded result and moves nothing")
+check(refused(send(ann, "xf-cat", 101, 6, { memo = "fare", requestId = "pay-1" }), "request_conflict", s1)
+    and refused(send(ann, "xf-cat", 100, 5, { requestId = "pay-1" }), "request_conflict", s1),
+    "the same requestId with another amount or without the memo is a conflict, not a second payment")
+
+-- 5. 拒絕全都零變更
+check(refused(send(ann, "xf-ann", 10, 1), "self_transfer", s1), "sending to yourself is refused")
+check(refused(send(ann, "nobody", 10, 1), "unknown_recipient", s1) and S.modData().wallets.nobody == nil,
+    "an account the economy never knew is refused and gets no wallet row")
+check(refused(send(ann, "XF-BOB", 10, 1), "unknown_recipient", s1), "account names match exactly: case counts")
+check(refused(send(ann, "SYSTEM_BURN", 10, 1), "unknown_recipient", s1)
+    and refused(send(ann, "MOD:XferMod", 10, 1), "unknown_recipient", s1),
+    "system and MOD accounts are never recipients")
+S.modData().frozen["xf-ann"] = { at = nowMs }
+ann.x = 500
+check(refused(send(ann, "xf-bob", 10, 1), "account_frozen", s1), "a frozen payer cannot send, and is told so before the terminal rule")
+ann.x = 100
+S.modData().frozen["xf-ann"] = nil
+check(refused(send(ann, "xf-iced", 10, 1), "recipient_frozen", s1), "a frozen recipient cannot receive")
+ann.x = 500
+check(refused(send(ann, "xf-bob", 10, 1), "not_at_terminal", s1), "with TransferRemote off a transfer needs a terminal")
+SV.TransferRemote = true
+local remote = send(ann, "xf-bob", 10, 1)
+check(remote.ok and bal("xf-bob") == 110 and cmd(ann, "transfer.info").remote == true and cmd(ann, "transfer.info").atTerminal == false,
+    "with TransferRemote on the same transfer goes through away from any terminal")
+SV.TransferRemote = nil
+ann.x = 100
+local s2 = state()
+SV.TransferMin = 10
+local low = send(ann, "xf-bob", 9, 1)
+local high = send(ann, "xf-bob", 5001, 251)
+check(refused(low, "amount_range", s2) and low.min == 10 and low.max == 5000 and refused(high, "amount_range", s2),
+    "amounts outside TransferMin..TransferMaxPerTx are refused with the range")
+SV.TransferMin = nil
+local changed = send(ann, "xf-bob", 100, 4)
+check(refused(changed, "fee_changed", s2) and changed.feeNow == 5 and changed.fee == 4,
+    "a fee the player did not confirm is refused with the current fee")
+local poor = send(ann, "xf-bob", 5000, 250)
+check(refused(poor, "insufficient_funds", s2) and poor.needed == 5250 - bal("xf-ann"),
+    "insufficient funds says how much is missing")
+check(refused(send(ann, "xf-bob", 10, 1, { memo = string.rep("m", 65) }), "invalid_args", s2)
+    and refused(send(ann, "xf-bob", 10, 1, { memo = "a\nb" }), "invalid_args", s2)
+    and refused(send(ann, "xf-bob", 0, 0), "invalid_args", s2) and refused(send(ann, "xf-bob", 10, -1), "invalid_args", s2),
+    "a memo over 64 characters or with control characters, a zero amount and a negative fee are malformed")
+local longName = fakePlayer(string.rep("L", 60)); onlinePlayers[#onlinePlayers + 1] = longName
+check(send(longName, "xf-bob", 10, 1, { requestId = string.rep("r", 90) }).error == "request_too_long" and state() == s2,
+    "an idempotency key the ledger cannot store is refused before anything moves")
+
+-- 6. 手續費：無條件進位、開啟時最少 1；0% 時沒有銷毀分錄
+check(Tr.fee(1, 5) == 1 and Tr.fee(20, 5) == 1 and Tr.fee(21, 5) == 2 and Tr.fee(100, 5) == 5 and Tr.fee(5000, 50) == 2500
+    and Tr.fee(1, 0) == 0 and Tr.fee(999, 1) == 10,
+    "fee = ceil(amount * pct / 100), at least 1 while on, 0 when off")
+local one = send(ann, "xf-bob", 1, 1)
+check(one.ok and one.fee == 1 and one.total == 2, "the minimum fee of 1 applies to the smallest transfer")
+SV.TransferFeePercent = 0
+local burnBefore = bal("SYSTEM_BURN")
+local free = send(ann, "xf-bob", 50, 0)
+proofSettle()
+local freeTx = nil
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do
+    local row = string.find(l, free.txId, 1, true) and EC.jsonDecode(l)
+    if type(row) == "table" and row.type == "tx.committed" then freeTx = row end
+end end
+check(free.ok and free.total == 50 and bal("SYSTEM_BURN") == burnBefore and freeTx and #freeTx.postings == 2,
+    "with a 0% fee the transaction has no burn posting")
+SV.TransferFeePercent = nil
+
+-- 7. 每日轉出上限：剛好用完可以、超過一元不行；獎勵日換日歸零
+SV.TransferDailyPerAccount = 300
+local used = Tr.sentOn(R.dayKey(nowMs), "xf-ann")          -- 100 + 10 + 1 + 50
+local s3 = state()
+local over = send(ann, "xf-bob", 300 - used + 1, Tr.fee(300 - used + 1, 5))
+check(refused(over, "daily_limit", s3) and over.remainingToday == 300 - used,
+    "one coin over the daily limit is refused with what is left today")
+local exact = send(ann, "xf-bob", 300 - used, Tr.fee(300 - used, 5))
+check(exact.ok and exact.sentToday == 300 and exact.remainingToday == 0, "the daily limit can be used up exactly")
+local s4 = state()
+local after = send(ann, "xf-bob", 1, 1)
+check(refused(after, "daily_limit", s4) and after.remainingToday == 0, "nothing more once the day's limit is used")
+nowMs = R.nextResetMs(nowMs) + 1000
+local info2 = cmd(ann, "transfer.info")
+local nextDay = send(ann, "xf-bob", 1, 1)
+check(info2.sentToday == 0 and info2.remainingToday == 300 and nextDay.ok and nextDay.sentToday == 1,
+    "the next reward day starts from zero")
+SV.TransferDailyPerAccount = 0
+check(cmd(ann, "transfer.info").remainingToday == nil and cmd(ann, "transfer.info").dailyLimit == 0,
+    "a daily limit of 0 is unlimited and reports no remaining figure")
+SV.TransferDailyPerAccount = nil
+
+-- 8. 收款人上限：不透露對方餘額
+SV.BalanceMax = 1000
+L.credit("xf-bob", "survivor", 950 - bal("xf-bob"), "SYSTEM_MINT", { requestId = "xf-fill-bob", reasonCode = "t" })
+local s5 = state()
+local capped = send(ann, "xf-bob", 51, 3)
+local leaks = false
+for k, v in pairs(capped) do if v == 950 or k == "balance" then leaks = true end end
+check(refused(capped, "recipient_cap", s5) and not leaks, "a payment that would lift the recipient over the cap is refused without their balance")
+check(send(ann, "xf-bob", 50, 3).ok and bal("xf-bob") == 1000, "exactly up to the recipient's cap is allowed")
+SV.BalanceMax = nil
+
+-- 9. 餘額剛好等於本金＋手續費
+L.credit("xf-new", "survivor", 105, "SYSTEM_MINT", { requestId = "xf-seed-new", reasonCode = "t" })
+SV.TransferMinAccountDays = 0
+local all = send(newbie, "xf-ann", 100, 5)
+check(all.ok and all.balance == 0 and bal("xf-new") == 0, "a balance of exactly amount + fee is enough")
+SV.TransferMinAccountDays = nil
+
+-- 10. 新帳號門檻
+L.credit("xf-new", "survivor", 500, "SYSTEM_MINT", { requestId = "xf-seed-new2", reasonCode = "t" })
+local s6 = state()
+local young = send(newbie, "xf-ann", 10, 1)
+check(refused(young, "account_too_new", s6) and young.availableAt == firstNew + 3 * 86400000
+    and cmd(newbie, "transfer.info").readyAt == firstNew + 3 * 86400000,
+    "an account first seen after the upgrade waits TransferMinAccountDays, and both replies say until when")
+local ghost = fakePlayer("xf-ghost"); onlinePlayers[#onlinePlayers + 1] = ghost
+L.credit("xf-ghost", "survivor", 100, "SYSTEM_MINT", { requestId = "xf-seed-ghost", reasonCode = "t" })
+local skipped = send(ghost, "xf-ann", 10, 1)
+check(skipped.error == "account_too_new" and skipped.availableAt == nowMs + 3 * 86400000 and S.modData().firstSeen["xf-ghost"] == nil,
+    "skipping hello never skips the wait: an unseen account has not started its clock")
+
+-- 11. 回滾重跑遷移：回到舊版存檔再開機，只會得到同一批或更少的豁免帳號
+local afterMigration = proofSnapshot()
+proofRestartFrom(preVersion)
+seen = S.modData().firstSeen
+check(seen["xf-ann"] == 0 and seen["xf-bob"] == 0 and seen["xf-claimer"] == 0 and seen["xf-iced"] == 0 and seen["xf-new"] == nil
+    and seen["xf-cat"] == nil,
+    "a rollback to the pre-upgrade save re-runs the migration over that save's population only")
+local reseen = nowMs + 700
+cmd(newbie, "hello")
+check(seen["xf-new"] == reseen and reseen > firstNew and cmd(newbie, "transfer.info").readyAt == reseen + 3 * 86400000,
+    "an account first seen in the lost branch starts again later: a rollback makes the wait longer, never shorter")
+proofRestartFrom(afterMigration)
+check(S.modData().firstSeen["xf-new"] == firstNew and S.modData().firstSeen["xf-ann"] == 0,
+    "an ordinary restart keeps the recorded ages and never grandfathers again")
+nowMs = firstNew + 3 * 86400000 + 1
+local grown = send(newbie, "xf-ann", 10, 1)
+check(grown.ok, "once the wait is over the account can send")
+
+-- 12. 候選收款人
+local crowd = {}
+for i = 1, 25 do crowd[i] = fakePlayer(string.format("xf-p%02d", i)) end
+onlinePlayers = { admin, ann, cat, newbie }
+for _, p in ipairs(crowd) do onlinePlayers[#onlinePlayers + 1] = p end
+local rc1 = cmd(ann, "transfer.recipients", { query = "XF-", requestId = "q1" })
+local names, selfListed = {}, false
+for _, it in ipairs(rc1.items) do names[it.username] = it.online; if it.username == "xf-ann" then selfListed = true end end
+check(rc1.requestId == "q1" and #rc1.items == 20 and not selfListed and names["xf-bob"] == false and names["xf-cat"] == true,
+    "recipients: recent counterparties (offline ones flagged) and online name matches, case-insensitive, never yourself, at most 20")
+local exactOffline = cmd(ann, "transfer.recipients", { query = "xf-claimer" })
+local wrongCase = cmd(ann, "transfer.recipients", { query = "XF-CLAIMER" })
+check(#exactOffline.items == 1 and exactOffline.items[1].username == "xf-claimer" and exactOffline.items[1].online == false
+    and #wrongCase.items == 0 and #cmd(ann, "transfer.recipients", { query = "SYSTEM_BURN" }).items == 0,
+    "an offline account is only found by its exact name, and system accounts never")
+SV.TransferEnabled = nil
+check(#cmd(ann, "transfer.recipients", { query = "xf" }).items == 0, "with the feature off no candidates are listed")
+SV.TransferEnabled = true
+onlinePlayers = { admin, ann, cat, newbie }
+
+-- 13. 整合 API：沒有 allowTransfer 就拒絕；有了之後同一套規則
+local src = V.registerSource({ modId = "XferMod", currencies = { "survivor" }, reasonCodes = { "rent" } })
+fire("OnTickEvenPaused")
+local s7 = state()
+local denied = src.transfer("xf-ann", "xf-bob", "survivor", 50, { requestId = "rent-1", reasonCode = "rent" })
+local todayRow = S.modData().sourceDaily[R.dayKey(nowMs)]
+check(denied.ok == false and denied.error == "transfer_not_allowed" and state() == s7
+    and todayRow and todayRow.XferMod.rejected.transfer_not_allowed == 1,
+    "a source may not transfer until the host sets allowTransfer, and the refusal is counted")
+check(cmd(admin, "admin.sources", { action = "set", modId = "XferMod", allowTransfer = "yes", reason = "rent" }).error == "invalid_args",
+    "allowTransfer takes a boolean only")
+local setRes = cmd(admin, "admin.sources", { action = "set", modId = "XferMod", allowTransfer = true, reason = "safehouse rent" })
+local listed = nil
+for _, row in ipairs(setRes.sources) do if row.modId == "XferMod" then listed = row end end
+check(setRes.ok and listed and listed.allowTransfer == true, "admin.sources sets allowTransfer and lists it")
+fire("OnTickEvenPaused")
+local rent = src.transfer("xf-ann", "xf-bob", "survivor", 50, { requestId = "rent-1", reasonCode = "rent", reasonText = "week 1" })
+proofSettle()
+local rentTx = nil
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do
+    local row = rent.txId and string.find(l, rent.txId, 1, true) and EC.jsonDecode(l)
+    if type(row) == "table" and row.type == "tx.committed" then rentTx = row end
+end end
+check(rent.ok and rent.fee == 3 and rent.duplicate == false and rentTx and rentTx.kind == "transfer" and rentTx.reasonCode == "rent"
+    and rentTx.payload.sourceMod == "XferMod" and rentTx.payload.from == "xf-ann" and rentTx.payload.memo == nil
+    and L.conservation("survivor") == 0,
+    "an allowed source transfers player to player with the fee, under its own reason code and name")
+local s8 = state()
+local again = V.transfer("xf-ann", "xf-bob", "survivor", 50, { modId = "XferMod", requestId = "rent-1", reasonCode = "rent", reasonText = "week 1" })
+check(again.ok and again.duplicate == true and again.txId == rent.txId and state() == s8
+    and src.transfer("xf-ann", "xf-bob", "survivor", 60, { requestId = "rent-1", reasonCode = "rent" }).error == "request_conflict"
+    and src.post({ requestId = "rent-1", reasonCode = "rent", postings = { { account = "xf-ann", currency = "survivor", amount = -1 },
+        { account = "MOD:XferMod", currency = "survivor", amount = 1 } } }).error == "request_conflict"
+    and state() == s8,
+    "the top-level E.transfer resends idempotently; the same id for another amount or a post is a conflict")
+check(src.transfer("xf-ann", "xf-iced", "survivor", 10, { requestId = "rent-2", reasonCode = "rent" }).error == "recipient_frozen"
+    and src.transfer("xf-ghost", "xf-ann", "survivor", 10, { requestId = "rent-3", reasonCode = "rent" }).error == "account_too_new"
+    and src.transfer("xf-ann", "xf-ann", "survivor", 10, { requestId = "rent-4", reasonCode = "rent" }).error == "self_transfer"
+    and src.transfer("xf-ann", "xf-bob", "survivor", 10, { requestId = "rent-5", reasonCode = "nope" }).error == "invalid_args"
+    and state() == s8,
+    "the API applies the player rules (freeze, account age, self) and its own reason codes, changing nothing")
+G.setSource("XferMod", { enabled = false }, "xf-admin", "pause")
+local s8b = state()                          -- the audit line of that switch has its own id
+check(src.transfer("xf-ann", "xf-bob", "survivor", 10, { requestId = "rent-6", reasonCode = "rent" }).error == "source_disabled" and state() == s8b,
+    "a disabled source cannot transfer")
+G.setSource("XferMod", { enabled = true }, "xf-admin", "resume")
+fire("OnTickEvenPaused")
+local limited = nil
+for i = 1, G.CALLS_PER_TICK + 1 do
+    limited = src.transfer("xf-ann", "xf-bob", "survivor", 1, { requestId = "burst-" .. i, reasonCode = "rent" })
+end
+check(limited.error == "rate_limited" and Tr.sentOn(R.dayKey(nowMs), "xf-ann") == 50 + G.CALLS_PER_TICK,
+    "a source's calls per tick are capped for transfers like for every other call")
+
+-- 14. 玩家端節流：500 ms 內的第二筆沒有回覆也不動帳
+fire("OnTickEvenPaused")
+local s9 = state()
+local before = #sentCommands
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.transfer", ann, { to = "xf-bob", currency = "survivor", amount = 5, fee = 1, requestId = "t-1" })
+nowMs = nowMs + 100
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.transfer", ann, { to = "xf-bob", currency = "survivor", amount = 5, fee = 1, requestId = "t-2" })
+local replies = 0
+for i = before + 1, #sentCommands do if sentCommands[i].command == "wallet.transfer" then replies = replies + 1 end end
+check(replies == 1 and Tr.sentOn(R.dayKey(nowMs), "xf-ann") == 50 + G.CALLS_PER_TICK + 5 and state() ~= s9,
+    "a second transfer within the command cooldown is dropped: only the first one is answered and booked")
+check(A.TX_GROUPS.transfer == true and L.conservation("survivor") == 0 and L.conservation("cat") == 0,
+    "the transactions page can filter transfers and every currency is still conserved")
+
+SV.TransferEnabled, SV.AdminRoles = nil, savedRoles
+SV.RewardDayResetHour, SV.RewardTimezoneUTC = nil, nil
+onlinePlayers = {}
+end)()
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then
