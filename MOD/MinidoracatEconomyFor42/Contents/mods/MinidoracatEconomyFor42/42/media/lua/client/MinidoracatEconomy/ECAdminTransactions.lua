@@ -60,8 +60,7 @@ require "ISUI/ISComboBox"
 require "ISUI/ISScrollBar"
 require "MinidoracatEconomy/ECWidgets"
 require "MinidoracatEconomy/ECDetailWindow"
-require "MinidoracatEconomy/ECAdminFilters"
-require "MinidoracatEconomy/ECDatePicker"
+require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECPlayerPicker"
 require "MinidoracatEconomy/ECItemPicker"
 require "MinidoracatEconomy/ECItemNames"
@@ -69,9 +68,8 @@ require "MinidoracatEconomy/ECItemNames"
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
-local F = C.AdminFilters
+local closeCombo = C.PanelWidgets.closeCombo
 local Detail = C.DetailWindow
-local DatePicker = C.DatePicker
 local PlayerPicker = C.PlayerPicker
 local ItemPicker = C.ItemPicker
 local ItemNames = C.ItemNames
@@ -264,21 +262,25 @@ function Page:createChildren()
     accountCombo:setWidthToOptions(110)
     self.txAccountCombo = accountCombo
     self:addChild(accountCombo)
-    self.txF = F.create(self, {
-        label = txGroupText,
-        kindLabel = tr("Admin_Tx_Group"),
-        sorts = { "time" }, fields = { time = "ord" },
-        fromLabel = tr("Filter_From"), toLabel = tr("Filter_To"),
-        onChange = function(panel) panel:onTxFilterChanged() end,
+    -- the shared filter row (UI.FilterBar, rev 11): the source and the days are the server's own
+    -- conditions (no field: the bar keeps the state and this page sends it), the sort and the
+    -- page are local over the page the server sent
+    self.txF = U.framework.FilterBar.new({
+        parent = self, target = self, theme = U.theme, height = math.max(22, fontH.small + 8),
+        pager = "inline",
+        kinds = { label = txGroupText, title = tr("Admin_Tx_Group") },
+        dates = {},
+        sorts = { { id = "time", label = tr("Filter_Sort_time"), field = "ord" } },
+        onChange = function(page) page:onTxFilterChanged(); page:updateEnabled() end,
+        onLayout = function(page) page:layout() end,
     })
-    self.txF.accountCombo = accountCombo
-    self.txF.accountLabel = tr("Admin_Tx_AccountClass")
-    self.txF.accountW = accountCombo.width
+    self.txF:addControl(accountCombo, tr("Admin_Tx_AccountClass"), "combo")
+    self.txAccountW = accountCombo.width
     -- the source chips are an enumeration, not whatever a reply happened to carry: a search that
     -- matched nothing still offers every other source to switch to
-    F.kinds(self.txF, TX_GROUPS)
-    self.txKindSig = self.txF.kind
-    self.txDateSig = entryText(self.txF.fromEntry) .. "\1" .. entryText(self.txF.toEntry)
+    self.txF:setKinds(TX_GROUPS)
+    self.txKindSig = self.txF:getKind()
+    self.txDateSig = self:txDateText()
     self.txList = U.newTable(U.AdminHistoryCell, listRowH())
     -- the body of a row reads: it picks the transaction (by id, so a page turn keeps the pick)
     -- and opens the record in the shared detail window. The row carries no control of its own,
@@ -299,6 +301,9 @@ function Page:createChildren()
     self.txRetryButton = chip(tr("Admin_Tx_Retry"), Page.onTxRetry, "retry")
     self.txFilterButton = chip(tr("Admin_Tx_Filters"), Page.onTxFilters, "filters")
     self.txActionButtons = { self.txFilterButton, self.txClearButton, self.txRetryButton }
+    -- the compact card hides the filter row: these two turn the local page from the action row
+    self.txPrevButton = chip(tr("Market_Prev"), Page.onTxPage, -1)
+    self.txNextButton = chip(tr("Market_Next"), Page.onTxPage, 1)
     -- the exact account and the exact item: each is picked, each is cleared, and neither is ever
     -- changed by typing a keyword
     self.txAccountClearButton = chip(tr("Admin_Tx_AccountClear"), Page.onTxAccountClear, "accountClear")
@@ -322,8 +327,8 @@ function Page:createChildren()
     -- The shared player picker. It is a plain object, not a widget: it adds its own two children
     -- (the box, then the candidate list) onto this page, so it is created here -- after
     -- everything the list has to drop over, before the overlay that has to cover it. It owns no
-    -- Events hook: tick(now) below is its clock, and admin.players replies reach it through the
-    -- controller as onPlayersReply.
+    -- Events hook (the framework field runs its own debounce), and admin.players replies reach
+    -- it through the controller as onPlayersReply.
     self.txAccountPicker = PlayerPicker.create(self, self.send, self.isPending, self.newRequestId,
         function(entry) self:onAccountPicked(entry) end, "transactions")
     -- and the item picker overlay is added last of all: it paints over the whole page
@@ -416,7 +421,7 @@ function Page:resolveItemTypes()
         -- the condition really changed (a first resolve, or an index that finished loading):
         -- the snapshot on screen answered a different question
         self.txItemTypesKey = key
-        self.txF.page = 1
+        self.txF:setPage(1)
         self.txDirty = true
     end
     self.txItemTypes = #out > 0 and out or nil
@@ -437,18 +442,22 @@ end
 -- that day, so the exclusive bound is the next midnight. A malformed box is simply not a bound
 -- (its placeholder says what it wants).
 function Page:txRange()
-    local f = self.txF
-    local to = EC.parseDay(entryText(f.toEntry), self.offsetMin)
-    return EC.parseDay(entryText(f.fromEntry), self.offsetMin), to and (to + 86400000) or nil
+    return self.txF:dateRange()
+end
+
+-- The two day boxes as typed, one string: what tells a changed range from a changed source.
+function Page:txDateText()
+    local from, to = self.txF:getDateText()
+    return from .. "\1" .. to
 end
 
 -- The same span check the server runs, so a typo never costs a round trip: at most 62 days, and
 -- the end after the start. A one-sided pair is completed the way the server completes it -- a
 -- missing end is tomorrow, a missing start is 62 days before the end.
 function Page:txRangeError(from, to)
-    local f = self.txF
-    if (string.find(entryText(f.fromEntry), "%S") and from == nil)
-        or (string.find(entryText(f.toEntry), "%S") and to == nil) then return true end
+    local fromText, toText = self.txF:getDateText()
+    if (string.find(fromText, "%S") and from == nil)
+        or (string.find(toText, "%S") and to == nil) then return true end
     if from == nil and to == nil then return false end
     local stop = to or (math.floor(EC.now() / 86400000) * 86400000 + 86400000)
     local start = from or math.max(0, stop - TX_RANGE_MAX_MS)
@@ -499,7 +508,7 @@ function Page:requestTransactions()
     if self.txAccount then args.account = self.txAccount end
     if self.txItem then args.item = self.txItem end
     if self.txItemTypes then args.itemTypes = self.txItemTypes end
-    if self.txF.kind ~= "all" then args.group = self.txF.kind end
+    if self.txF:getKind() ~= nil then args.group = self.txF:getKind() end
     if self.txCurrency then args.currency = self.txCurrency end
     if self.txAccountClass then args.accountClass = self.txAccountClass end
     if from then args.fromMs = from end
@@ -556,7 +565,7 @@ function Page:onTxSearch()
     local query = raw ~= "" and raw or nil
     if query == self.txQuery then return end
     self.txQuery = query
-    self.txF.page = 1
+    self.txF:setPage(1)
     self.txDirty = true
     self.txNamesDirty = true
     self.txItemTypesError = nil
@@ -569,16 +578,15 @@ end
 -- to this side, so they only rebuild.
 function Page:onTxFilterChanged()
     local f = self.txF
-    local dates = entryText(f.fromEntry) .. "\1" .. entryText(f.toEntry)
-    if f.kind ~= self.txKindSig then
-        self.txKindSig = f.kind
+    local dates = self:txDateText()
+    -- (the bar already put the page back to 1 for a source or a day change)
+    if f:getKind() ~= self.txKindSig then
+        self.txKindSig = f:getKind()
         self.txDateSig = dates
-        f.page = 1
         self.txDirty = true
         self.txQueryAt = nil   -- a chip is one click, not typing: it goes out on the next frame
     elseif dates ~= self.txDateSig then
         self.txDateSig = dates
-        f.page = 1
         self.txDirty = true
         self.txQueryAt = EC.now()   -- a day is typed: coalesced exactly like the search box
     end
@@ -586,12 +594,29 @@ function Page:onTxFilterChanged()
     self:rebuildTxNotes()
 end
 
+-- The compact card's own page chips follow the read gate and the page count.
+function Page:updateTxPager()
+    local on = self.txReadOn ~= false
+    self.txPrevButton:setEnable(on and self.txF.page > 1)
+    self.txNextButton:setEnable(on and self.txF.page < self.txF.pages)
+end
+
+-- The compact card's own page chips: the same local page the filter row's chips turn.
+function Page:onTxPage(button)
+    local f = self.txF
+    local page = f.page + button.internal
+    if page < 1 or page > f.pages then return end
+    f:setPage(page)
+    self:rebuildTransactions()
+    self:updateEnabled()
+end
+
 function Page:onTxCurrency(button)
     local id = button.internal ~= "all" and button.internal or nil
     if id == self.txCurrency then return end
     self.txCurrency = id
     for _, b in ipairs(self.txCurButtons) do b.active = b.internal == (id or "all") end
-    self.txF.page = 1
+    self.txF:setPage(1)
     self.txDirty = true
     self.txQueryAt = nil
     self:updateEnabled()
@@ -605,7 +630,7 @@ function Page:onTxMatchMode(button)
     if mode == self.txMatchMode then return end
     self.txMatchMode = mode
     for _, b in ipairs(self.txModeButtons) do b.active = b.internal == mode end
-    self.txF.page = 1
+    self.txF:setPage(1)
     self.txDirty = true
     self.txNamesDirty = true
     self.txItemTypesError = nil
@@ -619,7 +644,7 @@ function Page:onTxAccountClass(combo)
     if class == "all" then class = nil end
     if class == self.txAccountClass then return end
     self.txAccountClass = class
-    self.txF.page = 1
+    self.txF:setPage(1)
     self.txDirty = true
     self.txQueryAt = nil
     self:updateEnabled()
@@ -638,7 +663,7 @@ function Page:onAccountPicked(entry)
     self.txAccountPicker:setText(name)
     if self.txAccount == name then return end
     self.txAccount = name
-    self.txF.page = 1
+    self.txF:setPage(1)
     self.txDirty = true
     self.txQueryAt = nil
     self:layout()
@@ -652,7 +677,7 @@ function Page:onTxAccountClear()
         return
     end
     self.txAccount = nil
-    self.txF.page = 1
+    self.txF:setPage(1)
     self.txDirty = true
     self.txQueryAt = nil
     self:layout()
@@ -666,8 +691,8 @@ end
 function Page:onTxItemPick()
     self.txEntry:unfocus()
     self.txAccountPicker:close()
-    DatePicker.close(self)
-    F.closeCombo(self.txAccountCombo)
+    U.framework.DatePicker.close(self)
+    closeCombo(self.txAccountCombo)
     self.itemPicker:open()
     self:layout()
     if C.Keyboard and C.Keyboard.invalidate then pcall(C.Keyboard.invalidate, self.owner.owner) end
@@ -681,7 +706,7 @@ function Page:onItemPicked(record)
     end
     if self.txItem ~= fullType then
         self.txItem = fullType
-        self.txF.page = 1
+        self.txF:setPage(1)
         self.txDirty = true
         self.txQueryAt = nil
     end
@@ -697,19 +722,17 @@ end
 function Page:onTxItemClear()
     if self.txItem == nil then return end
     self.txItem = nil
-    self.txF.page = 1
+    self.txF:setPage(1)
     self.txDirty = true
     self.txQueryAt = nil
     self:layout()
 end
 
 function Page:onTxFilters()
-    DatePicker.close(self)
-    F.closeCombo(self.txAccountCombo)
+    closeCombo(self.txAccountCombo)
     self.txAccountPicker:close()
     self.txEntry:unfocus()
-    self.txF.fromEntry:unfocus()
-    self.txF.toEntry:unfocus()
+    self.txF:blur()   -- the day boxes and their calendar
     self.txFiltersOpen = not self.txFiltersOpen
     -- the sheet opens at its top: an offset left over from the last time it was open would hide
     -- the first conditions behind a scroll the admin never made
@@ -829,16 +852,11 @@ end
 -- exactly like a page that was just opened.
 function Page:onTxClear()
     local f = self.txF
-    f.kind = "all"
-    f.page = 1
-    -- one sortable column on this page, so the direction is the whole of the sort: back to
-    -- "newest first", the state a freshly opened page has
-    f.desc = true
-    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == "all" end
+    -- the source, both days, the page and the sort (one sortable column on this page, so the
+    -- direction is the whole of it: back to "newest first", the state a freshly opened page has)
+    f:reset(true)
     setEntryText(self.txEntry, "")
-    setEntryText(f.fromEntry, "")
-    setEntryText(f.toEntry, "")
-    DatePicker.close(self)
+    U.framework.DatePicker.close(self)
     self.txQuery = nil
     self.txMatchMode = "contains"
     for _, b in ipairs(self.txModeButtons) do b.active = b.internal == "contains" end
@@ -853,11 +871,11 @@ function Page:onTxClear()
     for _, b in ipairs(self.txCurButtons) do b.active = b.internal == "all" end
     self.txAccountClass = nil
     if self.txAccountCombo then
-        F.closeCombo(self.txAccountCombo)
+        closeCombo(self.txAccountCombo)
         self.txAccountCombo:setSelectedData("all")
     end
-    self.txKindSig = f.kind
-    self.txDateSig = entryText(f.fromEntry) .. "\1" .. entryText(f.toEntry)
+    self.txKindSig = f:getKind()
+    self.txDateSig = self:txDateText()
     self.owner.message = nil
     -- a refusal that is still on screen must not survive the click that replaces the question
     self.txListError = nil
@@ -887,10 +905,8 @@ end
 function Page:show(group, filters)
     filters = type(filters) == "table" and filters or {}
     local f = self.txF
-    f.kind = group or "all"
-    f.page = 1
-    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == f.kind end
-    self.txKindSig = f.kind
+    f:setKind((group ~= nil and group ~= "all") and group or nil, true)
+    self.txKindSig = f:getKind()
     local q = string.match(tostring(filters.query or ""), "^%s*(.-)%s*$") or ""
     -- the query is set before the box is written, so the box's own change hook (which compares
     -- against this very field) cannot mistake the caller's value for typing and delay the first
@@ -915,15 +931,14 @@ function Page:show(group, filters)
     local txId = (type(filters.txId) == "string" and filters.txId ~= "") and filters.txId or nil
     local ts = tonumber(filters.ts)
     local day = (txId ~= nil and ts ~= nil) and dateText(ts, self.offsetMin) or ""
-    setEntryText(f.fromEntry, day)
-    setEntryText(f.toEntry, day)
-    DatePicker.close(self)
-    self.txDateSig = entryText(f.fromEntry) .. "\1" .. entryText(f.toEntry)
+    f:setDateText(day, day, true)
+    U.framework.DatePicker.close(self)
+    self.txDateSig = self:txDateText()
     self.txCurrency = nil
     for _, b in ipairs(self.txCurButtons) do b.active = b.internal == "all" end
     self.txAccountClass = nil
     if self.txAccountCombo then
-        F.closeCombo(self.txAccountCombo)
+        closeCombo(self.txAccountCombo)
         self.txAccountCombo:setSelectedData("all")
     end
     -- a refusal still on screen belongs to the question that was just replaced
@@ -939,7 +954,7 @@ function Page:show(group, filters)
     self.txFiltersOpen = false
     self:rebuildTransactions()
     if txId ~= nil then
-        local from = day ~= "" and EC.parseDay(day, self.offsetMin) or nil
+        local from = day ~= "" and U.framework.Date.dayStart(day, self.offsetMin) or nil
         self:openTxDetail(txId, from, from and (from + 86400000) or nil)
     end
 end
@@ -949,11 +964,11 @@ end
 -- The item overlay eats the whole page while it is up; the account picker's candidate list does
 -- not (it is a drop-down over one row), so it is never a modal state -- only an Escape target.
 function Page:isModal()
-    return self.itemPicker:getIsVisible()
+    return self.itemPicker:isOpen()
 end
 
 function Page:onEscape()
-    if self.itemPicker:getIsVisible() then
+    if self.itemPicker:isOpen() then
         self.itemPicker:cancel()
         self:layout()
         return true
@@ -974,7 +989,7 @@ end
 -- answers with an empty table while another sub page is up, so the root only ever offers what is
 -- on screen.
 function Page:keyboardTargets()
-    if self.itemPicker:getIsVisible() then return self.itemPicker:keyboardTargets() end
+    if self.itemPicker:isOpen() then return self.itemPicker:keyboardTargets() end
     local out = {}
     local function add(kind, label, control, controls)
         out[#out + 1] = { kind = kind, label = label, control = control, controls = controls }
@@ -999,14 +1014,10 @@ function Page:keyboardTargets()
     group(tr("Admin_Tx_AccountExact"), { self.txAccountClearButton })
     group(tr("Admin_Tx_Item"), { self.txItemButton, self.txItemClearButton })
     group(tr("Admin_Tx_Currency"), self.txCurButtons)
-    group(tr("Admin_Tx_Group"), f.kindButtons)
-    add("entry", f.fromLabel, f.fromEntry)
-    add("button", tr("Filter_Calendar"), f.fromEntry.calendarButton)
-    add("entry", f.toLabel, f.toEntry)
-    add("button", tr("Filter_Calendar"), f.toEntry.calendarButton)
-    add("combo", tr("Admin_Tx_AccountClass"), self.txAccountCombo)
-    group(f.sortLabel, f.sortButtons)
-    group(tr("Filter_PageNav"), { f.prevButton, f.nextButton })
+    -- the shared row: sources, both days with their calendar buttons, the sort, the account
+    -- class combo and the page chips (UI.FilterBar); the compact card's own page chips after it
+    f:appendTargets(out)
+    group(tr("Filter_PageNav"), { self.txPrevButton, self.txNextButton })
     group(tr("Admin_Tx_Actions"), self.txActionButtons)
     add("scroll", tr("Admin_Tx_Title"), self.txNotesBox)
     add("list", tr("Admin_Tx_Title"), self.txList)
@@ -1194,10 +1205,9 @@ function Page:rebuildTransactions()
     local f = self.txF
     local snap = self.transactions
     local src = (snap and type(snap.entries) == "table") and snap.entries or {}
-    local picked, page, pages, total = EC.filterPage(src, {
-        sortKey = f.fields[f.sortKey], desc = f.desc, page = f.page, perPage = F.PER_PAGE,
-    })
-    f.page, f.pages, f.total = page, pages, total
+    local picked = f:apply(src)   -- the sort and the page only: source and days are the server's
+    -- the compact card's page chips follow the page count the apply just learned
+    self:updateTxPager()
     local rows = {}
     local width = math.max(120, self.txList.width - 12)   -- 12 = the scrollbar gutter
     local lh = lineH()
@@ -1246,9 +1256,9 @@ end
 -- rows say so instead of passing for the new answer.
 function Page:txFilterSig()
     local f = self.txF
-    return tostring(self.txQuery or "") .. "\1" .. tostring(f.kind)
+    return tostring(self.txQuery or "") .. "\1" .. tostring(f:getKind() or "all")
         .. "\1" .. tostring(self.txCurrency or "") .. "\1" .. tostring(self.txAccountClass or "")
-        .. "\1" .. entryText(f.fromEntry) .. "\1" .. entryText(f.toEntry)
+        .. "\1" .. self:txDateText()
         .. "\1" .. tostring(self.txMatchMode) .. "\1" .. tostring(self.txAccount or "")
         .. "\1" .. tostring(self.txItem or "") .. "\1" .. tostring(self.txItemTypesKey or "")
 end
@@ -1470,7 +1480,9 @@ function Page:updateEnabled()
     local modal = self.owner.dialog ~= nil
     local txRead = read and not modal
     setEntryEditable(self.txEntry, txRead)
-    F.enable(self.txF, txRead)
+    self.txF:setEnabled(txRead)
+    self.txReadOn = txRead
+    self:updateTxPager()
     for _, b in ipairs(self.txCurButtons) do b:setEnable(txRead) end
     for _, b in ipairs(self.txModeButtons) do b:setEnable(txRead) end
     self.txClearButton:setEnable(txRead)
@@ -1563,28 +1575,24 @@ function Page:layoutTxCurrency(visible, y, w, ch)
     return ch
 end
 
--- The page's source chips -- a fixed enumeration (F.kinds is fed once, in createChildren), so a
--- search that matched nothing still offers every other source to switch to -- with the range hint
--- on their right. `w` is the row's own width: the sheet keeps a gutter for its scrollbar, so the
--- hint never lands under it.
-function Page:layoutTxKinds(visible, y, w, ch)
+-- The shared filter row (UI.FilterBar): the source chips -- a fixed enumeration (setKinds is fed
+-- once, in createChildren), so a search that matched nothing still offers every other source --
+-- then both days, the sort, the account-class combo and the page chips, wrapped into as many
+-- bands as the width forces; returns its height. The range hint sits on its right, so the flow
+-- stops short of it. `w` is the row's own width: the sheet keeps a gutter for its scrollbar, so
+-- the hint never lands under it. A hidden row blurs its day boxes and closes its calendar.
+function Page:layoutTxFilter(visible, y, w)
     local g = self.g
-    g.txGroupY = y
-    g.txRangeHintY = y + math.floor((ch - fontH.small) / 2)
+    local f = self.txF
+    g.txRangeHintY = y + math.floor((f.height - fontH.small) / 2)
     g.txHintRight = PAD + w
-    F.layoutKinds(self.txF, visible, PAD, y, math.max(60, w - (g.txHintW or 0) - PAD), ch)
-    return ch
-end
-
--- The shared date / sort / page / account-class row. It wraps into as many bands as the width
--- forces, so its height is whatever F measured; a calendar left open over a row that is no longer
--- on screen goes with it.
-function Page:layoutTxRange(visible, y, w, eh, ch)
-    local g = self.g
-    g.txRowY = y
-    F.layoutRow(self.txF, visible, PAD, y, math.max(60, w), eh, ch)
-    if not visible then DatePicker.close(self) end
-    return self.txF.rowH
+    -- the combo is this page's control: its width and height are set here, the bar places it
+    local combo = self.txAccountCombo
+    combo:setWidth(math.min(self.txAccountW or combo.width, math.max(110, w)))
+    combo:setHeight(f.height)
+    combo.baseHeight = f.height
+    if not visible then closeCombo(combo) end
+    return f:layout(PAD, y, PAD + math.max(60, w - (g.txHintW or 0) - PAD), visible) - y
 end
 
 -- The exact-account row: the shared player picker's box (its candidate list drops over whatever
@@ -1660,11 +1668,11 @@ function Page:layout()
     local txTop, txBottom = CARD_TITLE_H + 4, h
     local infoH = fontH.small * 2 + 8
     g.txHintW = math.min(textWidth(tr("Admin_Tx_RangeHint")), math.floor(w * 0.3))
-    -- the first pass only decides whether the card is a compact one: five condition rows
-    -- (keyword, the two exact conditions, the currencies, the sources) over the shared row
-    self:layoutTxKinds(on, txTop + eh * 2 + pageH + 12, lstW, pageH)
-    local probeH = self:layoutTxRange(on, g.txGroupY + pageH + 4, lstW, eh, pageH)
-    local fullActionY = g.txRowY + probeH + 4
+    -- the first pass only decides whether the card is a compact one: four condition rows
+    -- (keyword, the two exact conditions, the currencies) over the shared filter row
+    local barY = txTop + eh * 2 + pageH + 12
+    local probeH = self:layoutTxFilter(on, barY, lstW)
+    local fullActionY = barY + probeH + 4
     self.txCompact = txBottom - lh - fullActionY - pageH - infoH - 12 < listRowH() * 2
     local filterSheet = self.txCompact and self.txFiltersOpen == true
     local results = on and not filterSheet
@@ -1687,8 +1695,8 @@ function Page:layout()
         local rowW = math.max(60, lstW - SHEET_GUTTER)
         local sheetW = math.max(120, w - SHEET_GUTTER)
         -- measured at the sheet's own width, which is the width it is placed at below
-        local rangeH = self:layoutTxRange(true, top, rowW, eh, pageH)
-        local contentH = eh * 2 + rangeH + pageH * 2 + 16
+        local rangeH = self:layoutTxFilter(true, top, rowW)
+        local contentH = eh * 2 + rangeH + pageH + 12
         self.sheetContentH, self.sheetViewH = contentH, viewH
         local maxOffset = math.max(0, contentH - viewH)
         local offset = math.max(0, math.min(self.scrollOffset or 0, maxOffset))
@@ -1699,16 +1707,13 @@ function Page:layout()
         self:layoutTxKeyword(shown, y, sheetW, eh, pageH)
         y = y + eh + 4
         shown = showFilters and y >= top and y + rangeH <= bottom
-        self:layoutTxRange(shown, y, rowW, eh, pageH)
+        self:layoutTxFilter(shown, y, rowW)
         y = y + rangeH + 4
         shown = showFilters and y >= top and y + eh <= bottom
         self:layoutTxCriteria(shown, y, sheetW, eh)
         y = y + eh + 4
         shown = showFilters and y >= top and y + pageH <= bottom
         self:layoutTxCurrency(shown, y, sheetW, pageH)
-        y = y + pageH + 4
-        shown = showFilters and y >= top and y + pageH <= bottom
-        self:layoutTxKinds(shown, y, rowW, pageH)
         local bar = self.txSheetBar
         bar:setVisible(showFilters and maxOffset > 0)
         bar:setX(w - PAD - 17); bar:setY(top)
@@ -1718,18 +1723,20 @@ function Page:layout()
         self:layoutTxKeyword(showFilters, txTop, w, eh, pageH)
         self:layoutTxCriteria(showFilters, txTop + eh + 4, w, eh)
         self:layoutTxCurrency(showFilters, txTop + eh * 2 + 8, w, pageH)
-        self:layoutTxKinds(showFilters, txTop + eh * 2 + pageH + 12, lstW, pageH)
-        local rangeH = self:layoutTxRange(showFilters, g.txGroupY + pageH + 4, lstW, eh, pageH)
+        local rangeH = self:layoutTxFilter(showFilters, barY, lstW)
         self.sheetContentH, self.sheetViewH = 0, 0
         self.txSheetBar:setVisible(false)
-        if showFilters then actionY = g.txRowY + rangeH + 4 end
+        if showFilters then actionY = barY + rangeH + 4 end
         pagerSpace = self.txCompact and (pageH * 2 + 12) or 0
     end
     txButtonRow(self.txActionButtons, on, PAD, actionY, lstW - pagerSpace, pageH,
         not self.txCompact and self.txFilterButton or nil)
-    if on and self.txCompact and not filterSheet then
-        for i, button in ipairs({ self.txF.prevButton, self.txF.nextButton }) do
-            button:setVisible(true); button:setX(w - PAD - (3 - i) * (pageH + 4))
+    -- the compact card hides the filter row, so its own two page chips sit on the action row
+    local compactPager = on and self.txCompact and not filterSheet
+    for i, button in ipairs({ self.txPrevButton, self.txNextButton }) do
+        button:setVisible(compactPager)
+        if compactPager then
+            button:setX(w - PAD - (3 - i) * (pageH + 4))
             button:setY(actionY); button:setWidth(pageH); button:setHeight(pageH)
             U.setButtonTitle(button, button.fullTitle)
         end
@@ -1776,9 +1783,8 @@ function Page:setVisible(visible)
         -- a record a jump asked for while this page was still off screen
         if self.txDetailOpenPending == true then self:showTxDetail(true) end
     else
-        DatePicker.close(self)
-        F.closeCombo(self.txAccountCombo)
-        F.blurDates(self.txF)
+        closeCombo(self.txAccountCombo)
+        self.txF:blur()   -- the day boxes and their calendar
         self.txAccountPicker:close()
         self.itemPicker:close()
         pcall(function() self.txEntry:unfocus() end)
@@ -1811,8 +1817,8 @@ function Page:drawTxList()
         card(self, 0, 0, self.width, self.height, tr("Admin_Tx_Title"))
     end
     local f = self.txF
-    -- the shared row's own labels; F draws nothing while that row is off the sheet
-    F.draw(f, self)
+    -- the shared row's own labels; the bar draws nothing while that row is off the sheet
+    f:draw(self)
     if self.txEntry:getIsVisible() then
         text(self, tr("Admin_Tx_SearchLabel"), PAD, g.txSearchLabelY, "textMuted")
         text(self, tr("Admin_Tx_Match"), g.txModeLabelX, g.txSearchLabelY, "textMuted")
@@ -1825,12 +1831,7 @@ function Page:drawTxList()
     if self.txCurButtons[1]:getIsVisible() then
         text(self, tr("Admin_Tx_Currency"), g.txCurLabelX, g.txCurTextY, "textMuted")
     end
-    if f.kindButtons[1]:getIsVisible() then
-        -- F.draw paints the source label with the shared row; the sheet can scroll the two apart,
-        -- and a chip row without its label is not a readable condition
-        if f.kindLabelX and not f.fromEntry:getIsVisible() then
-            text(self, f.kindLabel, f.kindLabelX, f.kindLabelY, "textFaint")
-        end
+    if f:isShown() then
         textRight(self, fitText(tr("Admin_Tx_RangeHint"), g.txHintW), g.txHintRight, g.txRangeHintY, "textMuted")
     end
     if self.txList:getIsVisible() then
@@ -1862,8 +1863,6 @@ end
 -- the answer lands -- so a server that says "busy" is reported once instead of asked again in a
 -- loop; the 30 s poll and the retry chip are what retry.
 function Page:tick(now)
-    self.txAccountPicker:tick(now)
-    self.itemPicker:tick(now)
     -- number compares only while nothing moved: the keyword's item set is resolved when the
     -- keyword or the mode changed, while the index is still loading, and once more when the
     -- index reaches its terminal state (revision bumps exactly once)
@@ -1918,11 +1917,9 @@ function Page:clear()
 end
 
 function Page:dispose()
-    DatePicker.close(self)
-    F.closeCombo(self.txAccountCombo)
+    closeCombo(self.txAccountCombo)
     pcall(function() self.txEntry:unfocus() end)
-    pcall(function() self.txF.fromEntry:unfocus() end)
-    pcall(function() self.txF.toEntry:unfocus() end)
+    self.txF:blur()
     self.txAccountPicker:dispose()
     self.itemPicker:dispose()
     self.transactions = nil

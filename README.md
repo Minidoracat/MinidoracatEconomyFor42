@@ -21,7 +21,7 @@
 ## 安裝
 
 - Steam Workshop：[Minidoracat Economy for B42](https://steamcommunity.com/sharedfiles/filedetails/?id=3801482125)
-- 必要依賴：[Minidoracat UI Library for B42](https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701)，要求 **API rev ≥10**（鍵盤與手把導覽由它提供；版本不足時經濟介面不會開啟）。只核對顯示版號不夠，需確認實際 API 修訂；伺服器與客戶端都要使用相容版本。
+- 必要依賴：[Minidoracat UI Library for B42](https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701)，要求 **API rev ≥11**（鍵盤與手把導覽、日期欄與日曆、表格、篩選列、物品挑選與帳號候選由它提供；版本不足時經濟介面不會開啟）。只核對顯示版號不夠，需確認實際 API 修訂；伺服器與客戶端都要使用相容版本。
 - 手動安裝：將 `MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42` 整個資料夾複製至遊戲使用者資料的 `mods/`，保留其 `42/` 子目錄；UI 函式庫也需安裝。
 - 服主在 dedicated server 啟用 `MinidoracatUIFor42` 與 `MinidoracatEconomyFor42`，依賴先載入；Workshop ID 分別為 `3789836701` 與 `3801482125`。
 - 伺服器與客戶端更新後同版完整重啟。地圖原生落地式／壁掛式 ATM 預設可在同層 2 格內直接使用，無須管理員登錄；右鍵有「使用經濟終端」。管理員可在「**經濟管理台 → 設定 → 一般**」調整「**原生 ATM 可作為終端**」（預設開啟）與「**允許玩家拆除原生 ATM**」（預設關閉）。兩者獨立、變更即時同步；關閉使用不會解除防拆。重設會清除面板覆寫、回到伺服器沙盒值；面板覆寫須隨世界存檔保存，未存檔崩潰仍可能回滾。自建機台／貓娘終端與一般終端機櫃仍須管理員登錄，不受這兩個選項影響；原生 ATM 不會自動生成電台，第三方不同貼圖不憑外觀猜測支援。
@@ -193,7 +193,7 @@ npm run report -- --help
 首發項目已由使用者建立，ID 已回填。以下為後續核對清單，不授權自動上傳。
 
 1. 首發版本為 `42.20.4-0.1.0`（2026-09-14），對應 tag `v42.20.4-0.1.0`；後續改動另列下一版本，不覆蓋既有 tag。
-2. 先確認 Workshop 訂閱端取得 UI 函式庫 API rev ≥10，再發布 Economy；本機開發版不能代表玩家訂閱到的版本。
+2. 先確認 Workshop 訂閱端取得 UI 函式庫 API rev ≥11，再發布 Economy；本機開發版不能代表玩家訂閱到的版本。
 3. 在乾淨的 dedicated server／客戶端組合確認首次安裝、權限與基本交易流程；服主確認 companion 保存水位正常。保留已通過的實測，不以離線圖冒充遊戲截圖。
 4. 提交要發布的日報與文案改動，通過 MOD 閘門與 companion 測試；確認 `.env`、報告、開發工具狀態及私密資料不在上傳內容內。
 5. 執行 `uv run scripts/gen_workshop_txt.py` 同步英文描述，保留既有 `id=3801482125`，不要重新建立 Workshop 項目。

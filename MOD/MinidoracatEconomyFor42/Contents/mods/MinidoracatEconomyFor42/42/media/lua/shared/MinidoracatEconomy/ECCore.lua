@@ -165,64 +165,12 @@ function EC.parseId(id)
     return epoch, seq
 end
 
--- Gregorian month length shared by typed dates and the client calendar; month is 1..12.
-function EC.daysInMonth(year, month)
-    if month == 2 then
-        return year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0) and 29 or 28
-    end
-    return (month == 4 or month == 6 or month == 9 or month == 11) and 30 or 31
-end
-
--- "YYYY-MM-DD" (or "YYYY/MM/DD") -> start of that civil day in ms, for a clock that is
--- offsetMinutes ahead of UTC (the client passes its localOffsetMinutes); nil when malformed.
--- Days-from-civil (Howard Hinnant), so no os.time / time zone of the JVM is involved.
-function EC.parseDay(text, offsetMinutes)
-    if type(text) ~= "string" then return nil end
-    local y, m, d = string.match(text, "^%s*(%d%d%d%d)[-/](%d%d?)[-/](%d%d?)%s*$")
-    if not y then return nil end
-    y, m, d = tonumber(y), tonumber(m), tonumber(d)
-    if m < 1 or m > 12 or d < 1 or d > EC.daysInMonth(y, m) then return nil end
-    if m <= 2 then y = y - 1 end
-    local era = math.floor(y / 400)
-    local yoe = y - era * 400
-    local mp = (m + 9) % 12
-    local doy = math.floor((153 * mp + 2) / 5) + d - 1
-    local doe = yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy
-    local days = era * 146097 + doe - 719468
-    return days * 86400000 - (tonumber(offsetMinutes) or 0) * 60000
-end
-
--- One page of a filtered, sorted list (the history / statement / audit pages all page on
--- the client: a reply is at most a few hundred rows). opts = { kinds = {[kind]=true}?, kindField?
--- ("kind"), fromMs?, toMs? (exclusive), timeField? ("ts"), sortKey? (field name or function),
--- desc?, page?, perPage? }. Returns rows, page, pages, total (rows filtered).
+-- One page of a list (the server's recovery page pages its rows this way; the client's filter
+-- rows are the framework's UI.FilterBar since rev 11). opts = { page?, perPage? (25) }.
+-- Returns rows, page, pages, total.
 function EC.filterPage(list, opts)
     opts = opts or {}
-    local kindField, timeField = opts.kindField or "kind", opts.timeField or "ts"
-    local kinds = opts.kinds
-    local rows = {}
-    for _, e in ipairs(list or {}) do
-        local ok = true
-        if kinds and not kinds[e[kindField]] then ok = false end
-        local t = tonumber(e[timeField])
-        if ok and opts.fromMs and (not t or t < opts.fromMs) then ok = false end
-        if ok and opts.toMs and (not t or t >= opts.toMs) then ok = false end
-        if ok then rows[#rows + 1] = e end
-    end
-    local key = opts.sortKey
-    if key ~= nil then
-        local get = type(key) == "function" and key or function(e) return e[key] end
-        local desc = opts.desc == true
-        EC.sortSafe(rows, function(a, b)
-            local av, bv = get(a), get(b)
-            if av == nil or bv == nil then return av ~= nil and bv == nil end
-            if type(av) ~= type(bv) then av, bv = tostring(av), tostring(bv) end
-            if type(av) == "string" then av, bv = string.lower(av), string.lower(bv) end
-            if av == bv then return false end
-            if desc then return av > bv end
-            return av < bv
-        end)
-    end
+    local rows = list or {}
     local total = #rows
     local perPage = math.max(1, math.floor(tonumber(opts.perPage) or 25))
     local pages = math.max(1, math.ceil(total / perPage))

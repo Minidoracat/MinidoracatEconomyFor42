@@ -19,7 +19,7 @@ local fontH = U.fontH
 local color, fill, text, textWidth, fitText = U.color, U.fill, U.text, U.textWidth, U.fitText
 local textRight, textCentre, strike, drawCoin = U.textRight, U.textCentre, U.strike, U.drawCoin
 local stampText, durationText, amountText = U.stampText, U.durationText, U.amountText
-local rowBackground = U.rowBackground
+local function rowBackground(cell) return U.framework.Table.rowBackground(cell) end
 
 local ITEM_ICON = 32
 
@@ -946,119 +946,6 @@ function HistoryCell:render()
     text(self, fitText(e.detailText, w - cols.kind - PAD), cols.kind, top + line, faint)
 end
 
-
-local ARROW_W, ARROW_H = 7, 4
--- A sortable column reserves this much of its right edge for the arrow, whether or not the sort
--- currently sits on it: a number that jumps sideways when the player sorts by it is unreadable.
-local SORT_GUTTER = ARROW_W + 4
-local function sortGutter(c) return (c.sortable ~= false) and SORT_GUTTER or 0 end
-
--- One strip of table columns, shared by the cells that paint the rows and by the sortable header
--- over them: an edge is computed once, so the two can never disagree about where a column is.
--- specs[1] is flexible. Other columns reserve their title/sample, padding and arrow separately;
--- deadline columns also measure the actual rows, since a zero-filled sample is not a widest date.
--- Each entry returns x / w (header hit area), textR and textW (value slot, gutter excluded).
---
--- The strip has a budget -- leftX to rightX, the row's action button starts there -- and it never
--- overruns it. What the measured columns cost over that budget is handed back in the order the
--- page can best afford: a sample-measured text column reads "..." (the seller), the coin beside a
--- price goes, a narrow market date wraps to two lines before any numeric column is touched (the
--- year is never cut), a `soft` column keeps its own title and nothing more, and only if even the
--- titles do not fit does every column shrink in proportion. Names and soft values may truncate;
--- money and the date keep their measured width while the budget allows, and the full value of
--- every column is in the row's record window.
-local function listingColumns(specs, leftX, rightX, nameMin, rows, moreRows)
-    local budget = math.max(0, rightX - leftX)
-    local ellipsis = textWidth("...")
-    -- the name column is what the table is about: a recognisable prefix, or at least its own title
-    local nameFloor = math.max(ellipsis, textWidth(specs[1].title) + sortGutter(specs[1]))
-    local used = 0
-    for i = 2, #specs do
-        local c = specs[i]
-        local valueW = c.sample and textWidth(c.sample) or 0
-        local dateW = c.key == "expires" and math.max(textWidth(string.sub(U.STAMP_SAMPLE, 1, 10)),
-            textWidth(string.sub(U.STAMP_SAMPLE, 12))) or nil
-        if c.key == "expires" or c.key == "ending" then
-            local count = rows and #rows or 0
-            local total = count + (moreRows and #moreRows or 0)
-            for index = 1, total do
-                local row = index <= count and rows[index] or moreRows[index - count]
-                local value = row.expiresText
-                if type(value) == "string" then
-                    valueW = math.max(valueW, textWidth(value))
-                    if dateW then
-                        if string.match(value, "^%d%d%d%d%-%d%d%-%d%d ") then
-                            dateW = math.max(dateW, textWidth(string.sub(value, 1, 10)),
-                                textWidth(string.sub(value, 12)))
-                        else
-                            dateW = math.max(dateW, textWidth(value))
-                        end
-                    end
-                end
-            end
-        end
-        local gutter, titleW = sortGutter(c), textWidth(c.title)
-        c.w = PAD + (c.extra or 0) + gutter + math.max(titleW, valueW)
-        c.dateW = dateW and (PAD + gutter + math.max(titleW, dateW)) or nil
-        used = used + c.w
-    end
-    local nameW = budget - used
-    -- Give the name column back what `low(c)` says column c can spare, while it is under `want`.
-    local function reclaim(want, low)
-        for i = 2, #specs do
-            if nameW >= want then return end
-            local c = specs[i]
-            local floor = low(c)
-            if floor and floor < c.w then
-                local take = math.min(want - nameW, c.w - floor)
-                c.w, nameW, used = c.w - take, nameW + take, used - take
-            end
-        end
-    end
-    reclaim(nameMin, function(c) return (c.sample and not c.right) and (PAD + ellipsis) or nil end)
-    reclaim(nameFloor, function(c) return c.extra and (c.w - c.extra) or nil end)
-    for i = 2, #specs do
-        local c = specs[i]
-        if nameW < nameMin and c.dateW then
-            local take = math.min(nameMin - nameW, math.max(0, c.w - c.dateW))
-            c.w, nameW, used = c.w - take, nameW + take, used - take
-            c.wrapDate = take > 0
-        end
-    end
-    reclaim(nameFloor, function(c) return c.soft and (textWidth(c.title) + sortGutter(c)) or nil end)
-    if nameW < nameFloor and used > 0 then
-        local room, total = math.max(0, budget - nameFloor), used
-        used = 0
-        for i = 2, #specs do
-            local c = specs[i]
-            c.w = math.floor(c.w * room / total)
-            c.wrapDate = false -- proportional fallback no longer guarantees the full date width
-            used = used + c.w
-        end
-        nameW = budget - used
-    end
-    specs[1].x, specs[1].w = leftX, math.max(0, nameW)
-    local x = leftX + specs[1].w
-    for i = 2, #specs do
-        local c = specs[i]
-        c.x = x
-        c.textR = x + c.w - sortGutter(c)
-        c.textW = math.max(0, c.w - sortGutter(c))
-        x = x + c.w
-    end
-    return specs
-end
-
--- Sort direction marker next to the active column/chip: a 7x4 stair of drawRect lines, so it
--- needs no asset (Icons ships chevron_down but no chevron_up).
-local function drawArrow(el, x, y, up, token)
-    local c = color(token or "accent")
-    for i = 0, ARROW_H - 1 do
-        local w = up and (i * 2 + 1) or (ARROW_W - i * 2)
-        el:drawRect(x + math.floor((ARROW_W - w) / 2), y + i, w, 1, c.a * U.alpha, c.r, c.g, c.b)
-    end
-end
-
 -- Count bubble on the top-right corner of a tab button (the Mail tab): a red circle through the
 -- framework's dot texture, widened into a pill from two digits on. The float button paints the
 -- same shape without the toolkit (U.init has not run before the first window opens).
@@ -1078,63 +965,14 @@ local function drawBadge(el, rightX, y, n)
     el:drawTextCentre(label, x + w / 2, y + math.floor((size - fontH.small) / 2), 1, 1, 1, 1, UIFont.Small)
 end
 
--- ---------- sortable table header ----------
--- A server-sorted page needs the header to be a control, not a caption: one transparent panel
--- over the header row, hit-tested against the same column numbers the cells paint with. The
--- market table and the auction table each own one instance; the panel fields it reads (the hit
--- list, the current sort, whether clicks are live) come from the instance, so one class serves
--- both without either page knowing about the other.
-
 -- "price_desc" -> "price", true. The default time sort is newest first and its ascending twin
 -- is a server key of its own ("time_asc"), so no column ever resolves to an ascending "time".
+-- The market and auction headers (UI.TableHeader) read the page's sort through it too.
 local function sortParts(sort)
     local key = tostring(sort or "")
     local base = string.match(key, "^(.*)_desc$")
     if base then return base, true end
     return key, false
-end
-
-local MarketHeader = ISPanel:derive("MinidoracatEconomyMarketHeader")
-
-function MarketHeader:render()
-    local panel = self.panel
-    local w, h = self.width, self.height
-    fill(self, 0, 0, w, h, "well", "rect")
-    local ty = math.floor((h - fontH.small) / 2)
-    local ay = ty + math.floor((fontH.small - ARROW_H) / 2)
-    local sortKey, desc = sortParts(panel[self.sortField])
-    local live = self.isLive(panel)
-    for _, c in ipairs(panel[self.hitsField] or {}) do
-        -- a column the page cannot sort by (the own-listings table sorts by nothing) never lights
-        -- up and never reserves a gutter: it is a caption over the very same edges
-        local sortable = c.sortable ~= false
-        local active = sortable and c.key == sortKey
-        local token = active and "accent" or (live and "textMuted" or "textFaint")
-        if c.right then
-            local rx = c.textR or (c.x + c.w - (sortable and SORT_GUTTER or 0))
-            textRight(self, fitText(c.title, math.max(0, rx - c.x)), rx, ty, token)
-            if active then drawArrow(self, c.x + c.w - ARROW_W, ay, not desc, token) end
-        else
-            local label = fitText(c.title, c.w - (sortable and SORT_GUTTER or 0))
-            text(self, label, c.x, ty, token)
-            if active then drawArrow(self, c.x + textWidth(label) + 4, ay, not desc, token) end
-        end
-    end
-end
-
-function MarketHeader:onMouseDown(x)
-    self.onHit(self.panel, x)
-    return true
-end
-
-local function newHeader(panel, sortField, hitsField, isLive, onHit)
-    local h = ISPanel:new(0, 0, 100, ROW)
-    setmetatable(h, MarketHeader)
-    h.background = false
-    h.panel = panel
-    h.sortField, h.hitsField, h.isLive, h.onHit = sortField, hitsField, isLive, onHit
-    h:initialise()
-    return h
 end
 
 -- ---------- toolbar helpers ----------
@@ -1210,6 +1048,14 @@ local function comboWidth(combo, minW, maxW)
     return math.max(minW, math.min(maxW, wanted))
 end
 
+-- The native popup is shared with other combo boxes (ISComboBox.lua:185-215); only close it when
+-- this box owns it. Used by the admin filter rows' own combos (actor, account class).
+local function closeCombo(combo)
+    if not combo or not combo.expanded then return end
+    combo.expanded = false
+    if combo.popup and combo.popup.parentCombo == combo then combo:hidePopup() end
+end
+
 -- Browse sort options. Every key here is one the server accepts (ECMarket.SORTS / ECAuction.SORTS)
 -- *and* one the sortable header can produce, so the box and the header arrow can never disagree.
 -- A key the server does not know is answered with the *default* page, and the page then sees an
@@ -1260,8 +1106,6 @@ local function sortLabel(specs)
 end
 
 W.ITEM_ICON = ITEM_ICON
-W.ARROW_W = ARROW_W
-W.ARROW_H = ARROW_H
 W.currencyIds = currencyIds
 W.defaultCurrency = defaultCurrency
 W.currencyLabel = currencyLabel
@@ -1303,15 +1147,14 @@ W.AUCTION_HISTORY_KINDS = AUCTION_HISTORY_KINDS
 W.historyRow = historyRow
 W.auctionHistoryRow = auctionHistoryRow
 W.HistoryCell = HistoryCell
-W.listingColumns = listingColumns
-W.drawArrow = drawArrow
 W.drawBadge = drawBadge
-W.newHeader = newHeader
+W.sortParts = sortParts
 W.placeRow = placeRow
 W.newCombo = newCombo
 W.comboSelect = comboSelect
 W.comboFill = comboFill
 W.comboWidth = comboWidth
+W.closeCombo = closeCombo
 W.sortLabel = sortLabel
 W.MARKET_SORTS = MARKET_SORTS
 W.AUCTION_SORTS = AUCTION_SORTS

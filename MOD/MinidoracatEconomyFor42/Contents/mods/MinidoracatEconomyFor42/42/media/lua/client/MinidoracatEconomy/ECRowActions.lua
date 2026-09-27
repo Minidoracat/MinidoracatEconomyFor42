@@ -40,7 +40,8 @@ function R.begin(cell)
     end
     cell.ecRowButtons = cell.ecRowButtons or {}
     cell.ecActiveButtons = cell.ecActiveButtons or {}
-    cell.ecResetActions = R.reset
+    cell.onBind = R.reset      -- the table shell calls these on every rebind (UI.Table bindCell)
+    cell.onUnbind = R.reset
     cell.ecActionsEntry = cell.entry
     cell.ecActionsRevision = cell.list.revision
     cell.ecActionPass = (cell.ecActionPass or 0) + 1

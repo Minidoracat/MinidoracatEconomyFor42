@@ -44,7 +44,7 @@ local CARD_TITLE_H = U.CARD_TITLE_H
 local fontH = U.fontH
 local fill, text, textWidth, fitText, textRight = U.fill, U.text, U.textWidth, U.fitText, U.textRight
 local amountText, card, drawCoin = U.amountText, U.card, U.drawCoin
-local rowBackground = U.rowBackground
+local function rowBackground(cell) return U.framework.Table.rowBackground(cell) end
 local Button = U.Button
 local newCombo, comboFill, comboSelect, comboWidth = W.newCombo, W.comboFill, W.comboSelect, W.comboWidth
 local currencyIds, currencyLabel, defaultCurrency = W.currencyIds, W.currencyLabel, W.defaultCurrency

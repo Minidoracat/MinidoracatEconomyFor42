@@ -219,7 +219,7 @@ function RecoveryCell:render()
     local e = self.entry
     if e == nil then return end
     local list = self.list
-    local lit = U.rowBackground(self)
+    local lit = U.framework.Table.rowBackground(self)
     -- A selected row is lit the same way and carries a bar down its left edge, so the set stays
     -- readable while the highlight is on whichever row the arrows last walked to. The set is
     -- keyed by account + record and read live off the list, so showing a pick needs no rebind.

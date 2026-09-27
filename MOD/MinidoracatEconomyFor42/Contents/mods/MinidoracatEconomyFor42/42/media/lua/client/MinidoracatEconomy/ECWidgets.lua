@@ -60,15 +60,18 @@ U.theme = nil
 U.fontH = { small = 0, medium = 0 }   -- filled by U.init (table identity is stable: alias freely)
 local fontH = U.fontH
 
--- rev 10: the keyboard/controller focus engine (C.Keyboard, see ECKeyboard) is the framework's
+-- rev 10: the keyboard/controller focus engine (C.Keyboard, see ECKeyboard) is the framework's.
+-- rev 11: so are the date field/calendar, the table shell and header, the filter bar, the item
+-- picker overlay and the candidate box every Economy page builds on.
+local REQUIRED = { "theme", "skin", "virtualList", "focus", "controls", "datePicker", "table", "filterBar",
+    "itemPicker", "autocomplete" }
 local function framework()
     local ui = MinidoracatUI and MinidoracatUI.v1
-    if ui and ui.API_MAJOR == 1 and ui.API_REVISION >= 10 and ui.CAPABILITIES
-        and ui.CAPABILITIES.theme == true and ui.CAPABILITIES.skin == true
-        and ui.CAPABILITIES.virtualList == true and ui.CAPABILITIES.focus == true then
-        return ui
+    if not (ui and ui.API_MAJOR == 1 and ui.API_REVISION >= 11 and ui.CAPABILITIES) then return nil end
+    for _, cap in ipairs(REQUIRED) do
+        if ui.CAPABILITIES[cap] ~= true then return nil end
     end
-    return nil
+    return ui
 end
 
 -- Returns the facade or nil (logged once). Safe to call repeatedly.
@@ -77,16 +80,16 @@ function U.init()
     if not (MinidoracatUI and MinidoracatUI.v1) then
         pcall(require, "MinidoracatUI/V1")
     end
-    if not (MinidoracatUI and MinidoracatUI.v1 and MinidoracatUI.v1.CAPABILITIES.virtualList) then
-        pcall(require, "MinidoracatUI/VirtualList")
-    end
-    if not (MinidoracatUI and MinidoracatUI.v1 and MinidoracatUI.v1.CAPABILITIES.focus) then
-        pcall(require, "MinidoracatUI/Focus")
+    for _, spec in ipairs({ { "virtualList", "VirtualList" }, { "focus", "Focus" }, { "controls", "Widgets/Controls" },
+        { "datePicker", "Widgets/DatePicker" }, { "table", "Widgets/Table" }, { "filterBar", "Widgets/FilterBar" },
+        { "itemPicker", "Widgets/ItemPicker" }, { "autocomplete", "Widgets/Autocomplete" } }) do
+        local ui = MinidoracatUI and MinidoracatUI.v1
+        if not (ui and ui.CAPABILITIES[spec[1]]) then pcall(require, "MinidoracatUI/" .. spec[2]) end
     end
     local ui = framework()
     if not ui then
         if not U.warned then
-            EC.log("MinidoracatUI v1 (rev>=10, virtualList, focus) missing: Economy Center UI disabled")
+            EC.log("MinidoracatUI v1 (rev>=11 with focus, controls, datePicker, table, filterBar, itemPicker, autocomplete) missing: Economy Center UI disabled")
             U.warned = true
         end
         return nil
@@ -94,6 +97,7 @@ function U.init()
     U.framework = ui
     U.Skin = ui.Skin
     U.theme = ui.Theme.create({ colors = MOD_COLORS })
+    U.theme.alpha = U.alpha   -- a ModOptions value set before the first window
     fontH.small = getTextManager():getFontHeight(UIFont.Small)
     fontH.medium = getTextManager():getFontHeight(UIFont.Medium)
     return ui
@@ -203,12 +207,14 @@ end
 function U.color(token) return U.theme.colors[token] end
 
 -- Panel opacity (the "chrome"): every fill/border the panels paint is scaled by U.alpha, text
--- and icons stay solid. Set from ECOptions (ModOptions slider) and the title-row slider.
+-- and icons stay solid. Set from ECOptions (ModOptions slider) and the title-row slider. The
+-- framework's own controls (rev 11 theme.alpha) read the same value off the theme.
 U.alpha = 1
 function U.setAlpha(v)
     v = tonumber(v) or 1
     if v < 0.2 then v = 0.2 elseif v > 1 then v = 1 end
     U.alpha = v
+    if U.theme then U.theme.alpha = v end
 end
 
 function U.fill(el, x, y, w, h, token, shape)
@@ -606,39 +612,6 @@ function Button:render()
     end
 end
 
--- ---------- generic table cell (admin tables) ----------
--- item = { cells = { "text", ... }, tokens = { "text"|"positive"|..., ... } (optional), muted = bool }
--- list.cols = { { x = number, right = bool }, ... } (one per cell, x relative to the cell)
-
-local TableCell = ISPanel:derive("MinidoracatEconomyTableCell")
-U.TableCell = TableCell
-
-function TableCell:render()
-    local e = self.entry
-    if not e then return end
-    local cols = self.list.cols
-    local w, h = self.width, self.height
-    if not self.cellText or self.cellCols ~= cols or self.cellWidth ~= w then
-        self.cellText = {}
-        for i, value in ipairs(e.cells) do
-            local col = cols[i]
-            self.cellText[i] = col and col.width and fitText(tostring(value), col.width) or tostring(value)
-        end
-        self.cellCols, self.cellWidth = cols, w
-    end
-    local lit = U.rowBackground(self)
-    local ty = math.floor((h - fontH.small) / 2)
-    for i, str in ipairs(self.cellText) do
-        local col = cols[i]
-        if col then
-            local token = e.muted and "textFaint" or ((e.tokens and e.tokens[i]) or "text")
-            if lit and (token == "textFaint" or token == "textMuted") then token = "text" end
-            if col.right then textRight(self, str, col.x, ty, token) else text(self, str, col.x, ty, token) end
-        end
-    end
-    if e.muted then strike(self, cols[1].x, ty, w - cols[1].x - PAD) end
-end
-
 -- The base cell owns the background; derived rows add their explicit action buttons afterwards.
 local AdminHistoryCell = ISPanel:derive("MinidoracatEconomyAdminHistoryCell")
 U.AdminHistoryCell = AdminHistoryCell
@@ -646,7 +619,7 @@ U.AdminHistoryCell = AdminHistoryCell
 function AdminHistoryCell:render()
     local e = self.entry
     if not e then return end
-    local lit = U.rowBackground(self)
+    local lit = U.framework.Table.rowBackground(self)
     local secondary = lit and "text" or "textMuted"
     text(self, e.headText, PAD, e.line1Y, e.rolled and secondary or "text")
     textRight(self, e.amountLabel, e.amountRight, e.line1Y, e.rolled and secondary or (e.amountToken or "accent"))
@@ -711,44 +684,12 @@ function U.newModalGuard(owner)
     return guard
 end
 
-function U.rowBackground(cell)
-    if cell.index and cell.index % 2 == 0 then
-        fill(cell, 0, 0, cell.width, cell.height, "card", "rect")
-    end
-    local lit = cell.list and cell.list:isSelected(cell.index) or false
-    if lit then fill(cell, 0, 0, cell.width, cell.height, "selected", "rect") end
-    if cell:isMouseOver() then
-        fill(cell, 0, 0, cell.width, cell.height, "hover", "rect")
-        lit = true
-    end
-    return lit
-end
-
--- VirtualList factory shared by every table: rows are plain item tables, cells bind by reference.
+-- Every table: the framework's table shell (rev 11) bound to this mod's theme and its own scroll
+-- track colour. Rows are plain item tables, cells bind by reference; a cell's onBind / onUnbind
+-- (ECRowActions) runs on every rebind.
 function U.newTable(cellClass, rowHeight)
-    local list = U.framework.VirtualList.new({
-        x = 0, y = 0, width = 100, height = 100, rowHeight = rowHeight or ROW, padding = 0,
-        createCell = function(l)
-            local cell = ISPanel.new(cellClass, 0, 0, 0, 0)
-            cell.background = false -- ISPanel:prerender would paint a 0.5 alpha black box + border
-            cell.list = l
-            return cell
-        end,
-        bindCell = function(_, cell, item, index)
-            if cell.ecResetActions then cell:ecResetActions() end
-            cell.entry = item
-            cell.index = index
-            cell.cellText = nil
-        end,
-        unbindCell = function(_, cell)
-            if cell.ecResetActions then cell:ecResetActions() end
-            cell.entry = nil
-        end,
-        colors = { thumb = color("textFaint"), thumbHover = color("textMuted"), track = color("track") },
-    })
-    list.cols = {}
-    list:initialise()
-    return list
+    return U.framework.Table.new({ cell = cellClass, rowHeight = rowHeight or ROW, theme = U.theme,
+        colors = { thumb = color("textFaint"), thumbHover = color("textMuted"), track = color("track") } })
 end
 
 -- Card frame with an optional title row; callers may allocate a taller heading.

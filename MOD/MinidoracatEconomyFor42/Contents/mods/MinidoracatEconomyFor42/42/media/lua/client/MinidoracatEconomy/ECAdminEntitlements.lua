@@ -232,7 +232,7 @@ local LineCell = ISPanel:derive("MinidoracatEconomyAdminEntCell")
 function LineCell:render()
     local e = self.entry
     if not e then return end
-    local lit = U.rowBackground(self)
+    local lit = U.framework.Table.rowBackground(self)
     local w, lh = self.width, lineH()
     if self.fitW ~= w or self.fitE ~= e then
         local cap = math.floor(w * 0.45)

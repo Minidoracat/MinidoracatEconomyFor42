@@ -473,7 +473,7 @@ end
 -- ----- overlay contract (the controller asks; the root obeys) -----
 
 function Page:isModal()
-    return self.picker:getIsVisible()
+    return self.picker:isOpen()
 end
 
 function Page:onEscape()
@@ -1011,7 +1011,6 @@ function Page:tick(now)
     -- it is dropped, so a keyboard Enter can never be read as that click
     self.clicked = false
     if entryText(self.searchEntry) ~= self.searchSeen then self:onSearch() end
-    self.picker:tick(now)
 end
 
 -- The permission collapse: everything this page learned from the server is dropped, the staged

@@ -714,7 +714,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1458 + 78   -- +78: generic entitlements (scripts/test_entitlements.lua).
+local EXPECTED_ASSERTIONS = 1448 + 78   -- +78: generic entitlements (scripts/test_entitlements.lua).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2934,33 +2934,16 @@ onlinePlayers = {}
 end)()
 
 -- ===== 情境二十七之二：客戶端分頁／篩選 helper（shared） =====
-io.write("scenario 27b: filterPage / parseDay\n")
+io.write("scenario 27b: filterPage\n")
 ;(function()
-check(EC.parseDay("2026-09-07", 0) == 1788739200000 and EC.parseDay("2026/9/7", 480) == 1788739200000 - 480 * 60000, "parseDay gives the civil day start in ms, shifted by the clock offset")
-check(EC.parseDay("2026-13-01", 0) == nil and EC.parseDay("nope", 0) == nil and EC.parseDay(nil, 0) == nil, "malformed dates are nil")
-check(EC.parseDay("2026-02-29", 0) == nil and EC.parseDay("2024-02-30", 0) == nil,
-    "invalid February dates never roll into March")
-check(EC.parseDay("2026-04-31", 0) == nil and EC.parseDay("2026-04-30", 0) ~= nil,
-    "short months reject day 31 while retaining their last day")
-check(EC.parseDay("2100-02-29", 0) == nil and EC.parseDay("2000-02-29", 0) ==
-    EC.parseDay("2000-03-01", 0) - 86400000,
-    "leap days follow the Gregorian century rule")
+-- (the day parser, the kind / day filters and the sort moved to the UI framework's FilterBar and
+-- Date in rev 11 and are covered by its own harness; the server pages its recovery rows here)
 local rows = {}
 for i = 1, 60 do rows[i] = { kind = (i % 3 == 0) and "sold" or "listed", ts = 1788739200000 + i * 3600000, price = (i * 7) % 50, name = "n" .. (61 - i) } end
 local page, p, pages, total = EC.filterPage(rows, { perPage = 25, page = 3 })
 check(#page == 10 and p == 3 and pages == 3 and total == 60 and page[1] == rows[51], "paging keeps input order and clamps the last page")
 page, p = EC.filterPage(rows, { perPage = 25, page = 9 })
 check(p == 3 and #page == 10, "a page past the end clamps to the last page")
-page, p, pages, total = EC.filterPage(rows, { kinds = { sold = true }, perPage = 100 })
-check(total == 20 and page[1].kind == "sold" and page[20] == rows[60], "kind filter")
-page, p, pages, total = EC.filterPage(rows, { fromMs = 1788739200000 + 10 * 3600000, toMs = 1788739200000 + 20 * 3600000, perPage = 100 })
-check(total == 10 and page[1] == rows[10] and page[10] == rows[19], "date window is [from, to)")
-page = EC.filterPage(rows, { sortKey = "price", desc = true, perPage = 100 })
-check(page[1].price >= page[2].price and page[99 - 40].price >= page[60].price, "sort by a numeric field, descending")
-page = EC.filterPage(rows, { sortKey = "name", perPage = 100 })
-check(page[1].name == "n1" and page[2].name == "n10", "string sort is case-insensitive lexical")
-page = EC.filterPage(rows, { sortKey = function(e) return e.ts end, perPage = 100 })
-check(page[1] == rows[1] and page[60] == rows[60], "a function sort key works")
 end)()
 
 -- ===== 情境二十八：白名單與快照 codec =====
@@ -4214,7 +4197,7 @@ io.write("scenario 36: administrator transaction ledger\n")
 
     local oldEpoch = "1700000000000"
     S.modData().meta.history[#S.modData().meta.history + 1] = { epoch = oldEpoch, loadedSeq = 0 }
-    local oldTs = EC.parseDay("2026-06-01", 0)
+    local oldTs = 1780272000000   -- 2026-06-01 00:00 UTC
     files[X.ROOT .. "/events-20260601.json"] = { opens = 0, lines = { EC.jsonEncode({
         type = "tx.committed", txId = oldEpoch .. ":1", epoch = oldEpoch, seq = 1, ts = oldTs,
         kind = "shop_buy", requestId = "historical-purchase", reasonCode = "shop_buy",

@@ -408,10 +408,10 @@ function ShopCell:render()
     local e = self.entry
     if not e then return end
     local w, h = self.width, self.height
-    -- zebra / selected / hover are the shared helper's, painted once (U.rowBackground): a lit row
+    -- zebra / selected / hover are the shared helper's, painted once (UI.Table.rowBackground): a lit row
     -- moves the secondary lines (the script's own name, "id / category / per unit", a state that
     -- is not "listed") to the opaque text token, so the row being read is the one that reads best.
-    local lit = U.rowBackground(self)
+    local lit = U.framework.Table.rowBackground(self)
     -- A row in the batch set is lit the same way and carries a bar down its left edge, so the set
     -- stays readable while the highlight is on whichever row the arrows last walked to. The set is
     -- keyed by SKU id and read live off the list, so showing a pick needs no rebind.
@@ -3273,14 +3273,14 @@ function Page:render() end
 -- ----- keyboard -----
 
 function Page:isModal()
-    return self.picker:getIsVisible() or self.confirm:getIsVisible()
+    return self.picker:isOpen() or self.confirm:getIsVisible()
 end
 
 -- Escape belongs to whatever this page put over itself, and to nothing else: the root only eats
 -- the key when one of them really closed. An open dropdown is ECKeyboard's own (it drops the
 -- popup and leaves the value alone), so it is not answered here.
 function Page:onEscape()
-    if self.picker:getIsVisible() then
+    if self.picker:isOpen() then
         self.picker:cancel()
         self:layout()
         return true
@@ -3294,7 +3294,7 @@ function Page:onEscape()
 end
 
 function Page:keyboardTargets()
-    if self.picker:getIsVisible() then return self.picker:keyboardTargets() end
+    if self.picker:isOpen() then return self.picker:keyboardTargets() end
     local out = {}
     local function add(kind, label, control)
         out[#out + 1] = { kind = kind, label = label, control = control }
@@ -3370,7 +3370,6 @@ function Page:tick(now)
         end
         if changed then self:onFieldEdit() end
     end
-    self.picker:tick(now)
 end
 
 -- Everything this page learned or typed, dropped. Reached by the controller when the admin right

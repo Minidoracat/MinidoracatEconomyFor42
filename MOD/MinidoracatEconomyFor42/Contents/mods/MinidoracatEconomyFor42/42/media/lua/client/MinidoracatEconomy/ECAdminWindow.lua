@@ -44,7 +44,6 @@ if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEco
     require "MinidoracatEconomy/ECWidgets"
 end
 require "MinidoracatEconomy/ECKeyboard"
-require "MinidoracatEconomy/ECDatePicker"
 require "MinidoracatEconomy/ECAdminPanel"
 require "MinidoracatEconomy/ECDetailWindow"
 require "MinidoracatEconomy/ECNavigation"
@@ -53,7 +52,6 @@ local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
 local Keys = C.Keyboard
-local DatePicker = C.DatePicker
 -- The session's detail window: every read-only record a page of this window opens goes there,
 -- and D.close(owner) closes whatever this window or any child of it opened -- so hiding it,
 -- closing it or losing the read right never leaves a record floating on its own.
@@ -385,7 +383,7 @@ function Win:setVisible(visible)
         if self.nav then self.nav:setVisible(false) end
         if admin then
             admin:setVisible(false)
-            DatePicker.close(admin)   -- this page's calendar only: the Economy Center keeps its own
+            U.framework.DatePicker.close(admin)   -- this page's calendar only: the Economy Center keeps its own
         end
         D.close(self)                 -- this window and every page under it
         Keys.clear(self)              -- no ring waiting behind a closed window

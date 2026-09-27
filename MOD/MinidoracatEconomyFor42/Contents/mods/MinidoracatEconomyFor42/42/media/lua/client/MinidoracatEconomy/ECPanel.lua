@@ -5,7 +5,6 @@ require "ISUI/ISCollapsableWindow"
 require "ISUI/ISLayoutManager"
 require "MinidoracatEconomy/ECWidgets"
 require "MinidoracatEconomy/ECKeyboard"
-require "MinidoracatEconomy/ECDatePicker"
 require "MinidoracatEconomy/ECNavigation"
 require "MinidoracatEconomy/ECAdminPanel"
 require "MinidoracatEconomy/ECAdminWindow"
@@ -13,7 +12,6 @@ require "MinidoracatEconomy/ECIconCache"
 require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECRowActions"
 require "MinidoracatEconomy/ECReadGate"
-require "MinidoracatEconomy/ECPanelFilters"
 require "MinidoracatEconomy/ECPanelDialogs"
 require "MinidoracatEconomy/ECPanelPreferences"
 require "MinidoracatEconomy/ECPanelLayout"
@@ -24,8 +22,8 @@ require "MinidoracatEconomy/ECLeaderboard"
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
-local DatePicker, Keys, Nav = C.DatePicker, C.Keyboard, C.Navigation
-local W, FilterBar, R, ReadGate = C.PanelWidgets, C.PanelFilters, C.RowActions, C.ReadGate
+local Keys, Nav = C.Keyboard, C.Navigation
+local W, R, ReadGate = C.PanelWidgets, C.RowActions, C.ReadGate
 local Dialogs, Preferences, Layout = C.PanelDialogs, C.PanelPreferences, C.PanelLayout
 -- The one floating record window of the session: every read-only row of every page is spelled
 -- out in it (ECDetailWindow), so no page keeps a preview band that eats its own table.
@@ -61,7 +59,7 @@ local detailLine, setPlaceholder, itemBaseName, shopError = W.detailLine, W.setP
 local marketError, listingRow, auctionRow = W.marketError, W.listingRow, W.auctionRow
 local candidateRow, shopRow, ShopCell, MailCell = W.candidateRow, W.shopRow, W.ShopCell, W.MailCell
 local StatementCell, ListingCell, historyRowHeight, historyRow = W.StatementCell, W.ListingCell, W.historyRowHeight, W.historyRow
-local auctionHistoryRow, HistoryCell, drawBadge, newHeader = W.auctionHistoryRow, W.HistoryCell, W.drawBadge, W.newHeader
+local auctionHistoryRow, HistoryCell, drawBadge, sortParts = W.auctionHistoryRow, W.HistoryCell, W.drawBadge, W.sortParts
 local newCombo, comboSelect, comboFill, sortKeysFor = W.newCombo, W.comboSelect, W.comboFill, W.sortKeysFor
 local sortLabel, MARKET_SORTS, AUCTION_SORTS = W.sortLabel, W.MARKET_SORTS, W.AUCTION_SORTS
 local currencyLabel, defaultCurrency = W.currencyLabel, W.defaultCurrency
@@ -125,6 +123,36 @@ local NAV_ICONS = {
     Auction = "auction", Mail = "mail", Leaderboard = "chart", Admin = "users", Settings = "settings",
 }
 
+-- The window's open calendar (rev 11: one shared UI.DatePicker; closed by scope, never another window's).
+local function closeCalendar(scope)
+    if U.framework then U.framework.DatePicker.close(scope) end   -- nothing to close before U.init
+end
+
+-- The filter bar of a client-paged list (the statement, the market ring, the auction record):
+-- multi-select kind chips, a day range, a time/amount sort and a pager strip under the list, all
+-- local -- the reply is at most a few hundred rows, so nothing here talks to the server. `hintKey`
+-- asks for a keyword box (the auction record is searched by the server instead).
+local function newFilterBar(panel, label, onChange, hintKey)
+    return U.framework.FilterBar.new({
+        parent = panel, target = panel, theme = U.theme, height = math.max(CHIP_H, fontH.small + 8),
+        onChange = onChange,
+        onLayout = function(p) Detail.close(p); p:layout() end,
+        kinds = { field = "kind", label = label, multi = true },
+        search = hintKey and { placeholder = getText(T .. hintKey), field = "searchText" } or nil,
+        dates = { field = "ts" },
+        sorts = { { id = "time", label = getText(T .. "Filter_Sort_time"), field = "ts" },
+            { id = "amount", label = getText(T .. "Filter_Sort_amount"), field = "amount" } },
+    })
+end
+
+local function marketKindText(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end
+
+-- The sortable header over a server-sorted table: it reads the page's sort key and whether the
+-- page takes clicks right now; a click is answered by the page (key, or nil for the default).
+local function newTableHeader(panel, sortField, isLive, onSort)
+    return U.framework.TableHeader.new({ height = ROW, theme = U.theme, target = panel,
+        sort = function(p) return sortParts(p[sortField]) end, live = isLive, onSort = onSort })
+end
 
 function Panel:createChildren()
     ISCollapsableWindow.createChildren(self)
@@ -182,7 +210,7 @@ function Panel:createChildren()
     self:addChild(self.list)
     -- the statement is paged on the client (the reply is the whole month): a keyword box, kind
     -- chips, a day range, a time/amount sort and the pager, all local
-    self.walletBar = FilterBar.new(self, kindText, "amount", Panel.rebuildList, "Wallet_SearchHint")
+    self.walletBar = newFilterBar(self, kindText, function(p) p:rebuildList() end, "Wallet_SearchHint")
 
     -- ----- the whole-page reader -----
     -- Two pages *are* a reading surface and have no table of their own: the wallet's balance
@@ -277,13 +305,12 @@ function Panel:createChildren()
     self.marketHistoryList = U.newTable(HistoryCell, historyRowHeight())
     self.marketHistoryList.onSelect = function(_, item) self:onDetailRow("history", item) end
     self:addChild(self.marketHistoryList)
-    self.marketHeader = newHeader(self, "marketSort", "marketHeaderHits",
+    self.marketHeader = newTableHeader(self, "marketSort",
         function(panel) return panel.marketMode == "browse" and not panel.browseBusy end,
-        Panel.onMarketHeader)
+        function(panel, key) panel:onMarketHeader(key) end)
     self:addChild(self.marketHeader)
-    self.historyBar = FilterBar.new(self,
-        function(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end,
-        "amount", Panel.rebuildMarketHistory, "Market_History_SearchHint")
+    self.historyBar = newFilterBar(self, marketKindText, function(p) p:rebuildMarketHistory() end,
+        "Market_History_SearchHint")
     for _, spec in ipairs({ { "Refresh", Panel.onMarketRefresh }, { "List", Panel.onMarketList },
         { "Prev", Panel.onMarketPage }, { "Next", Panel.onMarketPage } }) do
         local title = getText(T .. "Market_" .. spec[1])
@@ -337,18 +364,16 @@ function Panel:createChildren()
     -- fills the browse table's own; the identity is what keeps them in step)
     self.auctionSellList.cols = self.auctionList.cols
     self.auctionBidList.cols = self.auctionList.cols
-    self.auctionHeader = newHeader(self, "auctionSort", "auctionHeaderHits",
+    self.auctionHeader = newTableHeader(self, "auctionSort",
         function(panel) return panel.auctionMode == "browse" and not panel.auctionBusy end,
-        Panel.onAuctionHeader)
+        function(panel, key) panel:onAuctionHeader(key) end)
     self:addChild(self.auctionHeader)
     -- the record page: the same two-line cell and the same client-side filter bar the market
     -- ring uses, over the snapshot the server filtered for this player (or for one auction)
     self.auctionHistoryList = U.newTable(HistoryCell, historyRowHeight())
     self.auctionHistoryList.onSelect = function(_, item) self:onDetailRow("history", item) end
     self:addChild(self.auctionHistoryList)
-    self.auctionHistoryBar = FilterBar.new(self,
-        function(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end,
-        "amount", Panel.rebuildAuctionHistory)
+    self.auctionHistoryBar = newFilterBar(self, marketKindText, function(p) p:rebuildAuctionHistory() end)
     for _, spec in ipairs({ { "Refresh", "Market_Refresh", Panel.onAuctionRefresh },
         { "Create", "Auction_Create", Panel.onAuctionCreate },
         { "Prev", "Market_Prev", Panel.onAuctionPage }, { "Next", "Market_Next", Panel.onAuctionPage } }) do
@@ -516,12 +541,12 @@ end
 
 -- The text boxes that only exist on one page: a hidden one must not keep the keyboard.
 function Panel:unfocusEntries()
-    for _, e in ipairs({ self.shopEntry, self.marketEntry, self.auctionEntry,
-        self.walletBar.searchEntry, self.walletBar.fromEntry, self.walletBar.toEntry,
-        self.historyBar.searchEntry, self.historyBar.fromEntry, self.historyBar.toEntry,
-        self.auctionHistoryBar.fromEntry, self.auctionHistoryBar.toEntry }) do
+    for _, e in ipairs({ self.shopEntry, self.marketEntry, self.auctionEntry }) do
         pcall(function() e:unfocus() end)
     end
+    self.walletBar:blur()
+    self.historyBar:blur()
+    self.auctionHistoryBar:blur()
 end
 
 -- A page switch, a hide or a collapse takes every open dropdown with it: an ISComboBox popup is
@@ -543,7 +568,7 @@ function Panel:closeCombos()
     -- keyboard behind a page that is gone (or behind a confirmation this just put up)
     for _, picker in ipairs({ self.marketSellerPicker, self.auctionSellerPicker }) do
         picker:close()
-        pcall(picker.entry.unfocus, picker.entry)
+        picker:blur()
     end
 end
 
@@ -591,37 +616,12 @@ function Panel:keyboardTargets()
     return out
 end
 
--- The filter bar of a client-paged list (the statement, the market ring, the auction record): the
--- kind chips, the two day boxes with their calendar glyphs, the sort pair. One implementation, so
--- every paged list is walked the same way.
-function Panel:filterTargets(out, bar)
-    if bar.filterButton then
-        out[#out + 1] = { kind = "button", control = bar.filterButton, label = bar.filterButton.fullTitle }
-    end
-    -- the page's own keyword box, where it has one (the auction record is searched by the server)
-    if bar.searchEntry then
-        out[#out + 1] = { kind = "entry", control = bar.searchEntry, label = getText(T .. "Filter_Search") }
-    end
-    if #bar.kindButtons > 0 then
-        local controls = { bar.kindPrevButton }
-        for _, button in ipairs(bar.kindButtons) do controls[#controls + 1] = button end
-        controls[#controls + 1] = bar.kindNextButton
-        out[#out + 1] = { kind = "group", controls = controls, label = getText(T .. "Filter_Kind") }
-    end
-    for _, spec in ipairs({ { "fromEntry", "Filter_From" }, { "toEntry", "Filter_To" } }) do
-        local e = bar[spec[1]]
-        out[#out + 1] = { kind = "entry", control = e, label = getText(T .. spec[2]) }
-        if e.calendarButton then
-            out[#out + 1] = { kind = "button", control = e.calendarButton, label = getText(T .. "Filter_Calendar") }
-        end
-    end
-    out[#out + 1] = { kind = "group", controls = bar.sortButtons, label = getText(T .. "Filter_Sort") }
-end
+-- The filter bar of a client-paged list: the compact toggle, keyword box, kind chips, the two day
+-- fields with their calendar buttons and the sort pair, then (under the list) the pager. One
+-- implementation (UI.FilterBar), so every paged list is walked the same way.
+function Panel:filterTargets(out, bar) bar:appendTargets(out) end
 
-function Panel:pagerTargets(out, bar)
-    out[#out + 1] = { kind = "group", controls = { bar.prevButton, bar.nextButton },
-        label = getText(T .. "Filter_PageNav") }
-end
+function Panel:pagerTargets(out, bar) bar:appendPagerTargets(out) end
 
 -- The page reader is read-only and never focusable (Core.updateKeyboard wants isEditable while
 -- GameKeyboard only tests isDoingTextEntry: a focused read-only box swallows every key), so the
@@ -808,7 +808,7 @@ end
 
 function Panel:setTab(tab)
     if tab ~= self.tab then
-        DatePicker.close(self)   -- this window's calendar only; another window keeps its own
+        closeCalendar(self)   -- this window's calendar only; another window keeps its own
         self:closeCombos()
         self:closeBuy()
         self:closeMarketDialog()
@@ -917,7 +917,7 @@ end
 function Panel:onPeriod(button)
     self.period = button.internal
     for _, b in ipairs(self.periodButtons) do b.active = b.internal == self.period end
-    self.walletBar.page = 1        -- another month starts on its own first page
+    self.walletBar:setPage(1)      -- another month starts on its own first page
     self.history = nil
     self.historyError = nil
     self:loadHistory()
@@ -936,7 +936,7 @@ end
 -- Switch readers without changing statement filters, selection or list scroll.
 function Panel:onWalletDetails()
     self.walletFiltersOpen = false
-    DatePicker.close(self)
+    closeCalendar(self)
     self:unfocusEntries()
     self.walletDetails = not self.walletDetails
     self:layout()
@@ -944,7 +944,7 @@ function Panel:onWalletDetails()
 end
 
 function Panel:onWalletFilters()
-    DatePicker.close(self)
+    closeCalendar(self)
     self:unfocusEntries()
     self.walletFiltersOpen = not self.walletFiltersOpen
     self:layout()
@@ -1091,8 +1091,7 @@ function Panel:rebuildList()
     bar:syncKinds(self.allRows)
     -- the keyword narrows the rows this page has loaded; the chips, the days, the sort and the
     -- pager then count exactly what it left
-    local rows, page, pages, total = EC.filterPage(bar:search(self.allRows), bar:opts("ts"))
-    bar:setPage(page, pages, total)
+    local rows = bar:apply(self.allRows)
     self.rows = rows
     self.statementAmountW = textWidth(getText(T .. "Wallet_Col_Amount")) + PAD * 2
     self.statementValueW = 0
@@ -2091,9 +2090,7 @@ function Panel:rebuildMarketHistory()
     self.marketHistoryAll = rows
     local bar = self.historyBar
     if bar:syncKinds(rows) and self.g then self:layout() end
-    local page, pages, total
-    rows, page, pages, total = EC.filterPage(bar:search(rows), bar:opts("ts"))
-    bar:setPage(page, pages, total)
+    rows = bar:apply(rows)
     self.marketHistoryRows = rows
     self.marketHistoryList:setItems(rows)
 end
@@ -2138,13 +2135,10 @@ end
 -- between two columns) is the plain default sort, newest listing first. Every key the header can
 -- produce is one the sort box also offers, so the two never disagree -- and a key the server does
 -- not accept would be answered with the default page, which the throttle would then re-ask for.
-function Panel:onMarketHeader(x)
+function Panel:onMarketHeader(key)
     if self.marketMode ~= "browse" or self.browseBusy then return end
-    local key = "time"
-    for _, c in ipairs(self.marketHeaderHits or {}) do
-        -- a caption column (the own-listings table sorts by nothing) is not a hit target
-        if c.sortable ~= false and x >= c.x and x < c.x + c.w then key = c.key end
-    end
+    -- a caption column (the own-listings table sorts by nothing) answers nil, like a gap
+    key = key or "time"
     -- prices of two currencies do not compare, and the server says so (currency_required):
     -- the click is answered here instead of being sent and refused
     if W.isPriceSort(key) and self.marketCur == nil then
@@ -2959,9 +2953,7 @@ function Panel:rebuildAuctionHistory()
     self.auctionHistoryAll = rows
     local bar = self.auctionHistoryBar
     if bar:syncKinds(rows) and self.g then self:layout() end
-    local page, pages, total
-    rows, page, pages, total = EC.filterPage(rows, bar:opts("ts"))
-    bar:setPage(page, pages, total)
+    rows = bar:apply(rows)
     self.auctionHistoryRows = rows
     self.auctionHistoryList:setItems(rows)
 end
@@ -3063,12 +3055,9 @@ end
 -- ascending. Anything that is not a column falls back to the page default (the auctions closest to
 -- their end first) - that is `ending`, not the market's `time`. Every key here is one the sort box
 -- offers and one ECAuction.SORTS accepts.
-function Panel:onAuctionHeader(x)
+function Panel:onAuctionHeader(key)
     if self.auctionMode ~= "browse" or self.auctionBusy then return end
-    local key = "ending"
-    for _, c in ipairs(self.auctionHeaderHits or {}) do
-        if x >= c.x and x < c.x + c.w then key = c.key end
-    end
+    key = key or "ending"
     if W.isPriceSort(key) and self.auctionCur == nil then
         C.toast(getText(T .. "Market_CurrencyRequired"))
         return
@@ -3415,16 +3404,9 @@ function Panel:prerender()
     if self.marketQueryAt and EC.now() >= self.marketQueryAt and self.tab == "Market" then
         self:requestBrowse(1)
     end
-    -- the two keyword boxes (the statement and the market ring): the text is read back from the
-    -- box every frame, because an IME commit can land in it without the text-change callback ever
-    -- firing. One guard inside pollSearch, so nothing is rebuilt while the text stands still.
-    self.walletBar:pollSearch()
-    self.historyBar:pollSearch()
-    -- the two seller boxes: the debounce clock, the IME read-back and the list's own geometry.
-    -- A box whose page is not up was hidden by the layout and answers tick with nothing.
+    -- (the keyword boxes and the two seller boxes read their own text back every frame inside
+    -- the framework fields: UI.FilterBar / UI.Autocomplete)
     local sellerNow = EC.now()
-    self.marketSellerPicker:tick(sellerNow)
-    self.auctionSellerPicker:tick(sellerNow)
     -- a candidate read that never came back: the slot is freed and the same text may be asked
     -- for again by whichever box was waiting for it
     if self.sellersPendingAt and sellerNow - self.sellersPendingAt > SELLERS_TIMEOUT_MS then
@@ -3610,7 +3592,7 @@ function Panel:setVisible(visible)
     self.shown = visible == true
     if not visible then
         self:showPrefs(false)
-        DatePicker.close(self)   -- this window's calendar only; the admin window keeps its own
+        closeCalendar(self)   -- this window's calendar only; the admin window keeps its own
         self:closeCombos()       -- a dropdown popup lives in the UIManager, not in this window
         self:closeBuy()
         self:closeMarketDialog()
@@ -3762,7 +3744,7 @@ Events.OnKeyPressed.Add(onKeyPressed)
 -- Reset per world (UIManager elements survive a return to the main menu; a new session must
 -- rebuild against the new server state).
 local function onGameStart()
-    DatePicker.close()
+    closeCalendar()
     C.AdminWindow.reset()   -- the admin page is disposed for real here, and nowhere else
     if P.window then
         Detail.close(P.window)   -- the record window outlives a world otherwise

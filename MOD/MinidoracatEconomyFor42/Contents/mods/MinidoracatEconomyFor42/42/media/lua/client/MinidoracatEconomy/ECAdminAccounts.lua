@@ -113,7 +113,7 @@ local AccountCell = ISPanel:derive("MinidoracatEconomyAccountCell")
 function AccountCell:render()
     local e = self.entry
     if not e then return end
-    local lit = U.rowBackground(self)
+    local lit = U.framework.Table.rowBackground(self)
     text(self, e.nameText, PAD, e.line1Y, e.frozen and "warn" or "text")
     textRight(self, e.amountText, self.width - PAD, e.line1Y, "accent")
     text(self, e.stateText, PAD, e.line2Y, lit and "text" or "textMuted")

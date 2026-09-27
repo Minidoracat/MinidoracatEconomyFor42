@@ -46,8 +46,7 @@ require "ISUI/ISPanel"
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
 end
-require "MinidoracatEconomy/ECDatePicker"
-require "MinidoracatEconomy/ECAdminFilters"
+require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECAdminTransactions"
 require "MinidoracatEconomy/ECAdminShop"
 require "MinidoracatEconomy/ECAdminWhitelist"
@@ -63,14 +62,9 @@ require "MinidoracatEconomy/ECDetailWindow"
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
-local DatePicker = C.DatePicker
-local Filters, Transactions = C.AdminFilters, C.AdminTransactions
+local Transactions = C.AdminTransactions
 local R, PlayerPicker = C.RowActions, C.PlayerPicker
-local filterCreate, filterKinds = Filters.create, Filters.kinds
-local filterLayoutKinds, filterLayoutRow = Filters.layoutKinds, Filters.layoutRow
-local filterDraw, filterOptions, filterEnable = Filters.draw, Filters.options, Filters.enable
-local blurFilterDates = Filters.blurDates
-local filterCloseCombo = Filters.closeCombo
+local filterCloseCombo = C.PanelWidgets.closeCombo
 -- Every read-only record this page can show goes to the one session detail window: it scrolls,
 -- it copies the untruncated text and it closes on its own X or Escape, so no table here pays
 -- rows for an inline preview band.
@@ -84,8 +78,8 @@ local CARD_TITLE_H = U.CARD_TITLE_H
 local fontH = U.fontH
 local color, fill, border, text, textWidth, fitText, textRight, textCentre = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre
 local stampText, amountText, signedText, hasBit, kindText, card, drawCoin = U.stampText, U.amountText, U.signedText, U.hasBit, U.kindText, U.card, U.drawCoin
-local Button, TableCell = U.Button, U.TableCell
-local rowBackground = U.rowBackground
+local Button = U.Button
+local function rowBackground(cell) return U.framework.Table.rowBackground(cell) end
 
 -- U.fill scales every fill by the window opacity slider (U.alpha). The money views need one
 -- backdrop that ignores it: their text is read against the numbers, and at 50 % opacity the
@@ -510,7 +504,7 @@ local setEntryText = U.setEntryText
 
 local setEntryEditable = U.setEntryEditable
 
--- Column layout for a TableCell table: spec = { { key, header, sample, flex } , ... }.
+-- Column layout for a text-cell table (UI.Table.TextCell): spec = { { key, header, sample, flex } , ... }.
 -- Every column gets max(header, sample) + PAD; one flex column absorbs the rest and carries a
 -- width for fitText. `right` columns are measured from their right edge.
 local function layoutColumns(list, spec, innerWidth)
@@ -613,10 +607,10 @@ end
 -- One receipt line: the shared table cell, the selection band and the row's two buttons. The
 -- columns were laid out inside the width the strip leaves, so no text is ever painted under
 -- them, and the buttons are real children -- a press lands on a button, never on a rectangle.
-local ReceiptCell = TableCell:derive("MinidoracatEconomyReceiptCell")
+local ReceiptCell = ISPanel:derive("MinidoracatEconomyReceiptCell")
 
 function ReceiptCell:render()
-    TableCell.render(self)      -- the base cell owns zebra / selection / hover (U.rowBackground)
+    U.framework.Table.TextCell.render(self)   -- the shared text cell owns zebra / selection / hover
     local e = self.entry
     if e == nil or e.actions == nil then return end
     R.begin(self)
@@ -787,7 +781,7 @@ function OptionGroupCell:render()
     local admin = self.list.admin
     local total, overrides = admin:optionGroupCount(id)
     local active = id == admin.setGroup and admin.setQuery == nil
-    U.rowBackground(self)
+    U.framework.Table.rowBackground(self)
     if active then fill(self, 0, 0, 2, self.height, "accent", "rect") end
     local tail = overrides > 0 and getText(T .. "Admin_Set_OverrideCount", tostring(overrides))
         or getText(T .. "Admin_Set_Count", tostring(total))
@@ -820,7 +814,7 @@ end
 function OptionCell:prerender()
     local e = self.entry
     if not e then R.reset(self); return end
-    U.rowBackground(self)
+    U.framework.Table.rowBackground(self)
     local off = optionRowOff(self.list, e)
     R.begin(self)
     for _, hit in ipairs(e.hits) do
@@ -1738,6 +1732,24 @@ end
 
 local Admin = ISPanel:derive("MinidoracatEconomyAdminPanel")
 
+local function marketKindLabel(kind) return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or tostring(kind) end
+
+-- One of this page's local filter rows (UI.FilterBar, rev 11): single-select kind chips that
+-- page with < > when they overflow, the day range, the sort chips and the inline page chips on
+-- one wrapped flow. `sorts` = { { id, field }, ... }; every change is the page's own rebuild and
+-- then updateEnabled (the rebuild learns the new page count, the chips follow it).
+local function newAdminFilter(panel, kinds, dates, sorts, onChange)
+    local list = {}
+    for i, s in ipairs(sorts) do list[i] = { id = s[1], label = tr("Filter_Sort_" .. s[1]), field = s[2] } end
+    return U.framework.FilterBar.new({
+        parent = panel, target = panel, theme = U.theme, height = math.max(22, fontH.small + 8),
+        pager = "inline", kinds = kinds, dates = dates, sorts = list,
+        onChange = function(p) onChange(p); p:updateEnabled() end,
+        -- kind paging moved chips: the rows under the bar follow
+        onLayout = function(p) p:layout() end,
+    })
+end
+
 function Admin:createChildren()
     self.subTabButtons = {}
     for _, tab in ipairs(TABS) do
@@ -1867,13 +1879,11 @@ function Admin:createChildren()
     self.auditEntry.target = self
     self.auditEntry.onTextChangeFunction = Admin.onAuditQueryChanged
     self:addChild(self.auditEntry)
-    self.auditF = filterCreate(self, {
-        label = auditActionText,
-        sorts = { "time" }, fields = { time = "ts" },
-        extra = { { "rolled", tr("Admin_Audit_Rolled") } },
-        fromLabel = tr("Admin_Audit_From"), toLabel = tr("Admin_Audit_To"),
-        onChange = function(panel) panel:onAuditFilterChanged() end,
-    })
+    self.auditF = newAdminFilter(self,
+        { field = "action", label = auditActionText, title = false,
+          extra = { { id = "rolled", label = tr("Admin_Audit_Rolled") } } },
+        { field = "ts", fromLabel = tr("Admin_Audit_From"), toLabel = tr("Admin_Audit_To") },
+        { { "time", "ts" } }, function(panel) panel:onAuditFilterChanged() end)
 
     -- The exact actor: the administrator whose own actions are read. The server compares it byte
     -- for byte *before* the ring slice and the file tail are cut, so the page never filters an
@@ -1899,11 +1909,10 @@ function Admin:createChildren()
     self.auditActorCombo = actorCombo
     self:addChild(actorCombo)
     -- the shared filter row hosts one combo of its own (the money page puts its account class
-    -- there): here it is the actor candidates
-    self.auditF.accountCombo = actorCombo
-    self.auditF.accountLabel = tr("Admin_Audit_Actor")
-    self.auditF.accountW = actorCombo.width
-    self.auditList = U.newTable(TableCell, rowH())
+    -- there): here it is the actor candidates. Its width is this page's (layoutAuditFilters).
+    self.auditF:addControl(actorCombo, tr("Admin_Audit_Actor"), "combo")
+    self.auditActorW = actorCombo.width
+    self.auditList = U.newTable(U.framework.Table.TextCell, rowH())
     self.auditList.onSelect = function(_, item)
         self:onAuditRow(item)
     end
@@ -1972,13 +1981,9 @@ function Admin:createChildren()
     end
     self:addChild(self.historyList)
     -- the history filter row: type / date / sort / page, all of it local to this side
-    self.histF = filterCreate(self, {
-        label = function(kind) return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or tostring(kind) end,
-        kindLabel = tr("Filter_Kind"),
-        sorts = { "time", "amount" }, fields = { time = "ts", amount = "price" },
-        fromLabel = tr("Filter_From"), toLabel = tr("Filter_To"),
-        onChange = function(panel) D.close(panel); panel:rebuildHistory() end,
-    })
+    self.histF = newAdminFilter(self, { field = "kind", label = marketKindLabel }, { field = "ts" },
+        { { "time", "ts" }, { "amount", "price" } },
+        function(panel) D.close(panel); panel:rebuildHistory() end)
 
     -- auctions page: the listings card's shape with two modes -- a debounced search box, the
     -- live auction list and the two page chips, or the whole server's auction record over the
@@ -2022,13 +2027,9 @@ function Admin:createChildren()
     -- the record's filter row: type / date / sort / page, all of it local to this side. "time"
     -- sorts on the position the reply gave each line, so newest first is the exact reversal of
     -- the file order the server read.
-    self.aucF = filterCreate(self, {
-        label = function(kind) return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or tostring(kind) end,
-        kindLabel = tr("Filter_Kind"),
-        sorts = { "time", "amount" }, fields = { time = "ord", amount = "price" },
-        fromLabel = tr("Filter_From"), toLabel = tr("Filter_To"),
-        onChange = function(panel) D.close(panel); panel:rebuildAuctionHistory() end,
-    })
+    self.aucF = newAdminFilter(self, { field = "kind", label = marketKindLabel }, { field = "ts" },
+        { { "time", "ord" }, { "amount", "price" } },
+        function(panel) D.close(panel); panel:rebuildAuctionHistory() end)
 
     self.txPage = Transactions.create(self, send, isPending, newRequestId)
     self:addChild(self.txPage)
@@ -2067,11 +2068,11 @@ function Admin:createChildren()
     -- paint over the tables they drop across. The rows behind the pages are still
     -- admin.listings / admin.auctions.
     self.lstSellerPicker = PlayerPicker.create(self, sendSellers, isPending, newRequestId,
-        function(entry) self:setListingSeller(entry.username) end, "market", "market.sellers")
-    self.lstSellerPicker.entry.onCommandEntered = function() self:applyListingSeller() end
+        function(entry) self:setListingSeller(entry.username) end, "market", "market.sellers",
+        function() self:applyListingSeller() end)
     self.aucSellerPicker = PlayerPicker.create(self, sendSellers, isPending, newRequestId,
-        function(entry) self:setAuctionSeller(entry.username) end, "auction", "market.sellers")
-    self.aucSellerPicker.entry.onCommandEntered = function() self:applyAuctionSeller() end
+        function(entry) self:setAuctionSeller(entry.username) end, "auction", "market.sellers",
+        function() self:applyAuctionSeller() end)
 
     -- The reconciliation page. It is an ordinary sub page (it owns the body area of its own tab,
     -- like the shop, whitelist and money pages) and is added after the candidate lists so its own
@@ -2122,7 +2123,7 @@ end
 
 function Admin:setTab(tab)
     if self.tab == tab then return end
-    DatePicker.close(self)
+    U.framework.DatePicker.close(self)
     self.tab = tab
     for _, b in ipairs(self.subTabButtons) do b.active = b.internal == tab end
     self.message = nil
@@ -2437,7 +2438,7 @@ end
 function Admin:onAuditQueryChanged()
     local q = string.match(entryText(self.auditEntry), "^%s*(.-)%s*$")
     self.auditQuery = q ~= "" and string.lower(q) or nil
-    self.auditF.page = 1
+    self.auditF:setPage(1)
     self:rebuildAudit()
 end
 
@@ -2445,9 +2446,7 @@ end
 -- are the *parsed* bounds, so a half-typed date does not cost a read -- the key only moves once
 -- a whole day has been typed.
 function Admin:auditFilterKey()
-    local f = self.auditF
-    local from = EC.parseDay(entryText(f.fromEntry), self.offsetMin)
-    local to = EC.parseDay(entryText(f.toEntry), self.offsetMin)
+    local from, to = self.auditF:dateRange()
     return tostring(self.auditActor or "") .. "\1" .. tostring(from or "")
         .. "\1" .. tostring(to or "")
 end
@@ -2458,11 +2457,8 @@ end
 -- day, the exclusive bound the server takes. Every read carries a fresh requestId, so a late
 -- answer neither lands on screen nor releases the slot the newer read owns.
 function Admin:auditArgs(args)
-    local f = self.auditF
-    local to = EC.parseDay(entryText(f.toEntry), self.offsetMin)
     args.actor = self.auditActor
-    args.fromMs = EC.parseDay(entryText(f.fromEntry), self.offsetMin)
-    args.toMs = to and (to + 86400000) or nil
+    args.fromMs, args.toMs = self.auditF:dateRange()   -- to is already the next midnight
     args.requestId = newRequestId()
     return args
 end
@@ -2515,7 +2511,7 @@ function Admin:applyAuditActor()
     end
     if name == self.auditActor then return end
     self.auditActor = name
-    self.auditF.page = 1
+    self.auditF:setPage(1)
     self:rebuildAuditActors()
     self:onAuditFilterChanged()
     self:updateEnabled()
@@ -2580,7 +2576,7 @@ function Admin:rebuildAuditActors()
         if combo:getOptionData(i) == wanted then combo.selected = i end
         width = math.max(width, textWidth(combo:getOptionText(i)) + 30)
     end
-    self.auditF.accountW = math.min(240, width)
+    self.auditActorW = math.min(240, width)
     self:layoutAuditFilters()
 end
 
@@ -3389,7 +3385,7 @@ end
 function Admin:closeSellerPickers()
     for _, picker in ipairs({ self.lstSellerPicker, self.aucSellerPicker }) do
         picker:close()
-        pcall(picker.entry.unfocus, picker.entry)
+        picker:blur()
     end
 end
 
@@ -3404,7 +3400,7 @@ end
 -- Enter over the box: what is typed has to be a whole account name, so it is validated the way
 -- it always was and a name that cannot be asked for is reported instead of silently dropped.
 function Admin:applyListingSeller()
-    local name, bad = exactName(self.lstSellerPicker.entry)
+    local name, bad = exactName(self.lstSellerPicker.entry._entry)
     if bad then
         self.message = { text = errorText("invalid_args"), error = true }
         return
@@ -3634,9 +3630,7 @@ function Admin:showAuctionHistory(id)
     self.aucHistId = tostring(id)
     setEntryText(self.aucEntry, self.aucHistId)
     local f = self.aucF
-    f.kind = "all"   -- a type filter left over from the last search must not hide the jump
-    f.page = 1
-    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == "all" end
+    f:setKind(nil, true)   -- a type filter left over from the last search must not hide the jump
     self:layout()
 end
 
@@ -3662,7 +3656,7 @@ function Admin:setAuctionSeller(name)
 end
 
 function Admin:applyAuctionSeller()
-    local name, bad = exactName(self.aucSellerPicker.entry)
+    local name, bad = exactName(self.aucSellerPicker.entry._entry)
     if bad then
         self.message = { text = errorText("invalid_args"), error = true }
         return
@@ -3869,7 +3863,7 @@ function Admin:showRecovery(username)
         self.message = nil
         self.picker:close()
         self:closeSellerPickers()
-        DatePicker.close(self)
+        U.framework.DatePicker.close(self)
         filterCloseCombo(self.auditActorCombo)
         D.close(self)
         self.recoveryPage:showUser(username)
@@ -4096,25 +4090,9 @@ local function addGroup(out, label, buttons)
     if #shown > 0 then addTarget(out, "group", label, nil, shown) end
 end
 
--- The filter row of a history / audit card: the type chips, both dates with their calendar
--- glyphs, the sort chips and the page chips.
-local function addFilters(out, f)
-    addGroup(out, f.kindLabel or tr("Filter_Kind"), f.kindButtons)
-    addTarget(out, "entry", f.fromLabel, f.fromEntry)
-    addTarget(out, "button", tr("Filter_Calendar"), f.fromEntry.calendarButton)
-    addTarget(out, "entry", f.toLabel, f.toEntry)
-    addTarget(out, "button", tr("Filter_Calendar"), f.toEntry.calendarButton)
-    addGroup(out, f.sortLabel, f.sortButtons)
-    addGroup(out, tr("Filter_PageNav"), { f.prevButton, f.nextButton })
-end
-
--- The audit filter row carries one combo of its own (the actor candidates); the shared helper
--- above walks the chips, the dates and the pages, and this adds the box beside them.
-local function addCombo(out, label, combo)
-    if combo ~= nil and combo:getIsVisible() then
-        out[#out + 1] = { kind = "combo", label = label, control = combo }
-    end
-end
+-- The filter row of a history / audit card (UI.FilterBar): the type chips, both dates with their
+-- calendar buttons, the sort chips, the row's own combo (the audit actor) and the page chips.
+local function addFilters(out, f) f:appendTargets(out) end
 
 -- Every control the mouse can reach, in the order a keyboard should walk it -- the action
 -- buttons of the selected row included (C.RowActions answers which ones are live), so a row
@@ -4175,7 +4153,6 @@ function Admin:keyboardTargets()
     elseif self.tab == "Audit" then
         addTarget(out, "entry", tr("Admin_Audit_Hint"), self.auditEntry)
         addTarget(out, "entry", tr("Admin_Audit_Actor"), self.auditActorEntry)
-        addCombo(out, tr("Admin_Audit_Actor"), self.auditActorCombo)
         addFilters(out, self.auditF)
         addTarget(out, "list", tr("Admin_Audit_Title"), self.auditList)
         addGroup(out, tr("Admin_Audit_Actions"),
@@ -4244,7 +4221,7 @@ function Admin:openDialog(mode, ctx)
     C.Keyboard.blurInputs(self)
     self.picker:close()
     self:closeSellerPickers()
-    DatePicker.close(self)
+    U.framework.DatePicker.close(self)
     filterCloseCombo(self.auditActorCombo)
     D.close(self)
     local dlg = ISPanel:new(0, 0, 360, 200)
@@ -5265,7 +5242,7 @@ function Admin:rebuildAudit()
     -- Sources: the audit files (this and last month) carry full reasons and the rolled-back lines;
     -- the ModData ring (40-char reasons) only adds what the files do not have (older months).
     -- "rolled" shows the rolled-back file lines alone.
-    local fromFile = f.kind == "rolled"
+    local fromFile = f:getKind() == "rolled"
     local src, seen = {}, {}
     local key = self:auditFilterKey()
     local file = self.auditFileSnapshotKey == key and self.auditFile or {}
@@ -5297,13 +5274,14 @@ function Admin:rebuildAudit()
         end
     end
     EC.sortSafe(actions, function(a, b) return auditActionText(a) < auditActionText(b) end)
-    if filterKinds(f, actions) then
-        fromFile = f.kind == "rolled"
-        self:layoutAuditFilters()
+    -- a new chip set can change how many rows the bar wraps to: the table under it follows
+    if f:setKinds(actions) then
+        fromFile = f:getKind() == "rolled"
+        if self.g then self:layout() end
     end
     local q = self.auditQuery
     -- One entry per line that survives the source and the search box; the action, the day and the
-    -- page are EC.filterPage's job, so the row it picks carries the strings already built for it.
+    -- page are the filter bar's job (apply), so the row it picks carries the strings already built.
     local matched = {}
     for _, e in ipairs(src) do
         if type(e) == "table" then
@@ -5363,8 +5341,7 @@ function Admin:rebuildAudit()
             end
         end
     end
-    local picked, page, pages, total = EC.filterPage(matched, filterOptions(f, self, "action", "ts"))
-    f.page, f.pages, f.total = page, pages, total
+    local picked = f:apply(matched)
     local rows = {}
     for _, m in ipairs(picked) do rows[#rows + 1] = m.row end
     self.auditRows = rows
@@ -5725,10 +5702,9 @@ function Admin:rebuildAuctionHistory()
             end
         end
     end
-    EC.sortSafe(kinds, function(a, b) return f.label(a) < f.label(b) end)
-    if filterKinds(f, kinds) then self:layoutAuctionFilters() end
-    local picked, page, pages, total = EC.filterPage(src, filterOptions(f, self, "kind", "ts"))
-    f.page, f.pages, f.total = page, pages, total
+    EC.sortSafe(kinds, function(a, b) return marketKindLabel(a) < marketKindLabel(b) end)
+    if f:setKinds(kinds) and self.g then self:layout() end
+    local picked = f:apply(src)
     local rows = {}
     local width = math.max(120, self.aucHistoryList.width - 12)   -- 12 = the scrollbar gutter
     local lh = lineH()
@@ -5792,10 +5768,9 @@ function Admin:rebuildHistory()
             end
         end
     end
-    EC.sortSafe(kinds, function(a, b) return f.label(a) < f.label(b) end)
-    if filterKinds(f, kinds) then self:layoutHistoryFilters() end
-    local picked, page, pages, total = EC.filterPage(src, filterOptions(f, self, "kind", "ts"))
-    f.page, f.pages, f.total = page, pages, total
+    EC.sortSafe(kinds, function(a, b) return marketKindLabel(a) < marketKindLabel(b) end)
+    if f:setKinds(kinds) and self.g then self:layout() end
+    local picked = f:apply(src)
     local rows = {}
     local width = math.max(120, self.historyList.width - 12)   -- 12 = the scrollbar gutter
     local lh = lineH()
@@ -5969,7 +5944,7 @@ function Admin:updateEnabled()
 
     setEntryEditable(self.auditEntry, read and not modal)
     setEntryEditable(self.auditActorEntry, read and not modal)
-    filterEnable(self.auditF, read and not modal)
+    self.auditF:setEnabled(read and not modal)
     local picked = read and not modal and self.auditSelected ~= nil
     self.auditCopyNameButton:setEnable(picked)
     self.auditCopyIdButton:setEnable(picked)
@@ -5996,7 +5971,7 @@ function Admin:updateEnabled()
     self.lstHistoryButton:setEnable(read and not modal)
     self.lstSellerPicker:setEditable(read and not modal and self.lstMode ~= "history")
     self.lstSellerClearButton:setEnable(lstRead and self.lstSeller ~= nil)
-    filterEnable(self.histF, read and not modal)
+    self.histF:setEnabled(read and not modal)
 
     -- auctions page: one in-flight auctions command at a time; the page chips follow the
     -- snapshot, and a read-only role browses without ever arming a cancel
@@ -6017,7 +5992,7 @@ function Admin:updateEnabled()
     self.aucHistoryButton:setEnable(read and not modal)
     self.aucSellerPicker:setEditable(read and not modal and self.aucMode ~= "history")
     self.aucSellerClearButton:setEnable(aucRead and self.aucSeller ~= nil)
-    filterEnable(self.aucF, read and not modal)
+    self.aucF:setEnabled(read and not modal)
 
     self.txPage:updateEnabled()
     self.entitlementsPage:updateEnabled()
@@ -6058,35 +6033,36 @@ end
 -- Where the two filter rows sit. Both are called from layout() -- and again from their own
 -- rebuild when a reply changed the set of chips, because a chip has to be placed before it can
 -- be clicked. Neither reads anything layout() has not already put on self.g.
+-- Each returns the bar's height (UI.FilterBar lays its chips, dates, sort, own combo and page
+-- chips out in one wrapped flow), which is what the table under it starts from.
 function Admin:layoutAuditFilters()
     local g = self.g
-    if g == nil then return end
+    if g == nil then return 0 end
     local visible = self:readAllowed() and self.tab == "Audit"
-    local chipH = math.max(20, fontH.small + 6)
-    local x = self.auditEntry.width + PAD + self.auditActorEntry.width + PAD
-    g.auditCountX = filterLayoutKinds(self.auditF, visible, x, self.auditEntry.y
-        + math.floor((entryH() - chipH) / 2), math.max(60, self.width - x - PAD), chipH) + PAD
-    filterLayoutRow(self.auditF, visible, 0, g.auditFilterY, self.width, entryH(), chipH)
+    local f = self.auditF
+    -- the count line sits on the search row, right of the actor box
+    g.auditCountX = self.auditEntry.width + PAD + self.auditActorEntry.width + PAD
+    -- the actor combo is this page's control: its width and height are set here, the bar places it
+    local combo = self.auditActorCombo
+    combo:setWidth(math.min(self.auditActorW or combo.width, math.max(110, self.width - PAD * 2)))
+    combo:setHeight(f.height)
+    combo.baseHeight = f.height
+    if not visible then filterCloseCombo(combo) end
+    return f:layout(0, g.auditFilterY, self.width, visible) - g.auditFilterY
 end
 
 function Admin:layoutHistoryFilters()
     local g = self.g
-    if g == nil then return end
+    if g == nil then return 0 end
     local visible = self:readAllowed() and self.tab == "Listings" and self.lstMode == "history"
-    local chipH = math.max(20, fontH.small + 6)
-    local w = math.max(60, self.width - PAD * 2)
-    filterLayoutKinds(self.histF, visible, PAD, g.histKindY, w, chipH)
-    filterLayoutRow(self.histF, visible, PAD, g.histRowY, w, entryH(), chipH)
+    return self.histF:layout(PAD, g.histKindY, PAD + math.max(60, self.width - PAD * 2), visible) - g.histKindY
 end
 
 function Admin:layoutAuctionFilters()
     local g = self.g
-    if g == nil then return end
+    if g == nil then return 0 end
     local visible = self:readAllowed() and self.tab == "Auctions" and self.aucMode == "history"
-    local chipH = math.max(20, fontH.small + 6)
-    local w = math.max(60, self.width - PAD * 2)
-    filterLayoutKinds(self.aucF, visible, PAD, g.aucKindY, w, chipH)
-    filterLayoutRow(self.aucF, visible, PAD, g.aucRowY, w, entryH(), chipH)
+    return self.aucF:layout(PAD, g.aucKindY, PAD + math.max(60, self.width - PAD * 2), visible) - g.aucKindY
 end
 
 -- Fair share with redistribution, shared by the currencies and the sources action row: a button
@@ -6435,8 +6411,7 @@ function Admin:layout()
     self.auditActorEntry:setWidth(math.max(120, math.min(180, math.floor(w * 0.18))))
     self.auditActorEntry:setHeight(eh)
     g.auditFilterY = self.auditEntry.y + eh + 4
-    self:layoutAuditFilters()
-    g.auditHeaderY = g.auditFilterY + self.auditF.rowH + 6
+    g.auditHeaderY = g.auditFilterY + self:layoutAuditFilters() + 6
     local auditListY = g.auditHeaderY + rh
     local auditW = math.max(200, w - 2)
     -- a picked line is read in the detail window, so the table keeps the whole card
@@ -6554,9 +6529,7 @@ function Admin:layout()
     -- history mode: the type chips and the date / sort / page row take the two lines the page
     -- chips own in listings mode, and the list runs to the bottom of the card
     g.histKindY = lstListY
-    g.histRowY = g.histKindY + pageH + 4
-    self:layoutHistoryFilters()
-    local histListY = g.histRowY + self.histF.rowH + 6
+    local histListY = g.histKindY + self:layoutHistoryFilters() + 6
     local histH = math.max(rh, g.lstY + g.lstH - PAD - histListY)
     U.placeList(self.historyList, history, PAD, histListY, lstW, histH)
 
@@ -6613,9 +6586,7 @@ function Admin:layout()
     -- history mode: the type chips and the date / sort / page row take the two lines the page
     -- chips own in the active list, and the record list runs to the bottom of the card
     g.aucKindY = aucListY
-    g.aucRowY = g.aucKindY + pageH + 4
-    self:layoutAuctionFilters()
-    local aucHistListY = g.aucRowY + self.aucF.rowH + 6
+    local aucHistListY = g.aucKindY + self:layoutAuctionFilters() + 6
     local aucHistH = math.max(rh, g.aucY + g.aucH - PAD - aucHistListY)
     U.placeList(self.aucHistoryList, aucHistory, PAD, aucHistListY, lstW, aucHistH)
 
@@ -7215,7 +7186,7 @@ end
 -- it (newest first) and no paging.
 function Admin:drawListingHistory()
     local g = self.g
-    filterDraw(self.histF, self)
+    self.histF:draw(self)
     local rows = self.historyRows or {}
     local snap = self.marketHistory
     local countText = ""
@@ -7276,7 +7247,7 @@ end
 -- under it (newest first), the type / date / sort / page row instead of the page chips.
 function Admin:drawAuctionHistory()
     local g = self.g
-    filterDraw(self.aucF, self)
+    self.aucF:draw(self)
     local snap = self.aucHistory
     local rows = self.aucHistoryRows or {}
     local countText = ""
@@ -7347,8 +7318,8 @@ function Admin:drawAudit()
         stampW = textWidth(stamp) + PAD
         textRight(self, stamp, self.width - PAD, filterY, "textFaint")
     end
-    local rolled = self.auditF.kind == "rolled"
-    filterDraw(self.auditF, self)
+    local rolled = self.auditF:getKind() == "rolled"
+    self.auditF:draw(self)
     local total = self.auditTotal or 0
     text(self, fitText(getText(T .. "Admin_Audit_Count", tostring(#(self.auditRows or {})), tostring(total)),
         self.width - g.auditCountX - stampW), g.auditCountX, filterY, "textMuted")
@@ -7681,14 +7652,8 @@ function Admin:prerender()
         self:refresh()
     end
 
-    -- search candidates: debounce clock and the dropdown's own geometry
-    if self.tab == "Player" and self.hadRead then self.picker:tick(now) end
-    -- the two seller boxes: the debounce clock, the IME read-back and the list's own geometry.
-    -- A box the layout has hidden answers tick with nothing.
-    if self.hadRead then
-        self.lstSellerPicker:tick(now)
-        self.aucSellerPicker:tick(now)
-    end
+    -- (the account box and the two seller boxes run their own debounce, IME read-back and list
+    -- geometry inside the framework field: UI.Autocomplete)
 
     local g = self.g
     -- The money views are read against the numbers, so their backdrop is painted opaque whatever
@@ -7781,10 +7746,9 @@ function Admin:showAuditFor(username, filter)
     end
     setEntryText(self.auditEntry, username)
     self.auditQuery = string.lower(username)
-    local f = self.auditF
-    f.kind = filter or "all"
-    f.page = 1
-    for _, b in ipairs(f.kindButtons) do b.active = (not b.unused) and b.internal == f.kind end
+    -- "all" (or nil) is the whole record; the chip set is rebuilt from the reads, so a kind this
+    -- page has not seen yet is dropped by the next setKinds
+    self.auditF:setKind((filter ~= nil and filter ~= "all") and filter or nil, true)
     self:rebuildAudit()
 end
 
@@ -7880,7 +7844,7 @@ function Admin:setVisible(visible)
             self.polledAt = nil
         end
     else
-        for _, f in ipairs({ self.auditF, self.histF, self.aucF }) do blurFilterDates(f) end
+        for _, f in ipairs({ self.auditF, self.histF, self.aucF }) do f:blur() end
         self:closeDialog()
         self.picker:close()
         -- the reconciliation page may have a queue running: a window nobody can see must not keep
@@ -7931,12 +7895,7 @@ function Admin:dispose()
     pcall(function() self.aucEntry:unfocus() end)
     self.lstSellerPicker:dispose()
     self.aucSellerPicker:dispose()
-    pcall(function() self.auditF.fromEntry:unfocus() end)
-    pcall(function() self.auditF.toEntry:unfocus() end)
-    pcall(function() self.histF.fromEntry:unfocus() end)
-    pcall(function() self.histF.toEntry:unfocus() end)
-    pcall(function() self.aucF.fromEntry:unfocus() end)
-    pcall(function() self.aucF.toEntry:unfocus() end)
+    for _, f in ipairs({ self.auditF, self.histF, self.aucF }) do f:blur() end
     self.lookup = nil
     self.audit = nil
     self.system = nil

@@ -21,14 +21,12 @@ require "ISUI/ISToolTip"
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
 end
-require "MinidoracatEconomy/ECDatePicker"
 require "MinidoracatEconomy/ECPanelWidgets"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
 local W = C.PanelWidgets
-local DatePicker = C.DatePicker
 
 local L = {}
 
@@ -38,9 +36,44 @@ local fontH = U.fontH
 local fill, text, textWidth, fitText, textRight, textCentre, drawCoin = U.fill, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.drawCoin
 local amountText, kindText, card = U.amountText, U.kindText, U.card
 local ITEM_ICON = W.ITEM_ICON
-local placeRow, listingColumns, comboWidth = W.placeRow, W.listingColumns, W.comboWidth
+local placeRow, comboWidth = W.placeRow, W.comboWidth
 local HISTORY_KINDS, AUCTION_HISTORY_KINDS = W.HISTORY_KINDS, W.AUCTION_HISTORY_KINDS
 local historyError = W.historyError
+
+-- The deadline columns of the market and auction tables measure the rows themselves: a
+-- zero-filled sample is not the widest date. sampleW is the widest value; the market's
+-- "expires" also gets wrapW, the wider half of a "YYYY-MM-DD hh:mm" stamp, so a narrow table
+-- wraps the date onto two lines before any number is touched (UI.Table.layoutColumns).
+local function deadlineWidths(c, rows, moreRows)
+    local valueW = c.sample and textWidth(c.sample) or 0
+    local dateW = c.key == "expires" and math.max(textWidth(string.sub(U.STAMP_SAMPLE, 1, 10)),
+        textWidth(string.sub(U.STAMP_SAMPLE, 12))) or nil
+    local count = rows and #rows or 0
+    local total = count + (moreRows and #moreRows or 0)
+    for index = 1, total do
+        local row = index <= count and rows[index] or moreRows[index - count]
+        local value = row.expiresText
+        if type(value) == "string" then
+            valueW = math.max(valueW, textWidth(value))
+            if dateW then
+                if string.match(value, "^%d%d%d%d%-%d%d%-%d%d ") then
+                    dateW = math.max(dateW, textWidth(string.sub(value, 1, 10)), textWidth(string.sub(value, 12)))
+                else
+                    dateW = math.max(dateW, textWidth(value))
+                end
+            end
+        end
+    end
+    c.sampleW, c.wrapW = valueW, dateW
+end
+
+local function tableColumns(specs, leftX, rightX, nameMin, rows, moreRows)
+    for i = 2, #specs do
+        local c = specs[i]
+        if c.key == "expires" or c.key == "ending" then deadlineWidths(c, rows, moreRows) end
+    end
+    return U.framework.Table.layoutColumns(specs, leftX, rightX, nameMin, PAD)
+end
 
 -- The size the window may never be dragged under, and the purely visual bands of its chrome.
 local MIN_WIDTH, MIN_HEIGHT = 1000, 560
@@ -277,8 +310,8 @@ function L.layoutMarket(self, workBottom, chipBand, toolBand, capH, watch)
               right = true },
         }
     end
-    listingColumns(specs, mktCols.name, mktCols.actionX - PAD, textWidth("mmmmmmmm"), self.marketRows)
-    self.marketHeaderHits = specs
+    tableColumns(specs, mktCols.name, mktCols.actionX - PAD, textWidth("mmmmmmmm"), self.marketRows)
+    self.marketHeader:setColumns(specs)
     local mktBy = {}
     for _, c in ipairs(specs) do mktBy[c.key] = c end
     mktCols.nameW = mktBy.name.w
@@ -289,7 +322,7 @@ function L.layoutMarket(self, workBottom, chipBand, toolBand, capH, watch)
     mktCols.expiresR, mktCols.expiresW = mktBy.expires.textR, mktBy.expires.textW
     mktCols.curR = mktBy.cur and mktBy.cur.textR or nil
     mktCols.curW = mktBy.cur and mktBy.cur.textW or nil
-    mktCols.wrapDate = mktBy.expires.wrapDate
+    mktCols.wrapDate = mktBy.expires.wrapped
     if self.marketList.width ~= mktListW or self.marketList.height ~= mktListH then
         self.marketList:resize(mktListW, mktListH)
     end
@@ -302,7 +335,8 @@ function L.layoutMarket(self, workBottom, chipBand, toolBand, capH, watch)
     -- column (kind, item, amount, status) and the bar's own pager under the table
     local hist = self.marketHistoryList
     local histY, histH, showHistory = self.historyBar:layoutViewport(g.marketCardX + PAD, g.marketHeaderY,
-        mktRight, mktBottom - PAD, isMarket and historyMode, g.marketCardY + math.max(0, (CARD_TITLE_H - CHIP_H) / 2))
+        mktRight, mktBottom - PAD, isMarket and historyMode, g.marketCardY + math.max(0, (CARD_TITLE_H - CHIP_H) / 2),
+        W.historyRowHeight())
     hist:setVisible(showHistory)
     hist:setX(g.marketCardX + 1); hist:setY(histY)
     hist.ecChromeH = histY - g.contentY + ROW
@@ -343,7 +377,7 @@ end
 -- sit above their table, and the tables themselves span the whole workspace.
 function L.layout(self)
     local w, h = self.width, self.height
-    local walletFiltersVisible = self.walletBar.fromEntry:getIsVisible()
+    local walletFiltersVisible = self.walletBar:isShown()
     local th = self:titleBarHeight()
     local rh = self.resizable and self:resizeWidgetHeight() or 0
     local open = not self.isCollapsed
@@ -444,9 +478,9 @@ function L.layout(self)
     local balances = isWallet and self.walletDetails
     local walletLineH = self.list.rowHeight
     g.walletHeaderH = math.max(CARD_TITLE_H, fontH.medium + 8)
-    for _, buttons in ipairs({ self.periodButtons, self.walletBar.kindButtons, self.walletBar.sortButtons,
-        { self.walletDetailsButton, self.walletFilterButton, self.walletBar.prevButton,
-            self.walletBar.nextButton, self.detailCopyButton,
+    -- (the filter bar's own chips take their height from the bar: UI.FilterBar height)
+    for _, buttons in ipairs({ self.periodButtons,
+        { self.walletDetailsButton, self.walletFilterButton, self.detailCopyButton,
             self.historyRetryButton, self.mailClaimAllButton } }) do
         for _, button in ipairs(buttons) do
             local height = math.max(CHIP_H, fontH.small + 8)
@@ -458,7 +492,9 @@ function L.layout(self)
     local periodBottom = placeRow(self.periodButtons,
         bx + PAD + textWidth(getText(T .. "Wallet_Period")) + PAD,
         chromeTop, right, chipBand, 6) + 6
-    local filtersBottom = self.walletBar:layout(bx + PAD, periodBottom, right, false) + 6
+    -- a measuring pass at the visibility the bar already has: hiding it would blur a box the
+    -- player is typing in (UI.FilterBar:layout with visible=false blurs)
+    local filtersBottom = self.walletBar:layout(bx + PAD, periodBottom, right, walletFiltersVisible) + 6
 
     -- ----- the whole-page reader -----
     -- No page keeps a preview band any more: a picked row opens the floating record window
@@ -504,12 +540,6 @@ function L.layout(self)
     g.walletFilters, g.walletList, g.walletBalances = showFilters, showList, balances
     g.walletChipY = chromeTop
     for _, b in ipairs(self.periodButtons) do b:setVisible(showFilters) end
-    if walletFiltersVisible and not showFilters then
-        DatePicker.close(self)
-        self.walletBar.fromEntry:unfocus()
-        self.walletBar.toEntry:unfocus()
-        if self.walletBar.searchEntry then self.walletBar.searchEntry:unfocus() end
-    end
     self.walletBar:layout(bx + PAD, periodBottom, right, showFilters)
     g.tableHeaderY = self.walletCompact and chromeTop or filtersBottom
     local listY = g.tableHeaderY + walletLineH
@@ -770,12 +800,12 @@ function L.layout(self)
           sample = getText(T .. "Auction_Ends_In", getText(T .. "Time_HM", "99", "59")) },
     }
     if aucMine then
-        listingColumns(aSpecs, aCols.name, aCols.histX - PAD, textWidth("mmmmmmmm"),
+        tableColumns(aSpecs, aCols.name, aCols.histX - PAD, textWidth("mmmmmmmm"),
             self.auctionSellRows, self.auctionBidRows)
     else
-        listingColumns(aSpecs, aCols.name, aCols.histX - PAD, textWidth("mmmmmmmm"), self.auctionRows)
+        tableColumns(aSpecs, aCols.name, aCols.histX - PAD, textWidth("mmmmmmmm"), self.auctionRows)
     end
-    self.auctionHeaderHits = aSpecs
+    self.auctionHeader:setColumns(aSpecs)
     aCols.nameW = aSpecs[1].w
     aCols.curR, aCols.curW = aSpecs[2].textR, aSpecs[2].textW
     aCols.priceR, aCols.priceW = aSpecs[3].textR, aSpecs[3].textW
@@ -810,7 +840,8 @@ function L.layout(self)
     -- paged on the client, exactly like the market ring)
     local ahist = self.auctionHistoryList
     local ahY, ahH, showAuctionHistory = self.auctionHistoryBar:layoutViewport(g.auctionCardX + PAD, g.auctionHeaderY,
-        aucRight, aucBottom - PAD, isAuction and aucHistory, g.auctionCardY + math.max(0, (CARD_TITLE_H - CHIP_H) / 2))
+        aucRight, aucBottom - PAD, isAuction and aucHistory, g.auctionCardY + math.max(0, (CARD_TITLE_H - CHIP_H) / 2),
+        W.historyRowHeight())
     ahist:setVisible(showAuctionHistory)
     ahist:setX(g.auctionCardX + 1); ahist:setY(ahY)
     ahist.ecChromeH = ahY - g.contentY + ROW
@@ -1048,7 +1079,7 @@ function L.drawWallet(self)
         text(self, getText(T .. "Wallet_Col_Status"), hx + cols.status, ty, "textMuted")
     end
     -- pager, then the footer note: what this list really is, most urgent first
-    self.walletBar:drawPager(self, hx + PAD, cols.compact)
+    self.walletBar:drawPager(self, cols.compact)
     local retryB = self.historyRetryButton
     local noteW = math.max(0, (retryB:getIsVisible() and retryB.x - 6 or hx + self.list.width) - hx - PAD)
     local note, token = nil, "textMuted"
@@ -1065,7 +1096,7 @@ function L.drawWallet(self)
         note = getText(T .. "Filter_NoMatch")
     elseif all == 0 then
         note = getText(T .. "Wallet_Empty")
-    elseif self.walletBar.query ~= nil then
+    elseif self.walletBar:getQuery() ~= nil then
         -- the keyword only ever narrows what is loaded: the recent window is RECENT_ROWS lines and
         -- a month file is cut to the server's own limit, so it is never the whole two months
         note = getText(T .. "Filter_SearchScope", tostring(all))
@@ -1238,7 +1269,7 @@ function L.drawMarketHistory(self)
     else
         local loaded = #(self.marketHistoryAll or {})
         local note, noteToken = getText(T .. "Market_History_Note"), "textMuted"
-        if self.historyBar.query ~= nil then
+        if self.historyBar:getQuery() ~= nil then
             note = getText(T .. "Filter_SearchScope", tostring(loaded))
         end
         if snap.truncated == true then
@@ -1248,7 +1279,7 @@ function L.drawMarketHistory(self)
         text(self, fitText(note, noteW), g.marketCardX + PAD, ty, noteToken)
     end
     self.historyBar:draw(self)
-    self.historyBar:drawPager(self, g.marketCardX + PAD)
+    self.historyBar:drawPager(self)
     if list:getIsVisible() and #list:getItems() == 0 then
         local all = #(self.marketHistoryAll or {})
         text(self, getText(T .. (all > 0 and "Filter_NoMatch" or "Market_History_Empty")), list.x + PAD,
@@ -1283,7 +1314,7 @@ function L.drawMarket(self)
         text(self, getText(T .. "Filter_Sort"), self.marketSortCombo.x,
             self.marketSortCombo.y - fontH.small - 2, "textMuted")
     end
-    -- the header row is a child (MarketHeader): it paints the column names and takes the clicks
+    -- the header row is a child (UI.TableHeader): it paints the column names and takes the clicks
     if #self.marketList:getItems() == 0 then
         text(self, getText(T .. (self.marketNoMatch and "Market_NoMatch" or "Market_Empty")),
             self.marketList.x + PAD, self.marketList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
@@ -1331,7 +1362,7 @@ function L.drawAuctionHistory(self)
         textRight(self, getText(T .. "Wallet_Loading"), noteR, ty, "textMuted")
     end
     self.auctionHistoryBar:draw(self)
-    self.auctionHistoryBar:drawPager(self, g.auctionCardX + PAD)
+    self.auctionHistoryBar:drawPager(self)
     if list:getIsVisible() and #list:getItems() == 0 then
         local all = #(self.auctionHistoryAll or {})
         text(self, getText(T .. (all > 0 and "Filter_NoMatch" or "Auction_History_Empty")), list.x + PAD,
@@ -1367,7 +1398,7 @@ function L.drawAuction(self)
         self.auctionSortCombo.y - fontH.small - 2, "textMuted")
     text(self, getText(T .. "Trade_Currency"), self.auctionCurCombo.x,
         self.auctionCurCombo.y - fontH.small - 2, "textMuted")
-    -- the header row is a child (MarketHeader): it paints the column names and takes the clicks
+    -- the header row is a child (UI.TableHeader): it paints the column names and takes the clicks
     if #self.auctionList:getItems() == 0 then
         text(self, getText(T .. (self.auctionNoMatch and "Market_NoMatch" or "Auction_Empty")),
             self.auctionList.x + PAD, self.auctionList.y + math.floor((ROW - fontH.small) / 2), "textMuted")

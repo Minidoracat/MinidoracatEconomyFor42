@@ -95,7 +95,7 @@ end
 local Page = ISPanel:derive("MinidoracatEconomyAdminSeasons")
 
 function Page:createChildren()
-    self.list = U.newTable(U.TableCell, lineH() + 8)
+    self.list = U.newTable(U.framework.Table.TextCell, lineH() + 8)
     self.list.onSelect = function(_, item) self:onRow(item) end
     self:addChild(self.list)
 
