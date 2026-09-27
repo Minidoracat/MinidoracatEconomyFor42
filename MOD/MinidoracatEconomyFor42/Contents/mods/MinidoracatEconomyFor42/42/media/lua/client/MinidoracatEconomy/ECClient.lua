@@ -643,7 +643,7 @@ C.market = nil
 -- Own listings: { items = { view... (qty >= 1) }, maxListings, atTerminal }.
 C.myListings = nil
 -- Backpack candidates: { items = { {itemId, itemIds = {...}, count, item, ok, reason?,
--- condition?, uses?, category?}, ... }, atTerminal, feePercent, priceMin, priceMax, mine,
+-- state? (Codec.preview), category?}, ... }, atTerminal, feePercent, priceMin, priceMax, mine,
 -- maxListings }. One row per item state: `itemIds` holds every stacked item the server merged
 -- into it and `count` is how many (the picker lists a lot, not a single item).
 C.candidates = nil
