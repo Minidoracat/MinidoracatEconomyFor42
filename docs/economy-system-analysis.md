@@ -999,6 +999,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - **收音不是自訂串流**：VOIP 與一般聊天使用本體的附近電台清單；`VoiceManager.java:833-916` 尋找格子 `objects` 中開機的 `IsoRadio`，包含玩家周圍及下一層。VOIP 保留伺服器 `VoiceEnable` 與玩家 PTT／VAD；一般聊天採第一個可傳送裝置，背包雙向電台優先（`ChatManager.java:433-438,577-590`）。`MicRange=5` 不是這兩條路徑的共同距離閘門；`/all`、私訊與回程距離都不被本 MOD 改寫。
 - **範圍**：共用 `RadioFrequency` 與 `RadioRange`。`RadioRange=0` 的文字強度維持 `-1`；原生裝置使用 100000，因 `DeviceData.setTransmitRange(-1)` 會變 0 而停止匹配（`:455-457`）。Java `RadioData` 傳送座標使用 signed short（`VoiceManagerData.java:57-66`）；100000 覆蓋其座標域。42.20.4 Linux native 快照的 `RakNet::RakVoice::SetChannelsRouting`／`OnVoiceData` 顯示對頻後以二維距離比發送端 range，無額外的嘴對嘴距離總閘；這是來源查證，不是 Windows／Linux 雙端實際聲音送達證據。
 - **生命週期與限制**：`ECTradeRadioRelay` 處理登錄、解除、拆站、設定變更及格子載入；正常操作防線必須完整安裝才啟用裝置。已載入站台採有界輪掃與最短 30 秒修復間隔，普通 radio 不動；讀取、建立或清理失敗不冒充 active／disabled。原生封包沒有完整鎖定能力，恢復不保證對抗持續干擾；原生發送函式返回也不是每個 client 收到的 ACK。完整語音、一般聊天與雙向距離仍待雙客戶端操作驗收。
+- **格子載入成本（2026-09-27）**：`LoadGridsquare` 對每次 chunk 載入的每個有物件格子觸發（`IsoChunk.java:3796-3835`），不只新區域。登錄格以數值座標索引辨識（不再每格組 `"x,y,z"` 字串）；其餘格子只讀特殊物件清單，清單上沒有 `IsoRadio` 就結束，不走訪整個物件清單。依據：自有裝置只經 `createRadio` 的 `AddSpecialObject` 進世界（`IsoGridSquare.java:6185-6195`），存檔旗標讓讀檔後仍在特殊清單（`:2930-2933`、`:3221-3222`、`:3304-3310`）；判斷只看類別不看 sprite（client 可改任何物件的 sprite，`GameServer.java:1879-1907`），也不看位置，因此從未登錄或已解除登錄的格子上的孤兒照樣清除。日後若改用其他方式放置裝置，此預篩會看不到孤兒。
 - 原版另有 `media/radio/RadioData.xml` 的腳本化電台，只能放靜態預錄內容，適合世界觀氛圍，不適合動態行情。
 
 ### 17.4 生成建模

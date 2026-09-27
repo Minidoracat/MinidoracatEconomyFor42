@@ -405,6 +405,11 @@ function getCell()
         sq.getY = function() return y end
         sq.getZ = function() return z end
         sq.getObjects = function() faultCheck("getObjects") return javaList(worldObjectList(key)) end
+        -- IsoGridSquare.specialObjects（:9674-9676）：AddSpecialObject 放進去（:6185-6195），存檔
+        -- 旗標讓讀檔後仍在上面（:2930-2933、:3221-3222、:3304-3310）。這個假世界的 worldObjects
+        -- 全是 IsoRadio——relay 自己放的，或存檔帶回來的——所以兩份清單對它們一致；終端 tile
+        -- 物件（worldSprites）不在上面。
+        sq.getSpecialObjects = function() return javaList(worldObjects[key] or {}) end
         -- AddSpecialObject 先把物件放進 objects／specialObjects，之後才 addToWorld（也就是
         -- ZomboidRadio.RegisterDevice 的入口）與重算（IsoGridSquare.java:6189-6224）。注入點
         -- 刻意在「已經加進去之後」：那正是引擎會留下一個沒註冊、沒發送的真物件的地方。
@@ -714,7 +719,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78   -- +78: generic entitlements (scripts/test_entitlements.lua).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: chunk-load prefilter (ordinary square not walked, orphan still found).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -13025,12 +13030,16 @@ getCell = function()
         return fakeSquares[worldKey(x, y, z)] or realCell():getGridSquare(x, y, z)
     end }
 end
-local function fakeSquare(x, y, objects, mode)
-    local sq = { __class = "IsoGridSquare" }
+-- specials：引擎的第二份清單（IsoGridSquare.specialObjects）。預設與 objects 同一批物件（下面的
+-- 既有情境全是收音機），但它是另一個清單：注入在物件清單的故障不會連帶出現在這裡。
+-- objectReads：getObjects 被呼叫幾次——一般格子在載入時不該走訪物件清單。
+local function fakeSquare(x, y, objects, mode, specials)
+    local sq = { __class = "IsoGridSquare", objectReads = 0 }
     sq.getX = function() return x end
     sq.getY = function() return y end
     sq.getZ = function() return 0 end
     sq.getObjects = function()
+        sq.objectReads = sq.objectReads + 1
         return {
             size = function() return #objects end,
             get = function(_, i)
@@ -13039,7 +13048,17 @@ local function fakeSquare(x, y, objects, mode)
             end,
         }
     end
-    sq.transmitRemoveItemFromSquare = function() return 0 end
+    specials = specials or objects
+    sq.getSpecialObjects = function() return javaList(specials) end
+    -- "lie"：回成功 index 卻什麼都沒刪；其他模式真的把物件從兩份清單拿掉
+    sq.transmitRemoveItemFromSquare = function(_, o)
+        if mode ~= "lie" then
+            for i = #objects, 1, -1 do if objects[i] == o then table.remove(objects, i) end end
+            for i = #specials, 1, -1 do if specials[i] == o then table.remove(specials, i) end end
+            o.removed = true
+        end
+        return 0
+    end
     sq.RecalcProperties = function() end
     sq.RecalcAllWithNeighbours = function() end
     fakeSquares[worldKey(x, y, 0)] = sq
@@ -13136,6 +13155,26 @@ local beforeGet = #logs
 fire("LoadGridsquare", fakeSquare(643, 243, { getOwned }, "get"))
 check(getOwned.removed == nil and #logs > beforeGet and logged("native object list get threw"),
     "an object list whose get raised mid-scan removes nothing and is reported")
+
+-- 一般格子：沒登錄、沒有我們的裝置。載入時只讀座標與特殊物件清單的大小，物件清單一次都不走訪；
+-- 門在特殊清單上但不是 IsoRadio，一樣不走訪。舊版每格都 getObjects＋逐物件 instanceof。
+local floorTile = { __class = "IsoObject" }
+local doorTile = { __class = "IsoDoor" }
+local plainSq = fakeSquare(644, 244, { floorTile, { __class = "IsoObject" } }, nil, {})
+local doorSq = fakeSquare(645, 245, { floorTile, doorTile }, nil, { doorTile })
+local beforePlain = #logs
+fire("LoadGridsquare", plainSq)
+fire("LoadGridsquare", doorSq)
+check(plainSq.objectReads == 0 and doorSq.objectReads == 0 and #logs == beforePlain,
+    "a chunk load does not walk the object list of an ordinary square, with or without a door on it")
+-- 從未登錄過的格子上的孤兒，client 還把它的 sprite 改成門：格上唯一的收音機，靠類別（不靠 sprite
+-- 或位置）在特殊物件清單上被找到並刪掉；同格的門與地板不動。
+local stray = ownedRadio("fixtures_doors_01_0")
+local mixedSq = fakeSquare(646, 246, { floorTile, doorTile, stray }, nil, { doorTile, stray })
+fire("LoadGridsquare", mixedSq)
+check(stray.removed == true and doorTile.removed == nil and floorTile.removed == nil
+    and mixedSq.objectReads >= 1,
+    "an orphan on a square never registered, whatever sprite it wears, is still found through the special-object list and deleted; the door and the floor stay")
 getCell = realCell
 EC.log = realLog
 end

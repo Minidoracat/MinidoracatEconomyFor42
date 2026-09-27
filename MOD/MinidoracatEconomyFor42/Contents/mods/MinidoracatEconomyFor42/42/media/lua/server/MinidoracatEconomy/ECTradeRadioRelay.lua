@@ -103,7 +103,10 @@ Rl.SWEEP_BUDGET = 8              -- registered squares examined per sweep (<= T.
 
 local md = nil
 local states = {}                -- "x,y,z" -> { state, at = ms, err, needsReplace = true|nil }
-local coords = {}                -- "x,y,z" -> terminal id (rebuilt on every registration change)
+-- x -> y -> z -> terminal id (rebuilt on every registration change). Numbers, not the "x,y,z"
+-- string: a chunk load looks every square up by the engine's own coordinates, and building that
+-- string (three tostring calls) for each of them was the hot spot of the load callback.
+local coordIds = {}
 local queue = {}                 -- the current sweep cycle, T.list() order
 local queueAt = 1
 local lastSweepAt = 0
@@ -111,6 +114,15 @@ local dirty = false              -- a reported state changed: push the terminal 
 
 local function key(x, y, z)
     return tostring(x) .. "," .. tostring(y) .. "," .. tostring(z)
+end
+
+-- `+ 0` turns a -0.0 into 0.0: ECTerminal's isInt accepts -0.0 and T.at compares with ==, so a
+-- registration may carry one, while the engine's coordinates never do. The string key this
+-- replaced matched the two as well (Kahlua's tostring drops the sign of an integral -0.0).
+local function coordId(x, y, z)
+    local byY = coordIds[x + 0]
+    local byZ = byY and byY[y + 0]
+    return byZ and byZ[z + 0]
 end
 
 local function record(k)
@@ -304,6 +316,9 @@ local function createRadio(sq, terminalSpriteName, freq, range)
         if data == nil then error("could not clone the device data of " .. tostring(Rl.ITEM)) end
         obj:setDeviceData(data)
         applyDeviceData(obj:getDeviceData(), freq, range)
+        -- AddSpecialObject is also what puts the device on the square's special-object list:
+        -- the chunk-load orphan pass looks there and nowhere else (mayCarryRadio). Adding it any
+        -- other way would make an orphan invisible to that pass.
         sq:AddSpecialObject(obj)
         obj:transmitCompleteItemToClients()
         sq:RecalcProperties()
@@ -447,9 +462,16 @@ function Rl.syncAll(force)
 end
 
 local function rebuildCoords()
-    coords = {}
+    coordIds = {}
     if not md then return end
-    for id, t in pairs(md.terminals) do coords[key(t.x, t.y, t.z)] = id end
+    for id, t in pairs(md.terminals) do
+        local x, y = t.x + 0, t.y + 0
+        local byY = coordIds[x]
+        if byY == nil then byY = {}; coordIds[x] = byY end
+        local byZ = byY[y]
+        if byZ == nil then byZ = {}; byY[y] = byZ end
+        byZ[t.z + 0] = id
+    end
 end
 
 -- Registration changed (register / unregister / demolish). The touched square is handled at
@@ -459,7 +481,7 @@ function Rl.onTerminalsChanged(x, y, z)
     rebuildCoords()
     if x == nil then return nil end
     local k = key(x, y, z)
-    local id = coords[k]
+    local id = coordId(x, y, z)
     if id and md.terminals[id] then return Rl.syncSquare(md.terminals[id], true) end
     -- No registration here any more. The state record is this square's only entry in the
     -- bounded sweep, so it is dropped only once the square really is clear. ECTerminal refuses
@@ -490,21 +512,44 @@ end
 
 -- ---------- events ----------
 
--- Fires once per loaded square that has objects, after every object's addToWorld (IsoChunk.java:
--- 3796-3835), on the server too. Two jobs: bring a registered terminal's device up as soon as
--- its chunk is there, and delete orphans - an owned device on a square nobody registered any
--- more. A vanilla radio is never touched, whatever its sprite or its ModData says.
-local function onLoadGridsquare(sq)
-    local x, y, z = sq:getX(), sq:getY(), sq:getZ()
-    if x == nil then error("trade radio: loaded square has no x coordinate") end
-    local id = coords[key(x, y, z)]
-    if id and md.terminals[id] then
-        -- not forced: a chunk load must not become a way around Rl.REPAIR_MS. A square that was
-        -- never built carries no stamp, so a first load still brings its device up at once.
-        Rl.syncSquare(md.terminals[id], false)
-        return
+-- Could this square be carrying one of our devices? Every owned device entered the world through
+-- AddSpecialObject (createRadio is its only builder, and has been since the relay existed), which
+-- puts it on the square's special-object list (IsoGridSquare.java:6185-6195); a chunk save keeps
+-- that membership and the load puts the object back on the list (:2930-2933 save,
+-- :3221-3222 and :3304-3310 load). This asks nothing about where the square is, so an orphan
+-- is found wherever it stands. The class is checked, never the sprite - a client can give any
+-- object any sprite (GameServer.java:1879-1907) but not another class - and the owner check
+-- itself stays with TR.ownedOnSquare, over every object. The list only holds doors, windows,
+-- thumpables, radios and the like, so it is empty on most squares a chunk load streams in, and
+-- those squares end here without their object list being walked.
+local function mayCarryRadio(sq)
+    local specials = sq:getSpecialObjects()
+    for i = 0, specials:size() - 1 do
+        if instanceof(specials:get(i), "IsoRadio") then return true end
     end
-    clearLoadedSquare(sq)
+    return false
+end
+
+-- Fires once per loaded square that has objects, after every object's addToWorld (IsoChunk.java:
+-- 3796-3835), on the server too, and for every square of every chunk load, not just new ones:
+-- this is the one relay path whose cost grows with how much of the map players walk through.
+-- Two jobs: bring a registered terminal's device up as soon as its chunk is there, and delete
+-- orphans - an owned device on a square nobody registered any more. A vanilla radio is never
+-- touched, whatever its sprite or its ModData says. An ordinary square costs its x coordinate,
+-- one table read and the size of its special-object list.
+local function onLoadGridsquare(sq)
+    local x = sq:getX()
+    if x == nil then error("trade radio: loaded square has no x coordinate") end
+    if coordIds[x] ~= nil then     -- the x column decides for nearly every square: y and z unread
+        local id = coordId(x, sq:getY(), sq:getZ())
+        if id and md.terminals[id] then
+            -- not forced: a chunk load must not become a way around Rl.REPAIR_MS. A square that
+            -- was never built carries no stamp, so a first load still brings its device up at once.
+            Rl.syncSquare(md.terminals[id], false)
+            return
+        end
+    end
+    if mayCarryRadio(sq) then clearLoadedSquare(sq) end
 end
 
 function Rl.onLoadGridsquare(sq)
