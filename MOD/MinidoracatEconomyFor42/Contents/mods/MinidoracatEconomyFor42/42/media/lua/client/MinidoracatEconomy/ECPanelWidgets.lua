@@ -704,9 +704,9 @@ end
 
 -- Statement row (the wallet ledger): the six columns the header paints, plus the selection band
 -- every table in this window carries. The picked row is what the full-value strip spells out, so a
--- keyboard user has to be able to see which row that is. The counterparty/note column is the one
--- that truncates, so its fitted text is cached per row and per column width instead of measured
--- again on every frame of every visible row.
+-- keyboard user has to be able to see which row that is. The kind and counterparty/note columns
+-- truncate, so their fitted text is cached per row and per column width instead of measured again
+-- on every frame of every visible row.
 local StatementCell = ISPanel:derive("MinidoracatEconomyPlayerStatementCell")
 
 function StatementCell:render()
@@ -714,10 +714,12 @@ function StatementCell:render()
     if not e then return end
     local cols = self.list.cols
     local h = self.height
-    if self.descEntry ~= e or self.descBudget ~= cols.descW or self.timeBudget ~= cols.timeW then
-        self.descEntry, self.descBudget, self.timeBudget = e, cols.descW, cols.timeW
+    if self.descEntry ~= e or self.descBudget ~= cols.descW or self.timeBudget ~= cols.timeW
+        or self.kindBudget ~= cols.kindW then
+        self.descEntry, self.descBudget, self.timeBudget, self.kindBudget = e, cols.descW, cols.timeW, cols.kindW
         self.descText = fitText(e.desc, cols.descW or 0)
         self.timeText = cols.compact and fitText(e.time, cols.timeW) or e.time
+        self.kindText = fitText(e.kindText, cols.kindW or 0)
     end
     local lit = rowBackground(self)
     local ty = math.floor((h - fontH.small) / 2)
@@ -739,7 +741,7 @@ function StatementCell:render()
         return
     end
     text(self, e.time, cols.time, ty, tokenMuted)
-    text(self, e.kindText, cols.kind, ty, tokenText)
+    text(self, self.kindText, cols.kind, ty, tokenText)
     text(self, self.descText, cols.desc, ty, tokenMuted)
     textRight(self, e.amountText, cols.amountR, ty, amountToken)
     textRight(self, amountText(e.after), cols.balanceR, ty, tokenText)

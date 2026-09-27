@@ -34,7 +34,7 @@ local PAD, ROW, CHIP_H, COIN_SMALL, T = U.PAD, U.ROW, U.CHIP_H, U.COIN_SMALL, U.
 local CARD_TITLE_H = U.CARD_TITLE_H
 local fontH = U.fontH
 local fill, text, textWidth, fitText, textRight, textCentre, drawCoin = U.fill, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.drawCoin
-local amountText, kindText, card = U.amountText, U.kindText, U.card
+local amountText, card = U.amountText, U.card
 local ITEM_ICON = W.ITEM_ICON
 local placeRow, comboWidth = W.placeRow, W.comboWidth
 local HISTORY_KINDS, AUCTION_HISTORY_KINDS = W.HISTORY_KINDS, W.AUCTION_HISTORY_KINDS
@@ -558,12 +558,20 @@ function L.layout(self)
     local function colW(header, sample) return math.max(textWidth(getText(T .. header)), textWidth(sample)) + PAD * 2 end
     cols.time = PAD
     cols.kind = cols.time + colW("Wallet_Col_Time", U.STAMP_SAMPLE)
-    cols.desc = cols.kind + colW("Wallet_Col_Kind", kindText("admin_adjust"))
     cols.status = inner - colW("Wallet_Col_Status", getText(T .. "Wallet_RolledBack")) + PAD
     cols.balanceR = cols.status - PAD
     cols.amountR = cols.balanceR - colW("Wallet_Col_Balance", "999,999,999")
-    cols.descW = math.max(0, cols.amountR - (self.statementAmountW or 0) - cols.desc)
-    cols.compact = cols.descW == 0
+    -- The kind column is as wide as the widest kind the listed rows carry, but never more than
+    -- half of the band it shares with the note, so the note keeps its room; a longer kind is cut
+    -- with "..." on the row and spelled out in full in the row's record window. A band whose half
+    -- cannot even hold the kind header goes compact.
+    local band = cols.amountR - (self.statementAmountW or 0) - cols.kind
+    local kindCap = math.floor(band / 2) - PAD * 2
+    local headW = textWidth(getText(T .. "Wallet_Col_Kind"))
+    cols.compact = kindCap < headW
+    cols.kindW = math.min(kindCap, math.max(headW, self.statementKindW or 0))
+    cols.desc = cols.kind + cols.kindW + PAD * 2
+    cols.descW = cols.compact and 0 or (band - cols.kindW - PAD * 2)
     if cols.compact then
         cols.amountR = inner - PAD
         cols.timeW = math.max(0, cols.amountR - cols.time - (self.statementValueW or 0) - COIN_SMALL - PAD * 2)

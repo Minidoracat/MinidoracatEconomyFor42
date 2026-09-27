@@ -1115,9 +1115,11 @@ function Panel:rebuildList()
     self.rows = rows
     self.statementAmountW = textWidth(getText(T .. "Wallet_Col_Amount")) + PAD * 2
     self.statementValueW = 0
+    self.statementKindW = 0
     for _, row in ipairs(rows) do
         self.statementAmountW = math.max(self.statementAmountW, textWidth(row.amountText) + PAD * 2)
         self.statementValueW = math.max(self.statementValueW, textWidth(row.valueText))
+        self.statementKindW = math.max(self.statementKindW, textWidth(row.kindText))
     end
     self.list:setItems(rows)
     self:rebuildBalances()
