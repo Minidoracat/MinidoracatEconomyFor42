@@ -737,6 +737,38 @@ function Panel:onKeyRelease(key) Keys.onKeyRelease(self, key) end
 function Panel:isKeyConsumed(key) return Keys.isKeyConsumed(self, key) end
 function Panel:onFocus() Keys.onFocus(self) end
 
+-- Controller: JoyPadSetup.lua:431-458 hands the UI holding a player's joypad focus onJoypadDown and
+-- the four onJoypadDir* (:678-680). ISCollapsableWindow has no joypad navigation of its own, so all
+-- of them go to the same engine and focus state as the keyboard.
+function Panel:onJoypadDown(button, joypadData) Keys.onJoypadDown(self, button, joypadData) end
+function Panel:onJoypadDirUp(joypadData) Keys.onJoypadDir(self, "up", joypadData) end
+function Panel:onJoypadDirDown(joypadData) Keys.onJoypadDir(self, "down", joypadData) end
+function Panel:onJoypadDirLeft(joypadData) Keys.onJoypadDir(self, "left", joypadData) end
+function Panel:onJoypadDirRight(joypadData) Keys.onJoypadDir(self, "right", joypadData) end
+-- the controller is going away (JoyPadSetup.lua:1056-1064): its focus goes back, the ring goes
+function Panel:onJoypadBeforeDeactivate(joypadData)
+    Keys.releaseJoypad(self)
+    Keys.clear(self)
+end
+
+-- LB / RB: the previous / next page the rail shows, through the same setTab a click reaches
+-- (Admin and Settings are utility entries that open something else, not pages). A modal dialog
+-- owns the window, so no page turns under it.
+function Panel:onFocusShoulder(delta)
+    if self:isModal() then return end
+    local pages, at = {}, nil
+    for _, b in ipairs(self.tabButtons) do
+        if not b.navUtility and b:getIsVisible() then
+            pages[#pages + 1] = b.internal
+            if b.internal == self.tab then at = #pages end
+        end
+    end
+    if at == nil then return end
+    local i = at + delta
+    if i < 1 then i = #pages elseif i > #pages then i = 1 end
+    self:setTab(pages[i])
+end
+
 function Panel:isModal()
     return self.marketDialog ~= nil or self.buyDialog ~= nil
         or (self.prefsPopover and self.prefsPopover:getIsVisible())
@@ -3563,14 +3595,17 @@ function Panel:render()
     U.Skin.border(self, 0, 0, w, h, color("border"))
     -- last, and after the stencil was cleared: the children were rendered between prerender and
     -- this call (UIElement.java:1626-1634), so the ring is painted over the control it marks
-    Keys.render(self)
+    Keys.render(self, U.theme)
 end
 
 function Panel:close()
     Keys.close(self)
 end
 
+-- Every way the window hides (close chip, hotkey, float button, Keys.close's deferred close) ends
+-- here, so the controller focus is handed back here and nowhere else.
 function Panel:setVisible(visible)
+    local was = self.shown == true
     ISCollapsableWindow.setVisible(self, visible)
     self.shown = visible == true
     if not visible then
@@ -3586,6 +3621,7 @@ function Panel:setVisible(visible)
         self.marketGate:clear()
         self.leaderboard:leave()
         Keys.clear(self)              -- no ring waiting behind a closed window
+        Keys.releaseJoypad(self)      -- the controller goes back to what it had before
     end
     if visible then
         self.offsetMin = localOffsetMinutes()
@@ -3593,6 +3629,8 @@ function Panel:setVisible(visible)
         Keys.onFocus(self)
         self:layout()
         self:refresh()
+        -- a player on a controller gets the window's focus the moment it appears
+        if not was then Keys.takeJoypad(self, 0) end
     end
 end
 

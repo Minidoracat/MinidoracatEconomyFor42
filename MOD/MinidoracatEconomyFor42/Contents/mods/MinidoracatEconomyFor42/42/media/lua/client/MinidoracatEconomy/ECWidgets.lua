@@ -60,11 +60,12 @@ U.theme = nil
 U.fontH = { small = 0, medium = 0 }   -- filled by U.init (table identity is stable: alias freely)
 local fontH = U.fontH
 
+-- rev 10: the keyboard/controller focus engine (C.Keyboard, see ECKeyboard) is the framework's
 local function framework()
     local ui = MinidoracatUI and MinidoracatUI.v1
-    if ui and ui.API_MAJOR == 1 and ui.API_REVISION >= 6 and ui.CAPABILITIES
+    if ui and ui.API_MAJOR == 1 and ui.API_REVISION >= 10 and ui.CAPABILITIES
         and ui.CAPABILITIES.theme == true and ui.CAPABILITIES.skin == true
-        and ui.CAPABILITIES.virtualList == true then
+        and ui.CAPABILITIES.virtualList == true and ui.CAPABILITIES.focus == true then
         return ui
     end
     return nil
@@ -79,10 +80,13 @@ function U.init()
     if not (MinidoracatUI and MinidoracatUI.v1 and MinidoracatUI.v1.CAPABILITIES.virtualList) then
         pcall(require, "MinidoracatUI/VirtualList")
     end
+    if not (MinidoracatUI and MinidoracatUI.v1 and MinidoracatUI.v1.CAPABILITIES.focus) then
+        pcall(require, "MinidoracatUI/Focus")
+    end
     local ui = framework()
     if not ui then
         if not U.warned then
-            EC.log("MinidoracatUI v1 (rev>=6, virtualList) missing: Economy Center UI disabled")
+            EC.log("MinidoracatUI v1 (rev>=10, virtualList, focus) missing: Economy Center UI disabled")
             U.warned = true
         end
         return nil
@@ -600,52 +604,6 @@ function Button:render()
     else
         textCentre(self, self.title, w / 2, ty, textToken, font)
     end
-end
-
--- ---------- keyboard focus painter ----------
--- One ring for the whole mod (ECKeyboard paints it on the window, after the children had their
--- render pass, so it is never covered by the control it marks).
---
--- The ring lives *outside* the control: FOCUS_GAP px of untouched control edge, then FOCUS_W px of
--- ring. An opaque surface halo keeps it distinct even over bright scenes with faded chrome.
--- Neither the halo nor the ring follows U.alpha.
-U.FOCUS_GAP = 2
-U.FOCUS_W = 2
-
-function U.drawFocus(el, x, y, w, h, token)
-    local c = color(token or "accent")
-    local o = U.FOCUS_GAP + U.FOCUS_W
-    local rx, ry = x - o, y - o
-    local rw, rh = w + o * 2, h + o * 2
-    if rw <= 0 or rh <= 0 then return end
-    local bg = color("surface")
-    for i = 1, U.FOCUS_W do
-        el:drawRectBorder(rx - i, ry - i, rw + i * 2, rh + i * 2, 1, bg.r, bg.g, bg.b)
-    end
-    for i = 0, U.FOCUS_W - 1 do
-        el:drawRectBorder(rx + i, ry + i, rw - i * 2, rh - i * 2, c.a, c.r, c.g, c.b)
-    end
-end
-
--- Caption under the ring: the whole label of a control whose own paint cannot carry it (an icon
--- chip, a title the owner had to cut). Placed under the ring, flipped above when the ring sits at
--- the bottom edge of `el`, and always inside el's width so it can never be clipped away.
-function U.drawFocusCaption(el, x, y, w, h, caption)
-    if type(caption) ~= "string" or caption == "" then return end
-    local o = U.FOCUS_GAP + U.FOCUS_W
-    local tw = textWidth(caption)
-    local bw = tw + 10
-    local bh = fontH.small + 6
-    local bx = x + math.floor((w - bw) / 2)
-    local by = y + h + o + 2
-    if by + bh > el.height then by = y - o - 2 - bh end
-    if by < 0 then by = 0 end
-    if bx + bw > el.width then bx = el.width - bw end
-    if bx < 0 then bx = 0 end
-    local bg, bd = color("surface"), color("accent")
-    el:drawRect(bx, by, bw, bh, 1, bg.r, bg.g, bg.b)
-    el:drawRectBorder(bx, by, bw, bh, bd.a, bd.r, bd.g, bd.b)
-    text(el, caption, bx + 5, by + 3, "text")
 end
 
 -- ---------- generic table cell (admin tables) ----------

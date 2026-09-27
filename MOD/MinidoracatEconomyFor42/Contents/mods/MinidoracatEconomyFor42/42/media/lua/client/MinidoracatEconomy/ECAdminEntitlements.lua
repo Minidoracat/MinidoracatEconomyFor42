@@ -32,7 +32,7 @@
 -- lists are the shared VirtualList tables and the long read-only texts the shared reader. The plan
 -- fields scroll inside one form: a control that is outside the viewport is parked off screen but
 -- stays visible, so the keyboard ring can land on it and the form scrolls it into view first
--- (ECKeyboard land() -> scrollOwner:scrollTo).
+-- (MinidoracatUI/Focus.lua land() -> scrollOwner:scrollTo).
 
 require "ISUI/ISPanel"
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then

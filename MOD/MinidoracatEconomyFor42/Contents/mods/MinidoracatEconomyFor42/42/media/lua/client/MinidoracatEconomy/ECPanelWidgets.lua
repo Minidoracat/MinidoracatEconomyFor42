@@ -799,7 +799,7 @@ function CandidateCell:render()
         if Keys.isKeyboardFocused(self.list) and self.list:isSelected(self.index)
             and i == math.min(self.list.ecColumn or 1, #tiles) then
             fill(self, x + 2, 2, tw - 4, th - 4, "selected")
-            U.drawFocus(self, x + 6, 6, tw - 12, th - 12)
+            Keys.drawRing(self, x + 6, 6, tw - 12, th - 12, U.theme)
         end
         if e.ok and hoverCol == i then
             Skin.fill(self, x + 2, 2, tw - 4, th - 4, color("hover"), "round", 1)

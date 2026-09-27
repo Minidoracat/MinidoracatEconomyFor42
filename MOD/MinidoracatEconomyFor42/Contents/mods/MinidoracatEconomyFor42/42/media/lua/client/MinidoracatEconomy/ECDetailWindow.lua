@@ -289,6 +289,20 @@ function Win:onKeyRelease(key) Keys.onKeyRelease(self, key) end
 function Win:isKeyConsumed(key) return Keys.isKeyConsumed(self, key) end
 function Win:onFocus() Keys.onFocus(self) end
 
+-- Controller: same engine and focus state as the keyboard (JoyPadSetup.lua:431-458, :678-680).
+-- B is Escape here too: onEscape closes the record, and setVisible hands the joypad back to the
+-- window it came from.
+function Win:onJoypadDown(button, joypadData) Keys.onJoypadDown(self, button, joypadData) end
+function Win:onJoypadDirUp(joypadData) Keys.onJoypadDir(self, "up", joypadData) end
+function Win:onJoypadDirDown(joypadData) Keys.onJoypadDir(self, "down", joypadData) end
+function Win:onJoypadDirLeft(joypadData) Keys.onJoypadDir(self, "left", joypadData) end
+function Win:onJoypadDirRight(joypadData) Keys.onJoypadDir(self, "right", joypadData) end
+-- the controller is going away (JoyPadSetup.lua:1056-1064): its focus goes back, the ring goes
+function Win:onJoypadBeforeDeactivate(joypadData)
+    Keys.releaseJoypad(self)
+    Keys.clear(self)
+end
+
 -- ----- painting -----
 
 function Win:prerender()
@@ -334,19 +348,24 @@ function Win:render()
     if self.clearStentil then self:clearStencilRect() end
     U.Skin.border(self, 0, 0, w, h, color("border"))
     -- last: the children were painted between prerender and here, so the ring is over them
-    Keys.render(self)
+    Keys.render(self, U.theme)
 end
 
 -- ----- lifecycle -----
 
+-- Every close (Escape / B, the dismiss chip, a vanished owner) ends here, so the controller focus
+-- is handed back here and nowhere else.
 function Win:setVisible(visible)
+    local was = self.javaObject ~= nil and self:getIsVisible()
     ISCollapsableWindow.setVisible(self, visible)
     if not visible then
-        Keys.clear(self)   -- no ring and no text focus left behind a closed window
+        Keys.clear(self)          -- no ring and no text focus left behind a closed window
+        Keys.releaseJoypad(self)  -- the controller goes back to the window it came from
         return
     end
     Keys.onFocus(self)
     self:layout()
+    if not was then Keys.takeJoypad(self, 0) end
 end
 
 -- ISLayoutManager: the position and the size the player dragged to are kept, and the window never

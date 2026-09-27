@@ -40,7 +40,7 @@
 --
 -- Engine references (snapshot 42.20.4-20260826):
 --   setSelectedIndex does not fire onSelect (MinidoracatUI/VirtualList.lua:106-131), and Enter
---   over a list descriptor does (ECKeyboard.lua:521-526) -- so arrowing through the rows never
+--   over a list descriptor does (MinidoracatUI/Focus.lua listActivate) -- so arrowing through the rows never
 --   triggers a lookup, and Enter is the keyboard equal of the click.
 
 require "ISUI/ISPanel"

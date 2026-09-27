@@ -30,9 +30,14 @@
 --                                         walked backwards, so this popup is asked before the
 --                                         window) -> UIElement.java:2185-2214: onConsumeKeyPress
 --                                         calls onKeyPress *first* and isKeyConsumed afterwards, so
---                                         the answer comes from ECKeyboard's ledger and not from a
---                                         key list. Vanilla shape: ISUI/Crafting/
+--                                         the answer comes from the focus engine's ledger and not
+--                                         from a key list. Vanilla shape: ISUI/Crafting/
 --                                         ISHandcraftWindow.lua:289-299 + :386.
+--   controller                            JoyPadSetup.lua:431-458, :678-680 (the UI holding the
+--                                         joypad focus gets onJoypadDown / onJoypadDir*),
+--                                         :1056-1064 (onJoypadBeforeDeactivate); the popup
+--                                         borrows the focus from its window (C.Keyboard
+--                                         takeJoypad / releaseJoypad) only while it is open.
 --   key names                             Keyboard.KEY_ESCAPE/RETURN (ISHandcraftWindow.lua:290,
 --                                         ISUI/ISTextBox.lua), KEY_LEFT/RIGHT/UP/DOWN (DebugUIs/
 --                                         AnimationClipViewer.lua:693+), KEY_PRIOR/KEY_NEXT
@@ -449,10 +454,13 @@ end
 
 function Popup:onKeyPress(key)
     if D.active ~= self then return end
+    Keys.pressed(key)   -- a new hold: the auto-repeat below counts its delay from here
     if popupKey(self, key) then Keys.eat(key) end
 end
 
--- Only the four arrows repeat: a held Escape or Enter must act once.
+-- Only the four arrows and the month keys repeat: a held Escape or Enter must act once. The engine
+-- sends a repeat on every frame a key is held, so a tap would walk several days at a high frame
+-- rate; Keys.repeatDue lets it through only past the auto-repeat delay, at the repeat rate.
 function Popup:onKeyRepeat(key)
     if D.active ~= self then return end
     local k = Keyboard
@@ -460,6 +468,7 @@ function Popup:onKeyRepeat(key)
         and key ~= k.KEY_PRIOR and key ~= k.KEY_NEXT then
         return
     end
+    if not Keys.repeatDue(key) then return end
     if popupKey(self, key) then Keys.eat(key) end
 end
 
@@ -473,6 +482,23 @@ function Popup:isKeyConsumed(key)
     return Keys.consumed(key)
 end
 
+-- Controller: answered through popupKey, the one keyboard handler -- A is Enter, B is Escape, the
+-- D-pad the arrows -- and LB / RB are the Shift+Tab / Tab walk onto the month and Today / Clear /
+-- Close chips (a controller has no Tab).
+function Popup:onJoypadDown(button, joypadData)
+    if D.active ~= self or Joypad == nil then return end
+    if button == Joypad.AButton then popupKey(self, Keyboard.KEY_RETURN)
+    elseif button == Joypad.BButton then popupKey(self, Keyboard.KEY_ESCAPE)
+    elseif button == Joypad.LBumper then stepFocus(self, -1)
+    elseif button == Joypad.RBumper then stepFocus(self, 1) end
+end
+function Popup:onJoypadDirUp(joypadData) if D.active == self then popupKey(self, Keyboard.KEY_UP) end end
+function Popup:onJoypadDirDown(joypadData) if D.active == self then popupKey(self, Keyboard.KEY_DOWN) end end
+function Popup:onJoypadDirLeft(joypadData) if D.active == self then popupKey(self, Keyboard.KEY_LEFT) end end
+function Popup:onJoypadDirRight(joypadData) if D.active == self then popupKey(self, Keyboard.KEY_RIGHT) end end
+-- the controller is going away: closing hands its focus back to the window
+function Popup:onJoypadBeforeDeactivate(joypadData) D.close() end
+
 -- The chips are children, so they were painted before this call: the ring goes on top of them.
 -- The four arrows paint "<<" and friends, so their words (the tooltip) are the focus caption; a
 -- chip that already paints its whole label gets the ring alone.
@@ -483,8 +509,8 @@ function Popup:render()
     local y = button:getAbsoluteY() - self:getAbsoluteY()
     local caption = button.tooltip
     if caption == button.title then caption = nil end
-    U.drawFocus(self, x, y, button.width, button.height)
-    U.drawFocusCaption(self, x, y, button.width, button.height, caption)
+    Keys.drawRing(self, x, y, button.width, button.height, U.theme)
+    Keys.drawCaption(self, x, y, button.width, button.height, caption, U.theme)
 end
 
 -- ---------- facade ----------
@@ -502,6 +528,15 @@ local function ensurePopup()
     o:setVisible(false)
     popup = o
     return o
+end
+
+-- The top-level window an element hangs under (the root that holds the joypad focus).
+local function rootOf(el)
+    for _ = 1, 32 do
+        if type(el) ~= "table" or el.parent == nil then break end
+        el = el.parent
+    end
+    return el
 end
 
 function D.open(entry, owner, button)
@@ -528,6 +563,10 @@ function D.open(entry, owner, button)
     p:addToUIManager()
     p:bringToTop()
     D.active = p
+    -- opened from a window that holds a controller player's focus: the popup borrows it (it has
+    -- no keyboardTargets, so the window's ring stays put) until D.close hands it back
+    local root = rootOf(owner or button)
+    if root ~= nil and Keys.holdsJoypad(root) then Keys.takeJoypad(p, 0) end
     return p
 end
 
@@ -542,6 +581,7 @@ function D.close(owner)
     p.kbFocus, p.kbReturn = 0, nil
     p:setVisible(false)
     p:removeFromUIManager()
+    Keys.releaseJoypad(p)
     if back and button ~= nil then Keys.refocus(button) end
 end
 

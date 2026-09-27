@@ -574,8 +574,9 @@ function MarketDialog:createChildren()
         end
         return scrollDown(list, x, y)
     end
-    -- This grid uses the same list focus and held-key ledger as every other table.
-    self.pickList.ecKey = function(list, key)
+    -- This grid uses the same list focus and held-key ledger as every other table: the engine asks
+    -- the focused control's onFocusKey first, so the grid owns the arrows and Enter here.
+    self.pickList.onFocusKey = function(list, key)
         local rows, k = list.items, Keyboard
         if #rows == 0 then return false end
         if key == k.KEY_RETURN or key == k.KEY_NUMPADENTER or key == k.KEY_SPACE then
@@ -583,7 +584,8 @@ function MarketDialog:createChildren()
             if candidate then self.panel:onCandidate(candidate) end
             return true
         end
-        local row = list:getSelectedIndex() or 1
+        local was, wasCol = list:getSelectedIndex(), list.ecColumn
+        local row = was or 1
         row = math.max(1, math.min(#rows, row))
         local col = math.max(1, math.min(list.ecColumn or 1, #rows[row]))
         local page = math.max(1, math.floor(list.height / (list.rowHeight + (list.padding or 0))))
@@ -603,7 +605,10 @@ function MarketDialog:createChildren()
         list.ecColumn = math.min(col, #rows[row])
         list:setSelectedIndex(row)
         list:scrollToIndex(row)
-        return true
+        -- an arrow that could not move is left to the engine: the keyboard still eats it (the list
+        -- target claims every navigation key), while the D-pad steps out of the grid at its edge
+        -- instead of being trapped in it
+        return row ~= was or list.ecColumn ~= wasCol
     end
     self:addChild(self.pickList)
 end

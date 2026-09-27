@@ -256,7 +256,7 @@ function Page:createChildren()
 
     -- the keyboard's equal of every pointer path: the lists are selectable, and these act on the
     -- row that is selected. The category checkbox has no chip of its own -- Enter / Space over
-    -- the category list is that checkbox (see catList.ecKey below), so the toolbar does not
+    -- the category list is that checkbox (see catList.onFocusKey below), so the toolbar does not
     -- repeat a control the row already carries.
     self.addButton = chip(tr("Admin_Wl_AddItem"), Page.onAddItem, "add")
     self.allowButton = chip(tr("Admin_Wl_AllowSelected"), Page.onModeSelected, "allow")
@@ -284,10 +284,10 @@ function Page:createChildren()
     end
     self.catList = newList(CatCell, lineH() * 2 + 10, Page.onCatRow)
     self.ruleList = newList(RuleCell, lineH() * 2 + 12, Page.onRuleRow)
-    -- Enter / Space over the category list *is* the row's checkbox. ECKeyboard offers every key
-    -- to a list descriptor's own ecKey first (ECKeyboard.lua:485-487), so exactly these two are
-    -- claimed here and the arrows keep walking the rows.
-    self.catList.ecKey = function(list, key)
+    -- Enter / Space over the category list *is* the row's checkbox. The focus engine offers every
+    -- key to the focused control's own onFocusKey first (MinidoracatUI/Focus.lua handle), so
+    -- exactly these two are claimed here and the arrows keep walking the rows.
+    self.catList.onFocusKey = function(list, key)
         if key ~= Keyboard.KEY_SPACE and key ~= Keyboard.KEY_RETURN
             and key ~= Keyboard.KEY_NUMPADENTER then return false end
         local row = selectedRow(list)

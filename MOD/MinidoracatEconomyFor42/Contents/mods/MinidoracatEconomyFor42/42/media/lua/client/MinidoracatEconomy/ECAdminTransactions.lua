@@ -1490,7 +1490,7 @@ end
 -- A short window folds the conditions into a sheet, and a sheet is a form: the exit row is pinned
 -- to the bottom of the page and the conditions above it are one scrolling column. The offset is
 -- the page's own -- every control is placed explicitly by layout(), so the engine's scroll is
--- never used -- and it answers both the keyboard's scroll contract (ECKeyboard:525) and the
+-- never used -- and it answers both the keyboard's scroll contract (MinidoracatUI/Focus.lua scrollBy) and the
 -- native ISScrollBar, which speaks in negative offsets. The same contract the shop editor's
 -- field area answers.
 function Page:maxScrollOffset()

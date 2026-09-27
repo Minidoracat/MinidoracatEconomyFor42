@@ -111,7 +111,7 @@ local function rowRender(b)
 end
 
 -- The toggle. Icon-only, so its title stays empty and the words live in fullTitle / tooltip (the
--- pair ECKeyboard.captionOf reads). Without the chevron assets it paints three bars — the shape
+-- pair MinidoracatUI/Focus.lua captionOf reads). Without the chevron assets it paints three bars — the shape
 -- every player reads as "the menu", and one that cannot be mistaken for a page.
 local function toggleRender(b)
     local nav = b.navPanel

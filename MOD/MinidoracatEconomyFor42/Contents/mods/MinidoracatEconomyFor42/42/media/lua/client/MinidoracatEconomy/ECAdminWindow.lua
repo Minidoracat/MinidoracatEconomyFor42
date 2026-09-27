@@ -267,6 +267,38 @@ function Win:onKeyRelease(key) Keys.onKeyRelease(self, key) end
 function Win:isKeyConsumed(key) return Keys.isKeyConsumed(self, key) end
 function Win:onFocus() Keys.onFocus(self) end
 
+-- Controller: the UI holding a player's joypad focus is handed onJoypadDown and onJoypadDir*
+-- (JoyPadSetup.lua:431-458, :678-680); ISCollapsableWindow navigates nothing itself, so they go to
+-- the same engine and focus state as the keyboard.
+function Win:onJoypadDown(button, joypadData) Keys.onJoypadDown(self, button, joypadData) end
+function Win:onJoypadDirUp(joypadData) Keys.onJoypadDir(self, "up", joypadData) end
+function Win:onJoypadDirDown(joypadData) Keys.onJoypadDir(self, "down", joypadData) end
+function Win:onJoypadDirLeft(joypadData) Keys.onJoypadDir(self, "left", joypadData) end
+function Win:onJoypadDirRight(joypadData) Keys.onJoypadDir(self, "right", joypadData) end
+-- the controller is going away (JoyPadSetup.lua:1056-1064): its focus goes back, the ring goes
+function Win:onJoypadBeforeDeactivate(joypadData)
+    Keys.releaseJoypad(self)
+    Keys.clear(self)
+end
+
+-- LB / RB: the previous / next admin page the rail shows, through the same onSubTab a click
+-- reaches (it refuses under a dialog and asks the page before leaving an unsaved draft).
+function Win:onFocusShoulder(delta)
+    local admin = self.adminPanel
+    if admin == nil then return end
+    local tabs, at = {}, nil
+    for _, b in ipairs(admin.subTabButtons) do
+        if b:getIsVisible() and b.enable ~= false then
+            tabs[#tabs + 1] = b
+            if b.internal == admin.tab then at = #tabs end
+        end
+    end
+    if at == nil then return end
+    local i = at + delta
+    if i < 1 then i = #tabs elseif i > #tabs then i = 1 end
+    admin:onSubTab(tabs[i])
+end
+
 -- ----- drawing -----
 -- prerender/render replace the parent versions (rounded surfaces; the Economy Center paints the
 -- same way).
@@ -330,7 +362,7 @@ function Win:render()
     U.Skin.border(self, 0, 0, w, h, color("border"))
     -- last, and after the stencil was cleared: the children were rendered between prerender and
     -- this call (UIElement.java:1626-1634), so the ring is painted over the control it marks
-    Keys.render(self)
+    Keys.render(self, U.theme)
 end
 
 -- ----- lifecycle -----
@@ -342,7 +374,10 @@ function Win:close()
     self.adminPanel:requestClose(function() Keys.close(self) end)
 end
 
+-- Every way the window hides (close chip after the page agreed, a lost right, the deferred close of
+-- Keys.close) ends here, so the controller focus is handed back here and nowhere else.
 function Win:setVisible(visible)
+    local was = self.shown == true
     ISCollapsableWindow.setVisible(self, visible)
     self.shown = visible == true
     local admin = self.adminPanel
@@ -354,6 +389,7 @@ function Win:setVisible(visible)
         end
         D.close(self)                 -- this window and every page under it
         Keys.clear(self)              -- no ring waiting behind a closed window
+        Keys.releaseJoypad(self)      -- the controller goes back to what it had before
         return
     end
     local O = EC.Options
@@ -361,6 +397,8 @@ function Win:setVisible(visible)
     Keys.onFocus(self)
     self:layout()
     if admin then admin:refresh() end
+    -- a player on a controller gets the window's focus the moment it appears
+    if not was then Keys.takeJoypad(self, 0) end
 end
 
 -- ISLayoutManager: keep position/size, never auto-show on login. The saved numbers are clamped
@@ -412,6 +450,9 @@ function AW.open()
     end
     if win:getIsVisible() then
         Keys.onFocus(win)
+        -- asked for again from the Economy Center's Admin entry: a controller follows the request
+        -- instead of staying on the window that asked
+        Keys.takeJoypad(win, 0)
     else
         win:setVisible(true)
     end

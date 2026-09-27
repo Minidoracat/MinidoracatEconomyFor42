@@ -545,7 +545,7 @@ function Confirm:onMouseWheel() return true end
 -- A plain host for the editor's controls with one scroll offset, so a large font (or the extra
 -- groups the currencies carry) never pushes a field out of reach. The page computes every
 -- position; this paints the labels and answers the keyboard's scroll contract (scrollOffset /
--- setScrollOffset / maxScrollOffset, ECKeyboard:512).
+-- setScrollOffset / maxScrollOffset, MinidoracatUI/Focus.lua scrollBy).
 local Form = ISPanel:derive("MinidoracatEconomyShopForm")
 
 function Form:maxScrollOffset()
@@ -3329,7 +3329,7 @@ function Page:keyboardTargets()
         -- offset. `scrollOwner` is the field area that can bring one into view (Form:scrollTo),
         -- so a reveal belongs to whoever focuses the target -- this page never guesses a scroll
         -- offset from the ring's position. A build that ignores the hint behaves exactly as
-        -- before: ECKeyboard drops a control that is not visible (ECKeyboard:172-175).
+        -- before: ECKeyboard drops a control that is not visible (MinidoracatUI/Focus.lua usable).
         local function field(kind, label, control)
             out[#out + 1] = { kind = kind, label = label, control = control,
                 scrollOwner = self.form }
