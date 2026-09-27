@@ -1268,6 +1268,9 @@ function Panel:rebuildMail()
     local claimLabel = getText(T .. "Mail_Claim")
     for _, e in ipairs(C.mail and C.mail.entries or {}) do
         local qty = tonumber(e.qty) or 1
+        -- the server's per-copy estimate (M.list): the row names the whole letter's weight, and
+        -- a letter whose weight the server could not read shows none instead of a zero
+        local weight = tonumber(e.weight)
         local name = itemName(e.item)
         local seller = type(e.seller) == "string" and e.seller ~= "" and e.seller or nil
         local from = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or tostring(e.kind)
@@ -1280,6 +1283,8 @@ function Panel:rebuildMail()
             price = tonumber(e.price), currency = e.currency, seller = seller,
             nameText = name .. " x" .. tostring(qty),
             fromText = from,
+            weight = weight,
+            weightText = weight and getText(T .. "Mail_Weight", C.weightText(weight * qty)) or nil,
             claimable = e.claimable ~= false,
             claimLabel = claimLabel,
             timeText = stampText(tonumber(e.at) or 0, self.offsetMin),
@@ -1527,8 +1532,8 @@ end
 
 -- Every letter that is ready, in segments. The ids are fixed the moment the player presses:
 -- mail that arrives while the batch runs belongs to the next press, never to this one, so a
--- resend of the same segment can only ever answer `already_claimed`. A normal claim takes whole
--- envelopes; only the delivery exception splits one, and then the tally says so in items.
+-- resend of the same segment can only ever answer `already_claimed`. A letter the backpack
+-- cannot hold whole hands over the units that fit and keeps the rest; the tally says so in items.
 function Panel:onMailClaimAll()
     if self.mailPending or self.mailBatch or not self:tradeAllowed() then return end
     local ids = {}
@@ -1558,7 +1563,9 @@ end
 
 -- The batch is over: what was claimed, what stayed in the mailbox for want of room, what was
 -- refused, and - on its own line - the letters that only handed over part of themselves, in
--- items. Only a bucket that really happened is worded: a batch where every letter came through
+-- items, then the least weight the player has to free to claim one more unit (the smallest
+-- next-unit need any row reported, so "at least").
+-- Only a bucket that really happened is worded: a batch where every letter came through
 -- says so and nothing else, instead of also claiming "0 failed" (a zero read as a result is how
 -- a clean run came to look like a broken one). A letter that failed, one that stayed behind and
 -- one that split are each still spelled out in full, so no partial run can read as a whole one.
@@ -1581,6 +1588,7 @@ function Panel:finishMailBatch(code)
         C.toast(getText(T .. "Mail_BatchPartial", tostring(batch.partial),
             tostring(batch.partDone), tostring(batch.partLeft)))
     end
+    if batch.need ~= nil then C.toast(getText(T .. "Mail_BatchNeed", C.weightText(batch.need, true))) end
     if batch.lastError ~= nil then C.toast(shopError(batch.lastError)) end
     if code ~= nil then C.toast(shopError(code)) end
 end
@@ -1612,6 +1620,14 @@ function Panel:onMailBatchReply(args)
         else
             batch.failed = batch.failed + 1
             batch.lastError = r.error
+        end
+        -- what one more unit of this letter needs freed: backpack_full already says so, a partial
+        -- row says it through its unit weight and the room it left; a unit no backpack of this
+        -- character can hold (heavier than the empty capacity) is not something to free room for
+        local unit, free, cap = tonumber(r.unitWeight), tonumber(r.freeCapacity), tonumber(r.capacity)
+        if unit ~= nil and free ~= nil and (cap == nil or unit <= cap) and unit > free
+            and (r.error == "backpack_full" or r.error == "delivery_partial") then
+            batch.need = math.min(batch.need or math.huge, unit - free)
         end
     end
     local left, removed = {}, 0
@@ -1799,9 +1815,12 @@ function Panel:onShop(kind, args)
         C.toast(getText(T .. "Delivery_ConfirmMail"))
         return
     end
-    -- the buyback cap refusals carry how much room is left today
+    -- the buyback cap refusals carry how much room is left today; a unit no backpack of this
+    -- character can hold carries its weight against the empty capacity
     local code = tostring(args.error or "unknown")
-    if args.remaining ~= nil and getTextOrNull(T .. "Shop_Error_" .. code) then
+    if code == "unit_too_heavy" then
+        self:buyMessage(deliveryNote(args))
+    elseif args.remaining ~= nil and getTextOrNull(T .. "Shop_Error_" .. code) then
         self:buyMessage(getText(T .. "Shop_Error_" .. code, tostring(math.floor(tonumber(args.remaining) or 0))))
     else
         self:buyMessage(shopError(args.error, args.recovery, args.recoveryDetail))
@@ -2287,6 +2306,21 @@ function Panel:detailText(kind, e)
         -- third party (a shop purchase, a return, an old one) has no such line at all
         if e.seller ~= nil then out[#out + 1] = detailLine("Market_Col_Seller", e.seller) end
         out[#out + 1] = detailLine("Wallet_Col_Time", e.timeText)
+        -- the letter's weight against the room left: the buy dialog's own estimate. The purchase
+        -- line "this lot will be parked" has no place on a letter already in the mailbox; what
+        -- a claim will do instead is said here, in units, with what to free when none fits
+        local preview = C.deliveryPreview(e.item, e.qty, e.weight)
+        preview.willMail = nil
+        W.capacityLines(out, preview)
+        local fit, qty = tonumber(preview.fitQty), tonumber(e.qty) or 0
+        if preview.known and fit ~= nil and fit < qty then
+            if fit > 0 then
+                out[#out + 1] = getText(T .. "Mail_DetailPartial", tostring(fit), tostring(qty - fit))
+            else
+                out[#out + 1] = getText(T .. "Mail_DetailNoRoom",
+                    C.weightText(math.max(0, preview.totalWeight / qty - preview.freeCapacity), true))
+            end
+        end
     end
     return out
 end

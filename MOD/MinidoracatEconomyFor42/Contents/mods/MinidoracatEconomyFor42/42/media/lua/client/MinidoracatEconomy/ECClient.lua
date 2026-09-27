@@ -524,8 +524,9 @@ handlers["mail.list"] = function(args)
 end
 
 -- Reply of one claim: { ok, error?, requestId, mailId, item, qty, deliveredQty?, remainingQty?,
--- childMailId?, entries, unclaimed }. A claim that only settled part of the letter
--- answers ok=false with error='delivery_partial': deliveredQty went into the backpack and
+-- childMailId?, unitWeight?, freeCapacity?, capacity?, needWeight?, entries, unclaimed }. A claim
+-- that only settled part of the letter (the room took only that many whole units, or a take-back
+-- failed) answers ok=false with error='delivery_partial': deliveredQty went into the backpack and
 -- remainingQty stayed in the letter, which is still there to be claimed again.
 handlers["mail.claim"] = function(args)
     setUnclaimed(args)
@@ -578,9 +579,21 @@ end
 -- error space. The counts are items and the mailbox figure is letters still waiting, so a
 -- partial hand-over never reads as "the whole thing failed" and a parked one never as "all
 -- claimed". deliveredQty = nil means the server could not confirm a count, and an unknown is
--- never worded as zero. This lives in the transport because the auction notice has to toast
--- without any page being open.
-local DELIVERY_CODES = { mailbox = true, backpack_full = true, delivery_failed = true, delivery_partial = true }
+-- never worded as zero. When the room decided it, the server's own numbers say what to free:
+-- backpack_full names the unit weight, the room left and what one more unit needs (or that no
+-- backpack of this character can ever hold it), delivery_partial what the rest of the letter
+-- needs, and a purchase refused as unit_too_heavy the unit weight against the empty capacity.
+-- This lives in the transport because the auction notice has to toast without any page open.
+local DELIVERY_CODES = { mailbox = true, backpack_full = true, delivery_failed = true, delivery_partial = true,
+    unit_too_heavy = true }
+
+-- A weight as the player reads it (one decimal, like the buy dialog). `up` rounds up: an amount
+-- to free is never shown smaller than what the server asked for.
+function C.weightText(value, up)
+    local v = tonumber(value) or 0
+    if up then v = math.ceil(v * 10 - 1e-6) / 10 end
+    return string.format("%.1f", v)
+end
 
 function C.deliveryText(args)
     if type(args) ~= "table" then return nil end
@@ -591,12 +604,25 @@ function C.deliveryText(args)
     local key = "IGUI_MinidoracatEconomy_"
     local left = tostring(math.max(0, math.floor(tonumber(args.unclaimed) or C.unclaimed or 0)))
     local done = tonumber(args.deliveredQty)
+    local unit, free, cap, need = tonumber(args.unitWeight), tonumber(args.freeCapacity),
+        tonumber(args.capacity), tonumber(args.needWeight)
+    if code == "unit_too_heavy" then
+        return getText(key .. "Delivery_TooHeavyBuy", C.weightText(unit), C.weightText(cap))
+    end
     if code == "delivery_partial" then
-        return getText(key .. "Delivery_Partial", tostring(math.floor(done or 0)),
+        local text = getText(key .. "Delivery_Partial", tostring(math.floor(done or 0)),
             tostring(math.floor(tonumber(args.remainingQty) or 0)), left)
+        if need ~= nil and need > 0 then text = text .. " " .. getText(key .. "Delivery_FreeToFinish", C.weightText(need, true)) end
+        return text
     end
     if code == "delivery_failed" then
         return getText(key .. "Delivery_Failed", getTextOrNull(key .. "Shop_Error_delivery_failed") or code, left)
+    end
+    if code == "backpack_full" and unit ~= nil and cap ~= nil and unit > cap then
+        return getText(key .. "Delivery_TooHeavy", C.weightText(unit), C.weightText(cap))
+    end
+    if code == "backpack_full" and unit ~= nil and free ~= nil and need ~= nil then
+        return getText(key .. "Delivery_NoRoom", C.weightText(unit), C.weightText(free), C.weightText(need, true), left)
     end
     return getText(key .. "Shop_Parked", left)
 end
