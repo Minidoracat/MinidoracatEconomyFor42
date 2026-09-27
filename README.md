@@ -95,7 +95,7 @@
 
 玩家可以在錢包頁把錢轉給其他玩家。**預設整個功能關閉**，升級不會自動開放；規則與設計見 [`docs/design-proposals/player-transfer.md`](docs/design-proposals/player-transfer.md)。
 
-1. 「經濟管理台 → 設定 → 轉帳」開啟 `TransferEnabled`。
+1. 「經濟管理台 → 設定 → 玩家轉帳」開啟 `TransferEnabled`。
 2. 「貨幣設定」替要開放的幣別打開「允許玩家轉帳」（`directTransfer`，每個幣別各自開關、預設關）。貓幣可用 Discord 積分換入，開放它等於讓積分在玩家之間流通；建議只開倖存幣。
 3. 其餘五項預設值：手續費 5%（付款人另付、無條件進位、最少 1，全額銷毀）、單筆 1–5,000、每人每個獎勵日最多轉出 10,000（`0`＝不限）、新帳號滿 3 天才能轉出（`0`＝不限）、`TransferRemote` 關閉＝要站在終端或原版 ATM 旁。
 
