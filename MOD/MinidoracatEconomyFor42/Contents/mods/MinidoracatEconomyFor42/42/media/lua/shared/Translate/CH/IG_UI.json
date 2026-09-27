@@ -1958,7 +1958,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_unavailable": "暫時無法使用；伺服器會持續重試。",
   "IGUI_MinidoracatEconomy_Ent_Wait_await_save": "等待下一次世界存檔確認。請不要重複付款。",
   "IGUI_MinidoracatEconomy_Ent_Wait_await_first_save": "等待伺服器啟動後的第一次世界存檔。請不要重複付款。",
-  "IGUI_MinidoracatEconomy_Ent_Wait_await_restart": "尚未收到有效的存檔確認；可等 companion 確認，或正常重啟後載入確認。請不要重複付款。",
+  "IGUI_MinidoracatEconomy_Ent_Wait_await_restart": "已記錄；伺服器正常存檔並重新啟動後才會生效。請不要重複付款。",
   "IGUI_MinidoracatEconomy_Ent_Wait_journal_blocked": "存檔日誌目前無法使用，恢復後才會確認。請不要重複付款。",
   "IGUI_MinidoracatEconomy_Ent_Sandbox_dirty": "沙盒選項與方案不一致，正在重新寫入",
   "IGUI_MinidoracatEconomy_Ent_Sandbox_conflict": "沙盒選項與本頁同時被修改；伺服器以這裡的方案為準，請兩邊都確認"

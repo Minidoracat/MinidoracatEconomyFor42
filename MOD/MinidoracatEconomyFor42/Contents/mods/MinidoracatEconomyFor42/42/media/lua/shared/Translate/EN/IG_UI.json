@@ -1958,7 +1958,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_unavailable": "Temporarily unavailable; the server keeps retrying.",
   "IGUI_MinidoracatEconomy_Ent_Wait_await_save": "Waiting for the next world save to confirm this. Do not pay again.",
   "IGUI_MinidoracatEconomy_Ent_Wait_await_first_save": "Waiting for the first world save since the server started. Do not pay again.",
-  "IGUI_MinidoracatEconomy_Ent_Wait_await_restart": "No valid save confirmation yet. Wait for companion confirmation or a normal restart to load the save. Do not pay again.",
+  "IGUI_MinidoracatEconomy_Ent_Wait_await_restart": "Recorded. It takes effect after the server saves and restarts normally. Do not pay again.",
   "IGUI_MinidoracatEconomy_Ent_Wait_journal_blocked": "The save journal is unavailable; this will be confirmed once it is restored. Do not pay again.",
   "IGUI_MinidoracatEconomy_Ent_Sandbox_dirty": "the sandbox options differ from the plan and are being written again",
   "IGUI_MinidoracatEconomy_Ent_Sandbox_conflict": "the sandbox options and this page changed at the same time; the plan here is what the server uses, check both"

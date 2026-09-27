@@ -1958,7 +1958,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_unavailable": "一時的に利用できません。サーバーが再試行を続けます。",
   "IGUI_MinidoracatEconomy_Ent_Wait_await_save": "次のワールド保存での確認を待っています。再度支払わないでください。",
   "IGUI_MinidoracatEconomy_Ent_Wait_await_first_save": "サーバー起動後の最初のワールド保存を待っています。再度支払わないでください。",
-  "IGUI_MinidoracatEconomy_Ent_Wait_await_restart": "有効な保存確認をまだ受信していません。companion の確認を待つか、通常の再起動で保存を読み込んで確認してください。再度支払わないでください。",
+  "IGUI_MinidoracatEconomy_Ent_Wait_await_restart": "記録済みです。サーバーが正常に保存して再起動した後に有効になります。再度支払わないでください。",
   "IGUI_MinidoracatEconomy_Ent_Wait_journal_blocked": "保存ジャーナルが使えません。復旧後に確認されます。再度支払わないでください。",
   "IGUI_MinidoracatEconomy_Ent_Sandbox_dirty": "サンドボックス設定がプランと異なるため、書き込み直しています",
   "IGUI_MinidoracatEconomy_Ent_Sandbox_conflict": "サンドボックス設定とこのページが同時に変更されました。サーバーはここのプランを使います。両方を確認してください"
