@@ -3,46 +3,44 @@
 
 [hr][/hr]
 
-[h2]✨ What is this?[/h2]
-An economy system for Build 42 [b]dedicated multiplayer servers[/b]: two currencies, a system shop, player market, auctions, mailbox storage, rewards, seasons, administration and reconciliation tools.
-[b]Dedicated servers only - single-player and Host / co-op are not supported.[/b]
+An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Survivor Coins and trade at ATMs and trade stations. [b]No single-player or Host / co-op.[/b]
 
-[h2]🧰 For players[/h2]
+[h2]📦 Requirements[/h2]
 [list]
-[*] [b]Two-currency wallet[/b]: Survivor Coin and Cat Coin show available and reserved amounts separately, and the server can rename them and replace their icons. The statement can be searched by type, date and keyword across the records already loaded, and full balance details can be read and copied.
-[*] [b]Economy terminals[/b]: vanilla floor-standing and wall-mounted map ATMs work directly within 2 tiles on the same floor, without registration. Custom machine and catgirl terminals, and supported terminal cabinets, still require admin registration as an ATM or trade station; only trade stations provide the market radio. Transactions and claims require a nearby terminal; remote access rules are server-configurable.
-[*] [b]Map ATM protection[/b]: ordinary players cannot remove supported vanilla ATMs with a sledgehammer or furniture disassembly; authorized admins can still remove them. This does not cover fire, explosions or direct removal by other mods, and does not restore ATMs already removed.
-[*] [b]System shop[/b]: buy at the fixed prices the server sets, with per-player or server-wide daily limits. When buyback is enabled you can sell qualifying items back to the server. Every entry can carry its own Survivor Coin and Cat Coin sell and buyback price; each trade uses only the chosen currency, and no quote never means free.
-[*] [b]Player market[/b]: list items from your bag at a fixed price at a terminal, then browse, search, filter and sort every listing on the server and buy. The sales tax is paid by the seller, listing fees are not refunded, and unsold listings return to your mailbox when they expire. A seller picker lets you filter by one exact account.
-[*] [b]Auction house[/b]: choose a starting price and duration (6-72 hours by default, configurable by the server owner). Bids reserve funds; being outbid releases them. The winner receives the items, the seller receives payment after tax, and auctions without bids return the items. Bid history is available.
-[*] [b]Mailbox[/b]: purchases, auction wins, cancellations and returns all arrive in the mailbox and can be claimed one by one or in bulk; unclaimed items survive your character's death. The mailbox has a slot limit, and unclaimed mail plus your own listings and auctions all count towards it.
-[*] [b]Rewards and seasons[/b]: daily rewards unlock with total connected time that day, using server-configured limits and thresholds; collecting late never delays the next reward. Survival milestones use single-life progress within the season. Holdings rank by currency; the survival board records each account's longest single life this season and retains finished survival seasons.
-[*] [b]Market radio (optional)[/b]: trade stations can broadcast text market summaries. Native radio preset lists include "Market Radio"; select it and tune in. Reception still requires suitable frequency range, power, volume and distance. Voice pickup is [b]off by default[/b] and must be enabled by the server owner.
-[*] [b]Interface[/b]: a standalone Economy Center window that separates reading from acting - clicking a row only opens a floating detail view and never triggers a trade - and that detail view can be moved, resized, scrolled and copied. Every page supports keyboard and controller, and window position, size and preferences are remembered.
-[*] [b]Paid slots for other mods[/b]: supporting mods can sell permanent or rented extra slots for economy currency (Vehicle Manager first). Auto-renewal is opt-in and cancellable anytime. Admins set each mod's prices, currency, slots and terms under Integration plans, with entitlement lookup and refunds.
+[*] Required UI framework: [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library for B42[/url]
+[*] The server and every player need both mods at the same version; after an update, restart both the server and the game
+[*] Supports Build 42.20.4+
 [/list]
 
-[h2]📋 Installation and deployment for server owners[/h2]
-[list]
-[*] [b]Required dependency[/b]: [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701][b]MinidoracatUIFor42[/b][/url] (API rev 11 or newer). Both mods must be installed on the server and on every client at the same version; after an update restart both server and clients. Requires Build 42.20.4 or newer.
-[*] [b]Server configuration[/b]: rewards, admin limits, currency and deposits, shop, market and radio options are all editable in-game under Economy Administration - Settings. The shop catalog (catalog.json) and the market whitelist (whitelist.json) live in the server folder; panel changes are written back and pushed to online players.
-[*] [b]Permissions[/b]: economic write access, read-only access and self-adjustment have separate role lists. Adjustments require a reason, revision checks and limits, with an audit trail. Changing role lists, administration limits or seasons additionally requires native role-management permission.
-[*] [b]World saves[/b]: item transfers are settled by the world save, so set a suitable save interval and shut the server down normally. This mod never rewrites server settings or forces extra saves.
-[*] [b]companion (external tool, deploy it yourself)[/b]: a Node 24 tool shipped with the source that [b]does not run automatically with a Workshop subscription[/b] and must be deployed on the server host. Item transfers need it to report a stable world save as the save-confirmation watermark, so [b]deploy it for normal operation[/b]; it can also produce a read-only daily cash-flow report, run by hand or from your own scheduler, which never calls AI or edits balances. Without it, records awaiting confirmation accumulate and new item movement pauses once the protection limit is reached.
-[*] [b]Discord point deposits[/b]: the game side and companion expose the interface and order flow for an integration, but this is [b]not subscribe-and-go[/b] - you need your own external points system, your own Steam account linking, and you must deploy the bridge yourself.
-[/list]
+[h2]🚀 Quick start[/h2]
+[olist]
+[*] Press "[" or click the floating button to open the [b]Economy Center[/b]; away from a terminal you can only browse
+[*] Walk up to a map ATM or an admin-built terminal and right-click [b]Use economy terminal[/b] to trade
+[*] Claim your daily online reward on the Rewards page to start earning Survivor Coins
+[*] Buy and sell in the shop, market or auctions, and collect purchases from your Mailbox
+[/olist]
 
-[h2]🚧 Limits and boundaries[/h2]
+[h2]✨ Features[/h2]
 [list]
-[*] Listing requires both the server whitelist and the system's supported item types and state checks. [b]Not every modded item can be traded[/b]; consult the listing picker for the actual decision.
-[*] When source or save evidence is incomplete the system keeps a pending reconciliation entry rather than reissuing or deleting anything; admins can resolve entries individually or in batches from Asset Reconciliation, always with a reason and a fresh re-check.
-[*] Radio voice keeps the native radio limits: the server must have voice enabled, player push-to-talk or voice activation settings apply, and nearby or lower-floor devices may hear it, so it is not private chat. General chat relay and all range scenarios have not been fully tested yet.
-[*] Searches and record lookups have explicit loaded-record and date-range limits; the interface states the scope instead of presenting data that was never loaded as "no results".
+[*] [b]Two-currency wallet[/b]: Survivor Coin and Cat Coin, with a searchable, filterable statement
+[*] [b]System shop[/b]: fixed-price purchases, and sell items back to the server when buyback is on
+[*] [b]Player market[/b]: list items from your bag at a fixed price; they can be bought from any terminal
+[*] [b]Auction house[/b]: set a starting price and duration; bids are reserved and released when you are outbid
+[*] [b]Mailbox[/b]: purchases, wins and returns arrive here and survive your character's death
+[*] [b]Rewards and seasons[/b]: daily online rewards, survival milestones, holdings and survival leaderboards
+[*] [b]Market radio[/b]: tune a radio to a trade station's market broadcast (server option)
+[*] [b]Paid slots for other mods[/b]: buy or rent extra slots in supporting mods with economy currency
 [/list]
+📖 [b]Feature details and FAQ:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095779/]Economy Player Guide[/url]
+🛠️ [b]Server installation, permissions and external tools:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095807/]Economy Server Setup & Administration[/url]
+
+[h2]🔗 More Minidoracat mods[/h2]
+All my mods are in the [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3809297109]Minidoracat Mods for B42 collection[/url] — pick what you need.
 
 [h2]💬 Feedback and community[/h2]
 [list]
-[*] [url=https://discord.gg/Gur2V67]Discord community[/url]
+[*] [url=https://github.com/Minidoracat/MinidoracatEconomyFor42/issues]GitHub Issues[/url]
+[*] [url=https://discord.gg/Gur2V67]Discord[/url]
 [/list]
 
 [h2]☕ Support the author[/h2]
