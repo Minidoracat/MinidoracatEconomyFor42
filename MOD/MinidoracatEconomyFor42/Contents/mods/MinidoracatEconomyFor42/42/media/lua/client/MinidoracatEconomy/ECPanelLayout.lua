@@ -1409,7 +1409,12 @@ function L.drawAuction(self)
         local labelX = g.auctionCardX + PAD
         text(self, getText(T .. "Auction_Mine", tostring(info.mine), tostring(info.maxAuctions)),
             labelX, rowTextY(g.aucSellLabelY), "text")
-        text(self, getText(T .. "Auction_Bidding"), labelX, rowTextY(g.aucBidLabelY), "text")
+        -- the server lists at most its cap of bids (soonest-ending first) and says how many exist
+        local shown, total = #(C.myAuctions.bidding or {}), tonumber(C.myAuctions.biddingTotal)
+        local bidLabel = (total and total > shown)
+            and getText(T .. "Auction_BiddingPartial", tostring(shown), tostring(total))
+            or getText(T .. "Auction_Bidding")
+        text(self, fitText(bidLabel, g.auctionCardW - PAD * 2), labelX, rowTextY(g.aucBidLabelY), "text")
         if #self.auctionSellList:getItems() == 0 and #self.auctionBidList:getItems() == 0 then
             text(self, getText(T .. "Auction_MineEmpty"), labelX, rowTextY(g.aucSellY), "textMuted")
         end

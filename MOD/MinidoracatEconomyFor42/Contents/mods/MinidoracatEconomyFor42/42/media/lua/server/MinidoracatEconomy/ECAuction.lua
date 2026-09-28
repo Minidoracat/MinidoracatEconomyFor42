@@ -49,6 +49,10 @@ local Au = EC.Auction
 Au.RESERVED_KIND = "auction_bid"
 Au.MAX_AUCTIONS = 1000            -- server-wide
 Au.PAGE = 20
+-- A player may bid on any number of the MAX_AUCTIONS; the ones listed at once stop here so the
+-- reply (and the create / cancel replies that carry the same pair) stays far below the engine's
+-- 1 MB packet (about 1 KB a row). The soonest-ending come first; biddingTotal says how many exist.
+Au.MINE_BIDS_MAX = 200
 Au.SWEEP_EVERY_MS = 60000
 Au.DOWNTIME_IGNORE_MS = 5 * 60000
 Au.DOWNTIME_CANCEL_MS = 24 * 3600000
@@ -283,16 +287,19 @@ function Au.browse(username, args)
     }
 end
 
--- The player's own auctions: selling, and the ones they are bidding on (leading or outbid).
+-- The player's own auctions: selling (AuctionMaxPerPlayer, at most 50, caps them at creation), and
+-- the ones they are bidding on (leading or outbid), soonest-ending first and cut at MINE_BIDS_MAX.
 function Au.mine(username)
-    local selling, bidding = {}, {}
+    local selling, bids = {}, {}
     for _, a in pairs(md.auctions.items) do
         if a.seller == username then selling[#selling + 1] = view(a, username)
-        elseif a.bidders and a.bidders[username] then bidding[#bidding + 1] = view(a, username) end
+        elseif a.bidders and a.bidders[username] then bids[#bids + 1] = a end
     end
     EC.sortSafe(selling, function(a, b) return a.expiresAt < b.expiresAt end)
-    EC.sortSafe(bidding, function(a, b) return a.expiresAt < b.expiresAt end)
-    return { selling = selling, bidding = bidding }
+    EC.sortSafe(bids, function(a, b) return a.expiresAt < b.expiresAt end)
+    local bidding = {}
+    for i = 1, math.min(#bids, Au.MINE_BIDS_MAX) do bidding[i] = view(bids[i], username) end
+    return { selling = selling, bidding = bidding, biddingTotal = #bids }
 end
 
 -- ---------- list-out (rule two, shared shape with ECMarket) ----------

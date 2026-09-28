@@ -14,7 +14,7 @@
 -- larger than the snapshot may carry (the data itself travels: vanilla writes customName /
 -- condition:* there). State a snapshot cannot carry is refused instead of dropped: a notebook's
 -- writing or author lock, applied poison, a prepared dish's ingredients, a fertilized egg, a
--- patch sewn over a hole.
+-- patch sewn over a hole, a disc or tape left inside a device.
 --
 -- Engine references (snapshot 42.20.4-20260826, all exercised in A7):
 --   instanceItem                    LuaManager.java:5610-5620
@@ -40,6 +40,7 @@
 --   custom colour                                   InventoryItem.java:636-646, 3102-3104, 3645-3651
 --   raw custom name (getName adds prefixes)         InventoryItem.java:2428-2479, 3204-3206
 --   preview maxima                                  InventoryItem.java:2502, 2705-2715, 3909-3911 ; FluidContainer.java:530
+--   device battery / medium                         DeviceData.java:84, 259-273, 588-601, 1310-1330 ; KahluaConverterManager.java:206
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Shop then
     require "MinidoracatEconomy/ECShop"
@@ -518,6 +519,12 @@ function Codec.stateCheck(item)
     if call(item, "IsClothing") == true and (call(item, "getPatchesNumber") or 0) > 0 and not patchesCarried(item) then
         return false, "clothing_patch"
     end
+    -- A disc or tape inside a device cannot be carried: the medium's item type (DeviceData.mediaItem,
+    -- DeviceData.java:84) has no getter, and setMediaIndex(short) (:1318) cannot be called from Lua at
+    -- all - the converter maps primitive short to itself (KahluaConverterManager.java:206), so no
+    -- number converts. The rebuilt device would come out empty and the disc would be gone.
+    local dev = call(item, "getDeviceData")
+    if dev and call(dev, "hasMedia") == true then return false, "device_media" end
     return true
 end
 
@@ -746,7 +753,7 @@ function Codec.rebuild(s)
             if type(d.battery) == "boolean" then call(dev, "setHasBattery", d.battery) end
             if d.muted then call(dev, "setMicIsMuted", true) end
             if type(d.mediaType) == "number" then call(dev, "setMediaType", d.mediaType) end
-            if type(d.mediaIndex) == "number" then call(dev, "setMediaIndex", d.mediaIndex) end
+            -- no setMediaIndex: see device_media in Codec.stateCheck (a listed device holds no medium)
             if d.on then call(dev, "setTurnedOnRaw", true) end
         end
     end
@@ -789,6 +796,8 @@ local function maximaOf(fullType)
         m.offAge = call(fresh, "getOffAge")
         local fc = call(fresh, "getFluidContainer")
         if fc then m.fluidCap = call(fc, "getCapacity") end
+        local dev = call(fresh, "getDeviceData")
+        m.battery = dev ~= nil and call(dev, "getIsBatteryPowered") == true
     end
     maxima[fullType] = m
     return m
@@ -815,6 +824,13 @@ function Codec.preview(s)
         p.sharp = math.floor(math.min(num(s.sharpness) or 1, cap, 1) * 100 + 0.5)
     end
     if num(s.uses) and (num(m.uses) or 0) > 1 then p.uses, p.usesMax = s.uses, m.uses end
+    -- a battery device (the script's UsesBattery -> setIsBatteryPowered, Item.java:1789): whether
+    -- the battery is in and how full it is (DeviceData.java:259-273, 588-601)
+    local d = s.device
+    if m.battery and type(d) == "table" then
+        if d.battery == false then p.battery = false
+        elseif num(d.power) then p.power = math.floor(math.max(0, math.min(1, d.power)) * 100 + 0.5) end
+    end
     if (num(m.ammo) or 0) > 0 then p.ammo, p.ammoMax = num(s.ammo) or 0, m.ammo end
     if s.clip then p.clip = true end
     if s.chamber then p.chamber = true end

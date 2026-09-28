@@ -259,6 +259,8 @@ local function stateTokens(st)
     if tonumber(st.sharp) then add("Market_State_Sharpness", int(st.sharp)) end
     if tonumber(st.ammo) and tonumber(st.ammoMax) then add("Market_State_Rounds", int(st.ammo), int(st.ammoMax)) end
     if tonumber(st.uses) and tonumber(st.usesMax) then add("Market_State_Uses", int(st.uses), int(st.usesMax)) end
+    if st.battery == false then add("Market_State_NoBattery")
+    elseif tonumber(st.power) then add("Market_State_Power", int(st.power)) end
     if (tonumber(st.holes) or 0) > 0 then add("Market_State_Holes", int(st.holes)) end
     if (tonumber(st.patches) or 0) > 0 then add("Market_State_Patches", int(st.patches)) end
     if (tonumber(st.blood) or 0) > 0 then add("Market_State_Blood", int(st.blood)) end
@@ -510,7 +512,8 @@ end
 
 -- One backpack candidate. The tile itself only has room for the name, so everything else the
 -- player may want (the script name, the item-state line, and the server's refusal when the
--- item may not be listed) is joined once here for the picker's status line.
+-- item may not be listed) is joined once here for the picker's status line. A refusal leads:
+-- the line may be cut, and why the item cannot go (and what to do about it) is what counts.
 local function candidateRow(it)
     local ok = it.ok == true
     local name = itemName(it.item)
@@ -525,7 +528,7 @@ local function candidateRow(it)
     local detail = alt and (name .. " (" .. alt .. ")") or name
     if lot then detail = lot .. " " .. detail end
     if status then detail = detail .. " - " .. status end
-    if reason then detail = detail .. " - " .. reason end
+    if reason then detail = reason .. " - " .. detail end
     return {
         itemId = it.itemId, itemIds = ids, count = count, item = it.item, ok = ok,
         name = name, altName = alt, texture = itemTexture(it.item), state = it.state,

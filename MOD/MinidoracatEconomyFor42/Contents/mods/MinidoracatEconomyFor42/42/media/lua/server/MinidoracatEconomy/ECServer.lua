@@ -41,8 +41,44 @@ local durableAt = nil                   -- local ms when that marker was accepte
 local durableState = "idle"             -- outcome of the last poll (S.durableStatus().status)
 local durablePolledAt = 0
 
+-- The engine writes every packet to a player into one fixed 1,000,000-byte buffer
+-- (UdpConnection.java:40, 198-202). sendServerCommand (GameServer.java:3460-3482) catches only
+-- IOException, so a larger table raises BufferOverflowException: the reply is lost and the
+-- connection's send lock is never released (endPacket unlocks, :303-319). S.wireBytes is an upper
+-- bound of what TableNetworkUtils writes: a type byte, then an 8-byte double, a 1-byte boolean, a
+-- 4-byte count plus the entries, or a string as a 2-byte length plus UTF-8 (TableNetworkUtils.java:
+-- 30-41, 78-93; GameWindow.java:1263-1272). Kahlua strings are UTF-16 units, at most 3 UTF-8 bytes
+-- each; standard Lua (the harness) already counts bytes.
+S.REPLY_MAX_BYTES = 900000
+local charOK, char256 = pcall(string.char, 256)
+local UTF16 = charOK and string.byte(char256) == 256
+function S.wireBytes(v)
+    local t = type(v)
+    if t == "string" then
+        if not UTF16 then return 3 + #v end
+        local _, wide = string.gsub(v, "[^\1-\127]", "")
+        return 3 + #v + 2 * wide
+    end
+    if t == "number" then return 9 end
+    if t == "boolean" then return 2 end
+    if t ~= "table" then return 0 end
+    local n = 5
+    for k, x in pairs(v) do n = n + S.wireBytes(k) + S.wireBytes(x) end
+    return n
+end
+
+-- A reply that would not fit is never handed to the engine: a request is answered with
+-- reply_too_large (the client's pending slot is freed and the page says why), a push is dropped.
+-- Both are logged. The lists that can grow are bounded where they are built; this is the net.
 local function reply(player, command, args)
-    sendServerCommand(player, EC.COMMAND_MODULE, command, args or {})
+    args = args or {}
+    local size = S.wireBytes(args)
+    if size > S.REPLY_MAX_BYTES then
+        EC.log("reply " .. tostring(command) .. " not sent: about " .. size .. " bytes, over the packet limit")
+        if args.requestId == nil then return end
+        args = { ok = false, error = "reply_too_large", requestId = args.requestId }
+    end
+    sendServerCommand(player, EC.COMMAND_MODULE, command, args)
 end
 S.reply = reply
 

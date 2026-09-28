@@ -408,7 +408,8 @@ function instanceItem(fullType)
         it.setFreezingTime = function(_, v) it.freezing = v end
     end
     if k.device then
-        local dev = { channel = 88000, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1 }
+        local dev = { channel = 88000, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1,
+            batteryPowered = true }
         it.dev = dev
         it.getDeviceData = function() return {
             getChannel = function() return dev.channel end, setChannelRaw = function(_, v) dev.channel = v end,
@@ -420,6 +421,8 @@ function instanceItem(fullType)
             getHasBattery = function() return dev.battery end, setHasBattery = function(_, v) dev.battery = v end,
             getMediaType = function() return dev.mediaType end, setMediaType = function(_, v) dev.mediaType = v end,
             getMediaIndex = function() return dev.mediaIndex end, setMediaIndex = function(_, v) dev.mediaIndex = v end,
+            getIsBatteryPowered = function() return dev.batteryPowered end,
+            hasMedia = function() return dev.mediaIndex >= 0 end,
         } end
     end
     it.name, it.customName = fullType, false
@@ -938,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 19   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +19: clothing state and the buyer preview (28d).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3515,6 +3518,16 @@ local fd = Codec.preview(Codec.snapshot(apple)).food
 apple.age = 4
 check(fd.cooked == true and math.abs(fd.freshDays - 2) < 1e-9 and Codec.preview(Codec.snapshot(apple)).food.stale == true,
     "food shows how fresh it was when listed, or that it was already stale")
+-- 電池裝置：電池在不在、還剩多少（DeviceData getHasBattery／getPower）
+local radio = instanceItem("Base.RadioRed"); radio.dev.power = 0.374
+local bare = instanceItem("Base.RadioRed"); bare.dev.battery = false; bare.dev.power = 0
+local rp, bp = Codec.preview(Codec.snapshot(radio)), Codec.preview(Codec.snapshot(bare))
+check(rp.power == 37 and rp.battery == nil and bp.battery == false and bp.power == nil,
+    "a battery device shows how full its battery is, or that none is in")
+-- 裝置裡的光碟／錄影帶帶不走（mediaItem 沒有 getter、setMediaIndex(short) Lua 呼叫不到）-> 拒絕
+local disc = instanceItem("Base.RadioRed"); disc.dev.mediaIndex = 3
+check(select(2, Codec.stateCheck(disc)) == "device_media" and Codec.stateCheck(instanceItem("Base.RadioRed")) == true,
+    "a device with a disc or tape inside is refused; an empty one passes")
 -- 走真的市場流程：上架 -> 瀏覽看到預覽（舊欄位已移除）-> 購買收到同狀態的衣物
 modDataStore[EC.MODDATA_KEY] = nil
 sentCommands = {}
@@ -4081,6 +4094,33 @@ check(action == "extended" and modDataStore[EC.MODDATA_KEY].auctions.items[c5.au
 check(S.Auction.applyDowntime(nowMs + 3 * 60000, nowMs) == "ignored", "a 3 min downtime changes nothing")
 local action2 = S.Auction.applyDowntime(nowMs + 25 * 3600000, nowMs)
 check(action2 == "cancelled" and not S.Auction.hasAuction(c5.auctionId) and M.unclaimed("ann") >= 1, "a 25 h downtime cancels every auction and returns the items")
+-- 封包上限（每連線 1,000,000 bytes 緩衝，UdpConnection.java:40）：S.wireBytes 是序列化大小上界；
+-- 超過的回覆不送出（請求回 reply_too_large、推播丟棄）；auction.mine 的出價清單有上限
+check(S.wireBytes({ a = "xy", [1] = true, n = 5 }) == 38 and S.wireBytes("中文abc") == 12,
+    "wireBytes counts type bytes, 8-byte numbers, 2-byte string lengths and UTF-8 bytes")
+local limitWas = S.REPLY_MAX_BYTES
+S.REPLY_MAX_BYTES = 100
+sentCommands = {}
+S.reply(cat, "t.request", { requestId = "big", blob = string.rep("x", 200) })
+S.reply(cat, "t.push", { blob = string.rep("x", 200) })
+S.reply(cat, "t.small", { requestId = "ok" })
+S.REPLY_MAX_BYTES = limitWas
+local big, small = lastSent("t.request"), lastSent("t.small")
+check(big ~= nil and big.args.ok == false and big.args.error == "reply_too_large" and big.args.requestId == "big" and big.args.blob == nil
+    and lastSent("t.push") == nil and small ~= nil and small.args.requestId == "ok",
+    "a reply over the packet limit is answered with reply_too_large, a push is dropped, a small reply goes out")
+local items, capWas = modDataStore[EC.MODDATA_KEY].auctions.items, Au.MINE_BIDS_MAX
+for i, ends in ipairs({ 3000, 1000, 2000 }) do
+    items["cap" .. i] = { id = "cap" .. i, seller = "zed", item = "Base.Axe", snapshot = { type = "Base.Axe" }, qty = 1,
+        startPrice = 10, currency = "survivor", at = 1, expiresAt = nowMs + ends, weight = 3,
+        bidders = { cat = true }, highest = { amount = 10, bidder = "cat" } }
+end
+Au.MINE_BIDS_MAX = 2
+local capped = cmd(cat, "auction.mine", {})
+Au.MINE_BIDS_MAX = capWas
+for i = 1, 3 do items["cap" .. i] = nil end
+check(#capped.bidding == 2 and capped.biddingTotal == 3 and capped.bidding[1].id == "cap2" and capped.bidding[2].id == "cap3",
+    "auction.mine lists the bids ending soonest up to its cap and counts them all")
 onlinePlayers = {}
 end)()
 

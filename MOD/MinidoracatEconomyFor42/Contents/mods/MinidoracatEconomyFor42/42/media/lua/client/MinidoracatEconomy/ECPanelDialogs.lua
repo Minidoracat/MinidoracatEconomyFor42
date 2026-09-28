@@ -524,6 +524,21 @@ local function confirmLabel(mode)
     return nil     -- the picker confirms by picking a row
 end
 
+-- The picker's status over two lines: what does not fit the first runs on into the second (cut
+-- there if it must be), and a Latin word is not split when the first line has a space to break
+-- at. CJK has no spaces and breaks at the character, as U.wrapText does.
+local function isLatin(c) return c ~= nil and ((c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122)) end
+local function statusLines(status, width)
+    local first = U.wrapText(status, width, 1)[1] or ""
+    if #first >= #status then return first, nil end
+    if isLatin(string.byte(status, #first)) and isLatin(string.byte(status, #first + 1)) then
+        local space = string.find(first, " [^ ]*$")
+        if space and space > 1 then first = string.sub(first, 1, space - 1) end
+    end
+    local rest = string.gsub(string.sub(status, #first + 1), "^ +", "")
+    return first, fitText(rest, width)
+end
+
 function MarketDialog:createChildren()
     local bh = math.max(28, fontH.medium + 10)
     self.confirmButton = Button.create(0, 0, 120, bh, confirmLabel("buy"), self, MarketDialog.onConfirm, "primary")
@@ -1089,7 +1104,16 @@ function MarketDialog:prerender()
         elseif self.pickNote then
             status, token = self.pickNote, "warn"
         end
-        text(self, fitText(status, w - PAD * 2), PAD, self.statusY, token)
+        local statusW = w - PAD * 2
+        if self.message then
+            text(self, fitText(status, statusW), PAD, self.statusY, token)
+        else
+            -- the error line is free: a long status (a refusal and what to do about it) runs on
+            -- into it instead of being cut after the first line
+            local first, second = statusLines(status, statusW)
+            text(self, first, PAD, self.statusY, token)
+            if second then text(self, second, PAD, self.messageY, token) end
+        end
         if (self.candTotal or 0) == 0 then
             text(self, getText(T .. "Market_PickEmpty"), PAD * 2, list.y + 6, "textMuted")
         elseif (self.candShown or 0) == 0 then

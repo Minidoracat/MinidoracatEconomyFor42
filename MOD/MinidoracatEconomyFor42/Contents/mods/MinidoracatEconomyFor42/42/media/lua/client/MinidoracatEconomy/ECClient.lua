@@ -873,13 +873,15 @@ C.myAuctions = nil
 -- amount) -- never a wallet delta, so two bids in a row are two amounts and not a double charge.
 C.auctionHistory = nil
 
--- create/cancel answer with the fresh { selling, bidding } pair; the page-level fields
--- (atTerminal, maxAuctions) only come with auction.mine, so they are kept.
+-- create/cancel answer with the fresh { selling, bidding, biddingTotal } set; the page-level
+-- fields (atTerminal, maxAuctions) only come with auction.mine, so they are kept. `bidding` is cut
+-- at the server's cap (soonest-ending first); biddingTotal counts every auction bid on.
 local function setMyAuctions(mine)
     if type(mine) ~= "table" then return end
     C.myAuctions = C.myAuctions or {}
     C.myAuctions.selling = mine.selling or {}
     C.myAuctions.bidding = mine.bidding or {}
+    C.myAuctions.biddingTotal = tonumber(mine.biddingTotal)
 end
 
 handlers["auction.browse"] = function(args)
