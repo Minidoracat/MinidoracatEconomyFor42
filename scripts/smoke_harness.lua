@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 1   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +1: an empty container is rebuilt empty.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3281,6 +3281,16 @@ check(snap.type == "Base.PetrolCan" and snap.condition == 7 and snap.fluid.name 
     "the snapshot keeps condition, fluid and modData and drops the claim stamp")
 local back = Codec.rebuild(snap)
 check(back ~= nil and back.condition == 7 and back.fluidName == "Petrol" and back.fluidAmount == 3.5 and back.modData.Keep == "yes", "rebuild restores the same fields")
+;(function()
+    -- a fresh container starts with its script's fluid (FluidContainer.readFromScript); an empty one
+    -- leaves no fluid in the snapshot and must not come back full
+    local snapEmpty = Codec.snapshot(instanceItem("Base.PetrolCan"))
+    local real = instanceItem
+    instanceItem = function(t) local it = real(t); it:getFluidContainer():addFluid(Fluid.Get("Petrol"), 10); return it end
+    local copy = Codec.rebuild(snapEmpty)
+    instanceItem = real
+    check(snapEmpty.fluid == nil and copy ~= nil and copy.fluidAmount == 0 and copy.fluidName == "", "an empty container is rebuilt empty even when a fresh one starts full")
+end)()
 local weapon = instanceItem("Base.Axe"); local scope = instanceItem("Base.x2Scope"); weapon:attachWeaponPart(scope)
 local inv = fakeInventory(50)
 check(Codec.detachParts(weapon, inv) == 1 and #weapon.parts == 0 and inv.count("Base.x2Scope") == 1, "weapon parts are detached back into the backpack")

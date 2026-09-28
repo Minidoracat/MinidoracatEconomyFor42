@@ -757,15 +757,15 @@ function Codec.rebuild(s)
             if d.on then call(dev, "setTurnedOnRaw", true) end
         end
     end
-    if type(s.fluid) == "table" then
-        local fc = call(item, "getFluidContainer")
-        if fc then
-            pcall(function()
-                fc:Empty()
-                local fl = Fluid.Get(s.fluid.name)
-                if fl and (s.fluid.amount or 0) > 0 then fc:addFluid(fl, s.fluid.amount) end
-            end)
-        end
+    -- a fresh container starts with its script's fluid (FluidContainer.readFromScript,
+    -- FluidContainer.java:99-112) and an empty one leaves no fluid in the snapshot: empty it either way
+    local fc = call(item, "getFluidContainer")
+    if fc then
+        pcall(function()
+            fc:Empty()
+            local fl = type(s.fluid) == "table" and Fluid.Get(s.fluid.name)
+            if fl and (s.fluid.amount or 0) > 0 then fc:addFluid(fl, s.fluid.amount) end
+        end)
     end
     if type(s.modData) == "table" then
         local md = call(item, "getModData")
