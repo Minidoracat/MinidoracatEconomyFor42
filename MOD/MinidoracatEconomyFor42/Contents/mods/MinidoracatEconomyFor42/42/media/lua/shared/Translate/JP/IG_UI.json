@@ -258,7 +258,7 @@
   "IGUI_MinidoracatEconomy_Market_State_Paired": "リモコンとペアリング済み",
   "IGUI_MinidoracatEconomy_Market_State_Name": "カスタム名：%1",
   "IGUI_MinidoracatEconomy_Market_State_FoodAging": "食品は預かり中も通常どおり劣化します。鮮度は出品時の状態で、受け取る頃には落ちている場合があります",
-  "IGUI_MinidoracatEconomy_Market_Reason_clothing_patch": "穴の上に縫った継ぎ当ては完全には保存できないため出品できません。その継ぎ当てを外せば出品できます（穴はそのまま保存されます）",
+  "IGUI_MinidoracatEconomy_Market_Reason_clothing_patch": "穴の上に縫った継ぎ当ては完全には保存できないため出品できません。その継ぎ当てを外せば出品できます（穴はそのまま保存されます）。裁縫レベル 8 以上なら、外した後に同じ素材の布で穴を完全に直すこともできます",
   "IGUI_MinidoracatEconomy_Shop_Error_clothing_patch": "穴を継ぎ当てした衣類は現在システムに売れません：継ぎ当ての情報を完全に保存できません",
   "IGUI_MinidoracatEconomy_Market_Reason_device_media": "中にディスクかテープが入っています。デバイス設定の「メディアを取り出す」で取り出してから出品してください",
   "IGUI_MinidoracatEconomy_Shop_Error_device_media": "中にディスクかテープが入っています。デバイス設定の「メディアを取り出す」で取り出してから売却してください",

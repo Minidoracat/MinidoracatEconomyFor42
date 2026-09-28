@@ -258,7 +258,7 @@
   "IGUI_MinidoracatEconomy_Market_State_Paired": "已配對遙控器",
   "IGUI_MinidoracatEconomy_Market_State_Name": "自訂名稱：%1",
   "IGUI_MinidoracatEconomy_Market_State_FoodAging": "食物在託管期間照常變質：新鮮度是上架當時的狀態，領到時可能已經變差",
-  "IGUI_MinidoracatEconomy_Market_Reason_clothing_patch": "補在破洞上的補丁無法完整保存，這件不能上架；拆掉這些補丁後就能上架（破洞會照實保存）",
+  "IGUI_MinidoracatEconomy_Market_Reason_clothing_patch": "補在破洞上的補丁無法完整保存，這件不能上架。拆掉這些補丁就能上架（破洞會照實保存）；縫紉 8 級以上也可以拆掉後用同材質布料把破洞完全修好",
   "IGUI_MinidoracatEconomy_Shop_Error_clothing_patch": "補過破洞的衣物目前不能賣給系統：補丁資料無法完整保存",
   "IGUI_MinidoracatEconomy_Market_Reason_device_media": "裝置裡還有光碟或錄影帶，請先在裝置選項用「移除媒體」取出再上架",
   "IGUI_MinidoracatEconomy_Shop_Error_device_media": "裝置裡還有光碟或錄影帶，請先在裝置選項用「移除媒體」取出再賣給系統",

@@ -258,7 +258,7 @@
   "IGUI_MinidoracatEconomy_Market_State_Paired": "Paired with a remote",
   "IGUI_MinidoracatEconomy_Market_State_Name": "Custom name: %1",
   "IGUI_MinidoracatEconomy_Market_State_FoodAging": "Food keeps ageing while it waits in escrow: freshness is as it was when listed and may be worse by the time you collect it",
-  "IGUI_MinidoracatEconomy_Market_Reason_clothing_patch": "Patches sewn over holes cannot be kept intact, so this cannot be listed. Remove those patches and it can be; the holes are kept as they are",
+  "IGUI_MinidoracatEconomy_Market_Reason_clothing_patch": "Patches sewn over holes cannot be kept intact, so this cannot be listed. Remove those patches and it can be (the holes are kept as they are); at Tailoring 8+ you can also remove them and mend the holes fully with the garment's own fabric",
   "IGUI_MinidoracatEconomy_Shop_Error_clothing_patch": "Clothing with a patched hole cannot be sold for now: its patches cannot be kept intact",
   "IGUI_MinidoracatEconomy_Market_Reason_device_media": "There is still a disc or tape inside; take it out with \"Remove media\" in the device options before listing",
   "IGUI_MinidoracatEconomy_Shop_Error_device_media": "There is still a disc or tape inside; take it out with \"Remove media\" in the device options before selling",
