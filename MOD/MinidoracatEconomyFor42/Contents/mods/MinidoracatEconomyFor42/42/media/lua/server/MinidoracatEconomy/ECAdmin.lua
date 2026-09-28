@@ -1425,6 +1425,43 @@ S.handlers["admin.auditDetail"] = function(player, args)
     end, true)
 end
 
+-- admin.reclaim {reclaimId, reason, requestId} (write gate): mail back one stale copy the login
+-- took (ECMailbox reclaimStaleCopies), rebuilt from the snapshot taken as it was removed, to the
+-- account that held it. Once only: the record keeps who restored it and the letter it made, in
+-- the same save as that letter, so a world rollback takes both back together.
+function A.restoreReclaim(player, args)
+    if type(args) ~= "table" or type(args.reclaimId) ~= "string" then return { ok = false, error = "invalid_args" } end
+    local rerr, reason = A.reasonError(args.reason)
+    if rerr then return { ok = false, error = rerr } end
+    local rec = S.Recovery.reclaimRecord(args.reclaimId)
+    local snapshot = rec and rec.snapshot
+    if type(snapshot) ~= "table" or type(snapshot.type) ~= "string" then return { ok = false, error = "reclaim_unknown" } end
+    if type(rec.restored) == "table" then
+        return { ok = false, error = "reclaim_restored", mailId = rec.restored.mailId, username = rec.username }
+    end
+    local admin = player:getUsername()
+    local entry, err = M.add(rec.username, { kind = "restore", item = snapshot.type, qty = 1, snapshot = snapshot })
+    if not entry then return { ok = false, error = err or "invalid_args" } end
+    rec.restored = { by = admin, at = EC.now(), mailId = entry.id }
+    X.emit("recovery.reclaimRestored", { admin = admin, username = rec.username, reclaimId = args.reclaimId,
+        opId = rec.opId, item = snapshot.type, mailId = entry.id })
+    X.audit({ action = "recovery", admin = admin, target = rec.username, field = rec.opId, after = "restored",
+        reason = reason, item = snapshot.type, qty = 1, reclaimId = args.reclaimId, mailId = entry.id })
+    X.changed("mail", rec.username)
+    local holder = onlinePlayer(rec.username)
+    if holder ~= nil then
+        S.reply(holder, "recovery.restored", { item = snapshot.type, qty = 1, unclaimed = M.unclaimed(rec.username) })
+    end
+    return { ok = true, mailId = entry.id, username = rec.username, item = snapshot.type }
+end
+
+S.handlers["admin.reclaim"] = function(player, args)
+    if not gate(player, "admin.reclaim", true) then return end
+    local res = A.restoreReclaim(player, args)
+    if type(args) == "table" then res.requestId, res.reclaimId = args.requestId, args.reclaimId end
+    S.reply(player, "admin.reclaim", res)
+end
+
 -- ---------- asset reconciliation (admin.recovery) ----------
 --
 -- admin.recovery {action='list'|'overview'|'recheck'|'resolve', username, requestId, page?,

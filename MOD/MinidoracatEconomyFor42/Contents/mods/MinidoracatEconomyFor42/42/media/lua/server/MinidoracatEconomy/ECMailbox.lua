@@ -840,57 +840,63 @@ local function reconcileMissingLetters(username, p, scan, blockedLetters)
     return changed
 end
 
--- A world save newer than the player save leaves the older backpack holding objects this very
--- account already moved out (listed, put up for auction or sold to the system). The copy carries
--- no stamp - the stamp is written at hand-over, after that player save - but it carries the type
--- and engine id its receipt recorded. Once the receipt is inside a world save the copy is taken
--- back, and every one of them is written down: an event line, the admin audit, the player's
--- market history and a notice. What could make a removal wrong is held for an administrator
--- instead: a receipt this run has not seen saved (a rollback would take the operation away and
--- leave nothing), an id two objects wear, an equipped or hotbar object, a bag with contents.
-local function reclaimStaleCopies(player, username, receipts, scan)
+-- A world save newer than the player save leaves the older backpack holding objects the world
+-- already moved out (listed, put up for auction or sold to the system). The copy carries no
+-- stamp - the stamp is written at hand-over, after that player save - but it carries the type
+-- and engine id a receipt recorded, and it may have changed hands since. Whoever holds it, once
+-- that receipt is inside a world save the copy is taken back, and every one is written down: an
+-- event line, a SYSTEM audit line that can mail it back (R.noteReclaim keeps the snapshot), the
+-- holder's market history and a notice. What could make a removal wrong is held instead: a
+-- receipt this run has not seen saved (a rollback would take the operation away and leave
+-- nothing), an id two objects of that type wear, an equipped or hotbar object, a bag with
+-- contents.
+local function reclaimStaleCopies(player, username, scan)
     local notices, noticeOf = {}, {}
-    for _, receipt in ipairs(receipts) do
-        local survived, reclaimed = R.receiptVerdict(receipt) == "survived", 0
-        for _, unit in ipairs(receipt.units or {}) do
-            local rows = unit.n ~= nil and scan.byId[unit.n] or {}
-            for _, row in ipairs(rows) do
-                if not row.gone and row.stamp == nil and (receipt.item == nil or row.fullType == receipt.item) then
-                    local key = "unit:" .. receipt.id .. ":" .. tostring(unit.n)
-                    local blocked = (receipt.item == nil and "stale_native_copy")
-                        or (#rows > 1 and "duplicate_unit")
-                        or (not survived and "stale_copy_unsaved")
-                        or R.removalBlock(row)
-                    if not blocked then
-                        -- a listing or an auction detached the parts before its snapshot and left
-                        -- them with the seller; a sale to the system took them with the item
-                        if receipt.kind ~= "buyback" then S.Codec.detachParts(row.item, player:getInventory()) end
-                        if R.dropRow(row) then
-                            reclaimed = reclaimed + 1
-                            R.resolveHold(username, key, "reclaimed")
-                            X.emit("ledger.anomaly", { kind = "recovery", username = username, resolution = "stale-copy-reclaimed",
-                                key = key, opId = receipt.id, opKind = receipt.kind, item = row.fullType, unit = unit.n })
-                        else
-                            blocked = "remove_unconfirmed"
+    for id, rows in pairs(scan.byId) do
+        for _, row in ipairs(rows) do
+            local opId, receipt, proof = nil, nil, nil
+            if not row.gone and row.stamp == nil then
+                opId, receipt, proof = R.consumer({ src = "native", nativeId = id, item = row.fullType })
+            end
+            if opId and receipt and proof == "locator" then
+                local key, same = "unit:" .. opId .. ":" .. tostring(id), 0
+                for _, other in ipairs(rows) do
+                    if not other.gone and other.fullType == row.fullType then same = same + 1 end
+                end
+                local blocked = (same > 1 and "duplicate_unit")
+                    or (R.receiptVerdict(receipt) ~= "survived" and "stale_copy_unsaved")
+                    or R.removalBlock(row)
+                if not blocked then
+                    -- a listing or an auction detached the parts before its snapshot and left
+                    -- them with the seller; a sale to the system took them with the item
+                    if receipt.kind ~= "buyback" then S.Codec.detachParts(row.item, player:getInventory()) end
+                    local snapshot = S.Codec.snapshot(row.item)
+                    if R.dropRow(row) then
+                        local foreign = receipt.owner ~= username and receipt.owner or nil
+                        local reclaimId = R.noteReclaim({ username = username, owner = receipt.owner, opId = opId,
+                            opKind = receipt.kind, item = row.fullType, unit = id, snapshot = snapshot })
+                        R.resolveHold(username, key, "reclaimed")
+                        X.emit("ledger.anomaly", { kind = "recovery", username = username, resolution = "stale-copy-reclaimed",
+                            key = key, opId = opId, opKind = receipt.kind, owner = foreign, item = row.fullType, unit = id,
+                            reclaimId = reclaimId })
+                        X.audit({ action = "recovery", admin = "SYSTEM", target = username, field = opId, after = "reclaimed",
+                            item = row.fullType, qty = 1, reclaimId = reclaimId, owner = foreign })
+                        X.market(username, { kind = "reclaimed", listingId = opId, item = row.fullType, qty = 1, other = foreign })
+                        EC.log("recovery reclaimed stale " .. row.fullType .. " " .. tostring(id) .. " of " .. opId .. " from " .. username)
+                        local notice = noticeOf[row.fullType]
+                        if not notice then
+                            notice = { item = row.fullType, qty = 0 }
+                            noticeOf[row.fullType], notices[#notices + 1] = notice, notice
                         end
-                    end
-                    if blocked then
-                        R.holdUpdate(username, key, blocked, { opId = receipt.id, unit = unit.n, item = row.fullType, qty = 1 })
+                        notice.qty = notice.qty + 1
+                    else
+                        blocked = "remove_unconfirmed"
                     end
                 end
+                if blocked then
+                    R.holdUpdate(username, key, blocked, { opId = opId, unit = id, item = row.fullType, qty = 1 })
+                end
             end
-        end
-        if reclaimed > 0 then
-            X.audit({ action = "recovery", admin = "SYSTEM", target = username, field = receipt.id, after = "reclaimed",
-                item = receipt.item, qty = reclaimed })
-            X.market(username, { kind = "reclaimed", listingId = receipt.id, item = receipt.item, qty = reclaimed })
-            EC.log("recovery reclaimed " .. tostring(reclaimed) .. " stale " .. receipt.item .. " of " .. receipt.id .. " from " .. username)
-            local notice = noticeOf[receipt.item]
-            if not notice then
-                notice = { item = receipt.item, qty = 0 }
-                noticeOf[receipt.item], notices[#notices + 1] = notice, notice
-            end
-            notice.qty = notice.qty + reclaimed
         end
     end
     for _, notice in ipairs(notices) do S.reply(player, "recovery.reclaimed", notice) end
@@ -1017,7 +1023,7 @@ function M.reconcile(player)
     end
     -- before the pending judgement: a copy still standing on a receipt's locator reads there as
     -- an ambiguous original and would hold a record this pass is about to settle
-    reclaimStaleCopies(player, username, receipts, scan)
+    reclaimStaleCopies(player, username, scan)
     local outChanged, handled = reconcileOuts(player, p, scan, username)
     changed = outChanged or changed
     -- Generation zero (report #2 / #4). Delivery stamps written before unit tokens existed, and

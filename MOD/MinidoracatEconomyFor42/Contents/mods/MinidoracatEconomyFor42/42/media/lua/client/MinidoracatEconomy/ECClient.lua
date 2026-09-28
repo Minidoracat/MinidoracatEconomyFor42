@@ -617,11 +617,18 @@ handlers["recovery.status"] = function(args)
     end
 end
 
--- An older save brought back objects this account had already listed, auctioned or sold; the
--- server took the copies back at login and wrote them into the market history: { item, qty }.
+-- The server took back a copy an older save brought back (it had already been listed, auctioned
+-- or sold, possibly by someone else) and wrote it into the market history: { item, qty }.
 handlers["recovery.reclaimed"] = function(args)
     local qty = math.max(1, math.floor(tonumber(args.qty) or 1))
     C.toast(getText("IGUI_MinidoracatEconomy_Recovery_Reclaimed", C.itemLabel(args.item), tostring(qty)))
+end
+
+-- An administrator mailed one of those back: { item, qty, unclaimed }.
+handlers["recovery.restored"] = function(args)
+    setUnclaimed(args)
+    local qty = math.max(1, math.floor(tonumber(args.qty) or 1))
+    C.toast(getText("IGUI_MinidoracatEconomy_Recovery_Restored", C.itemLabel(args.item), tostring(qty)))
 end
 
 -- What became of the items a write produced, worded for a toast. The outcome is a delivery code

@@ -95,7 +95,7 @@ end
 -- schema: rotating a season and deciding how long the next one runs are the same rare,
 -- deliberate act, and both of them take the native role capability rather than the write role.
 local TABS = { "Player", "Recovery", "Dashboard", "Currencies", "Sources", "IntegrationPlans", "Shop", "Whitelist", "Listings", "Auctions", "Transactions", "Audit", "System", "Settings", "Seasons" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 
@@ -1927,6 +1927,9 @@ function Admin:createChildren()
     self.auditCopyIdButton = Button.create(0, 0, 90, 22, tr("Admin_Audit_CopyId"), self, Admin.onAuditCopy, "chip")
     self.auditCopyIdButton.internal = "id"
     self:addChild(self.auditCopyIdButton)
+    -- a stale copy the server took back at login can be mailed back from its own audit line
+    self.auditRestoreButton = Button.create(0, 0, 90, 22, tr("Admin_Audit_Restore"), self, Admin.onAuditRestore, "chip")
+    self:addChild(self.auditRestoreButton)
 
     -- system page: one copy button per path
     self.copyButtons = {}
@@ -2724,6 +2727,17 @@ function Admin:onAuditCopy(button)
     local ok = pcall(Clipboard.setClipboard, value)
     self.message = ok and { text = getText(T .. "Admin_Audit_Copied", value) }
         or { text = tr("Admin_Sys_CopyFailed"), error = true }
+end
+
+function Admin:onAuditRestore()
+    local d = self.auditSelected
+    if d == nil or type(d.reclaimId) ~= "string" then return end
+    self:openDialog("reclaimRestore", {
+        reclaimId = d.reclaimId,
+        title = tr("Admin_Reclaim_Title"),
+        confirm = tr("Admin_Reclaim_Confirm"),
+        warn = getText(T .. "Admin_Reclaim_Warn", itemName(d.item), tostring(d.rawTarget)),
+    })
 end
 
 function Admin:onCopyPath(button)
@@ -4191,7 +4205,7 @@ function Admin:keyboardTargets()
         addFilters(out, self.auditF)
         addTarget(out, "list", tr("Admin_Audit_Title"), self.auditList)
         addGroup(out, tr("Admin_Audit_Actions"),
-            { self.auditCopyNameButton, self.auditCopyIdButton })
+            { self.auditCopyNameButton, self.auditCopyIdButton, self.auditRestoreButton })
     elseif self.tab == "Dashboard" then
         -- the issued card's currency, and one entry per supply column into the account list
         addGroup(out, tr("Admin_Dash_Issued"), self.dashIssueButtons)
@@ -4275,6 +4289,7 @@ function Admin:openDialog(mode, ctx)
     dlg.optionGroup = ctx.optionGroup
     dlg.listingId = ctx.listingId
     dlg.auctionId = ctx.auctionId
+    dlg.reclaimId = ctx.reclaimId
     dlg.hintText = ctx.hint
     -- the season a rotation expects to replace: the command carries this exact id, so the
     -- confirmation stays bound to the season that was on screen when it was opened
@@ -4452,6 +4467,12 @@ function Admin:submitDialog(dlg)
             return self:dialogError(dlg, tr("Admin_Throttled"))
         end
         self.pendingFreeze = { username = self.lookupUser, frozen = dlg.frozenTarget == true }
+    elseif dlg.mode == "reclaimRestore" then
+        local requestId = newRequestId()
+        if not send("admin.reclaim", { reclaimId = dlg.reclaimId, reason = reason, requestId = requestId }) then
+            return self:dialogError(dlg, tr("Admin_Throttled"))
+        end
+        self.pendingReclaim = { reclaimId = dlg.reclaimId, requestId = requestId }
     elseif dlg.mode == "sourceCaps" or dlg.mode == "sourceEnabled" or dlg.mode == "sourceTransfer" then
         if type(dlg.modId) ~= "string" or dlg.modId == "" then
             return self:dialogError(dlg, errorText("invalid_args"))
@@ -4811,6 +4832,17 @@ function Admin:onReply(kind, args)
             self.message = { text = getText(T .. (args.frozen and "Admin_Freeze_Ok" or "Admin_Unfreeze_Ok"), tostring(req.username)) }
             self:closeDialog()
             self:requestLookup(req.username)
+        else
+            self:dialogError(self.dialog, errorText(args.error))
+        end
+    elseif kind == "reclaim" then
+        local req = self.pendingReclaim
+        if not req or args.requestId ~= req.requestId then return end
+        self.pendingReclaim = nil
+        if args.ok then
+            self.message = { text = getText(T .. "Admin_Reclaim_Ok", itemName(args.item), tostring(args.username)) }
+            self:closeDialog()
+            self:requestAudit()
         else
             self:dialogError(self.dialog, errorText(args.error))
         end
@@ -5195,7 +5227,7 @@ function Admin:onTimeout(command)
     if command == "admin.catalog" or command == "admin.option" then self.shopPage:onTimeout(command) end
     if command == "admin.whitelist" then self.whitelistPage:onTimeout(command) end
     if command == "admin.entitlements" then self.entitlementsPage:onTimeout() end
-    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" or command == "admin.catalog" or command == "admin.listings" or command == "admin.auctions" then
+    if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" or command == "admin.catalog" or command == "admin.listings" or command == "admin.auctions" or command == "admin.reclaim" then
         if self.dialog then
             self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
             self:layoutDialog()
@@ -5383,7 +5415,10 @@ function Admin:rebuildAudit()
                     full = e.full == true, source = tostring(e.source or "ring"),
                     rawTarget = tostring(target), targetText = targetText, actionText = actionText,
                     adminName = admin, stamp = stamp, changeFull = change, reasonFull = reason,
-                    txId = e.txId,
+                    txId = e.txId, item = e.item,
+                    -- only the SYSTEM line of a login reclaim carries the id a restore needs
+                    reclaimId = (action == "recovery" and e.after == "reclaimed" and type(e.reclaimId) == "string")
+                        and e.reclaimId or nil,
                 } }
             end
         end
@@ -5999,6 +6034,8 @@ function Admin:updateEnabled()
     local picked = read and not modal and self.auditSelected ~= nil
     self.auditCopyNameButton:setEnable(picked)
     self.auditCopyIdButton:setEnable(picked)
+    self.auditRestoreButton:setEnable(picked and self.auditSelected.reclaimId ~= nil and self:writeAllowed()
+        and not isPending("admin.reclaim"))
     for _, b in ipairs(self.copyButtons) do
         local paths = self.system and self.system.paths
         b:setEnable(not modal and paths ~= nil and type(paths[b.internal]) == "string")
@@ -6067,7 +6104,7 @@ function Admin:updateEnabled()
     local dlg = self.dialog
     if dlg then
         local mayConfirm = self:dialogAllowed()
-        local busy = isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources") or isPending("admin.option") or isPending("admin.catalog") or isPending("admin.listings") or isPending("admin.auctions") or isPending("admin.recovery") or isPending("admin.seasons")
+        local busy = isPending("admin.adjust") or isPending("admin.freeze") or isPending("admin.config") or isPending("admin.sources") or isPending("admin.option") or isPending("admin.catalog") or isPending("admin.listings") or isPending("admin.auctions") or isPending("admin.recovery") or isPending("admin.seasons") or isPending("admin.reclaim")
         local ok = mayConfirm and not busy
         -- a decision over data the server could not prove needs its own explicit acceptance
         -- first: until the gate is ticked the confirm button is not pressable at all
@@ -6484,6 +6521,11 @@ function Admin:layout()
     copyName:setWidth(math.min(textWidth(copyName.fullTitle) + 20, copyMax)); copyName:setHeight(copyH)
     copyName:setX(math.max(PAD, copyId.x - 6 - copyName.width)); copyName:setY(copyY)
     U.setButtonTitle(copyName, copyName.fullTitle)
+    local restore = self.auditRestoreButton
+    restore:setVisible(audit)
+    restore:setWidth(math.min(textWidth(restore.fullTitle) + 20, copyMax)); restore:setHeight(copyH)
+    restore:setX(math.max(PAD, copyName.x - 6 - restore.width)); restore:setY(copyY)
+    U.setButtonTitle(restore, restore.fullTitle)
 
     -- system page: state card left, paths card right. Each path is "label / value / copy": two
     -- lines when the card has the room, one line at the minimum window height with a large UI font
@@ -7471,7 +7513,7 @@ function Admin:clearData()
     self.seasonsPage:clear()
     self.pendingCatalog, self.pendingWhitelist, self.pendingOption = nil, nil, nil
     self.optionRequestId = nil
-    self.pendingAdjust, self.pendingFreeze, self.pendingConfig = nil, nil, nil
+    self.pendingAdjust, self.pendingFreeze, self.pendingConfig, self.pendingReclaim = nil, nil, nil, nil
     self.pendingSource, self.pendingListings, self.pendingAuctions = nil, nil, nil
     self.resetQueue = nil
     for command in pairs(deferred) do

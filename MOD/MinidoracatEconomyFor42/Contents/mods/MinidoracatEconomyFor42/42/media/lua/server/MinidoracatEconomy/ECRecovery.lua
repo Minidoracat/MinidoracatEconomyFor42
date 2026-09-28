@@ -85,6 +85,7 @@ R.HELD_WARN = 64              -- one event line when an account passes it; never
 R.HELD_TTL_MS = 7 * 24 * 3600000   -- resolved held records are kept this long for the admin view
 R.HELD_LIMIT = 64
 R.SCAN_DEPTH = 3              -- backpack plus three levels of carried bags
+R.RECLAIMS_MAX = 200          -- reclaimed copies an administrator can still restore; oldest dropped
 
 local md = nil
 local reserved, reservedCount, consumedIndex = {}, 0, {}
@@ -302,6 +303,7 @@ function R.init(root)
     if type(rec.count) ~= "number" then rec.count = EC.countKeys(rec.ops) end
     if type(rec.floorAt) ~= "number" then rec.floorAt = 0 end
     if type(rec.floorCount) ~= "number" then rec.floorCount = 0 end
+    if type(rec.reclaims) ~= "table" then rec.reclaims = {} end
     root.recovery = rec
     reserved, reservedCount, consumedIndex = {}, 0, {}
     for _, receipt in pairs(rec.ops) do indexReceipt(receipt) end
@@ -309,6 +311,30 @@ end
 
 function R.ready()
     return md ~= nil and type(md.recovery) == "table"
+end
+
+-- A stale copy taken back at login, kept as what it was (a snapshot, not the object) so an
+-- administrator can mail it back from the audit line if the removal turns out to be wrong.
+-- Bounded: past RECLAIMS_MAX the oldest record goes, and its audit line then answers
+-- reclaim_unknown instead of restoring. ponytail: O(n) oldest scan per insert, n <= 200 on a
+-- path that runs after crashes only.
+function R.noteReclaim(fields)
+    local list = md.recovery.reclaims
+    local id = S.newId()
+    fields.at = EC.now()
+    list[id] = fields
+    local n, oldest, oldestAt = 0, nil, nil
+    for key, r in pairs(list) do
+        n = n + 1
+        if oldest == nil or (r.at or 0) < oldestAt then oldest, oldestAt = key, r.at or 0 end
+    end
+    if n > R.RECLAIMS_MAX then list[oldest] = nil end
+    return id
+end
+
+function R.reclaimRecord(id)
+    if not R.ready() or type(id) ~= "string" then return nil end
+    return md.recovery.reclaims[id]
 end
 
 local function ownerRec(username, create)

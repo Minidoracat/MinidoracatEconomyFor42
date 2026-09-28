@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 10   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +10: stale copies an older player save brought back are reclaimed with records, held when unsafe, refused in any other account (scenario 42: 13 new, 3 hold-only checks of the old policy replaced).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -6394,7 +6394,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             return n, qty
         end
         local audits, audited = reclaimAudits()
-        check(audits == 4 and audited == 5, "the audit carries one SYSTEM line per operation, with how many of its units came back")
+        check(audits == 5 and audited == 5, "the audit carries one SYSTEM line per unit taken back")
         proofSettle()
         local marketLines, eventLines = 0, 0
         for _, f in pairs(files) do
@@ -6403,8 +6403,8 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
                 if string.find(line, '"resolution":"stale-copy-reclaimed"', 1, true) then eventLines = eventLines + 1 end
             end
         end
-        check(marketLines == 4 and eventLines == 5,
-            "the player's market history has a line per operation and the event stream a line per unit")
+        check(marketLines == 5 and eventLines == 5,
+            "the player's market history and the event stream each have a line per unit taken back")
         local pushed, pushes = {}, 0
         for i = first, #sentCommands do
             local s = sentCommands[i]
@@ -6480,19 +6480,73 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
     end
 
     -- The copy can change hands before any login takes it back. Whoever holds it, its locator
-    -- names the operation that consumed it: refused and held, never sold a second time.
+    -- names the operation that consumed it: refused while that operation is unsaved, taken back
+    -- once it is - and an administrator can mail it back from the SYSTEM audit line, once.
     do
-        local _, seller, buyer = fresh()
+        local admin, seller, buyer = fresh()
         local a = native(seller, "Base.Bandage")
         local oldData = copy(a:getModData())
         local aId = list(seller, a)
-        a.modData = oldData
+        a.modData, a.condition = oldData, 3
         buyer.inventory:AddItem(a)
+        local key = "unit:" .. aId .. ":" .. a.id
         local res = cmd(buyer, "market.list", { itemId = a.id, price = 10 })
         local d = type(res.recoveryDetail) == "table" and res.recoveryDetail or {}
         check(res.error == "recovery_conflict" and d.reason == "stale_native_copy" and d.opId == aId
-            and buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), "unit:" .. aId .. ":" .. a.id) ~= nil,
+            and buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), key) ~= nil,
             "an unstamped copy in another account is refused with the operation that consumed it, and held there")
+        confirmWorld()
+        reconcileNow(buyer)
+        local line = nil
+        for _, e in ipairs(X.auditEntries()) do
+            if e.action == "recovery" and e.after == "reclaimed" and e.target == buyer:getUsername() then line = e end
+        end
+        check(not buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), key).note == "reclaimed"
+            and line ~= nil and line.admin == "SYSTEM" and line.owner == seller:getUsername() and line.item == "Base.Bandage"
+            and Mk.listingExists(aId),
+            "once the listing is saved, the copy in the other account is taken back; the audit names whose listing it copied")
+        local function restore(who, id, reason)
+            return cmd(who, "admin.reclaim", { reclaimId = id, reason = reason })
+        end
+        local watcher = fakePlayer("provenance-moderator")
+        watcher.role = "moderator"                    -- ReadOnlyRoles: may read the audit, not write
+        onlinePlayers[#onlinePlayers + 1] = watcher
+        check(restore(buyer, line.reclaimId, "mine").error == "forbidden" and restore(watcher, line.reclaimId, "look").error == "forbidden"
+            and restore(admin, line.reclaimId, "").error ~= nil
+            and restore(admin, "1:1", "why").error == "reclaim_unknown" and M.unclaimed(buyer:getUsername()) == 0,
+            "restoring needs the write role (reading the audit is not enough), a reason and a reclaim the server kept")
+        local first = #sentCommands + 1
+        local done = restore(admin, line.reclaimId, "taken by mistake")
+        local told = nil
+        for i = first, #sentCommands do
+            if sentCommands[i].player == buyer and sentCommands[i].command == "recovery.restored" then told = sentCommands[i].args end
+        end
+        local again = restore(admin, line.reclaimId, "twice")
+        check(done.ok and done.username == buyer:getUsername() and M.unclaimed(buyer:getUsername()) == 1
+            and told ~= nil and told.item == "Base.Bandage" and again.error == "reclaim_restored",
+            "an administrator mails the copy back to its holder once, and the holder is told")
+        local claimed = M.claim(buyer, done.mailId)
+        local back = buyer.inventory.items[#buyer.inventory.items]
+        reconcileNow(buyer)
+        check(claimed.ok and back.fullType == "Base.Bandage" and back.condition == 3 and back.id ~= a.id
+            and buyer.inventory:contains(back),
+            "the restored item is rebuilt as it was taken, under a new id a later login does not take back")
+    end
+    -- The restorable snapshots are bounded: past the ceiling the oldest goes, and its audit line
+    -- then answers reclaim_unknown instead of restoring something the server no longer has.
+    do
+        local admin = fresh()
+        local R, keep = S.Recovery, S.Recovery.RECLAIMS_MAX
+        R.RECLAIMS_MAX = 2
+        local ids = {}
+        for i = 1, 3 do
+            nowMs = nowMs + 1000
+            ids[i] = R.noteReclaim({ username = "provenance-seller", item = "Base.Bandage", snapshot = { type = "Base.Bandage" } })
+        end
+        R.RECLAIMS_MAX = keep
+        local gone = cmd(admin, "admin.reclaim", { reclaimId = ids[1], reason = "late" })
+        check(gone.error == "reclaim_unknown" and R.reclaimRecord(ids[2]) ~= nil and R.reclaimRecord(ids[3]) ~= nil,
+            "past the ceiling the oldest reclaim is dropped and can no longer be restored; the newer ones stay")
     end
 
     SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
