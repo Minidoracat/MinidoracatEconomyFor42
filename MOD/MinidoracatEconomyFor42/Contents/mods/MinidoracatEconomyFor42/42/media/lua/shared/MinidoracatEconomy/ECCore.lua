@@ -141,13 +141,27 @@ function EC.isFixedType(script)
     return false
 end
 
+-- The local player's role name, exactly as the engine spells it, or "" when there is none. Read
+-- from the player object, never from the connection: the deprecated global getAccessLevel()
+-- dereferences GameClient.connection (LuaManager.java:4435-4436), which is null once the client
+-- is disconnected while the engine still renders one more frame on the way out (IngameState.exit
+-- -> IsoWorld.render -> ISDestroyCursor.render), and pcall catches that NullPointerException only
+-- after the engine has printed it. Every client path sets the local player's role together with
+-- the connection's (ConnectedPacket.java:159-166, ExtraInfoPacket.java:191-197,
+-- RolesPacket.java:120-127); vanilla reads it the same way (ISAdminPanelUI.lua:197). A dedicated
+-- server has no local player and answers "".
+function EC.localRoleName()
+    local player = getPlayer()
+    local role = player and player:getRole()
+    return role and role:getName() or ""
+end
+
 -- CraftRecipe OnAddToMenu callback of the terminal entity (CraftRecipe.java:379-380, called by
 -- ISRecipeScrollingListBox.lua:344-347 on the client): only admins see the build entry. Server
--- side never lists build menus; getAccessLevel is client-only (LuaManager.java:4435-4436).
+-- side never lists build menus.
 function MinidoracatEconomy_AdminBuildOnly(param)
     if isServer() then return false end
-    local ok, level = pcall(getAccessLevel)
-    return ok and level == "admin"
+    return EC.localRoleName() == "admin"
 end
 
 function EC.log(msg)

@@ -11,7 +11,7 @@
 -- own their widgets and state in separate page modules; the other business pages stay here.
 --
 -- Permission gate mirrors the server (ECAdmin.lua gate()): role *name* lists compared exactly
--- against the client-only getAccessLevel(), plus the native role-editing capability for the
+-- against the local player's own role (EC.localRoleName), plus the native role-editing capability for the
 -- handful of options that decide who the admins are. The server re-checks every command; this
 -- side only decides what to draw and what to enable, and collapses when a right is taken away.
 --
@@ -27,7 +27,7 @@
 -- shared polling, deferred sends and timeouts, and delegates the active transaction page's tick.
 --
 -- Engine references (snapshot 42.20.4-20260826):
---   getAccessLevel()             LuaManager.java:4435-4436 (client only; "" when unavailable)
+--   IsoPlayer.getRole()          IsoPlayer.java:7562-7564, read through EC.localRoleName ("" when unavailable)
 --   getRoles()                   LuaManager.java:3359-3365 -> Roles.getRoles (client and
 --                                dedicated both answer; read through EC.roleChoices)
 --   Role.getName / getPosition   Role.java:41-43 / :73-75 (exact, case sensitive; Roles.java:302-305)
@@ -119,10 +119,7 @@ local FILTER_DEBOUNCE_MS = 650    -- an exact name typed into a filter box: one 
 -- The player's own role name, exactly as the engine spells it: role lookup is case sensitive
 -- (Roles.java:302-305) and a host-made role may contain spaces, so nothing is folded or split.
 local function accessLevel()
-    if type(getAccessLevel) ~= "function" then return "" end
-    local ok, level = pcall(getAccessLevel)
-    if not ok or type(level) ~= "string" then return "" end
-    return level
+    return EC.localRoleName()
 end
 
 -- A role list option, as this client has to read it. EC.sandbox alone would answer with the
@@ -5853,7 +5850,7 @@ function Admin:syncPermissionContext(force)
     end
 end
 
--- Local role read (getAccessLevel + sandbox lists) AND, once a reply has told us, the level the
+-- Local role read (the player's own role + sandbox lists) AND, once a reply has told us, the level the
 -- server actually enforced. Either side saying no means no.
 function Admin:writeAllowed()
     self:syncPermissionContext()

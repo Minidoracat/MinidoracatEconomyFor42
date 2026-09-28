@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -14919,6 +14919,26 @@ nowMs = nowMs + 2 * 3600000                    -- down for two hours
 fire("OnServerStarted")
 local a = S.modData().auctions.items["dt-1"]
 check(a ~= nil and a.expiresAt == ends + (nowMs - lastBeat), "two hours of downtime push a running auction's end back by the downtime")
+end)()
+
+;(function()
+-- The client's admin checks read the local player's own role, never the connection: once the
+-- client is disconnected the deprecated getAccessLevel() dereferences a null GameClient.connection
+-- (LuaManager.java:4435-4436) while the engine still renders the destroy cursor one more frame.
+io.write("scenario RL: the admin check without a connection\n")
+local savedGetPlayer, savedGetAccessLevel, savedIsServer = getPlayer, getAccessLevel, isServer
+local role = "admin"
+getAccessLevel = function() error("GameClient.connection is null") end
+getPlayer = function() return { getRole = function() return role and { getName = function() return role end } or nil end } end
+isServer = function() return false end
+local okAdmin, admin = pcall(MinidoracatEconomy_AdminBuildOnly)
+role = nil
+local okNone, none = pcall(EC.localRoleName)
+getPlayer = function() return nil end
+local okNoPlayer, noPlayer = pcall(EC.localRoleName)
+getPlayer, getAccessLevel, isServer = savedGetPlayer, savedGetAccessLevel, savedIsServer
+check(okAdmin and admin == true and okNone and none == "" and okNoPlayer and noPlayer == "",
+    "the admin check reads the local player's role and never the connection, even after a disconnect")
 end)()
 
 io.write("\n")

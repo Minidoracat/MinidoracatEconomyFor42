@@ -7,8 +7,8 @@
 -- station" on a square that carries an allowed terminal tile (EC.TERMINAL_SPRITES) and
 -- "unregister" on a registered one; the server re-validates all of them (ECTerminal.register /
 -- unregister). Changing the kind of a square is unregister then register, exactly as before --
--- there is no "set kind" call. getAccessLevel is a client-only read of the connection
--- (LuaManager.java:4435-4436); OnFillWorldObjectContextMenu: LuaEventManager.java:619-620.
+-- there is no "set kind" call. Admin means the local player's own role (EC.localRoleName, never
+-- the connection); OnFillWorldObjectContextMenu: LuaEventManager.java:619-620.
 --
 -- What this file may and may not claim about the radio: the note is a reading of what the server
 -- last told the client (C.radio, the terminal's own radioState) plus the engine's own rules. It
@@ -35,8 +35,7 @@ local T = "IGUI_MinidoracatEconomy_"
 local RELAY_RANGE_UNLIMITED = 100000
 
 local function isAdmin()
-    local ok, level = pcall(getAccessLevel)
-    return ok and level == "admin"
+    return EC.localRoleName() == "admin"
 end
 
 local function spriteName(o)
