@@ -415,7 +415,9 @@ function X.init(root)
         EC.log("epoch " .. h.epoch .. " crashed before saving; entries from seq " .. tostring(h.loadedSeq + 1) .. " are rolled back")
     end
     X.flush()                      -- startup lines go out immediately
-    X.heartbeat(ms)
+    -- No heartbeat here: the file still holds the previous run's last beat, and ECAuction's init
+    -- (which may run after this one) measures the downtime from it. The first tick writes it.
+    lastHeartbeat = 0
 end
 
 -- Throttled tick: flush the queue, heartbeat every minute, header on day change.

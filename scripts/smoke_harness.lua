@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused.
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1368,8 +1368,7 @@ check(evPath == "MinidoracatEconomy/events-20260906.json", "events file is named
 local ev = files[evPath]
 check(ev and #ev.lines == 2 and string.find(ev.lines[1], '"type":"file.header"', 1, true) and string.find(ev.lines[1], '"startedSeq":0', 1, true), "first line is file.header with startedSeq")
 check(ev and string.find(ev.lines[2], '"type":"server.started"', 1, true) and string.find(ev.lines[2], '"epoch":"' .. root2.meta.epoch .. '"', 1, true), "second line is server.started carrying the epoch")
-local hb = files["MinidoracatEconomy/heartbeat.json"]
-check(hb and #hb.lines == 1 and string.find(hb.lines[1], '"realmId":"' .. root2.meta.realmId .. '"', 1, true), "heartbeat.json has one line with the realmId")
+check(files["MinidoracatEconomy/heartbeat.json"] == nil, "no heartbeat during the start: the previous run's beat must survive for the auction downtime policy")
 check(string.find(ev.lines[1], '"realmId":"realm-', 1, true) ~= nil, "realmId is generated once and stamped on file lines")
 
 -- ===== 情境十一：交易 → 事件行＋收據行 =====
@@ -1377,6 +1376,8 @@ io.write("scenario 11: tx.committed event and receipt lines\n")
 local rc = L.credit("Mini doracat[1]", "survivor", 30, "SYSTEM_MINT", { requestId = "x-1", reasonCode = "daily_checkin", kind = "checkin" })
 check(rc.ok and #ev.lines == 2, "commit only queues; nothing is written before the tick")
 fire("OnTickEvenPaused")
+local hb = files["MinidoracatEconomy/heartbeat.json"]
+check(hb and #hb.lines == 1 and string.find(hb.lines[1], '"realmId":"' .. root2.meta.realmId .. '"', 1, true), "heartbeat.json has one line with the realmId")
 do
     local txLine = nil
     for _, l in ipairs(ev.lines) do if string.find(l, '"type":"tx.committed"', 1, true) then txLine = l end end
@@ -14813,6 +14814,111 @@ check(A.TX_GROUPS.transfer == true and L.conservation("survivor") == 0 and L.con
 SV.TransferEnabled, SV.AdminRoles = nil, savedRoles
 SV.RewardDayResetHour, SV.RewardTimezoneUTC = nil, nil
 onlinePlayers = {}
+end)()
+
+;(function()
+-- 市場／拍賣拒絕碼：之前沒有任何 assertion 點名的分支。每一條都走 client 用的 OnClientCommand，
+-- 驗錯誤碼，並驗整體狀態（餘額含保留款、刊登／拍賣數、背包、pending、信箱）一點都沒動。
+io.write("scenario EC: market and auction refusals move nothing\n")
+local Mk, Au, M = S.Market, S.Auction, S.Mailbox
+local KEY = EC.PLAYER_MODDATA_KEY
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+sentCommands = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local boss = fakePlayer("boss"); boss.role = "admin"
+local ann = fakePlayer("ann"); ann.x, ann.y = 101, 200; ann.inventory = fakeInventory(50)
+local bob = fakePlayer("bob"); bob.x, bob.y = 101, 201; bob.inventory = fakeInventory(50)
+onlinePlayers = { boss, ann, bob }
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_catgirl_0" }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    sentCommands = {}
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "trade" })
+L.credit("ann", "survivor", 500, "SYSTEM_MINT", { requestId = "ec-ann", reasonCode = "t" })
+L.credit("bob", "survivor", 500, "SYSTEM_MINT", { requestId = "ec-bob", reasonCode = "t" })
+local function state()
+    local md = S.modData()
+    local parts = { md.market.count, md.auctions.count, Mk.ownerCount("ann"), Au.ownerCount("ann"),
+        M.unclaimed("ann"), M.unclaimed("bob"), ann.inventory.count(), bob.inventory.count(), L.conservation("survivor") }
+    for _, u in ipairs({ "ann", "bob", "SYSTEM_BURN" }) do
+        local b = L.getBalance(u, "survivor")
+        parts[#parts + 1] = b.available .. "/" .. b.reserved
+    end
+    for _, p in ipairs({ ann, bob }) do parts[#parts + 1] = EC.countKeys(p.modData[KEY] and p.modData[KEY].pendingOuts or {}) end
+    for id, a in pairs(md.auctions.items) do parts[#parts + 1] = id .. ":" .. tostring(a.bids) .. ":" .. tostring(a.highest and a.highest.amount) end
+    return table.concat(parts, ",")
+end
+local axe = instanceItem("Base.Axe"); ann.inventory:AddItem(axe)
+local saw = instanceItem("Base.Saw"); ann.inventory:AddItem(saw)
+local bobs = instanceItem("Base.Hammer"); bob.inventory:AddItem(bobs)
+-- item_not_found: an id that is not a top-level item of this backpack (here: someone else's hammer)
+local s0 = state()
+check(cmd(ann, "market.list", { itemId = bobs.id, price = 50 }).error == "item_not_found" and state() == s0,
+    "listing an item id that is not in the seller's backpack is item_not_found and moves nothing")
+check(cmd(ann, "auction.create", { itemId = bobs.id, startPrice = 50, hours = 24 }).error == "item_not_found" and state() == s0,
+    "auctioning an item id that is not in the seller's backpack is item_not_found and moves nothing")
+-- market_full: the server-wide cap counts every seller's listings
+local maxListings = Mk.MAX_LISTINGS
+Mk.MAX_LISTINGS = S.modData().market.count
+check(cmd(ann, "market.list", { itemId = axe.id, price = 50 }).error == "market_full" and state() == s0,
+    "a market at its server-wide listing cap refuses a new listing, charges no fee and keeps the item")
+Mk.MAX_LISTINGS = maxListings
+local maxAuctions = Au.MAX_AUCTIONS
+Au.MAX_AUCTIONS = S.modData().auctions.count
+check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 50, hours = 24 }).error == "market_full" and state() == s0,
+    "an auction house at its server-wide cap refuses a new auction, charges no fee and keeps the item")
+Au.MAX_AUCTIONS = maxAuctions
+-- too_many_auctions: the per-player cap
+SandboxVars.MinidoracatEconomy.AuctionMaxPerPlayer = 1
+local first = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 24 })
+local s1 = state()
+check(first.ok == true and cmd(ann, "auction.create", { itemId = saw.id, startPrice = 50, hours = 24 }).error == "too_many_auctions"
+    and state() == s1 and ann.inventory.contains(nil, saw), "a seller at AuctionMaxPerPlayer is refused the next auction, with no fee and the item kept")
+SandboxVars.MinidoracatEconomy.AuctionMaxPerPlayer = nil
+-- unknown_auction: bidding on / cancelling an id that does not exist
+check(cmd(bob, "auction.bid", { auctionId = "no-such-auction", amount = 100 }).error == "unknown_auction" and state() == s1,
+    "a bid on an auction id that does not exist is unknown_auction and reserves nothing")
+check(cmd(ann, "auction.cancel", { auctionId = "no-such-auction" }).error == "unknown_auction" and state() == s1,
+    "cancelling an auction id that does not exist is unknown_auction and returns nothing")
+-- auction_ended: past expiresAt, before the once-a-minute sweep has settled it (no tick fired here)
+nowMs = S.modData().auctions.items[first.auctionId].expiresAt
+check(cmd(bob, "auction.bid", { auctionId = first.auctionId, amount = 100 }).error == "auction_ended" and state() == s1
+    and Au.hasAuction(first.auctionId), "a bid after the auction's end but before the sweep settles it is auction_ended and reserves nothing")
+onlinePlayers = {}
+end)()
+
+;(function()
+-- The auction downtime policy reads the previous run's last heartbeat while the server starts.
+-- Nothing may rewrite heartbeat.json before it does: an auction that was running when the server
+-- went down two hours ago must end two hours later than planned (spec 12 stage F), instead of
+-- being judged against a heartbeat written a moment earlier by this very start.
+io.write("scenario DT: auction downtime measured across a real restart\n")
+modDataStore[EC.MODDATA_KEY] = nil
+files = {}
+onlinePlayers = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local md = S.modData()
+local ends = nowMs + 3600000
+md.auctions.items["dt-1"] = { id = "dt-1", seller = "ann", item = "Base.Axe", snapshot = { type = "Base.Axe" }, qty = 1,
+    startPrice = 10, currency = "survivor", tradeSchema = L.TRADE_SCHEMA, fee = 0, bids = 0, bidders = {},
+    at = nowMs, expiresAt = ends, hours = 1, weight = 3, category = "other" }
+md.auctions.count = md.auctions.count + 1
+md.auctions.byOwner.ann = { ["dt-1"] = true }
+fire("OnTickEvenPaused")                       -- this run's last heartbeat
+local lastBeat = nowMs
+nowMs = nowMs + 2 * 3600000                    -- down for two hours
+fire("OnServerStarted")
+local a = S.modData().auctions.items["dt-1"]
+check(a ~= nil and a.expiresAt == ends + (nowMs - lastBeat), "two hours of downtime push a running auction's end back by the downtime")
 end)()
 
 io.write("\n")
