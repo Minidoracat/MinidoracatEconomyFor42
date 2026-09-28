@@ -892,10 +892,10 @@ end
 local function historyLine() return fontH.small + 8 end
 local function historyRowHeight() return historyLine() * 2 + 8 end
 
-local HISTORY_KINDS = { "listed", "sold", "bought", "cancelled", "expired", "delisted", "restored",
+local HISTORY_KINDS = { "listed", "sold", "bought", "cancelled", "expired", "delisted", "restored", "reclaimed",
     "auction_created", "auction_bid", "auction_outbid", "auction_sold", "auction_won",
     "auction_unsold", "auction_cancelled", "auction_restored" }
-local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "warn", expired = "warn",
+local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "warn", expired = "warn", reclaimed = "warn",
     auction_sold = "positive", auction_won = "positive", auction_outbid = "warn",
     auction_unsold = "warn", auction_cancelled = "warn", auction_created = "textFaint" }
 

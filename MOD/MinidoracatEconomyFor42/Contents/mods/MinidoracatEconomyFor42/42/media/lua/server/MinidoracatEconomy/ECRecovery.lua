@@ -279,10 +279,14 @@ function R.stripProven(record)
     if type(record) == "table" then record.proven = nil end
 end
 
+-- The locator (type + engine id) is indexed for every unit that has one, not only legacy ones: an
+-- older player save can bring back an unstamped copy of a native unit the world already moved
+-- out, and the copy can change hands before anything removes it. Whoever holds it, R.consumer
+-- then answers with the operation that consumed it instead of letting it be sold a second time.
 local function indexReceipt(receipt)
     for _, unit in ipairs(receipt.units or {}) do
         if type(unit.t) == "string" then consumedIndex[unit.t] = receipt.id end
-        if unit.l == true and unit.n ~= nil and type(receipt.item) == "string" then
+        if unit.n ~= nil and type(receipt.item) == "string" then
             consumedIndex["legacy:" .. receipt.item .. ":" .. tostring(unit.n)] = receipt.id
         end
     end
@@ -606,6 +610,22 @@ function R.dropRow(row)
     local notified, notifyErr = pcall(sendRemoveItemFromContainer, row.container, row.item)
     if not notified then EC.log("recovery removal notification failed: " .. tostring(notifyErr)) end
     return true
+end
+
+-- What stops a removal the server would otherwise make: it never pulls an object out of an
+-- equipment or hotbar slot, and never deletes a bag that still holds something. A state it
+-- cannot read blocks as well.
+function R.removalBlock(row)
+    local ok, blocked = pcall(function()
+        if row.item:isEquipped() or row.item:getAttachedSlot() > -1 then return "legacy_item_equipped" end
+        if row.item.getInventory then
+            local contents = row.item:getInventory()
+            if contents and contents:getItems():size() > 0 then return "legacy_container_not_empty" end
+        end
+        return nil
+    end)
+    if not ok then return "legacy_item_unreadable" end
+    return blocked
 end
 
 -- The automatic path. A legacy-stamped object is never removed here: this server cannot name its

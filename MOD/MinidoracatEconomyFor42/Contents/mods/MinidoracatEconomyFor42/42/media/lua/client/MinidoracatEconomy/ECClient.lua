@@ -617,6 +617,13 @@ handlers["recovery.status"] = function(args)
     end
 end
 
+-- An older save brought back objects this account had already listed, auctioned or sold; the
+-- server took the copies back at login and wrote them into the market history: { item, qty }.
+handlers["recovery.reclaimed"] = function(args)
+    local qty = math.max(1, math.floor(tonumber(args.qty) or 1))
+    C.toast(getText("IGUI_MinidoracatEconomy_Recovery_Reclaimed", C.itemLabel(args.item), tostring(qty)))
+end
+
 -- What became of the items a write produced, worded for a toast. The outcome is a delivery code
 -- (`deliveryError` next to a purchase's `delivered = false`, or the `error` of a claim, which is
 -- itself the outcome); any other code is not a delivery answer and is left to the caller's own

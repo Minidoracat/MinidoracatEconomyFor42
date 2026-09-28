@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 10   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +10: stale copies an older player save brought back are reclaimed with records, held when unsafe, refused in any other account (scenario 42: 13 new, 3 hold-only checks of the old policy replaced).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3861,17 +3861,15 @@ fire("OnServerStarted")
 onlinePlayers = { boss, ann }
 cmd(ann, "hello")
 check(Mk.hasListing(listed.listingId) and ann.modData[KEY].pendingOuts[listed.listingId] == nil, "a listing that survived into a save clears the pending record at the next login")
--- A native-id collision alone cannot prove identity; retain the unverified object for review.
+-- An older save's unstamped copy on the restored unit's type and id. The receipt is in a save, so
+-- the copy is taken back before the pending is judged, and the pending closes in the same pass.
 local ghost = instanceItem("Base.Axe"); ghost.id = axe.id; ann.inventory:AddItem(ghost)
 ann.modData[KEY].pendingOuts[listed.listingId] = deepCopy(restoredPend)
 sentItemPackets = {}
 cmd(ann, "hello")
-check(ann.inventory.count("Base.Axe") == 1 and M.recoveryStatus("ann").held > 0
-    and ann.modData[KEY].pendingOuts[listed.listingId] ~= nil and Mk.listingExists(listed.listingId),
-    "an unverified native-id match is held without destroying a potentially different object")
-local disputed = cmd(ann, "market.list", { itemId = ghost.id, price = 120 })
-check(disputed.ok == false and ann.inventory.count("Base.Axe") == 1 and Mk.ownerCount("ann") == 1,
-    "the retained native-id conflict cannot be relisted as another asset")
+check(ann.inventory.count("Base.Axe") == 0 and M.recoveryStatus("ann").held == 0
+    and ann.modData[KEY].pendingOuts[listed.listingId] == nil and Mk.listingExists(listed.listingId),
+    "an older save's copy of a saved listing is taken back before its pending is judged, which then closes in the same pass")
 -- row 5: crashed before the removal (pending present, item present, no listing) -> pending cleared, item stays
 local hammer = instanceItem("Base.Hammer"); ann.inventory:AddItem(hammer)
 ann.modData[KEY].pendingOuts["9999:1"] = { itemId = hammer.id, snapshot = { type = "Base.Hammer" }, price = 10, seq = 1, epoch = "9999" }
@@ -6261,27 +6259,6 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         check(Mk.listingExists(id) and tally(seller, "Base.CannedCorn") == 1,
             "a later login does not restore that unit a second time")
     end
-    -- FINAL-REC-D (3): the world saved the t+n receipt, the player save predates both the stamp
-    -- and the pending.
-    do
-        local _, seller = fresh()
-        local item = native(seller, "Base.CannedCorn")
-        local oldPlayer, beforeStamp = copy(seller.modData), copy(item:getModData())
-        local id = list(seller, item)
-        confirmWorld()
-        seller.modData = oldPlayer                       -- no pending at all, and older than the stamp
-        item.modData = beforeStamp
-        seller.inventory:AddItem(item)
-        reconcileNow(seller)
-        check(Mk.listingExists(id) and seller.inventory:contains(item)
-            and M.recoveryStatus(seller:getUsername()).held == 1,
-            "a saved receipt plus a save older than the stamp holds the stale copy, neither spending nor deleting it")
-        local refused = cmd(seller, "market.list", { itemId = item.id, price = 10 })
-        reconcileNow(seller)
-        check(refused.error == "recovery_conflict" and seller.inventory:contains(item)
-            and item:getModData()[KEY] == nil and M.recoveryStatus(seller:getUsername()).held == 1,
-            "that held stale copy cannot be listed as a fresh asset, and the hold stays one record")
-    end
     -- FINAL-REC-D (4): a complete abort keeps the unit tradable under its own token; wiping that
     -- token while the operation is still open must not buy a new one.
     do
@@ -6366,6 +6343,156 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         check(not Mk.listingExists(id) and tally(seller, "Base.CannedCorn") == 0
             and M.recoveryStatus(seller:getUsername()).held > 0,
             "a crash in the same tick as the operation loses the proof with the queue: the listing is not rebuilt from the player's own file, it is held for a human")
+    end
+
+    -- V3: the world save is newer than the player save. The older backpack still holds the very
+    -- objects this account listed, auctioned and sold; those receipts are inside the world save,
+    -- so the login takes the copies back and writes every one of them down.
+    do
+        local _, seller = fresh()
+        local user = seller:getUsername()
+        files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+            { id = "corn", item = "Base.CannedCorn", qty = 1, price = 20, dailyCap = 0, buyback = true, bidPrice = 3, buybackCap = 0 },
+            { id = "axe", item = "Base.Axe", qty = 1, price = 50, dailyCap = 0, buyback = true, bidPrice = 5, buybackCap = 0 },
+        } }) }, opens = 0 }
+        assert(Shop.load())
+        local listedAxe, soldAxe = native(seller, "Base.Axe"), native(seller, "Base.Axe")
+        local listedScope, soldScope = instanceItem("Base.x2Scope"), instanceItem("Base.x2Scope")
+        listedAxe:attachWeaponPart(listedScope)
+        soldAxe:attachWeaponPart(soldScope)
+        local bandages = { native(seller, "Base.Bandage"), native(seller, "Base.Bandage") }
+        local hammer = native(seller, "Base.Hammer")
+        local oldPlayer, oldItems = copy(seller.modData), {}
+        for i, item in ipairs(seller.inventory.items) do oldItems[i] = { item = item, data = copy(item:getModData()) } end
+        local axeListing = list(seller, listedAxe)
+        local lot = cmd(seller, "market.list", { itemIds = { bandages[1].id, bandages[2].id }, price = 20 })
+        local auction = cmd(seller, "auction.create", { itemId = hammer.id, startPrice = 20, hours = 24 })
+        local sold = cmd(seller, "shop.sell", { id = "axe", itemIds = { soldAxe.id }, revision = Shop.revision() })
+        assert(lot.ok and auction.ok and sold.ok, tostring(lot.error or auction.error or sold.error))
+        local coins = L.getBalance(user, "survivor").available
+        restart(copy(S.modData()))                                  -- the world save carries all four receipts
+        seller.modData, seller.inventory.items = copy(oldPlayer), {}  -- the player save predates them
+        for _, old in ipairs(oldItems) do old.item.modData = copy(old.data); seller.inventory:AddItem(old.item) end
+        listedAxe.parts, soldAxe.parts = { listedScope }, { soldScope }
+        local first = #sentCommands + 1
+        reconcileNow(seller)
+        local inv = seller.inventory
+        check(inv.count("Base.Axe") == 0 and inv.count("Base.Bandage") == 0 and inv.count("Base.Hammer") == 0
+            and Mk.listingExists(axeListing) and Mk.listingExists(lot.listingId) and S.modData().auctions.items[auction.auctionId] ~= nil,
+            "the login takes back every copy of what this account already listed, auctioned or sold; the world keeps the operations")
+        check(inv.count("Base.x2Scope") == 1 and inv:contains(listedScope),
+            "the part a listing left with the seller comes off the copy into the backpack; the part a sale took with the item does not")
+        check(L.getBalance(user, "survivor").available == coins and M.recoveryStatus(user).held == 0,
+            "taking the copies back moves no money and leaves nothing for an administrator")
+        local function reclaimAudits()
+            local n, qty = 0, 0
+            for _, e in ipairs(X.auditEntries()) do
+                if e.action == "recovery" and e.admin == "SYSTEM" and e.target == user and e.after == "reclaimed" then
+                    n, qty = n + 1, qty + e.qty
+                end
+            end
+            return n, qty
+        end
+        local audits, audited = reclaimAudits()
+        check(audits == 4 and audited == 5, "the audit carries one SYSTEM line per operation, with how many of its units came back")
+        proofSettle()
+        local marketLines, eventLines = 0, 0
+        for _, f in pairs(files) do
+            for _, line in ipairs(f.lines) do
+                if string.find(line, '"kind":"reclaimed"', 1, true) and string.find(line, '"type":"market"', 1, true) then marketLines = marketLines + 1 end
+                if string.find(line, '"resolution":"stale-copy-reclaimed"', 1, true) then eventLines = eventLines + 1 end
+            end
+        end
+        check(marketLines == 4 and eventLines == 5,
+            "the player's market history has a line per operation and the event stream a line per unit")
+        local pushed, pushes = {}, 0
+        for i = first, #sentCommands do
+            local s = sentCommands[i]
+            if s.player == seller and s.command == "recovery.reclaimed" then
+                pushed[s.args.item], pushes = (pushed[s.args.item] or 0) + s.args.qty, pushes + 1
+            end
+        end
+        check(pushes == 3 and pushed["Base.Axe"] == 2 and pushed["Base.Bandage"] == 2 and pushed["Base.Hammer"] == 1,
+            "the player is told once per item type, with the whole count")
+        first = #sentCommands + 1
+        reconcileNow(seller)
+        local again = 0
+        for i = first, #sentCommands do if sentCommands[i].command == "recovery.reclaimed" then again = again + 1 end end
+        check(again == 0 and reclaimAudits() == audits and inv.count("Base.x2Scope") == 1,
+            "a second login finds nothing left to take back and writes nothing twice")
+    end
+
+    -- What would make a removal wrong keeps the copy and says why: a receipt this run has not
+    -- seen saved (a rollback would take the operation away and leave nothing), or an equip slot.
+    do
+        local _, seller = fresh()
+        local user, R = seller:getUsername(), S.Recovery
+        local a, b = native(seller, "Base.Bandage"), native(seller, "Base.CannedCorn")
+        local oldPlayer, oldItems = copy(seller.modData), {}
+        for i, item in ipairs(seller.inventory.items) do oldItems[i] = { item = item, data = copy(item:getModData()) } end
+        local aId = list(seller, a)
+        list(seller, b)
+        seller.modData, seller.inventory.items = copy(oldPlayer), {}
+        for _, old in ipairs(oldItems) do old.item.modData = copy(old.data); seller.inventory:AddItem(old.item) end
+        local key = "unit:" .. aId .. ":" .. a.id
+        reconcileNow(seller)
+        local held = R.heldRecord(user, key)
+        check(seller.inventory:contains(a) and seller.inventory:contains(b) and held and not held.resolvedAt
+            and held.reason == "stale_copy_unsaved",
+            "a copy whose receipt this run has not seen saved is held, not removed")
+        a.equipped = true
+        confirmWorld()
+        reconcileNow(seller)
+        held = R.heldRecord(user, key)
+        check(seller.inventory:contains(a) and not seller.inventory:contains(b) and not held.resolvedAt
+            and held.reason == "legacy_item_equipped",
+            "once saved, an equipped copy stays in its slot and the record names why; the other copy is taken back")
+        a.equipped = false
+        reconcileNow(seller)
+        check(not seller.inventory:contains(a) and R.heldRecord(user, key).note == "reclaimed" and M.recoveryStatus(user).held == 0,
+            "unequipping is enough: the next pass takes it back and closes every record")
+    end
+
+    -- An id alone is not identity: another type on it is left alone, and two copies of the right
+    -- type on it are held rather than guessed between.
+    do
+        local _, seller = fresh()
+        local user = seller:getUsername()
+        local a = native(seller, "Base.Bandage")
+        local oldData = copy(a:getModData())
+        local aId = list(seller, a)
+        restart(copy(S.modData()))
+        local other = instanceItem("Base.Hammer")
+        other.id = a.id
+        seller.inventory.items = { other }
+        reconcileNow(seller)
+        check(seller.inventory:contains(other) and M.recoveryStatus(user).held == 0,
+            "another type standing on a consumed id is not a copy: neither removed nor held")
+        local bagInv, bag, twin = fakeInventory(20), instanceItem("Base.Bag_ALICEpack"), instanceItem("Base.Bandage")
+        bag.getInventory = function() return bagInv end
+        twin.id, a.modData = a.id, oldData
+        bagInv:AddItem(twin)
+        seller.inventory.items = { a, bag }
+        reconcileNow(seller)
+        local held = S.Recovery.heldRecord(user, "unit:" .. aId .. ":" .. a.id)
+        check(seller.inventory:contains(a) and bagInv:contains(twin) and held and held.reason == "duplicate_unit",
+            "two copies wearing one consumed id are both kept and held: the server does not pick one")
+    end
+
+    -- The copy can change hands before any login takes it back. Whoever holds it, its locator
+    -- names the operation that consumed it: refused and held, never sold a second time.
+    do
+        local _, seller, buyer = fresh()
+        local a = native(seller, "Base.Bandage")
+        local oldData = copy(a:getModData())
+        local aId = list(seller, a)
+        a.modData = oldData
+        buyer.inventory:AddItem(a)
+        local res = cmd(buyer, "market.list", { itemId = a.id, price = 10 })
+        local d = type(res.recoveryDetail) == "table" and res.recoveryDetail or {}
+        check(res.error == "recovery_conflict" and d.reason == "stale_native_copy" and d.opId == aId
+            and buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), "unit:" .. aId .. ":" .. a.id) ~= nil,
+            "an unstamped copy in another account is refused with the operation that consumed it, and held there")
     end
 
     SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil

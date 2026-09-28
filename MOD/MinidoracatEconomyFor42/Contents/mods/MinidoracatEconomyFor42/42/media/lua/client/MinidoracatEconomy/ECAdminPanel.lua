@@ -5340,6 +5340,13 @@ function Admin:rebuildAudit()
             else
                 -- the structural actions (whitelist / catalog / terminal) name a field, not money
                 change = auditChangeText(e)
+                -- a reconciliation line names what it moved: the key alone is an operation id
+                if action == "recovery" and type(e.item) == "string" and e.item ~= "" then
+                    local qty = tonumber(e.qty)
+                    local item = getText(T .. "Admin_Rcpt_Item", itemName(e.item),
+                        qty ~= nil and tostring(math.floor(qty)) or "-")
+                    change = change and (item .. "  " .. change) or item
+                end
                 changeToken = change and "text" or "textFaint"
                 change = change or "-"
             end

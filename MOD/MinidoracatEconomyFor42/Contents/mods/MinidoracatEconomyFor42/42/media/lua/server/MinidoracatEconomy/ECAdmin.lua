@@ -1524,19 +1524,6 @@ local function recoveryPreview(evidence, origins, source)
     return out
 end
 
-local function removalBlock(row)
-    local ok, blocked = pcall(function()
-        if row.item:isEquipped() or row.item:getAttachedSlot() > -1 then return "legacy_item_equipped" end
-        if row.item.getInventory then
-            local contents = row.item:getInventory()
-            if contents and contents:getItems():size() > 0 then return "legacy_container_not_empty" end
-        end
-        return nil
-    end)
-    if not ok then return "legacy_item_unreadable" end
-    return blocked
-end
-
 -- The objects one operation took out, as this page must name them: one entry per unit, no
 -- duplicates, engine ids inside the range the engine issues. A protocol 2 record (and the
 -- journal's own copy of one) carries its origins already; an older one carries bare engine
@@ -1616,7 +1603,7 @@ local function legacyRows(scan, mailId, consumedOnly)
             or (consumedOnly and (consumed ~= nil or unreadable)
                 and (origin.gen0 or Rcv.gen0Unit(origin.unit)))) then
             rows[#rows + 1] = row
-            blocked = blocked or (unreadable and "legacy_source_unknown") or removalBlock(row)
+            blocked = blocked or (unreadable and "legacy_source_unknown") or Rcv.removalBlock(row)
         end
     end
     return rows, blocked
@@ -2352,7 +2339,7 @@ S.handlers["admin.recovery"] = function(player, args)
             -- could not be read proves nothing, and the object stays where it is rather
             -- than being destroyed on a guess; the rollback verdict is separate evidence
             -- and stands on its own.
-            local allowed = type(origin) == "table" and not unit.duplicate and removalBlock(unit) == nil
+            local allowed = type(origin) == "table" and not unit.duplicate and Rcv.removalBlock(unit) == nil
                 and ((origin.gen0 == true and Rcv.verdict(origin.epoch, origin.seq) == "rolledback")
                     or (row.reason == "legacy_unit_consumed" and consumed ~= nil and not unreadable))
             if allowed and Rcv.dropRow(unit) then
