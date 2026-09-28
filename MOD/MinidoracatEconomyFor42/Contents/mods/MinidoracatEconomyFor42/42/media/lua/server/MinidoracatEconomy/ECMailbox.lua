@@ -23,8 +23,10 @@
 -- is network-atomic: the durable pair is the item stamp plus the claim witness, and the login
 -- reconcile is the convergence.
 -- Death (rule five, part one): every `claimed` entry of that username becomes `settled` and is
--- never redelivered - the items are on the corpse. A `ready` entry (the remainder of a split
--- included) is world state and survives the death untouched.
+-- never redelivered - the items went with the character (onto the corpse; since 42.21 what was
+-- held in the hands drops to the floor, IsoGameCharacter.die -> dropHeldItems).
+-- A `ready` entry (the remainder of a split included) is world state and survives the death
+-- untouched.
 --
 -- Engine references (snapshot 42.20.4-20260826):
 --   instanceItem(fullType)          LuaManager.java:5610-5620 (A7: InventoryItemFactory is not a global)

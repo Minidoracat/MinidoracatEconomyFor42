@@ -2,7 +2,7 @@
 
 提供雙貨幣、系統商店、玩家市場、拍賣、獎勵與管理查帳的 Project Zomboid Build 42 經濟系統。
 
-**多人 dedicated server 專用，不支援單人或遊戲內 Host／co-op。** 適用 Build 42.20.4；需搭配 Minidoracat UI Library。
+**多人 dedicated server 專用，不支援單人或遊戲內 Host／co-op。** 適用 Build 42.20.4 以上（已在 42.21.0 實機驗證）；需搭配 Minidoracat UI Library。
 
 ## 發布狀態與功能
 

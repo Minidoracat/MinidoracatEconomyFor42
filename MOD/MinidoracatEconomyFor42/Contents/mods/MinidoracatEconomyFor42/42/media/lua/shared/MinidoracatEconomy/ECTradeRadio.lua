@@ -21,11 +21,11 @@
 --     raise: the caller aborts that operation instead of treating an unreadable device as
 --     absent (which would add a second one) or as a normal radio (which would let it be taken).
 --
--- Deliberately not handled here: a client can point a dropped Radio item's ModData RadioItemID
--- at an owned device, and the vanilla server handler (RemoveItemFromSquarePacket
--- .handleRemoveRadio) will then delete the carrier. That is a packet the server accepts by
--- itself; the relay's verified rebuild is the answer, and no wrapper in this shared file would
--- change it.
+-- Deliberately not handled here: when a dropped Radio item leaves a square, the vanilla server
+-- deletes the IsoRadio there whose ModData RadioItemID equals that item's id
+-- (RemoveItemFromSquarePacket.handleRemoveRadio, from GameServer.RemoveItemFromMap). Since 42.21
+-- clients can no longer send that packet; only the server's own removals (a pickup) reach it.
+-- The relay's verified rebuild is the answer, and no wrapper in this shared file would change it.
 --
 -- Engine references (decompiled snapshot 42.20.4-20260826; vanilla Lua from the same build):
 --   IsoRadio(cell, square, sprite), getObjectName() = "Radio"   IsoRadio.java:10-21
