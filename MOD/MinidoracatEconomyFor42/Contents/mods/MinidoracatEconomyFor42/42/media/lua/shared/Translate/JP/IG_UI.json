@@ -262,6 +262,8 @@
   "IGUI_MinidoracatEconomy_Shop_Error_clothing_patch": "穴を継ぎ当てした衣類は現在システムに売れません：継ぎ当ての情報を完全に保存できません",
   "IGUI_MinidoracatEconomy_Market_Reason_device_media": "中にディスクかテープが入っています。デバイス設定の「メディアを取り出す」で取り出してから出品してください",
   "IGUI_MinidoracatEconomy_Shop_Error_device_media": "中にディスクかテープが入っています。デバイス設定の「メディアを取り出す」で取り出してから売却してください",
+  "IGUI_MinidoracatEconomy_Market_Reason_fluid_mixture": "複数の液体が混ざっていて完全には保存できないため出品できません。「中身を捨てる」で空にするか、一種類の液体だけにしてから出品してください",
+  "IGUI_MinidoracatEconomy_Shop_Error_fluid_mixture": "複数の液体が混ざっていて完全には保存できません。「中身を捨てる」で空にするか、一種類の液体だけにしてから売却してください",
   "IGUI_MinidoracatEconomy_Market_Buy": "購入",
   "IGUI_MinidoracatEconomy_Market_BuyTitle": "購入：%1",
   "IGUI_MinidoracatEconomy_Market_BuyFrom": "出品者 %1",

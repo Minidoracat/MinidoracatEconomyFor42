@@ -262,6 +262,8 @@
   "IGUI_MinidoracatEconomy_Shop_Error_clothing_patch": "补过破洞的衣物目前不能卖给系统：补丁数据无法完整保存",
   "IGUI_MinidoracatEconomy_Market_Reason_device_media": "设备里还有光盘或录像带，请先在设备选项用「移除媒体」取出再上架",
   "IGUI_MinidoracatEconomy_Shop_Error_device_media": "设备里还有光盘或录像带，请先在设备选项用「移除媒体」取出再卖给系统",
+  "IGUI_MinidoracatEconomy_Market_Reason_fluid_mixture": "容器里混了不只一种液体，混合液体无法完整保存，这件不能上架。请先用「倒掉」清空，或只装一种液体再上架",
+  "IGUI_MinidoracatEconomy_Shop_Error_fluid_mixture": "容器里混了不只一种液体，混合液体无法完整保存。请先用「倒掉」清空，或只装一种液体再卖给系统",
   "IGUI_MinidoracatEconomy_Market_Buy": "购买",
   "IGUI_MinidoracatEconomy_Market_BuyTitle": "购买：%1",
   "IGUI_MinidoracatEconomy_Market_BuyFrom": "卖家 %1",

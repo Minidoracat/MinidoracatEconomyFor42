@@ -262,6 +262,8 @@
   "IGUI_MinidoracatEconomy_Shop_Error_clothing_patch": "Clothing with a patched hole cannot be sold for now: its patches cannot be kept intact",
   "IGUI_MinidoracatEconomy_Market_Reason_device_media": "There is still a disc or tape inside; take it out with \"Remove media\" in the device options before listing",
   "IGUI_MinidoracatEconomy_Shop_Error_device_media": "There is still a disc or tape inside; take it out with \"Remove media\" in the device options before selling",
+  "IGUI_MinidoracatEconomy_Market_Reason_fluid_mixture": "It holds a mix of fluids, which cannot be kept intact, so this cannot be listed. Empty it with \"Pour on ground\" or keep a single fluid in it before listing",
+  "IGUI_MinidoracatEconomy_Shop_Error_fluid_mixture": "It holds a mix of fluids, which cannot be kept intact. Empty it with \"Pour on ground\" or keep a single fluid in it before selling",
   "IGUI_MinidoracatEconomy_Market_Buy": "Buy",
   "IGUI_MinidoracatEconomy_Market_BuyTitle": "Buy: %1",
   "IGUI_MinidoracatEconomy_Market_BuyFrom": "Seller %1",

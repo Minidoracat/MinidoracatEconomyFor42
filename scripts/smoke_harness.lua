@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 1   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +1: an empty container is rebuilt empty.
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused.
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3290,6 +3290,15 @@ check(back ~= nil and back.condition == 7 and back.fluidName == "Petrol" and bac
     local copy = Codec.rebuild(snapEmpty)
     instanceItem = real
     check(snapEmpty.fluid == nil and copy ~= nil and copy.fluidAmount == 0 and copy.fluidName == "", "an empty container is rebuilt empty even when a fresh one starts full")
+end)()
+;(function()
+    -- the snapshot carries one fluid: a mixture is refused, a single fluid passes
+    local mixed, single = instanceItem("Base.PetrolCan"), instanceItem("Base.PetrolCan")
+    local base = mixed.getFluidContainer
+    mixed.getFluidContainer = function(self) local fc = base(self); fc.isMixture = function() return true end; return fc end
+    single.getFluidContainer = function(self) local fc = base(self); fc.isMixture = function() return false end; return fc end
+    local okM, whyM = Codec.stateCheck(mixed)
+    check(okM == false and whyM == "fluid_mixture" and Codec.stateCheck(single) == true, "a fluid mixture is refused as fluid_mixture, a single fluid is not")
 end)()
 local weapon = instanceItem("Base.Axe"); local scope = instanceItem("Base.x2Scope"); weapon:attachWeaponPart(scope)
 local inv = fakeInventory(50)

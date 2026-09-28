@@ -525,6 +525,10 @@ function Codec.stateCheck(item)
     -- number converts. The rebuilt device would come out empty and the disc would be gone.
     local dev = call(item, "getDeviceData")
     if dev and call(dev, "hasMedia") == true then return false, "device_media" end
+    -- The snapshot keeps one fluid and the total (fluidOf): a mixture (FluidContainer.isMixture,
+    -- FluidContainer.java:855-857) would come back as the whole amount of its primary fluid.
+    local fc = call(item, "getFluidContainer")
+    if fc and call(fc, "isMixture") == true then return false, "fluid_mixture" end
     return true
 end
 
