@@ -3747,12 +3747,6 @@ function Panel:setVisible(visible)
         self:closeBuy()
         self:closeMarketDialog()
         self:closeTransfer()
-        -- The admin window is opened from this one and goes with it, through its own close so an
-        -- unsaved draft still asks first (ECAdminWindow Win:close -> requestClose); its records
-        -- close with it. Only when this window really was shown: the hide a fresh window gets at
-        -- creation or on login must not take an admin window opened from somewhere else.
-        local AW = C.AdminWindow
-        if was and AW and AW.window and AW.window:getIsVisible() then AW.window:close() end
         Detail.close(self)       -- a record of a window that is gone is not a record
         self:unfocusEntries()
         self:cancelAuctionHistory()   -- a closed window asks the server for nothing
