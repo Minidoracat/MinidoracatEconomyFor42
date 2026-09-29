@@ -790,7 +790,7 @@ RECONCILE
 
 | 項目 | 已找到 | 尚缺 |
 |---|---|---|
-| account identity | getUsername：IsoPlayer.java:6445-6475；getSteamID：6412-6417；getOnlineID：6488-6491 | username 可 rename：ServerWorldDatabase.java:188-201；同一 Steam ID 可有多個 username/account：1200-1229；onlineID 是當次連線 ID。仍需 accountKey 產品政策與 migration |
+| account identity | getUsername：IsoPlayer.java:6445-6475；getSteamID：6412-6417；getOnlineID：6488-6491 | ~~username 可 rename：ServerWorldDatabase.java:188-201~~（2026-09-29 更正：`changeUsername` 沒有任何呼叫端，登入名不會改；會「改名」的是重生與分割畫面座位的 `player.username`，那是客戶端送來的名字，`ConnectCoopPacket.java:72-97`、`GameServer.java:2848`）；同一 Steam ID 可有多個 username/account：1200-1229；onlineID 是當次連線 ID。已定案（`ECIdentity.lua`）：帳戶鍵維持登入名，以 SteamID 綁定驗證，見家族約定「玩家身分」 |
 | character identity | server player slot／playerIndex 有資料：IsoPlayer.java:966-974、GameServer.java:2767-2771、2794；ServerPlayerDB 以 account/world/playerIndex 查角色：ServerPlayerDB.java:124-147、216-234 | 同 slot 死亡後新角色的 generation key、rename 與角色重建語意未證明，不能直接拿 playerIndex 當 milestone identity |
 | InventoryItem serialization | Java save／loadItem／load 存在：InventoryItem.java:1660-1697、1872-1918、1943-1955、2019-2027 | 方法需要 ByteBuffer；原版 Lua 未找到可建立並完成 arbitrary item blob round-trip 的路徑 |
 | instanceItem | 可由 full type 建立預設 item：LuaManager.java:5599-5627 | 不保留 condition、age、attachments、fluid、custom pages、modData；不能當 generic restore |

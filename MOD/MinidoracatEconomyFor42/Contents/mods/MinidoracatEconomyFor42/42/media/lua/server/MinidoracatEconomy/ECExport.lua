@@ -247,15 +247,23 @@ function X.auditKey(rec)
 end
 
 -- Full record goes to the audit + events files; a trimmed copy lands in the bounded ModData ring
--- the admin panel reads (newest first via X.auditEntries).
-function X.audit(fields)
+-- the admin panel reads (newest first via X.auditEntries). `private` fields go to the two files
+-- only: the ring is Global ModData, and any logged-in client can ask for a whole Global ModData
+-- table (GlobalModDataRequestPacket.java:15,32), so a SteamID must never be written there.
+function X.audit(fields, private)
     local ms = EC.now()
     local rec = baseRecord("audit", ms)
     for k, v in pairs(fields or {}) do rec[k] = v end
     rec.auditId = S.newId()
     rec.seq = md.meta.seq
-    X.enqueue(auditPath(ms), EC.jsonEncode(rec))
-    X.enqueue(eventsPath(ms), EC.jsonEncode(rec))
+    local full = rec
+    if private then
+        full = {}
+        for k, v in pairs(rec) do full[k] = v end
+        for k, v in pairs(private) do if full[k] == nil then full[k] = v end end
+    end
+    X.enqueue(auditPath(ms), EC.jsonEncode(full))
+    X.enqueue(eventsPath(ms), EC.jsonEncode(full))
     local ring = md.audit
     local short = {}
     for k, v in pairs(rec) do short[k] = v end

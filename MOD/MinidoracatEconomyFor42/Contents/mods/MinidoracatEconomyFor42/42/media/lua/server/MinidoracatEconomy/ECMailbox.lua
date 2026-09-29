@@ -1338,10 +1338,10 @@ local carryOver = {}
 
 function M.onDeath(character)
     if not md or not instanceof(character, "IsoPlayer") then return end
-    -- A split-screen seat has no economy identity (S.forEachOnline): its name is whatever the
-    -- client typed, so its death must not settle that account's mail or carry records over.
-    local ok, seat, username = pcall(function() return character:getPlayerNum(), character:getUsername() end)
-    if not ok or seat ~= 0 or type(username) ~= "string" then return end
+    -- Only the account this character really is (S.principal: never a split-screen seat or a
+    -- name its SteamID does not match) may have its mail settled and its records carried over.
+    local username = S.principal(character)
+    if username == nil then return end
     local okData, data = pcall(function() return character:getModData()[EC.PLAYER_MODDATA_KEY] end)
     if okData and type(data) == "table" and type(data.pendingOuts) == "table" then
         local copy, n = {}, 0

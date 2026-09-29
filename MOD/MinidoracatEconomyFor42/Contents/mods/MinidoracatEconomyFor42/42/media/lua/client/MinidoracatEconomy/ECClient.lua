@@ -998,8 +998,37 @@ function C.toast(message)
     end
 end
 
+-- Identity (server ECIdentity): the server answers a player whose name it cannot verify - a
+-- name that does not match the SteamID it is bound to - with identity.unverified (at most once a
+-- minute) instead of any reply, and with identity.verified once an administrator's import or
+-- confirmation fixed it. The flag is what the panel paints; listeners (the panel) repaint on it.
+-- Every other command from the server means the server is answering this player as its account
+-- again (a respawn under the right name), so it clears the flag as well.
+C.identityUnverified = false
+C.identityListeners = {}
+function C.onIdentity(fn) C.identityListeners[#C.identityListeners + 1] = fn end
+local function setIdentity(unverified)
+    if C.identityUnverified == unverified then return end
+    C.identityUnverified = unverified
+    notify(C.identityListeners, "identity", unverified and "unverified" or "verified", {})
+end
+
+handlers["identity.unverified"] = function()
+    setIdentity(true)
+    C.toast(getText("IGUI_MinidoracatEconomy_Identity_Unverified"))
+end
+
+-- The session this client never received while it was refused: say hello again.
+handlers["identity.verified"] = function()
+    setIdentity(false)
+    send("hello")
+end
+
+-- admin.identity is answered even while the name is unverified (S.IDENTITY_EXEMPT), so its reply
+-- says nothing about this player's own identity.
 local function onServerCommand(module, command, args)
     if module ~= EC.COMMAND_MODULE then return end
+    if command ~= "identity.unverified" and command ~= "admin.identity" then setIdentity(false) end
     local handler = handlers[command]
     if not handler then return end
     local ok, err = pcall(handler, args or {})
@@ -1028,6 +1057,7 @@ local function onGameStart()
         Events.OnTick.Remove(snapshotPump)
     end
     sent = false
+    C.identityUnverified = false
     C.session = nil
     C.unclaimed = 0
     C.wallet = nil

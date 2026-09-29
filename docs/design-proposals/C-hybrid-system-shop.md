@@ -214,7 +214,7 @@ expectedRevision
 payload（僅 ID、數量與玩家選項）
 ```
 
-server 必須自行推導 actor、`accountKey`、role、價格、稅、配額、餘額、物品狀態與目前 revision。此部署的 `accountKey` 固定採 server-side `player:getUsername()`；不得接受 client 自報 username、SteamID 或 account。相同 `requestId` 搭配相同 payload 回同一 receipt；相同 `requestId` 搭配不同 payload 回 `IDEMPOTENCY_CONFLICT`。所有 idempotency result、request size、字串、數量、頁碼與頻率都有 hard cap。
+server 必須自行推導 actor、`accountKey`、role、價格、稅、配額、餘額、物品狀態與目前 revision。此部署的 `accountKey` 固定採登入名，但只取 `S.principal(player)` 驗證過的名字（2026-09-29 定案，`ECIdentity.lua`；家族約定「玩家身分」）：`player:getUsername()` 本身是客戶端送來的名字，分割畫面座位沒有身分，Steam 模式下名字必須符合綁定的 SteamID；不得接受 client 自報 username、SteamID 或 account。相同 `requestId` 搭配相同 payload 回同一 receipt；相同 `requestId` 搭配不同 payload 回 `IDEMPOTENCY_CONFLICT`。所有 idempotency result、request size、字串、數量、頁碼與頻率都有 hard cap。
 
 正常 UI 回應包含 `requestId`、typed result、最新 revision、餘額投影及短交易碼，並只定向送給原請求連線。這是最小揭露與頻寬規則，不是機密性保證：本方案選用的 Global ModData 可被任何已登入 client 以可猜 tag 主動要求整表，接受此取捨的條件見 §5.1 與 §6.1。
 
@@ -624,7 +624,7 @@ game server credit、永久 tombstone、`creditSeq` 與 `exchange.fulfilled` 事
 |---|---|---|
 | Client → server command | 已找到入口 | `sendClientCommand(player, ...)`：`LuaManager.java:8908-8924`；server 由 connection 與 player index 重取 actor：`GameServer.java:2247-2270`，再觸發 `OnClientCommand`：`GameServer.java:2292-2298`。經濟命令固定使用帶 player overload；handler 仍須自行完整驗證。 |
 | Server → client 定向回應 | 已找到入口 | `sendServerCommand(player, ...)`：`LuaManager.java:8938-8945`、`GameServer.java:3525-3531`；client 觸發 `OnServerCommand`：`GameClient.java:1052-1068`。實際傳輸粒度是該 player 所在 connection；response 仍帶 `requestId` 與 account projection。 |
-| Dedicated 帳戶鍵 | 已查證並採用 | `player:getUsername()`：`IsoPlayer.java:6445-6446`；server 在連線流程指派 username：`GameServer.java:2812`。本部署固定以 username 作 `accountKey`。`getSteamID()` 回 Java `long`，Kahlua 轉 Lua `double` 會失去 SteamID64 精度：`IsoPlayer.java:6411-6413`、`KahluaNumberConverter.java:106,140-142`，因此不得作 Lua 帳戶鍵或 Discord 對應。 |
+| Dedicated 帳戶鍵 | 已查證並採用（2026-09-29 更正） | 帳戶鍵是登入名，但 `player:getUsername()`（`IsoPlayer.java:6445-6446`）是客戶端送來的名字：重生與分割畫面加入走 `ConnectCoopPacket`，伺服器只擋空名與在線重名（`ConnectCoopPacket.java:72-97`），再以該名字設定座位（`GameServer.java:2848`）。所以帳戶鍵一律取 `S.principal(player)`（`ECIdentity.lua`：分割畫面座位沒有身分；Steam 模式下名字要符合伺服器私有檔裡綁定的 SteamID）。`getSteamID()` 回 Java `long`，Kahlua 轉 Lua `double` 會捨入到 16 的倍數（`KahluaNumberConverter.java:103-116`），只當驗證因子以 number 比對，不作帳戶鍵或 Discord 對應。 |
 | Server role capability | 已找到入口 | `Role.hasCapability`：`Role.java:176-186`。候選設定權限 `ChangeAndReloadServerOptions`、觀測權限 `GetStatistic`：`Capability.java:80-81,98-103`。不得用 client `isAdmin()` 作授權。 |
 | Inventory item 重查／增刪 | 已找到 primitive | `getFullType`／`getID`：`InventoryItem.java:1654-1658,3590-3595`；`AddItem`／`Remove`／`getItemWithID`：`ItemContainer.java:458-532,2032-2093,3083-3092`；原版 server 用例：`ClientCommands.lua:1200-1217`。這些 primitive 不等於原子 escrow。 |
 | 物品序列化方法 | 已找到 Java 方法；純 Lua 路徑待查證 | `InventoryItem.save/load` 需要 `ByteBuffer`：`InventoryItem.java:1660-1696,1872-1880,3379-3383`。指定來源尚未找到 Lua 可建立／操作該 `ByteBuffer` 的入口，因此 production 不採純 Lua 完整序列化；世界容器轉移與中央白名單重建仍各自受 §10.2 gate 約束。 |

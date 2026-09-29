@@ -8,8 +8,11 @@
 --                                       (ServerMap.java:409); transmit() from a client is not
 --                                       validated (GlobalModData.java:112-150) -> this table is never
 --                                       transmitted and the client must never transmit it either
---   player:getUsername()                IsoPlayer.java:6445-6446 (account key; SteamID64 loses
---                                       precision through Lua doubles, KahluaNumberConverter.java:140-142)
+--   player:getUsername()                IsoPlayer.java:6445-6446: the name the client sent. The
+--                                       account key is the login name, but only as S.principal
+--                                       verified it (ECIdentity: SteamID binding; split-screen
+--                                       seats have none). SteamID64 itself is no key: it loses
+--                                       precision as a Lua double (KahluaNumberConverter.java:103-116)
 
 if not MinidoracatEconomy or not MinidoracatEconomy.makeId then
     require "MinidoracatEconomy/ECCore"
@@ -82,28 +85,55 @@ local function reply(player, command, args)
 end
 S.reply = reply
 
+-- ---------- identity ----------
+
+-- getUsername() is whatever name the client sent: a split-screen seat or a respawn may carry any
+-- name that is not online at that moment (ConnectCoopPacket.java:72-97 refuses only an empty or
+-- an already connected one; GameServer.java:2830, 2848 then names the seat with it). Every
+-- command, push and lookup therefore asks S.principal(player) - the account name this player
+-- really is, or nil - and never the raw name. ECIdentity installs it (family convention
+-- "player identity": split-screen seats have none, in Steam mode the name must match its bound
+-- SteamID). Until that module has loaded nobody is anyone: a missing identity check must fail
+-- closed, never open.
+S.principal = S.principal or function() return nil end
+
+-- The raw name, for log lines and for keying a refusal - never an identity.
+function S.claimedName(player)
+    local ok, name = pcall(function() return player:getUsername() end)
+    return ok and type(name) == "string" and name or "?"
+end
+
+-- Commands a player without a verified identity may still send, each gated on its own terms:
+-- the identity import only on the role, which comes from the connection and not from the name
+-- (GameServer.java:2841), so an administrator whose own binding is wrong can repair it.
+S.IDENTITY_EXEMPT = { ["admin.identity"] = true }
+
 -- Server-side player list (LuaManager.java:4453-4463); the client-side getConnectedPlayers is
 -- unavailable on a dedicated server (AGENTS.md API table).
--- The one loop every push and lookup goes through: fn(player) for each online player in the
--- engine's order; returning true stops early. Split-screen seats 2-4 are never visited: they
--- share the main seat's connection and SteamID, and the engine takes their name from the client
--- (ConnectCoopPacket.java:72-97 only refuses an empty or an already connected name; the seat is
--- then named with it, GameServer.java:2830, 2848), so nothing about such a seat can be verified.
+-- The one loop every push and lookup goes through: fn(player, account) for each online player
+-- with a verified identity, in the engine's order; returning true stops early. A player without
+-- one (a split-screen seat, a name that does not match its SteamID) is never visited, so no push
+-- meant for an account can reach someone who merely carries its name.
 function S.forEachOnline(fn)
     local players = getOnlinePlayers()
     if not players then return end
     for i = 0, players:size() - 1 do
         local p = players:get(i)
-        if p and p:getPlayerNum() == 0 and fn(p) == true then return end
+        local who = p and S.principal(p)
+        if who and fn(p, who) == true then return end
     end
 end
 
+-- The online player who IS this account, or nil. The raw name is compared first so a lookup
+-- costs one identity check, not one per online player.
 function S.onlinePlayer(username)
-    local found = nil
-    S.forEachOnline(function(p)
-        if p:getUsername() == username then found = p return true end
-    end)
-    return found
+    local players = getOnlinePlayers()
+    if not players then return nil end
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        if p and p:getUsername() == username and S.principal(p) == username then return p end
+    end
+    return nil
 end
 
 -- Push pattern (spec 19.2): a module that changes player-visible state pushes the fresh snapshot
@@ -453,12 +483,21 @@ function S.dispatch(module, command, player, args)
     end
     local handler = handlers[command]
     if not handler then
-        EC.log("unknown command " .. tostring(command) .. " from " .. tostring(player and player:getUsername()))
+        EC.log("unknown command " .. tostring(command) .. " from " .. S.claimedName(player))
         return
     end
-    -- A split-screen seat has no economy identity (see S.forEachOnline): its commands do nothing.
-    if player:getPlayerNum() ~= 0 then return end
-    local username = player:getUsername()
+    -- Every handler acts for the account S.principal verified, so a player without one is refused
+    -- before any handler runs (ECIdentity.refuse: counted for the audit, a notice at most once a
+    -- minute, nothing at all for a split-screen seat). An exempt command checks its own gate and
+    -- is throttled under the claimed name, apart from the account it claims.
+    local username = S.principal(player)
+    if username == nil then
+        if not S.IDENTITY_EXEMPT[command] then
+            if S.Identity then S.Identity.refuse(player, command) end
+            return
+        end
+        username = "?" .. S.claimedName(player)
+    end
     if throttled(username, command, EC.now()) then
         return
     end

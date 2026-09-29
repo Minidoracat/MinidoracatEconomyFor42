@@ -54,6 +54,7 @@ require "MinidoracatEconomy/ECAdminRecovery"
 require "MinidoracatEconomy/ECAdminSeasons"
 require "MinidoracatEconomy/ECAdminAccounts"
 require "MinidoracatEconomy/ECAdminEntitlements"
+require "MinidoracatEconomy/ECAdminIdentity"
 require "MinidoracatEconomy/ECRowActions"
 require "MinidoracatEconomy/ECPlayerPicker"
 require "MinidoracatEconomy/ECItemNames"
@@ -94,8 +95,10 @@ end
 -- "Seasons" sits beside "Settings" for the same reason the season length lives in the option
 -- schema: rotating a season and deciding how long the next one runs are the same rare,
 -- deliberate act, and both of them take the native role capability rather than the write role.
-local TABS = { "Player", "Recovery", "Dashboard", "Currencies", "Sources", "IntegrationPlans", "Shop", "Whitelist", "Listings", "Auctions", "Transactions", "Audit", "System", "Settings", "Seasons" }
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim" }
+-- "Identity" sits beside "Whitelist": both are about who may be who on this server, and it is the
+-- one page that works for an administrator whose own name the server has not verified yet.
+local TABS = { "Player", "Recovery", "Dashboard", "Currencies", "Sources", "IntegrationPlans", "Shop", "Whitelist", "Identity", "Listings", "Auctions", "Transactions", "Audit", "System", "Settings", "Seasons" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim", "admin.identity" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 
@@ -2107,6 +2110,12 @@ function Admin:createChildren()
     -- through this controller's slot and owns everything else, like the money page.
     self.entitlementsPage = C.AdminEntitlements.create(self, send, isPending, newRequestId)
     self:addChild(self.entitlementsPage)
+
+    -- The identity desk (ECAdminIdentity): SteamID bindings, the whitelist import and the
+    -- confirmation of conflicts. It sends admin.identity through this controller's slot and
+    -- nothing else; the confirmation is this controller's dialog (mode "identity").
+    self.identityPage = C.AdminIdentity.create(self, send, isPending, newRequestId)
+    self:addChild(self.identityPage)
 
     self:layout()
 end
@@ -4153,6 +4162,7 @@ function Admin:keyboardTargets()
     if self.tab == "Whitelist" then return self.whitelistPage:keyboardTargets() end
     if self.tab == "Recovery" then return self.recoveryPage:keyboardTargets() end
     if self.tab == "Seasons" then return self.seasonsPage:keyboardTargets() end
+    if self.tab == "Identity" then return self.identityPage:keyboardTargets() end
     if self.tab == "IntegrationPlans" then return self.entitlementsPage:keyboardTargets() end
     local out = {}
     if self.tab == "Player" then
@@ -4386,6 +4396,11 @@ function Admin:submitDialog(dlg)
     -- landing on a season an automatic deadline has already turned.
     if dlg.mode == "season" then
         self:sendSeasons({ action = "start", expectedSeason = dlg.seasonExpected, reason = reason }, dlg)
+        return
+    end
+    -- The identity conflicts the box listed, moved to the whitelist's SteamID (ECAdminIdentity).
+    if dlg.mode == "identity" then
+        self.identityPage:sendRebind(reason, dlg)
         return
     end
     -- The reconciliation page's decision. Nothing about it is derived here: the account, the key,
@@ -4623,6 +4638,7 @@ function Admin:matchesReply(kind, args)
         return self.txPage:matchesReply(kind, args)
     end
     if kind == "entitlements" then return self.entitlementsPage:matchesReply(args) end
+    if kind == "identity" then return self.identityPage:matchesReply(args) end
     if kind == "auditDetail" then
         return self.auditDetailRequestId == nil or args.requestId == nil
             or args.requestId == self.auditDetailRequestId
@@ -5140,6 +5156,8 @@ function Admin:onReply(kind, args)
     elseif kind == "entitlements" then
         -- the slot is freed (matchesReply already matched the page's own open request)
         self.entitlementsPage:onReply(args)
+    elseif kind == "identity" then
+        self.identityPage:onReply(args)
     end
     self:updateEnabled()
 end
@@ -5227,6 +5245,13 @@ function Admin:onTimeout(command)
     if command == "admin.catalog" or command == "admin.option" then self.shopPage:onTimeout(command) end
     if command == "admin.whitelist" then self.whitelistPage:onTimeout(command) end
     if command == "admin.entitlements" then self.entitlementsPage:onTimeout() end
+    if command == "admin.identity" then
+        self.identityPage:onTimeout()
+        if self.dialog ~= nil and self.dialog.mode == "identity" then
+            self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
+            self:layoutDialog()
+        end
+    end
     if command == "admin.adjust" or command == "admin.freeze" or command == "admin.config" or command == "admin.sources" or command == "admin.option" or command == "admin.catalog" or command == "admin.listings" or command == "admin.auctions" or command == "admin.reclaim" then
         if self.dialog then
             self.dialog.message = { text = getText(T .. "Admin_Timeout", label), error = true }
@@ -6101,6 +6126,7 @@ function Admin:updateEnabled()
     self.recoveryPage:updateEnabled()
     self.accountsPage:updateEnabled()
     self.seasonsPage:updateEnabled()
+    self.identityPage:updateEnabled()
     local dlg = self.dialog
     if dlg then
         local mayConfirm = self:dialogAllowed()
@@ -6757,6 +6783,10 @@ function Admin:layout()
     self.seasonsPage:setX(0)
     self.seasonsPage:setY(g.bodyY)
     self.seasonsPage:resize(w, math.max(80, g.bodyH))
+    self.identityPage:setVisible(read and self.tab == "Identity" and self:getIsVisible())
+    self.identityPage:setX(0)
+    self.identityPage:setY(g.bodyY)
+    self.identityPage:resize(w, math.max(80, g.bodyH))
     if self.dialog then self:layoutDialog() end
     self.layoutW, self.layoutH = w, h
     self:updateEnabled()
@@ -7511,6 +7541,7 @@ function Admin:clearData()
     self.pendingSeason, self.seasonUnknown = nil, nil
     pendingAt["admin.seasons"], pendingAt["admin.option"] = nil, nil
     self.seasonsPage:clear()
+    self.identityPage:clear()
     self.pendingCatalog, self.pendingWhitelist, self.pendingOption = nil, nil, nil
     self.optionRequestId = nil
     self.pendingAdjust, self.pendingFreeze, self.pendingConfig, self.pendingReclaim = nil, nil, nil, nil
@@ -7697,6 +7728,7 @@ function Admin:prerender()
     -- the season desk: the read it was owed while the shared slot was busy goes out from here
     if self.tab == "Seasons" and self.hadRead then self.seasonsPage:tick(now) end
     if self.tab == "IntegrationPlans" and self.hadRead then self.entitlementsPage:tick(now) end
+    if self.tab == "Identity" and self.hadRead then self.identityPage:tick(now) end
 
     -- the account typed in history mode: one command per pause, never one per keystroke
     if self.histQueryAt and now - self.histQueryAt > PLAYERS_DEBOUNCE_MS then
@@ -7756,7 +7788,7 @@ function Admin:prerender()
     -- 1.00:1 against the world behind it (.omc/tmp/colour-audit.json). The stored opacity is
     -- untouched -- the window chrome around this child still honours it.
     if self.tab == "Transactions" or self.tab == "Shop" or self.tab == "Whitelist"
-        or self.tab == "Recovery" or self.tab == "Seasons" or self.tab == "IntegrationPlans"
+        or self.tab == "Recovery" or self.tab == "Seasons" or self.tab == "IntegrationPlans" or self.tab == "Identity"
         or (self.tab == "Player" and self.playerMode == "list") then
         fillSolid(self, 0, 0, self.width, self.height, "surface")
     end
@@ -7779,7 +7811,8 @@ function Admin:prerender()
         or (self.tab == "Transactions" and self.txPage.updatedAt)
         or (self.tab == "Recovery" and self.recoveryPage.updatedAt)
         or (self.tab == "Seasons" and self.seasonsPage.updatedAt)
-        or (self.tab == "IntegrationPlans" and self.entitlementsPage.updatedAt) or nil
+        or (self.tab == "IntegrationPlans" and self.entitlementsPage.updatedAt)
+        or (self.tab == "Identity" and self.identityPage.updatedAt) or nil
     if stampAt then
         local fresh = getText(T .. "Admin_Updated", stampText(stampAt, self.offsetMin))
         textRight(self, fresh, self.refreshButton.x - PAD,
@@ -7925,6 +7958,8 @@ function Admin:refresh()
         self.seasonsPage:refresh()
     elseif self.tab == "IntegrationPlans" then
         self.entitlementsPage:refresh()
+    elseif self.tab == "Identity" then
+        self.identityPage:refresh()
     end
     self:updateEnabled()
 end
@@ -7962,6 +7997,7 @@ function Admin:setVisible(visible)
     self.recoveryPage:setVisible(visible and self.tab == "Recovery" and self:readAllowed())
     self.seasonsPage:setVisible(visible and self.tab == "Seasons" and self:readAllowed())
     self.entitlementsPage:setVisible(visible and self.tab == "IntegrationPlans" and self:readAllowed())
+    self.identityPage:setVisible(visible and self.tab == "Identity" and self:readAllowed())
     -- the account list keeps everything it read: a window that was merely hidden must come back
     -- to the same slice, and the permission collapse is what drops it
     self.accountsPage:setVisible(visible and self.tab == "Player" and self.playerMode == "list"
@@ -7975,6 +8011,7 @@ function Admin:dispose()
     self.pendingRecovery = nil
     self.seasonsPage:dispose()
     self.entitlementsPage:dispose()
+    self.identityPage:dispose()
     self.pendingSeason, self.seasonUnknown = nil, nil
     self.shopPage:dispose()
     self.whitelistPage:dispose()

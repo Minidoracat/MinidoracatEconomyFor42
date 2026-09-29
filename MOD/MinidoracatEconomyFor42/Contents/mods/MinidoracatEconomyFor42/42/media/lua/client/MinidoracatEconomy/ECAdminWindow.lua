@@ -72,7 +72,7 @@ local Nav = C.Navigation
 local ADMIN_ICONS = {
     Player = "users", Recovery = "layers", Dashboard = "chart", Currencies = "coins", Sources = "plug",
     IntegrationPlans = "sliders",
-    Shop = "shop", Whitelist = "shieldCheck", Listings = "tag", Auctions = "auction",
+    Shop = "shop", Whitelist = "shieldCheck", Identity = "lock", Listings = "tag", Auctions = "auction",
     Transactions = "transactions", Audit = "clipboardCheck", System = "server",
     Settings = "settings", Seasons = "reload",
 }

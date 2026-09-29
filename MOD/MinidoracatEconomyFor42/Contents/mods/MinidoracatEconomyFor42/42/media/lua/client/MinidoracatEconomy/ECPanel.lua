@@ -1966,11 +1966,29 @@ end
 -- row, and this is where a long or a CJK name is read complete and handed to the clipboard by
 -- the window's own CopyAll. Pressing the chip again closes it, the way every other note chip in
 -- this mod behaves; with no account to name there is nothing to open and nothing is opened.
-function Panel:onIdentity()
+-- While the server refuses this name (C.identityUnverified) the chip says so and the window
+-- carries the whole message with the account it was refused for.
+function Panel:identityText()
     local account = self:username()
-    if account == nil then return end
+    if C.identityUnverified then
+        return getText(T .. "Player_IdentityUnverifiedDetail", account or "-")
+    end
+    return account
+end
+
+function Panel:onIdentity()
+    local body = self:identityText()
+    if body == nil then return end
     if Detail.isOpen(self, "identity") then Detail.close(self); return end
-    Detail.open(self, "identity", getText(T .. "Player_IdentityTitle"), account)
+    Detail.open(self, "identity", getText(T .. "Player_IdentityTitle"), body)
+end
+
+-- identity.unverified / identity.verified (ECClient): the chip is relaid and an open record
+-- follows it; a closed one is never reopened.
+function Panel:onIdentityChanged()
+    self:layout()
+    local body = self:identityText()
+    if body ~= nil then Detail.update(self, "identity", getText(T .. "Player_IdentityTitle"), body) end
 end
 
 -- ----- market -----
@@ -3859,6 +3877,7 @@ function P.instance()
         -- views.changed: the server says the data behind a scope moved. Only the page on screen
         -- reads again; every other page records it and asks when it is looked at.
         C.onViews(function(scope) if P.window then P.window:onViewChanged(scope) end end)
+        C.onIdentity(function() if P.window then P.window:onIdentityChanged() end end)
     end
     return P.window
 end

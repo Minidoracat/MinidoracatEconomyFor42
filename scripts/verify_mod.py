@@ -25,6 +25,10 @@
  11. CHANGELOG 洩漏掃描     — bullet 會被整段貼到公開的 Workshop 更新說明；掃基礎設施
                            樣式（/home/ 路徑、IP、SteamID64、ssh、主機名）當最後防線。
                            攻擊配方與玩家識別資訊機器認不出來，靠撰寫規則（AGENTS.md）
+ 12b. 伺服器身分入口     — getUsername() 是客戶端送的名字；server/、shared/ 只准身分模組
+                           （ECIdentity.lua）自由使用，其他檔案的次數只准持平或減少（每一處都在
+                           S.dispatch 身分閘門之後），getOnlinePlayers() 只准 ECServer／ECIdentity
+                           （在線迭代必須經 S.forEachOnline 的身分過濾）。`--self-test-identity` 植入違規自證
 
 新增檢查時：同步把對應的坑記進 AGENTS.md 踩坑錄，並依「踩坑進化協議」回流到
 pz-mod-template（見 AGENTS.md）。
@@ -142,6 +146,69 @@ def self_test_lua_limits():
 
 if __name__ == "__main__" and "--self-test-lua-limits" in sys.argv:
     self_test_lua_limits()
+    sys.exit(0)
+
+# ---- 身分入口（第 12b 項）----
+# 家族約定「玩家身分」：伺服器上 getUsername() 是客戶端送來的名字，身分一律問 S.principal。
+# 既有的呼叫都在 S.dispatch 的身分閘門之後（handler 參數）或是 OnNewGame 的登入名；
+# 新增一處就要人工確認它也在閘門之後，再調高這裡的數字（只准調低以外的變更都要寫理由）。
+IDENTITY_MODULE = "ECIdentity.lua"
+IDENTITY_ONLINE_OK = {"ECIdentity.lua", "ECServer.lua"}
+IDENTITY_BASELINE = {
+    "ECAdmin.lua": 27, "ECAuction.lua": 9, "ECEntitlements.lua": 8, "ECExchange.lua": 1,
+    "ECMailbox.lua": 10, "ECMarket.lua": 13, "ECRecovery.lua": 3, "ECRewards.lua": 7,
+    "ECSeasons.lua": 1, "ECServer.lua": 3, "ECShop.lua": 13, "ECStats.lua": 2, "ECTerminal.lua": 7,
+    "ECTransfer.lua": 5, "ECWallet.lua": 4,
+}
+_ID_LONG_COMMENT = re.compile(r"--\[(=*)\[.*?\]\1\]", re.DOTALL)
+_ID_LONG_STRING = re.compile(r"\[(=*)\[.*?\]\1\]", re.DOTALL)
+_ID_SHORT_STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'')
+
+
+def lua_code_only(src):
+    src = _ID_LONG_COMMENT.sub(lambda mm: "\n" * mm.group().count("\n"), src)
+    src = _ID_LONG_STRING.sub(lambda mm: "\n" * mm.group().count("\n"), src)
+    return "\n".join(_ID_SHORT_STRING.sub('""', line).split("--", 1)[0] for line in src.split("\n"))
+
+
+def identity_issues(sources):
+    """sources: [(檔名, 原始碼)]，只放 server/ 與 shared/ 的檔。"""
+    issues = []
+    for name, src in sources:
+        code = lua_code_only(src)
+        if name != IDENTITY_MODULE:
+            n = len(re.findall(r"\bgetUsername\s*\(", code))
+            allowed = IDENTITY_BASELINE.get(name, 0)
+            if n > allowed:
+                issues.append(f"{name}: getUsername() {n} 處，超過基準 {allowed}（身分請問 S.principal；"
+                              "確認在 S.dispatch 閘門之後才可調高 IDENTITY_BASELINE）")
+        if name not in IDENTITY_ONLINE_OK and re.search(r"\bgetOnlinePlayers\s*\(", code):
+            issues.append(f"{name}: 直接呼叫 getOnlinePlayers()（改用 S.forEachOnline／S.onlinePlayer）")
+    return issues
+
+
+def self_test_identity():
+    base = [(name, "local u = p:getUsername()\n" * count) for name, count in IDENTITY_BASELINE.items()]
+    cases = (
+        ("基準本身", base, False),
+        ("多一處 getUsername", base + [("ECMarket.lua", "x = p:getUsername()\n")], True),
+        ("新檔案的 getUsername", base + [("ECNew.lua", "x = p:getUsername()\n")], True),
+        ("註解與字串不算", base + [("ECNew.lua", "-- p:getUsername()\nlocal s = \"getOnlinePlayers()\"\n"
+                                             "--[[ getUsername() ]]\n")], False),
+        ("身分模組自由使用", base + [("ECIdentity.lua", "a = p:getUsername()\nb = getOnlinePlayers()\n")], False),
+        ("其他檔直接掃在線玩家", base + [("ECMarket2.lua", "local ps = getOnlinePlayers()\n")], True),
+    )
+    for label, sources, reject in cases:
+        merged = {}
+        for name, src in sources:
+            merged[name] = merged.get(name, "") + src
+        if bool(identity_issues(list(merged.items()))) != reject:
+            raise AssertionError(label)
+    print("PASS 身分入口：基準、超出基準、新檔、註解與字串、身分模組、直接掃在線玩家")
+
+
+if __name__ == "__main__" and "--self-test-identity" in sys.argv:
+    self_test_identity()
     sys.exit(0)
 
 
@@ -416,6 +483,17 @@ for f in LUA_FILES:
                 nonascii.append(f"{rel}:{lineno}: {mm.group()[:30]}")
 fail("Lua 字串字面值純 ASCII（Kahlua 截斷）", nonascii) if nonascii \
     else ok(f"Lua 字串字面值純 ASCII（{len(LUA_FILES)} 檔）")
+
+# ---- 12b. 伺服器身分入口 ----
+_identity_sources = []
+for f in LUA_FILES:
+    parts = os.path.normpath(f).split(os.sep)
+    if "server" in parts or "shared" in parts:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            _identity_sources.append((os.path.basename(f), fh.read()))
+_identity = identity_issues(_identity_sources)
+fail("伺服器身分入口（getUsername／getOnlinePlayers 只經身分閘門）", _identity) if _identity \
+    else ok(f"伺服器身分入口（{len(_identity_sources)} 檔）")
 
 # ---- 13. 不得定義貨幣類 item ----
 # 主規格 §7.2 不變量：倖存幣／貓幣只存在於伺服器帳本，沒有可掉落／交易的硬幣道具。

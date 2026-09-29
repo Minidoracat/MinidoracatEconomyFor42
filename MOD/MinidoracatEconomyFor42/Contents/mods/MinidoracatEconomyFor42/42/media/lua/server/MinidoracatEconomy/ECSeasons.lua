@@ -373,9 +373,10 @@ end
 local function onDeath(character)
     if not instanceof(character, "IsoPlayer") then return end
     -- Only the tracked instance gets one final sample, and never after its season's deadline.
-    -- A split-screen seat has no economy identity (S.forEachOnline) and is never tracked.
+    -- It must still be the account it was tracked as (S.principal): a name moved to another
+    -- SteamID since, or a split-screen seat, closes nothing.
     local ok, username, slot = pcall(readPlayer, character)
-    if not ok or slot ~= 0 then return end
+    if not ok or slot ~= 0 or S.principal(character) ~= username then return end
     local slots = seen[username]
     if not slots or slots[tostring(slot)] ~= character then return end
     local ms = EC.now()

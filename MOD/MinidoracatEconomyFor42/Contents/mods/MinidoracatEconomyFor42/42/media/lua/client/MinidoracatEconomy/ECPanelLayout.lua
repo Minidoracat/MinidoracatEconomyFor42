@@ -423,10 +423,13 @@ function L.layout(self)
     local idB = self.identityButton
     local account = self:username()
     self.identityName = account
-    local idLabel = (type(account) == "string") and getText(T .. "Player_Identity", account)
+    local unverified = C.identityUnverified == true
+    local idLabel = unverified and getText(T .. "Player_IdentityUnverified")
+        or (type(account) == "string") and getText(T .. "Player_Identity", account)
         or getText(T .. "Player_IdentityUnknown")
     idB:setVisible(open)
-    idB:setEnable(type(account) == "string")
+    idB:setEnable(unverified or type(account) == "string")
+    idB.stateToken = unverified and "errorText" or nil
     idB:setHeight(g.idH)
     local idWidth = math.max(40, math.min(textWidth(idLabel) + 20, g.headTextW))
     local titleWidth = textWidth(getText(T .. "Tab_" .. tostring(self.tab)), UIFont.Medium)

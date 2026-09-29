@@ -63,6 +63,10 @@ local function javaList(items)
 end
 local onlinePlayers = {}
 function getOnlinePlayers() return javaList(onlinePlayers) end
+-- getSteamModeActive()（LuaManager.java:9359-9364 -> SteamUtils.isSteamModeEnabled）：預設 no-steam，
+-- 身分情境改成 true。全域：主函式已逼近 200 個 local。
+steamModeActive = false
+function getSteamModeActive() return steamModeActive end
 
 -- getRoles()：原生角色清單（LuaManager.java:3359-3365 -> Roles.getRoles，專用伺服器上也回得出來），
 -- size()/get(i) 0-based，每個 Role 有 getName()／getPosition()（原版 ISRolesList.lua:74-79 的用法）。
@@ -875,6 +879,10 @@ local function fakePlayer(username)
     p.getZ = function() return p.z end
     p.getHoursSurvived = function() return p.hours end
     p.getPlayerNum = function() return p.playerNum end
+    -- getSteamID 在引擎是 long，進 Lua 變 double（KahluaNumberConverter.java:103-116）：情境一律給
+    -- 「已捨入的 double」（例如 76561198000000024 寫成 76561198000000032.0），與實機同一個數。
+    p.getSteamID = function() return p.steamId end
+    p.getOnlineID = function() return p.onlineId end
     p.isDead = function() return p.dead == true end
     p.getInventory = function() return p.inventory end
     p.getModData = function() return p.modData end
@@ -931,6 +939,7 @@ require("MinidoracatEconomy/ECExchange")
 require("MinidoracatEconomy/ECAdmin")
 require("MinidoracatEconomy/ECEntitlements")
 require("MinidoracatEconomy/ECTransfer")
+require("MinidoracatEconomy/ECIdentity")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
@@ -941,7 +950,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3 + 6   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller). +6: a split-screen seat is not an economy identity (scenario SP; scenario 89's three split-slot checks now say the seat is never observed).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3 + 6 + 25   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller). +6: a split-screen seat is not an economy identity (scenario SP; scenario 89's three split-slot checks now say the seat is never observed). +25: the identity bound to the SteamID (scenario ID: principal matrix, OnNewGame, import, confirmation, refusals, replay).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -15199,6 +15208,248 @@ ann.dead = true
 fire("OnCharacterDeath", ann)
 check(md.mailbox.byOwner["sp-ann"].entries["sp-m1"].state == "settled",
     "the main seat's own death still settles that account's claimed mail")
+onlinePlayers = {}
+end)()
+
+;(function()
+-- Family convention "player identity": the account key stays the login name and the SteamID is
+-- the factor that proves a player is that name. Bindings come only from OnNewGame (login name +
+-- the connection's SteamID, CreatePlayerPacket.java:296-301), the administrator's whitelist
+-- import and the administrator's confirmation of its conflicts; they live in a server file, never
+-- in Global ModData. Every check below is written against what a player could do from a client.
+io.write("scenario ID: identity bound to the SteamID\n")
+local Id = EC.Identity
+local KEY = EC.PLAYER_MODDATA_KEY
+local FILE = Id.FILE
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+steamModeActive = true
+fire("OnServerStarted")
+local md = S.modData()
+local function sid(text) return tonumber(text) + 0.0 end   -- the double the engine hands Lua
+local function steamPlayer(name, steamId) local p = fakePlayer(name); p.steamId = steamId; return p end
+local function fileRecs()
+    local out = {}
+    for _, line in ipairs(files[FILE] and files[FILE].lines or {}) do out[#out + 1] = EC.jsonDecode(line) end
+    return out
+end
+local function sentTo(p, command)
+    local n = 0
+    for _, s in ipairs(sentCommands) do
+        if s.player == p and (command == nil or s.command == command) then n = n + 1 end
+    end
+    return n
+end
+local function ringHas(action, target, field)
+    for _, e in ipairs(X.auditEntries()) do
+        if e.action == action and e.target == target and (field == nil or e.field == field) then return e end
+    end
+end
+local function fileAudits(action)
+    proofSettle()
+    local out = {}
+    for _, line in ipairs(files[X.auditPath(nowMs)] and files[X.auditPath(nowMs)].lines or {}) do
+        local rec = EC.jsonDecode(line)
+        if type(rec) == "table" and rec.action == action then out[#out + 1] = rec end
+    end
+    return out
+end
+local function admin(who, args)
+    nowMs = nowMs + 700
+    sentCommands = {}
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", who, args)
+    local s = lastSent("admin.identity")
+    return s and s.args or {}
+end
+
+local vectorsOk = true
+for _, v in ipairs({ { "76561198000000008", "76561198000000000" }, { "76561198000000024", "76561198000000032" },
+    { "76561198012345679", "76561198012345680" }, { "76561198097932712", "76561198097932704" },
+    { "76561198097932713", "76561198097932720" } }) do
+    if Id.sidText(sid(v[1])) ~= v[2] or sid(v[1]) ~= sid(v[2]) then vectorsOk = false end
+end
+check(vectorsOk, "a whitelist SteamID text and the engine's double land on one number, written back as that double's exact decimal (the family convention's five vectors)")
+
+-- ----- before the first import -----
+local SID_ANN, SID_BOB, SID_EVE = sid("76561198000000016"), sid("76561198000000032"), sid("76561198000000048")
+fire("OnNewGame", steamPlayer("id-ann", SID_ANN), nil)
+local recs = fileRecs()
+check(#recs == 1 and recs[1].k == "bind" and recs[1].name == "id-ann" and recs[1].sid == "76561198000000016"
+    and recs[1].src == "NEWGAME",
+    "a new character binds its login name to the connection's SteamID in the server's identity file")
+local ann = steamPlayer("id-ann", SID_ANN)
+local fake = steamPlayer("id-ann", SID_EVE)            -- another Steam account wearing ann's name
+local bob = steamPlayer("id-bob", SID_BOB)             -- has not made a character since the update: unbound
+check(Id.principal(ann) == "id-ann" and Id.principal(fake) == nil and Id.principal(bob) == "id-bob",
+    "before the first import a bound name needs its own SteamID, while an unbound name is still taken at its word")
+local seat = steamPlayer("id-ann", SID_ANN); seat.playerNum = 1
+steamModeActive = false
+local noSteam = Id.principal(fake)
+steamModeActive = true
+check(Id.principal(seat) == nil and Id.principal(steamPlayer("", SID_ANN)) == nil and noSteam == "id-ann",
+    "a split-screen seat and an empty name are nobody, and a server without Steam has no factor to check")
+fire("OnNewGame", steamPlayer("id-ann", SID_EVE), nil)
+local afterWrong = { Id.principal(ann), Id.principal(fake) }
+fire("OnNewGame", steamPlayer("id-ann", SID_ANN), nil)
+check(#fileRecs() == 1 and afterWrong[1] == "id-ann" and afterWrong[2] == nil
+    and Id.principal(ann) == "id-ann" and Id.principal(fake) == nil
+    and ringHas("BIND_CONFLICT", "id-ann", "SID_MISMATCH") ~= nil,
+    "a new character with another SteamID never moves a binding: it is audited as a conflict and the name stays with its owner")
+steamModeActive = false
+fire("OnNewGame", steamPlayer("id-nos", SID_EVE), nil)
+steamModeActive = true
+check(#fileRecs() == 1, "without Steam mode a new character binds nothing: there is no SteamID to trust")
+local bindRing = ringHas("BIND", "id-ann", "NEWGAME")
+local bindFile = fileAudits("BIND")[1]
+check(bindRing ~= nil and bindRing.steamId == nil and bindFile ~= nil and bindFile.steamId == "76561198000000016",
+    "the SteamID of a binding reaches the audit file only, never the audit ring every client can read")
+
+-- ----- someone wearing a bound name -----
+L.credit("id-ann", "survivor", 100, "SYSTEM_MINT", { requestId = "id-fund", reasonCode = "t" })
+onlinePlayers = { fake, bob }
+sentCommands = {}
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", fake, {})
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", fake, { requestId = "id-w1" })
+L.credit("id-ann", "survivor", 5, "SYSTEM_MINT", { requestId = "id-push", reasonCode = "t" })
+check(sentTo(fake, "hello.ack") == 0 and sentTo(fake, "wallet.state") == 0 and sentTo(fake, "wallet.changed") == 0
+    and sentTo(fake, "identity.unverified") == 1 and S.onlinePlayer("id-ann") == nil,
+    "a name worn with the wrong SteamID gets neither the account's replies nor its pushes, only one notice saying why")
+nowMs = nowMs + 30000
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", fake, { requestId = "id-w2" })
+local within = sentTo(fake, "identity.unverified")
+nowMs = nowMs + 31000
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", fake, { requestId = "id-w3" })
+check(within == 1 and sentTo(fake, "identity.unverified") == 2,
+    "the notice is repeated at most once a minute, never once per command")
+fire("OnTickEvenPaused")
+local unv = ringHas("IDENTITY_UNVERIFIED", "id-ann", "commands")
+check(unv ~= nil and unv.after == 4, "the minute's four refused commands (a hello and three reads) become one IDENTITY_UNVERIFIED audit line for that name")
+md.mailbox.byOwner["id-ann"] = { entries = { ["id-m1"] = { id = "id-m1", state = "claimed", at = nowMs, claimedAt = nowMs } }, unclaimed = 0 }
+fake.dead = true
+fire("OnCharacterDeath", fake)
+check(md.mailbox.byOwner["id-ann"].entries["id-m1"].state == "claimed",
+    "the death of someone wearing the name settles none of the account's mail")
+
+-- ----- the whitelist import -----
+SandboxVars.MinidoracatEconomy.AdminRoles = "admin"
+local boss = steamPlayer("id-boss", sid("76561198000000080")); boss.role = "admin"
+onlinePlayers = { boss, bob }
+fire("OnNewGame", steamPlayer("id-fay", sid("76561198000000096")), nil)   -- fay's old Steam account
+L.credit("id-gone", "survivor", 7, "SYSTEM_MINT", { requestId = "id-gone", reasonCode = "t" })   -- a deleted account
+md.claims["id-seat"] = {}                                                                      -- a split-screen name of old
+local ROWS = {
+    { u = "id-boss", s = "76561198000000080" },
+    { u = "id-ann", s = "76561198000000016" },          -- same
+    { u = "id-bob", s = "76561198000000032" },          -- new
+    { u = "id-cat", s = "" },                           -- never logged in with Steam
+    { u = "id-dan", s = "76561198000000066" },          -- 66 and 67 round to the same double
+    { u = "id-dee", s = "76561198000000067" },
+    { u = "id-fay", s = "76561198000000112" },          -- fay's account moved to another Steam account
+    { u = "SYSTEM_X", s = "" },
+}
+local linesBefore = #fileRecs()
+local bad = admin(boss, { action = "import", requestId = "i0", rows = { { u = "id-x", s = "7.6561198E16" } } })
+local dup = admin(boss, { action = "import", requestId = "i1", rows = { { u = "id-x", s = "" }, { u = "id-x", s = "" } } })
+local user = admin(bob, { action = "import", requestId = "i2", rows = ROWS })
+check(bad.ok == false and bad.error == "invalid_steamid" and bad.name == "id-x" and dup.error == "invalid_args"
+    and user.error == "forbidden" and #fileRecs() == linesBefore and bad.status.imported == false,
+    "a SteamID text parseDouble would accept, a repeated name or a caller without the write role imports nothing at all")
+steamModeActive = false
+local noSteamImport = admin(boss, { action = "import", requestId = "i3", rows = ROWS })
+steamModeActive = true
+check(noSteamImport.error == "not_steam" and #fileRecs() == linesBefore,
+    "a server without Steam has nothing to import")
+local imp = admin(boss, { action = "import", requestId = "i4", rows = ROWS })
+local last = imp.last or {}
+local reserved = table.concat(last.reserved or {}, ",")
+local collisions = table.concat(last.collisions or {}, ",")
+check(imp.ok == true and last.rows == 8 and last.bound == 4 and last.same == 1 and last.ignored == 1
+    and table.concat(last.missing or {}, ",") == "id-cat" and reserved == "id-gone,id-seat"
+    and collisions == "id-dan,id-dee" and last.conflicts == 1 and imp.status.conflicts[1].name == "id-fay"
+    and imp.status.conflicts[1].reason == "SID_MISMATCH" and imp.status.conflicts[1].whitelist == "76561198000000112",
+    "the import reports new, unchanged, no-SteamID, reserved, conflicting and colliding names - and system accounts are left out")
+recs = fileRecs()
+check(recs[linesBefore + 1].k == "import" and recs[linesBefore + 1].by == "id-boss"
+    and imp.status.imported == true and imp.perms.write == true,
+    "the import marker is written before the bindings it brings, so a cut-short write keeps the strict mode")
+local fay = steamPlayer("id-fay", sid("76561198000000112"))
+local fayOld = steamPlayer("id-fay", sid("76561198000000096"))
+check(Id.principal(bob) == "id-bob" and Id.principal(steamPlayer("id-zed", SID_EVE)) == nil
+    and Id.principal(steamPlayer("id-cat", SID_EVE)) == nil and Id.principal(steamPlayer("id-gone", SID_EVE)) == nil
+    and Id.principal(steamPlayer("id-gone", nil)) == nil and Id.principal(fay) == nil and Id.principal(fayOld) == "id-fay",
+    "after the first import an unbound or reserved name is nobody (even for a SteamID that reads as nil), and a conflict leaves the old binding in force until it is confirmed")
+check(Id.principal(steamPlayer("id-dee", sid("76561198000000066"))) == "id-dee",
+    "two Steam accounts that round to one number cannot be told apart: they are bound and listed, not guessed")
+check(ringHas("IDENTITY_IMPORT", "whitelist") ~= nil and ringHas("BIND_RESERVED", "id-gone", "IMPORT") ~= nil
+    and ringHas("BIND_CONFLICT", "id-fay", "SID_MISMATCH") ~= nil and ringHas("BIND_CONFLICT", "id-dan", "COLLISION") ~= nil,
+    "the import, each reservation, each conflict and each collision are audited")
+
+-- ----- confirming a conflict -----
+onlinePlayers = { boss, fay }
+local noReason = admin(boss, { action = "rebind", requestId = "r0", names = { "id-fay" } })
+local rb = admin(boss, { action = "rebind", requestId = "r1", names = { "id-fay", "id-nobody" }, reason = "moved to a new Steam account" })
+local moved = ringHas("BIND_MOVE", "id-fay", "REBIND")
+check(noReason.ok == false and noReason.error == "reason_too_short" and rb.ok == true and rb.rebound == 1
+    and table.concat(rb.stale, ",") == "id-nobody" and moved ~= nil and moved.reason == "moved to a new Steam account"
+    and moved.steamId == nil,
+    "a confirmation needs a reason, moves only the listed conflicts and is audited without the SteamID in the ring")
+check(Id.principal(fay) == "id-fay" and Id.principal(fayOld) == nil and sentTo(fay, "identity.verified") == 1
+    and fileRecs()[#fileRecs()].src == "REBIND",
+    "the name now follows the whitelist's SteamID, and the player it now verifies is told to say hello again")
+
+-- ----- an administrator whose own name is not verified -----
+local lost = steamPlayer("id-lost", sid("76561198000000128")); lost.role = "admin"
+onlinePlayers = { lost }
+local st = admin(lost, { action = "status", requestId = "s1" })
+sentCommands = {}
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", lost, {})
+check(st.ok == true and st.perms.write == true and lastSent("admin.system") == nil and sentTo(lost, "identity.unverified") == 1,
+    "an administrator without a verified name still reaches the identity page by role, and nothing else")
+local fix = admin(lost, { action = "import", requestId = "i5", rows = { { u = "id-lost", s = "76561198000000128" } } })
+check(fix.ok == true and Id.principal(lost) == "id-lost" and ringHas("IDENTITY_IMPORT", "whitelist").admin == "?id-lost"
+    and sentTo(lost, "identity.verified") == 1,
+    "that administrator can import the whitelist to repair their own name, audited under the name they claimed")
+
+-- ----- the tracked life of a name moved away -----
+local hal = steamPlayer("id-hal", sid("76561198000000144")); hal.hours = 10
+fire("OnNewGame", steamPlayer("id-hal", sid("76561198000000144")), nil)
+onlinePlayers = { hal }
+nowMs = nowMs + 60000; fire("OnTickEvenPaused")
+hal.hours = 12
+nowMs = nowMs + 60000; fire("OnTickEvenPaused")
+local halBefore = S.Seasons.progress("id-hal").bestHours
+onlinePlayers = { boss }
+admin(boss, { action = "import", requestId = "i6", rows = { { u = "id-hal", s = "76561198000000160" } } })
+admin(boss, { action = "rebind", requestId = "r2", names = { "id-hal" }, reason = "moved" })
+hal.hours, hal.dead = 20, true
+fire("OnCharacterDeath", hal)
+check(halBefore == 2 and S.Seasons.progress("id-hal").bestHours == 2,
+    "a tracked character whose name was moved to another SteamID closes no life with its death")
+
+-- ----- a restart replays the file; memory-only state does not survive -----
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local again = admin(boss, { action = "rebind", requestId = "r3", names = { "id-fay" }, reason = "again" })
+check(Id.principal(bob) == "id-bob" and Id.principal(fay) == "id-fay" and Id.principal(fayOld) == nil
+    and Id.principal(steamPlayer("id-gone", SID_EVE)) == nil and Id.principal(steamPlayer("id-zed", SID_EVE)) == nil
+    and again.error == "import_first",
+    "after a restart every binding, reservation and the strict mode come back from the file; unconfirmed conflicts need a new import")
+local savedReader = getFileReader
+getFileReader = function(path, create) if path == FILE then return nil end return savedReader(path, create) end
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local broken = admin(boss, { action = "import", requestId = "i7", rows = ROWS })
+local brokenBob = Id.principal(bob)
+getFileReader = savedReader
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+check(brokenBob == nil and broken.error == "unreadable" and broken.status.unreadable == true and Id.principal(bob) == "id-bob",
+    "an identity file that exists but cannot be read verifies nobody and imports nothing, instead of trusting every name")
+SandboxVars.MinidoracatEconomy.AdminRoles = "admin;gm"
+steamModeActive = false
 onlinePlayers = {}
 end)()
 
