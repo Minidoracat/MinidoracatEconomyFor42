@@ -82,16 +82,19 @@ local function reply(player, command, args)
 end
 S.reply = reply
 
--- Server-side player list (LuaManager.java:4437-4443); the client-side getConnectedPlayers is
+-- Server-side player list (LuaManager.java:4453-4463); the client-side getConnectedPlayers is
 -- unavailable on a dedicated server (AGENTS.md API table).
 -- The one loop every push and lookup goes through: fn(player) for each online player in the
--- engine's order (LuaManager.java:4437-4443); returning true stops early.
+-- engine's order; returning true stops early. Split-screen seats 2-4 are never visited: they
+-- share the main seat's connection and SteamID, and the engine takes their name from the client
+-- (ConnectCoopPacket.java:72-97 only refuses an empty or an already connected name; the seat is
+-- then named with it, GameServer.java:2830, 2848), so nothing about such a seat can be verified.
 function S.forEachOnline(fn)
     local players = getOnlinePlayers()
     if not players then return end
     for i = 0, players:size() - 1 do
         local p = players:get(i)
-        if p and fn(p) == true then return end
+        if p and p:getPlayerNum() == 0 and fn(p) == true then return end
     end
 end
 
@@ -453,6 +456,8 @@ function S.dispatch(module, command, player, args)
         EC.log("unknown command " .. tostring(command) .. " from " .. tostring(player and player:getUsername()))
         return
     end
+    -- A split-screen seat has no economy identity (see S.forEachOnline): its commands do nothing.
+    if player:getPlayerNum() ~= 0 then return end
     local username = player:getUsername()
     if throttled(username, command, EC.now()) then
         return

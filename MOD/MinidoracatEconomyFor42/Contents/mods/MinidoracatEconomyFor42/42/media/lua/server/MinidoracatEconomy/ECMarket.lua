@@ -764,10 +764,7 @@ S.handlers["market.sellers"] = function(player, args)
     if context == "auction" then owners = (md.auctions and md.auctions.byOwner) or {} end
     -- Active owner sets are bounded by the market/auction limits; count them completely.
     local online = {}
-    local players = getOnlinePlayers()
-    for i = 0, players:size() - 1 do
-        online[players:get(i):getUsername()] = true
-    end
+    S.forEachOnline(function(p) online[p:getUsername()] = true end)
     local names = {}
     for name in pairs(owners) do
         if query == "" or string.find(string.lower(name), query, 1, true) then

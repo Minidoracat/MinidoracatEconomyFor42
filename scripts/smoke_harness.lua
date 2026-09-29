@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3 + 6   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller). +6: a split-screen seat is not an economy identity (scenario SP; scenario 89's three split-slot checks now say the seat is never observed).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -12853,6 +12853,8 @@ onlinePlayers = { back }
 tick()
 check(Se.progress("s89-zoe").currentHours == 25 and Se.progress("s89-zoe").bestHours == 25,
     "a reconnect on the same slot keeps the base it was anchored with: the life carries on instead of restarting at zero")
+-- A split-screen seat has no economy identity: even named after the account (the name is the
+-- client's own choice, ConnectCoopPacket.java:72-97), its hours are never observed.
 local split = fakePlayer("s89-zoe"); split.hours = 4; split.playerNum = 1
 onlinePlayers = { split }
 tick()
@@ -12860,21 +12862,21 @@ local afterSplit = Se.progress("s89-zoe")
 split.hours = 9
 tick()
 local grown = Se.progress("s89-zoe")
-check(afterSplit.currentHours == 0 and afterSplit.bestHours == 25
-    and grown.currentHours == 5 and grown.bestHours == 25,
-    "a second slot on the same account is a second life with its own base: its five hours are never added to the twenty-five the first slot recorded")
+check(afterSplit.currentHours == 25 and afterSplit.bestHours == 25
+    and grown.currentHours == 25 and grown.bestHours == 25,
+    "a split-screen seat carrying the account's name is never observed: its hours start no life and add nothing to the account")
 split.hours = 40
 tick()
 onlinePlayers = { back }
 tick()
 local mixed = Se.progress("s89-zoe")
-check(mixed.bestHours == 36 and mixed.currentHours == 25,
-    "the account's best is the longest single life on one slot, never the sum, and the first slot still finds its own base waiting")
+check(mixed.bestHours == 25 and mixed.currentHours == 25,
+    "forty hours on a split-screen seat that borrowed the name leave the account's best at its own seat's longest life")
 local older = fakePlayer("s89-zoe"); older.hours = 20
 onlinePlayers = { older }
 tick()
 local rewound = Se.progress("s89-zoe")
-check(rewound.currentHours == 0 and rewound.bestHours == 36,
+check(rewound.currentHours == 0 and rewound.bestHours == 25,
     "a character that comes back with fewer hours than its base is not a fresh life worth twenty hours: this life reads zero and the season's best is kept")
 local dying = fakePlayer("s89-dan"); dying.hours = 100
 onlinePlayers = { dying }
@@ -15137,6 +15139,67 @@ local okNoPlayer, noPlayer = pcall(EC.localRoleName)
 getPlayer, getAccessLevel, isServer = savedGetPlayer, savedGetAccessLevel, savedIsServer
 check(okAdmin and admin == true and okNone and none == "" and okNoPlayer and noPlayer == "",
     "the admin check reads the local player's role and never the connection, even after a disconnect")
+end)()
+
+;(function()
+-- Split-screen seats 2-4 take their name from the client (ConnectCoopPacket.java:72-97 refuses only
+-- an empty or an already connected name; GameServer.java:2848 then names the seat with it) and
+-- share the main seat's connection and SteamID: the vanilla split-screen UI can name one after an
+-- offline account. Such a seat has no economy identity at all - its commands do nothing, no push
+-- or lookup finds it, and its death settles nothing of the account it named.
+io.write("scenario SP: a split-screen seat is not an economy identity\n")
+local KEY = EC.PLAYER_MODDATA_KEY
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local md = S.modData()
+L.credit("sp-ann", "survivor", 100, "SYSTEM_MINT", { requestId = "sp-fund", reasonCode = "t" })
+local seat = fakePlayer("sp-ann"); seat.playerNum = 1
+local bob = fakePlayer("sp-bob")
+onlinePlayers = { seat, bob }
+local function sentTo(p)
+    local n = 0
+    for _, s in ipairs(sentCommands) do if s.player == p then n = n + 1 end end
+    return n
+end
+sentCommands = {}
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", seat, { requestId = "sp-1" })
+fire("OnClientCommand", EC.COMMAND_MODULE, "rewards.checkin", seat, checkinArgs("sp-ann", nowMs, "sp-2"))
+check(sentTo(seat) == 0 and L.getBalance("sp-ann", "survivor").available == 100,
+    "a split-screen seat named after an offline account gets no answer and moves none of that account's money")
+check(S.onlinePlayer("sp-ann") == nil and S.onlinePlayer("sp-bob") == bob,
+    "an online lookup never finds a split-screen seat, while a main seat is found by its name")
+sentCommands = {}
+L.credit("sp-ann", "survivor", 5, "SYSTEM_MINT", { requestId = "sp-push", reasonCode = "t" })
+S.broadcast("sp.test", {})
+check(sentTo(seat) == 0 and sentTo(bob) == 1,
+    "neither the account's own push nor a broadcast reaches a split-screen seat")
+md.market.byOwner["sp-ann"] = { ["sp-l1"] = true }
+sentCommands = {}
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "market.sellers", bob, { requestId = "sp-s1", context = "market", query = "sp-" })
+local sellers = lastSent("market.sellers").args.players
+check(#sellers == 1 and sellers[1].username == "sp-ann" and sellers[1].online == false,
+    "the seller picker does not call an account online because a split-screen seat carries its name")
+md.market.byOwner["sp-ann"] = nil
+md.mailbox.byOwner["sp-ann"] = { entries = { ["sp-m1"] = { id = "sp-m1", state = "claimed", at = nowMs, claimedAt = nowMs } }, unclaimed = 0 }
+seat.modData[KEY] = { pendingOuts = { ["sp-o1"] = { kind = "market", epoch = md.meta.epoch, seq = 1 } } }
+seat.dead = true
+fire("OnCharacterDeath", seat)
+local orphan = fakePlayer("sp-ann")
+fire("OnNewGame", orphan, nil)
+local carried = orphan.modData[KEY] and orphan.modData[KEY].pendingOuts or {}
+check(md.mailbox.byOwner["sp-ann"].entries["sp-m1"].state == "claimed" and EC.countKeys(carried) == 0,
+    "the death of a split-screen seat settles none of the account's mail and hands no records to its next character")
+local ann = fakePlayer("sp-ann")
+onlinePlayers = { ann, bob }
+ann.dead = true
+fire("OnCharacterDeath", ann)
+check(md.mailbox.byOwner["sp-ann"].entries["sp-m1"].state == "settled",
+    "the main seat's own death still settles that account's claimed mail")
+onlinePlayers = {}
 end)()
 
 io.write("\n")
