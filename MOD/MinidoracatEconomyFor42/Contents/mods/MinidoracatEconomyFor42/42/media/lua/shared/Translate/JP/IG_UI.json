@@ -661,6 +661,8 @@
   "IGUI_MinidoracatEconomy_Wallet_Col_Amount": "金額",
   "IGUI_MinidoracatEconomy_Wallet_Col_Balance": "残高",
   "IGUI_MinidoracatEconomy_Wallet_Col_Status": "状態",
+  "IGUI_MinidoracatEconomy_Wallet_Col_Fee": "手数料",
+  "IGUI_MinidoracatEconomy_Wallet_Tax": "税",
   "IGUI_MinidoracatEconomy_Wallet_RecentLedger": "最近の取引",
   "IGUI_MinidoracatEconomy_Wallet_MoreHistory": "履歴をもっと見る",
   "IGUI_MinidoracatEconomy_Rewards_Daily": "毎日のオンライン報酬",

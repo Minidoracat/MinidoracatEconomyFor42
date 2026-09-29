@@ -1040,6 +1040,9 @@ local function normalize(e, offsetMin)
     local label = kind == "transfer" and getText(T .. (amount < 0 and "Kind_transfer_out" or "Kind_transfer_in"))
         or kindText(kind)
     local item = type(e.item) == "string" and e.item or nil
+    -- the part of the amount that was a fee or a tax; lines written before receipts carried it
+    -- leave the column empty rather than claim there was none
+    local fee = tonumber(e.fee)
     return {
         recordKey = U.recordKey(e),
         ts = e.ts, txId = e.txId, kind = kind, currency = e.currency, amount = amount,
@@ -1047,6 +1050,7 @@ local function normalize(e, offsetMin)
         time = stampText(e.ts, offsetMin), kindText = label, desc = desc,
         reasonText = type(e.reasonText) == "string" and e.reasonText or nil,
         valueText = valueText, amountText = valueText .. " " .. C.currencyName(e.currency),
+        fee = fee, feeText = fee and amountText(fee) or "",
         -- what the statement's keyword box searches: the note (which already names the
         -- counterparty or the item), the raw account key, the item's own fullType and localised
         -- name, the kind, and the transaction id an admin or a bug report quotes
@@ -1114,10 +1118,12 @@ function Panel:rebuildList()
     local rows = bar:apply(self.allRows)
     self.rows = rows
     self.statementAmountW = textWidth(getText(T .. "Wallet_Col_Amount")) + PAD * 2
+    self.statementFeeW = textWidth(getText(T .. "Wallet_Col_Fee")) + PAD * 2
     self.statementValueW = 0
     self.statementKindW = 0
     for _, row in ipairs(rows) do
         self.statementAmountW = math.max(self.statementAmountW, textWidth(row.amountText) + PAD * 2)
+        self.statementFeeW = math.max(self.statementFeeW, textWidth(row.feeText) + PAD * 2)
         self.statementValueW = math.max(self.statementValueW, textWidth(row.valueText))
         self.statementKindW = math.max(self.statementKindW, textWidth(row.kindText))
     end
@@ -2335,7 +2341,10 @@ function Panel:detailText(kind, e)
         out[2] = detailLine("Wallet_Col_Kind", e.kindText)
         out[3] = detailLine("Wallet_Col_Desc", e.desc)
         out[4] = detailLine("Wallet_Col_Amount", e.amountText)
-        out[5] = detailLine("Wallet_Col_Balance", amountText(e.after))
+        if e.fee then
+            out[#out + 1] = detailLine(U.FEE_KEY[e.kind] or "Wallet_Col_Fee", e.feeText .. " " .. C.currencyName(e.currency))
+        end
+        out[#out + 1] = detailLine("Wallet_Col_Balance", amountText(e.after))
         if e.rolledBack then out[#out + 1] = getText(T .. "Wallet_RolledBack") end
         if e.txId then out[#out + 1] = detailLine("Detail_TxId", e.txId) end
         if e.reasonText and e.reasonText ~= "" then

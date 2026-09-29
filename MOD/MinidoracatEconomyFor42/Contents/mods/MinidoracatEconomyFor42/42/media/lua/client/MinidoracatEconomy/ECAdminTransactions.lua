@@ -781,10 +781,12 @@ function Page:openTxDetail(txId, fromMs, toMs)
     self:showTxDetail(true)
 end
 
--- What the window says about this transaction: the state of the record read, the summary of the
--- row, and the record itself once it has landed. `open` is the explicit gesture (a pick) and is
--- the only thing that may put the window back on screen: an answer that came back after the
--- admin closed it updates nothing and revives nothing (D.update says so, and is believed).
+-- What the window says about this transaction: the state of the record read, then the record
+-- itself once it has landed, or the summary of the row until then (the record holds every field
+-- of the summary, and the summary's own header says the record is still on its way). `open` is
+-- the explicit gesture (a pick) and is the only thing that may put the window back on screen: an
+-- answer that came back after the admin closed it updates nothing and revives nothing (D.update
+-- says so, and is believed).
 function Page:showTxDetail(open)
     local id = self.txDetailTx
     if id == nil then return false end
@@ -798,8 +800,8 @@ function Page:showTxDetail(open)
     local key = "tx:" .. id
     local title = getText(T .. "Admin_Tx_Id", id)
     local body = self:txDetailNoteText(self:txDetailStatus())
-    if self.txDetailSummary ~= nil then body = body .. "\n\n" .. self.txDetailSummary end
-    if self.txDetailText ~= nil then body = body .. "\n\n" .. self.txDetailText end
+    local more = self.txDetailText or self.txDetailSummary
+    if more ~= nil then body = body .. "\n\n" .. more end
     if open == true then
         self.txDetailOpenPending = nil
         return Detail.open(self, key, title, body, function() self:onTxDetailClosed() end) ~= nil
@@ -1421,6 +1423,17 @@ function Page:txRecordText(d)
     pair(tr("Admin_Tx_Field_Group"), txGroupText(d.group))
     if d.rolledBack == true then out[#out + 1] = tr("Wallet_RolledBack") end
     pair(tr("Admin_Tx_Amount"), txAmountText(d.amounts))
+    -- what the fee or the tax came to: the kind's SYSTEM_BURN posting, named on its own line so
+    -- it is not left for the reader to find among the postings below
+    local feeKey = U.FEE_KEY[kind]
+    if feeKey then
+        local fee, cur = 0, nil
+        for _, p in ipairs(type(d.postings) == "table" and d.postings or {}) do
+            local amount = type(p) == "table" and EC.accountClass(p.account) == "burn" and tonumber(p.amount) or nil
+            if amount then fee, cur = fee + amount, p.currency end
+        end
+        if cur then pair(tr(feeKey), amountText(fee) .. " " .. currencyName(cur)) end
+    end
     pair(tr("Admin_Tx_Field_Origin"), txSourceName(d))
     if type(d.actor) == "string" and d.actor ~= "" then pair(tr("Admin_Tx_Field_Actor"), d.actor) end
     if type(d.sourceMod) == "string" and d.sourceMod ~= "" then

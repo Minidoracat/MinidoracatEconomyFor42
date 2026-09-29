@@ -347,7 +347,7 @@ local function onCommitted(ev)
             X.changed("wallet", p.account)
             X.enqueue(receiptsPath(p.account, ev.ts), EC.jsonEncode({
                 epoch = md.meta.epoch, seq = ev.seq, ts = ev.ts, txId = ev.txId, type = ev.kind,
-                reasonCode = ev.reasonCode, currency = p.currency, delta = p.amount,
+                reasonCode = ev.reasonCode, currency = p.currency, delta = p.amount, fee = p.fee,
                 availableBefore = p.availableBefore, availableAfter = p.availableAfter,
                 reservedBefore = p.reservedBefore, reservedAfter = p.reservedAfter,
                 counterparty = L.counterparty(ev.postings, p),

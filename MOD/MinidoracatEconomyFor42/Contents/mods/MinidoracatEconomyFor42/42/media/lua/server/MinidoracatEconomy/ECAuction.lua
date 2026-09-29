@@ -575,7 +575,7 @@ local function settle(a)
     if tax < 0 then tax = 0 end
     local postings = {
         { account = h.bidder, currency = h.currency, amount = -h.amount, bucket = "reserved" },
-        { account = a.seller, currency = h.currency, amount = h.amount - tax },
+        { account = a.seller, currency = h.currency, amount = h.amount - tax, fee = tax > 0 and tax or nil },
     }
     if tax > 0 then postings[#postings + 1] = { account = Mk.BURN_ACCOUNT, currency = h.currency, amount = tax } end
     local res = L.post({

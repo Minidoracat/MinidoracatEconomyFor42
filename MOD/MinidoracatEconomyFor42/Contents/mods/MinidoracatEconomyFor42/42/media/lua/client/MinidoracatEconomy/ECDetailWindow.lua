@@ -312,6 +312,21 @@ function Win:prerender()
         closeNow(self)
         return
     end
+    -- A row is picked on mouse *down*, and the click first ran onFocus of the window the row sits
+    -- in (UIElement.java:1055-1064), which raised that window together with this one. The UIManager
+    -- applies raises at the start of the next update, in the windows' old list order
+    -- (UIManager.java:546-553), so a record that sat below that window stays behind it; a raise
+    -- in the first prerender after the open still joins that same batch. The second prerender
+    -- comes after the batch was applied, and a raise there is the only one of its batch.
+    local pending = self.raisePending
+    if pending ~= nil then
+        if pending > 1 then
+            self.raisePending = pending - 1
+        else
+            self.raisePending = nil
+            self:bringToTop()
+        end
+    end
     self:clampToScreen()
     if self.width ~= self.layoutW or self.height ~= self.layoutH
         or self.layoutCollapsed ~= self.isCollapsed then
@@ -474,6 +489,7 @@ function D.open(owner, key, title, value, onClose)
         win:bringToTop()
         Keys.onFocus(win)
     end
+    win.raisePending = 2   -- and once more on its own, two prerenders later (Win:prerender says why)
     return win
 end
 

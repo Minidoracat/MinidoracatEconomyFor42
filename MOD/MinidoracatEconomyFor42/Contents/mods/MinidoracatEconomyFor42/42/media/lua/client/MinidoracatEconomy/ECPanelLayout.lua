@@ -560,7 +560,9 @@ function L.layout(self)
     cols.kind = cols.time + colW("Wallet_Col_Time", U.STAMP_SAMPLE)
     cols.status = inner - colW("Wallet_Col_Status", getText(T .. "Wallet_RolledBack")) + PAD
     cols.balanceR = cols.status - PAD
-    cols.amountR = cols.balanceR - colW("Wallet_Col_Balance", "999,999,999")
+    -- the fee sits between amount and balance, as wide as the widest fee listed (or its header)
+    cols.feeR = cols.balanceR - colW("Wallet_Col_Balance", "999,999,999")
+    cols.amountR = cols.feeR - (self.statementFeeW or 0)
     -- The kind column is as wide as the widest kind the listed rows carry, but never more than
     -- half of the band it shares with the note, so the note keeps its room; a longer kind is cut
     -- with "..." on the row and spelled out in full in the row's record window. A band whose half
@@ -1096,6 +1098,7 @@ function L.drawWallet(self)
     end
     textRight(self, getText(T .. "Wallet_Col_Amount"), hx + cols.amountR, ty, "textMuted")
     if not cols.compact then
+        textRight(self, getText(T .. "Wallet_Col_Fee"), hx + cols.feeR, ty, "textMuted")
         textRight(self, getText(T .. "Wallet_Col_Balance"), hx + cols.balanceR, ty, "textMuted")
         text(self, getText(T .. "Wallet_Col_Status"), hx + cols.status, ty, "textMuted")
     end

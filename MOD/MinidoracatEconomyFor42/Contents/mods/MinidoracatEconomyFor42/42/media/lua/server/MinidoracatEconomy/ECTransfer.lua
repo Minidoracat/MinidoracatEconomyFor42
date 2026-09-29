@@ -207,7 +207,7 @@ function Tr.execute(req)
     if have < total then return fail("insufficient_funds", { needed = total - have }) end
 
     local postings = {
-        { account = from, currency = currency, amount = -total },
+        { account = from, currency = currency, amount = -total, fee = fee > 0 and fee or nil },
         { account = to, currency = currency, amount = amount },
     }
     if fee > 0 then postings[3] = { account = Tr.BURN_ACCOUNT, currency = currency, amount = fee } end

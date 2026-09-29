@@ -661,6 +661,8 @@
   "IGUI_MinidoracatEconomy_Wallet_Col_Amount": "Amount",
   "IGUI_MinidoracatEconomy_Wallet_Col_Balance": "Balance",
   "IGUI_MinidoracatEconomy_Wallet_Col_Status": "Status",
+  "IGUI_MinidoracatEconomy_Wallet_Col_Fee": "Fee",
+  "IGUI_MinidoracatEconomy_Wallet_Tax": "Sales tax",
   "IGUI_MinidoracatEconomy_Wallet_RecentLedger": "Recent ledger",
   "IGUI_MinidoracatEconomy_Wallet_MoreHistory": "More history",
   "IGUI_MinidoracatEconomy_Rewards_Daily": "Daily online rewards",

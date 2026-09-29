@@ -416,9 +416,12 @@ function L.post(tx)
         local availableBefore, reservedBefore = w.available, w.reserved
         if reserved then w.reserved = reservedBefore + p.amount else w.available = availableBefore + p.amount end
         w.rev = w.rev + 1
+        -- `fee`: the part of this posting that went to a fee or a tax (a transfer's sender, a
+        -- sale's seller). The builder of the tx sets it; the statement shows it as its own column.
         local entry = {
             txId = txId, seq = seq, ts = ts, kind = tx.kind, reasonCode = tx.reasonCode,
             account = p.account, currency = p.currency, amount = p.amount, bucket = reserved and "reserved" or nil,
+            fee = p.fee,
             availableBefore = availableBefore, availableAfter = w.available,
             reservedBefore = reservedBefore, reservedAfter = w.reserved,
         }
@@ -426,7 +429,7 @@ function L.post(tx)
         -- the receipt (statement) tells the story of the spendable balance: a reserve shows as the
         -- available line ("bid held -X"), the mirror line on the reserved bucket is only in the event
         if not reserved then pushReceipt(p.account, {
-            txId = txId, seq = seq, ts = ts, kind = tx.kind, currency = p.currency, amount = p.amount,
+            txId = txId, seq = seq, ts = ts, kind = tx.kind, currency = p.currency, amount = p.amount, fee = p.fee,
             before = availableBefore, after = w.available, reservedAfter = w.reserved, counterparty = L.counterparty(tx.postings, p),
             sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonText = tx.reasonText,
             item = tx.payload and tx.payload.item or nil, qty = tx.payload and tx.payload.qty or nil,

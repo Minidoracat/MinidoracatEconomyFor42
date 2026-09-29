@@ -941,7 +941,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller).
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3666,6 +3666,9 @@ check(cmd(bob, "market.buy", { listingId = listed.listingId, price = 200, reques
 check(L.conservation("survivor") == 0, "fee and tax burns keep the currency conserved")
 local rc = L.receipts("ann")
 check(rc[#rc].kind == "market_buy" and rc[#rc].amount == 190 and rc[#rc].item == "Base.Axe", "the seller's receipt shows the net proceeds and the item")
+local brc = L.receipts("bob")
+check(rc[#rc].fee == 10 and brc[#brc].kind == "market_buy" and brc[#brc].amount == -200 and brc[#brc].fee == nil,
+    "the seller's receipt carries the 10 tax as its fee; the buyer's carries none")
 -- cancel: back to the seller through the mailbox
 local mine = Mk.mine("ann")
 local nailsId = mine[1].id
@@ -4052,6 +4055,9 @@ nowMs = nowMs + 6 * 60000
 fire("OnTickEvenPaused")
 check(not Au.hasAuction(id), "the auction is gone after settlement")
 check(bal("cat").reserved == 0 and bal("cat").available == 350 and bal("ann").available == 498 + 150 - 8, "the winner's reserve pays the seller 150 minus 8 tax")
+local arc = L.receipts("ann")
+check(arc[#arc].kind == "auction_sale" and arc[#arc].amount == 142 and arc[#arc].fee == 8,
+    "the seller's auction receipt carries the 8 tax as its fee")
 check(cat.inventory.count("Base.Axe") == 1 and cat.inventory.items[#cat.inventory.items].condition == 6, "the winner standing at the terminal receives the rebuilt item at once")
 check(notices(ann, "auction_sold") == 1 and notices(cat, "auction_won") == 1, "seller and winner are told")
 check(L.conservation("survivor") == 0, "settlement keeps the currency conserved")
@@ -14752,6 +14758,17 @@ local ra, rc = L.receipts("xf-ann"), L.receipts("xf-cat")
 check(ra[#ra].kind == "transfer" and ra[#ra].counterparty == "xf-cat" and ra[#ra].amount == -105 and ra[#ra].reasonText == "fare"
     and rc[#rc].counterparty == "xf-ann" and rc[#rc].amount == 100 and rc[#rc].reasonText == "fare",
     "both receipts name the other party and carry the memo")
+local payerLine, payeeLine = nil, nil
+for _, f in pairs(files) do for _, l in ipairs(f.lines) do
+    local row = string.find(l, ok1.txId, 1, true) and EC.jsonDecode(l)
+    if type(row) == "table" and row.type == "transfer" then
+        if row.delta == -105 then payerLine = row elseif row.delta == 100 then payeeLine = row end
+    end
+end end
+local wr = W.state("xf-ann").receipts
+check(ra[#ra].fee == 5 and rc[#rc].fee == nil and payerLine and payerLine.fee == 5 and payeeLine and payeeLine.fee == nil
+    and wr[#wr].fee == 5,
+    "the fee rides on the sender's receipt (ring, receipt file, wallet.state) and never on the recipient's")
 local pushed, pushedToPayer = nil, false
 for _, r in ipairs(sentCommands) do
     if r.command == "wallet.transferReceived" then

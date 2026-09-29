@@ -556,7 +556,7 @@ function Mk.buy(player, args)
     if tax < 0 then tax = 0 end
     local postings = {
         { account = username, currency = currency, amount = -l.price },
-        { account = l.seller, currency = currency, amount = l.price - tax },
+        { account = l.seller, currency = currency, amount = l.price - tax, fee = tax > 0 and tax or nil },
     }
     if tax > 0 then postings[#postings + 1] = { account = Mk.BURN_ACCOUNT, currency = currency, amount = tax } end
     local res = L.post({

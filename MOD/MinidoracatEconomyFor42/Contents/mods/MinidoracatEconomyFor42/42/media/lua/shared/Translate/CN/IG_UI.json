@@ -661,6 +661,8 @@
   "IGUI_MinidoracatEconomy_Wallet_Col_Amount": "金额",
   "IGUI_MinidoracatEconomy_Wallet_Col_Balance": "余额",
   "IGUI_MinidoracatEconomy_Wallet_Col_Status": "状态",
+  "IGUI_MinidoracatEconomy_Wallet_Col_Fee": "手续费",
+  "IGUI_MinidoracatEconomy_Wallet_Tax": "成交税",
   "IGUI_MinidoracatEconomy_Wallet_RecentLedger": "最近帐本",
   "IGUI_MinidoracatEconomy_Wallet_MoreHistory": "更多历史",
   "IGUI_MinidoracatEconomy_Rewards_Daily": "每日在线奖励",

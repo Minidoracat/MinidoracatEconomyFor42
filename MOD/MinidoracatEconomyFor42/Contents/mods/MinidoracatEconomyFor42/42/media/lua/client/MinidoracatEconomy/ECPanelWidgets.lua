@@ -705,7 +705,7 @@ function MailCell:render()
     R.finish(self)
 end
 
--- Statement row (the wallet ledger): the six columns the header paints, plus the selection band
+-- Statement row (the wallet ledger): the seven columns the header paints, plus the selection band
 -- every table in this window carries. The picked row is what the full-value strip spells out, so a
 -- keyboard user has to be able to see which row that is. The kind and counterparty/note columns
 -- truncate, so their fitted text is cached per row and per column width instead of measured again
@@ -747,6 +747,7 @@ function StatementCell:render()
     text(self, self.kindText, cols.kind, ty, tokenText)
     text(self, self.descText, cols.desc, ty, tokenMuted)
     textRight(self, e.amountText, cols.amountR, ty, amountToken)
+    if e.feeText ~= "" then textRight(self, e.feeText, cols.feeR, ty, tokenText) end
     textRight(self, amountText(e.after), cols.balanceR, ty, tokenText)
     if muted then
         text(self, getText(T .. "Wallet_RolledBack"), cols.status, ty, lit and "text" or "textFaint")

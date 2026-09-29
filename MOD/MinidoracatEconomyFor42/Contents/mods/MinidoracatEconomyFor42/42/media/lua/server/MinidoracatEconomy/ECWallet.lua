@@ -48,7 +48,7 @@ function W.state(username)
     for i, r in ipairs(receipts) do
         local epoch = r.txId and EC.parseId(r.txId) or nil
         list[i] = {
-            txId = r.txId, seq = r.seq, ts = r.ts, kind = r.kind, currency = r.currency, amount = r.amount,
+            txId = r.txId, seq = r.seq, ts = r.ts, kind = r.kind, currency = r.currency, amount = r.amount, fee = r.fee,
             before = r.before, after = r.after,
             reservedBefore = r.reservedBefore, reservedAfter = r.reservedAfter,
             counterparty = r.counterparty,

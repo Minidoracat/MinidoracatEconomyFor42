@@ -520,6 +520,10 @@ function U.reasonText(code, written)
     return name .. " (" .. code .. ")"
 end
 
+-- The kinds whose SYSTEM_BURN posting is a charge on one party, and the word for it: a transfer's
+-- sender pays a fee, a sale's seller a tax. Labels the statement's fee line and the admin record.
+U.FEE_KEY = { transfer = "Wallet_Col_Fee", market_buy = "Wallet_Tax", auction_sale = "Wallet_Tax" }
+
 color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, dateText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2 = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin, U.clockText, U.dateText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.pad2
 
 -- ---------- skinned button (chip / primary) ----------
