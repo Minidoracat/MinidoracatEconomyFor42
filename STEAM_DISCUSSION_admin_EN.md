@@ -36,7 +36,7 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [h2]🏧 Terminals and market radio[/h2]
 [list]
 [*] [b]Map ATMs[/b]: Settings - General has "Use map ATMs as terminals" (on) and "Allow players to remove map ATMs" (off). Fire, explosions and other mods are not covered, and removed ATMs are not restored.
-[*] [b]Custom terminals[/b]: the machine and catgirl designs are in the build menu's Furniture category, visible to admins only. Right-click a placed one: "Register as ATM terminal (no radio)" or "Register as trade station (with market radio)". To switch type, remove the registration and register again; no rebuild needed.
+[*] [b]Custom terminals[/b]: the machine and catgirl designs are in the build menu's Furniture category, visible to admins only. Right-click a placed one: "Register as ATM terminal (no radio)" or "Register as trade station (with market radio)". To switch type, remove the registration and register again.
 [*] [b]Market summaries[/b]: trade stations broadcast text summaries on a timer; an interval of 0 stops only the summary. ATMs never broadcast.
 [*] [b]Voice pickup[/b] (Settings - Market radio) is [b]off by default[/b]. Once on, server voice and players' push-to-talk settings still apply; nearby or lower-floor devices may hear it, so it is not private.
 [*] [b]Before removing this mod[/b]: unregister every trade station while its area is loaded, check the speaker is gone, then save normally. Disabling the mod alone runs no cleanup.
@@ -53,7 +53,7 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [h2]📅 Seasons and integration plans[/h2]
 [list]
 [*] [b]Seasons[/b]: Admin - Seasons shows current and past seasons. With native role-management permission you can set the length (real days, 0 = manual) or start the next season with a reason; results are archived, balances and characters are kept.
-[*] [b]Integration plans[/b]: set prices, currency, slots and terms for other mods' paid slots, review the change summary before applying, look up entitlements and refund the original order.
+[*] [b]Integration plans[/b]: set prices, currency, slots and terms for other mods' paid slots with a change summary before applying; look up entitlements and refund orders.
 [/list]
 
 [h2]💾 World saves and companion[/h2]
@@ -66,10 +66,10 @@ Item transfers settle on the [b]world save[/b]. A save interval of 0 means no sc
 [*] Run npm install, then keep npm start running
 [*] Check the save confirmation status in Economy Administration - System
 [/olist]
-[b]Read-only daily report[/b]: npm run report writes the previous day's cash-flow report (npm run report -- --date 2026-09-13 for a given day). It never calls AI or edits balances. Reports contain accounts and admin reasons, so restrict access.
+[b]Read-only daily report[/b]: npm run report writes the previous day's cash-flow report (npm run report -- --date 2026-09-13 for a given day). It never edits balances. Reports contain accounts and admin reasons, so restrict access.
 
 [h2]💰 Discord point deposits[/h2]
-The game side and companion provide the interface and order flow, but this is [b]not subscribe-and-go[/b]: you need your own points system, Steam account linking and bridge. Basic trading does not need Discord.
+The interface and order flow exist, but this is [b]not subscribe-and-go[/b]: you need your own points system, Steam account linking and bridge. Basic trading does not need Discord.
 
 [h2]🧾 Asset reconciliation[/h2]
 [list]

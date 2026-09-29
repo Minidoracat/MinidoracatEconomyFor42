@@ -8,7 +8,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 
 [h2]🚀 Quick start[/h2]
 [olist]
-[*] Press "[" (rebindable in Key Bindings) or click the floating button to open the [b]Economy Center[/b]
+[*] Open the [b]Economy Center[/b] with the "[" key (rebindable in Key Bindings) or the floating button
 [*] Away from a terminal you can only browse. To trade, list or claim items, walk up to a map ATM or an admin-built terminal and right-click [b]Use economy terminal[/b]
 [*] Claim your daily online reward on the Rewards page to start earning Survivor Coins
 [*] Buy and sell in the shop, market or auctions; items arrive in your Mailbox and can be claimed at any terminal
