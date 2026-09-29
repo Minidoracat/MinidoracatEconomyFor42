@@ -957,7 +957,7 @@ local failures, assertions = 0, 0
 local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3 + 6 + 25   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller). +6: a split-screen seat is not an economy identity (scenario SP; scenario 89's three split-slot checks now say the seat is never observed). +25: the identity bound to the SteamID (scenario ID: principal matrix, OnNewGame, import, confirmation, refusals, replay).
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing one account (scenario MA, identity v2 step 2a)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7   -- +7: review fixes: EXACT_MISMATCH fails closed, a merge stopped midway resumes (2), a rollback with merging off closes the alias's letter (3), a torn import marker stays strict (2); one old duplicate-key check replaced
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -15752,6 +15752,26 @@ nowMs = nowMs + 1000
 fire("OnServerStarted")
 check(#mgRecs() == lines and Id.exportStatus().status == "accepted" and Id.view().bindings["mg-ann"].exact == true,
     "after a restart the same export is read again at start and changes nothing")
+-- a new generation with the same rows changes no binding but still leaves its generation and
+-- digest, so after a restart an older export is stale and the same generation with other rows is refused
+mgExport(ROWS)
+mgPoll()
+local newest = mgGen
+check(Id.exportStatus().status == "accepted" and Id.exportStatus().generatedAt == newest and #mgRecs() == lines + 1
+    and mgAudits("IDENTITY_IMPORT", "COMPANION") == 1,
+    "a new generation that changes nothing writes only its marker (generation and row digest) and is not audited")
+mgExport(ROWS, { gen = newest - 1 })
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local staleAfterRestart = Id.exportStatus().status
+local fewer = {}
+for i = 1, #ROWS - 1 do fewer[i] = ROWS[i] end
+mgExport(fewer, { gen = newest })
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+check(staleAfterRestart == "stale" and Id.exportStatus().status == "replaced" and #mgRecs() == lines + 1
+    and Id.view().bindings["mg-p2"] ~= nil and Id.view().bindings["mg-p2"].reserved == nil,
+    "after a restart an older export is stale, and the last accepted generation with other rows is refused whole")
 -- exact mismatch, recorded once
 local rows2 = {}
 for i, r in ipairs(ROWS) do rows2[i] = r end
@@ -16187,9 +16207,9 @@ local r5, e5 = Mg.mergeOne("mg-a2", "mg-c2")
 S.Shop.mergeAccount = shopMerge
 local _, e6 = Mg.mergeOne("mg-a2", "mg-c2")
 check(r5 == nil and e5 == "merge_failed" and e6 == "merge_failed" and md.identity.merged["mg-a2"] == nil
-    and L.getBalance("mg-a2", "survivor").available == 0 and L.getBalance("mg-c2", "survivor").available == c2Before + 10
+    and L.getBalance("mg-a2", "survivor").available == 10 and L.getBalance("mg-c2", "survivor").available == c2Before
     and L.conservation("survivor") == consBefore,
-    "a merge that stops midway keeps the money it moved conserved in the account, marks nothing and waits for a restart")
+    "a merge that stops in a store leaves the money in the alias's own wallet, marks nothing and waits for a restart")
 L.credit("mg-a2", "survivor", 4, "SYSTEM_MINT", { requestId = "mg-a2g", reasonCode = "t" })
 Mg.init()
 local r7 = Mg.mergeOne("mg-a2", "mg-c2")
@@ -16249,6 +16269,21 @@ fire("OnClientCommand", EC.COMMAND_MODULE, "hello", alias, {})
 local again = M.claim(alias, letter.id)
 check(not (again and again.ok) and alias.inventory.count("Base.Bandage") == 0 and canon.inventory.count("Base.Bandage") == 1,
     "the alias cannot claim that letter a second time")
+-- the account's save goes back to one without the bandage or its witness: that login gets the
+-- letter again wherever it stands; its death settles it there
+local canon2 = mgPlayer("mg-c50", P)
+onlinePlayers = { canon2 }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", canon2, {})
+check(canon2.inventory.count("Base.Bandage") == 1 and back.state == "claimed" and back.claimLogin == "mg-c50",
+    "an older save of the account's login is delivered again the letter it closed under the alias")
+fire("OnCharacterDeath", canon2)
+local canon3 = mgPlayer("mg-c50", P)
+onlinePlayers = { canon3 }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", canon3, {})
+check(back.state == "settled" and canon3.inventory.count("Base.Bandage") == 0,
+    "that login's death settles the letter under the alias: the new character is not delivered it again")
 steamModeActive = false
 onlinePlayers = {}
 end)()

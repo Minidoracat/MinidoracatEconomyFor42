@@ -103,7 +103,7 @@ local disputes = {}          -- name -> { text, reason }: the conflict the file 
 local canon = {}             -- exact text -> { name, rule, src, at }: the group's account, decided once
 local importedAt, importedBy = nil, nil     -- the first import; strict from then on
 local lastImportAt, lastImportBy = nil, nil
-local markerGen, markerCount = nil, nil     -- the last companion import marker in the file
+local markerGen, markerCount, markerDigest = nil, nil, nil   -- the last companion import marker in the file
 local unreadable = false     -- the file exists but could not be read: nobody is verified
 local damaged = false        -- lines were skipped and no import marker survived: strict anyway
 local conflicts = nil        -- name -> { sid, text, reason, bound } of the last import (memory only)
@@ -280,7 +280,7 @@ local function apply(rec)
         if importedAt == nil then importedAt, importedBy = at, by end
         lastImportAt, lastImportBy = at, by
         if src == "COMPANION" and whole(rec.gen, 1, 9007199254740991) then
-            markerGen, markerCount = rec.gen, tonumber(rec.count)
+            markerGen, markerCount, markerDigest = rec.gen, tonumber(rec.count), tonumber(rec.digest)
         end
         return true
     end
@@ -321,7 +321,7 @@ end
 function Id.load()
     bindings, byText, doubles, disputes, canon, unreadable, damaged = {}, {}, {}, {}, {}, false, false
     importedAt, importedBy, lastImportAt, lastImportBy = nil, nil, nil, nil
-    markerGen, markerCount = nil, nil
+    markerGen, markerCount, markerDigest = nil, nil, nil
     local reader = nil
     local opened = pcall(function() reader = getFileReader(Id.FILE, false) end)
     if not opened or reader == nil then
@@ -589,15 +589,19 @@ local function applyImport(rows, o)
         recs[#recs + 1] = { v = Id.VERSION, k = "conflict", name = name, clear = true, src = o.src, at = ms }
     end
     local changed = #recs > 0
-    if changed or importedAt == nil then
-        table.insert(recs, 1, { v = Id.VERSION, k = "import", at = ms, by = o.actor, src = o.src, gen = o.gen, count = o.count })
+    -- every new companion export leaves its generation and a digest of its rows in the file, so
+    -- after a restart an older export, or the same generation with other rows, is refused
+    local newGen = o.src == "COMPANION" and (o.gen ~= markerGen or o.digest ~= markerDigest)
+    if changed or importedAt == nil or newGen then
+        table.insert(recs, 1, { v = Id.VERSION, k = "import", at = ms, by = o.actor, src = o.src, gen = o.gen,
+            count = o.count, digest = o.digest })
     end
     local before = onlineVerdicts()
     if #recs > 0 and not writeLines(recs) then return nil, "write_failed" end
     if #recs > 0 then
         if importedAt == nil then importedAt, importedBy = ms, o.actor end
         lastImportAt, lastImportBy = ms, o.actor
-        if o.src == "COMPANION" then markerGen, markerCount = o.gen, o.count end
+        if o.src == "COMPANION" then markerGen, markerCount, markerDigest = o.gen, o.count, o.digest end
     end
     for name, b in pairs(fresh) do setBinding(name, b) end
     for _, name in ipairs(res.reserved) do setBinding(name, { reserved = true, src = o.src, at = ms }) end
@@ -712,6 +716,7 @@ local function readLines(st, budget)
                 local bad = rowError(st, r)
                 if bad then status, detail = "malformed", where .. ": " .. bad; return end
                 st.rows[#st.rows + 1] = { u = r.u, s = r.s, id = r.id }
+                st.digest = EC.hashUpdate(st.digest, line)
             end
         end
     end)
@@ -721,13 +726,16 @@ end
 
 local function finishExport(st, status, detail, ms)
     pcall(function() st.reader:close() end)
+    if status == "ok" and st.gen == markerGen and markerDigest ~= nil and st.digest ~= markerDigest then
+        status, detail = "replaced", "same generatedAt, other rows"
+    end
     if status ~= "ok" then
         rejectedGen = st.gen      -- refused whole: not read again until a newer export
         exportReject(status, detail, st.header)
         return
     end
     local res, err = applyImport(st.rows, { src = "COMPANION", actor = "COMPANION", ms = ms, auto = true,
-        gen = st.gen, count = #st.rows })
+        gen = st.gen, count = #st.rows, digest = st.digest })
     if res == nil then
         -- our own file failed, not the export: the next poll tries again
         export.reason = err
@@ -772,7 +780,8 @@ function Id.pollExport(ms, startup)
         exportReject(status, detail, h)
         return
     end
-    local st = { reader = reader, header = h, gen = h.generatedAt, rows = {}, ids = {}, names = {} }
+    local st = { reader = reader, header = h, gen = h.generatedAt, rows = {}, ids = {}, names = {},
+        digest = EC.hashInit() }
     if startup then
         local s, d = readLines(st, nil)
         finishExport(st, s, d, ms)

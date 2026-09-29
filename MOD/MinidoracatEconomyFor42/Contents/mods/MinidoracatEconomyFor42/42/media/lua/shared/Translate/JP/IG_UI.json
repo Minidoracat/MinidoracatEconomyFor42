@@ -2167,6 +2167,7 @@
   "IGUI_MinidoracatEconomy_Admin_Id_Export_malformed": "出力ファイルの形式が不正です。全体を拒否し、何も適用していません",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_truncated": "出力ファイルが不完全です（行数または終端行が不一致）。全体を拒否し、何も適用していません",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_stale": "出力ファイルが最後に受理したものより古いため、適用していません",
+  "IGUI_MinidoracatEconomy_Admin_Id_Export_replaced": "出力ファイルの生成時刻が最後に受理したものと同じなのに内容が違うため、全体を拒否しました。companion を再起動して出力し直してください",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_reserve_suspect": "紐付けは適用しましたが、消えた名前がしきい値を超えたため出力が不完全な疑いがあり、名前の予約は行っていません。ホワイトリストを確認したら「本人情報を取り込む」を一度実行してください",
   "IGUI_MinidoracatEconomy_Admin_Id_ExportFile": "出力日時：%1・%2 行",
   "IGUI_MinidoracatEconomy_Admin_Id_ExportAccepted": "最終受理：%1",

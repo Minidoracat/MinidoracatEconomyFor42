@@ -88,6 +88,19 @@ local function owner(username, create)
     return o
 end
 
+-- The boxes of every name sharing this account (S.groupOf: its merged names and, through the
+-- identity module, the other logins of its SteamID), the account's own first. A letter a login
+-- claimed follows that login's evidence wherever it stands: a world rollback with merging turned
+-- off since puts a letter the account claimed back under its alias (see M.reconcile).
+local function groupBoxes(account)
+    local out, seen = {}, {}
+    for _, name in ipairs(S.groupOf(account)) do
+        local box = md.mailbox.byOwner[name]
+        if box and not seen[box] then seen[box] = true; out[#out + 1] = box end
+    end
+    return out
+end
+
 function M.unclaimed(username)
     local o = owner(username, false)
     return o and o.unclaimed or 0
@@ -1218,8 +1231,8 @@ function M.reconcile(player)
             if not durable and not insured and origin and origin.mailId then blockedLetters[origin.mailId] = true end
         end
     end
-    if o then
-        for mailId, entry in pairs(o.entries) do
+    for _, box in ipairs(groupBoxes(account)) do
+        for mailId, entry in pairs(box.entries) do
             local witness, have = p.claims[mailId], scan.stamped[mailId]
             local avail = availableUnits(entry)
             if entry.state == "claimed" and claimedBy(entry) == username and not witness and not have and not blockedLetters[mailId] then
@@ -1234,10 +1247,10 @@ function M.reconcile(player)
                         entry.claimSeq, entry.claimedAt, entry.claimLogin = claimSeq, ms, username
                         anomaly(username, mailId, "redelivered", { qty = result.qty })
                     elseif result.kept then
-                        local child = splitDelivered(player, o, entry, claimSeq, result.kept, ms)
+                        local child = splitDelivered(player, box, entry, claimSeq, result.kept, ms)
                         anomaly(username, mailId, "redeliver-partial", { child = child.id, delivered = child.qty, remaining = entry.qty })
                     else
-                        reopen(o, entry)
+                        reopen(box, entry)
                         anomaly(username, mailId, "requeued", { reason = result.error })
                     end
                     changed = true
@@ -1434,7 +1447,8 @@ function M.onDeath(character)
     if not md or not instanceof(character, "IsoPlayer") then return end
     -- Only the login this character really is (S.login: never a split-screen seat or a name its
     -- SteamID does not match) may have its records carried over, and only the letters that very
-    -- save claimed are settled: another login of the same account keeps its own.
+    -- save claimed are settled, in whichever box of its account group they stand: another login
+    -- of the same account keeps its own.
     local username = S.login(character)
     if username == nil then return end
     local okData, data = pcall(function() return character:getModData()[EC.PLAYER_MODDATA_KEY] end)
@@ -1446,13 +1460,13 @@ function M.onDeath(character)
             X.emit("player.died", { username = username, pendingOuts = n })
         end
     end
-    local o = owner(username, false)
-    if not o then return end
     local n = 0
-    for _, entry in pairs(o.entries) do
-        if entry.state == "claimed" and claimedBy(entry) == username then
-            entry.state = "settled"
-            n = n + 1
+    for _, box in ipairs(groupBoxes(S.accountOf(username))) do
+        for _, entry in pairs(box.entries) do
+            if entry.state == "claimed" and claimedBy(entry) == username then
+                entry.state = "settled"
+                n = n + 1
+            end
         end
     end
     if n > 0 then

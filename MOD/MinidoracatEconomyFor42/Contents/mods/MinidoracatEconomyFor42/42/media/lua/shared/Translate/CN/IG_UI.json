@@ -2167,6 +2167,7 @@
   "IGUI_MinidoracatEconomy_Admin_Id_Export_malformed": "导出档格式错误；整份拒收，没有套用任何变更",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_truncated": "导出档不完整（列数或结尾不符）；整份拒收，没有套用任何变更",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_stale": "导出档比上次接受的旧；没有套用",
+  "IGUI_MinidoracatEconomy_Admin_Id_Export_replaced": "导出档的产生时间与上次接受的相同，内容却不同；整份拒收。请重新启动 companion，让它重新导出",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_reserve_suspect": "已套用绑定，但少掉的帐号超过门槛，疑似白名单不完整，没有自动保留名字；确认白名单无误后请按「导入身分」手动导入一次",
   "IGUI_MinidoracatEconomy_Admin_Id_ExportFile": "导出时间：%1・%2 笔",
   "IGUI_MinidoracatEconomy_Admin_Id_ExportAccepted": "最近接受：%1",

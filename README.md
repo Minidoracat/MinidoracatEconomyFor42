@@ -97,7 +97,7 @@
 
 - **綁定從哪裡來**（都是自動，不需要管理員操作）：
   - 玩家建立新角色（第一次進服、死亡重生）時，伺服器以該連線的登入名與 SteamID 綁定。
-  - 有 companion 的伺服器：companion 每次更新帳戶對應時，把伺服器 whitelist 的複本匯出成 `Lua/MinidoracatEconomy/identity/whitelist.json`（見下方「Companion 身分匯出」）；伺服器啟動時與之後每分鐘檢查一次，伺服器名、列數、結尾行與產生時間都對得上才採用，任何一項不符就整份不用，身分頁寫明原因。
+  - 有 companion 的伺服器：companion 每次更新帳戶對應時，把伺服器 whitelist 的複本匯出成 `Lua/MinidoracatEconomy/identity/whitelist.json`（見下方「Companion 身分匯出」）；伺服器啟動時與之後每分鐘檢查一次，伺服器名、列數、結尾行都要對得上，產生時間不能比上次接受的舊（同一個產生時間，內容也必須相同），任何一項不符就整份不用，身分頁寫明原因。
   - 沒有 companion 的伺服器：管理員在「經濟管理台 → 身分」按「匯入身分」，由管理員客戶端讀 whitelist（需要原生 SeeNetworkUsers 權限）。帳號接近 6000 個時原版名單封包會超過上限，這時請改用 companion。
   綁定存在伺服器的 `Lua/MinidoracatEconomy/identity/bindings.json`，不放在任何客戶端讀得到的地方。
 - **第一次匯入前後**：還沒匯入過時，沒有綁定的名字照舊以名字判定，部署後不會有空窗；第一次匯入後，沒有綁定的名字（例如從未以 Steam 登入的帳號）一律不算，直到建立新角色或下一次匯入。綁定檔有讀不懂的行、又找不到匯入紀錄時，視同已匯入（不會退回相信名字），身分頁會標示。

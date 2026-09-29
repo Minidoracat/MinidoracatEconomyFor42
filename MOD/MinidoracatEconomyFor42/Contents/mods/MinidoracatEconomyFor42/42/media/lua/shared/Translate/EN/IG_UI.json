@@ -2167,6 +2167,7 @@
   "IGUI_MinidoracatEconomy_Admin_Id_Export_malformed": "the export file is malformed; rejected, nothing applied",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_truncated": "the export file is incomplete (row count or end line does not match); rejected, nothing applied",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_stale": "the export file is older than the last accepted one; not applied",
+  "IGUI_MinidoracatEconomy_Admin_Id_Export_replaced": "the export file has the same generation time as the last accepted one but other rows; rejected, nothing applied. Restart the companion so it exports again",
   "IGUI_MinidoracatEconomy_Admin_Id_Export_reserve_suspect": "bindings applied, but too many names went missing for the export to be trusted, so no names were reserved; once the whitelist is confirmed, run Import identities once",
   "IGUI_MinidoracatEconomy_Admin_Id_ExportFile": "Generated: %1 · %2 rows",
   "IGUI_MinidoracatEconomy_Admin_Id_ExportAccepted": "Last accepted: %1",

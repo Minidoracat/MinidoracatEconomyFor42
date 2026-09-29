@@ -45,7 +45,7 @@ Mg.LIST_MAX = 200         -- groups in one admin.identity reply (the counts are 
 
 local plan = nil
 local lastTick = 0
-local failed = {}        -- alias -> the error of a merge that stopped after moving money (this uptime)
+local failed = {}        -- alias -> the error of a merge that stopped midway (this uptime)
 
 function Mg.enabled()
     return EC.sandbox("IdentityAutoMerge", false) == true
@@ -222,11 +222,12 @@ end
 
 -- ---------- the merge ----------
 
--- Merges `alias` into `into` in this one call, or changes nothing and says why. Every step after
--- the money only moves what is still under the alias, so a merge that stopped midway (a Lua
--- error in a store; the money already moved into the account) is safe to run again: the next
--- attempt posts whatever the alias holds then under a fresh key, and finishes the stores. The
--- marker is the last write.
+-- Merges `alias` into `into` in this one call, or changes nothing and says why. The stores go
+-- first and the money after them: a Lua error in a store (or a refused posting) stops the merge
+-- with the money still in the alias's own wallet, where that login sees it, and without the
+-- marker. Every step only moves what is still under the alias, so the next attempt (after a
+-- restart: Mg.blockers says merge_failed until then) finishes what is left, the money under a
+-- fresh ledger key. The marker is the last write.
 function Mg.mergeOne(alias, into, ms)
     local md = S.modData()
     local merged = md.identity.merged
@@ -251,7 +252,22 @@ function Mg.mergeOne(alias, into, ms)
     if #reasons > 0 then return nil, reasons[1] end
     if (md.claims[alias] ~= nil and type(md.claims[alias]) ~= "table")
         or (md.claims[into] ~= nil and type(md.claims[into]) ~= "table") then return nil, "data_unreadable" end
-    -- 1. the money: one account_merge tx, every currency's available balance (reserved is 0)
+    -- 1. every per-account store
+    local ok, claims, age, letters = pcall(function()
+        local c, err = S.Rewards.mergeAccount(alias, into, ms)
+        if c == nil and err ~= nil then error("claims: " .. tostring(err)) end
+        local a = S.Transfer.mergeAccount(alias, into)
+        S.Shop.mergeAccount(alias, into)
+        S.Exchange.mergeAccount(alias, into)
+        S.Admin.mergeAccount(alias, into)
+        return c, a, S.Mailbox.mergeAccount(alias, into)
+    end)
+    if not ok then
+        failed[alias] = tostring(claims)
+        EC.log("account merge " .. alias .. " -> " .. into .. " stopped before the money: " .. failed[alias])
+        return nil, "merge_failed"
+    end
+    -- 2. the money: one account_merge tx, every currency's available balance (reserved is 0)
     local wallets, currencies, postings, moved = md.wallets[alias] or {}, {}, {}, {}
     for currency in pairs(wallets) do currencies[#currencies + 1] = currency end
     EC.sortSafe(currencies, byName)
@@ -268,24 +284,12 @@ function Mg.mergeOne(alias, into, ms)
         local res = L.post({ kind = "account_merge", requestId = "merge:" .. alias .. ":" .. S.newId(),
             reasonCode = "account_merge", actor = "SYSTEM", merge = true, payload = { alias = alias, into = into },
             postings = postings })
-        if not res.ok then return nil, res.error or "ledger" end
+        if not res.ok then
+            failed[alias] = tostring(res.error)
+            EC.log("account merge " .. alias .. " -> " .. into .. " stopped at the money: " .. failed[alias])
+            return nil, res.error or "ledger"
+        end
         txId = res.txId
-    end
-    -- 2. every per-account store; an error leaves no marker, and the alias stays itself until
-    -- a restart runs the merge again
-    local ok, claims, age, letters = pcall(function()
-        local c, err = S.Rewards.mergeAccount(alias, into, ms)
-        if c == nil and err ~= nil then error("claims: " .. tostring(err)) end
-        local a = S.Transfer.mergeAccount(alias, into)
-        S.Shop.mergeAccount(alias, into)
-        S.Exchange.mergeAccount(alias, into)
-        S.Admin.mergeAccount(alias, into)
-        return c, a, S.Mailbox.mergeAccount(alias, into)
-    end)
-    if not ok then
-        failed[alias] = tostring(claims)
-        EC.log("account merge " .. alias .. " -> " .. into .. " stopped midway (" .. tostring(txId) .. "): " .. failed[alias])
-        return nil, "merge_failed"
     end
     -- 3. the alias's emptied keys
     local empty = true
