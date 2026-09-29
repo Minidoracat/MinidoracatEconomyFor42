@@ -9,7 +9,6 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 [list]
 [*] Required UI framework: [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library for B42[/url]
 [*] The server and every player need both mods at the same version; after an update, restart both the server and the game
-[*] Supports Build 42.20.4+
 [/list]
 
 [h2]🚀 Quick start[/h2]
@@ -24,8 +23,8 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 [list]
 [*] [b]Two-currency wallet[/b]: Survivor Coin and Cat Coin, with a searchable, filterable statement
 [*] [b]System shop[/b]: fixed-price purchases, and sell items back to the server when buyback is on
-[*] [b]Player market[/b]: list items from your bag at a fixed price; they can be bought from any terminal
-[*] [b]Auction house[/b]: set a starting price and duration; bids are reserved and released when you are outbid
+[*] [b]Player market and auctions[/b]: sell items from your bag at a fixed price or by auction, at any terminal
+[*] [b]Player transfers[/b]: send currency straight to another player when the server allows it
 [*] [b]Mailbox[/b]: purchases, wins and returns arrive here and survive your character's death
 [*] [b]Rewards and seasons[/b]: daily online rewards, survival milestones, holdings and survival leaderboards
 [*] [b]Market radio[/b]: tune a radio to a trade station's market broadcast (server option)
