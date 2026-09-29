@@ -19,7 +19,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]Wallet[/h3]
 [list]
 [*] [b]Two currencies[/b]: Survivor Coin and Cat Coin show available and reserved amounts; the server can rename them and change their icons.
-[*] [b]Statement[/b]: search loaded records by type, date and keyword; Balance details can be read in full and copied.
+[*] [b]Statement[/b]: search loaded records by type, date and keyword; the Fee column shows transfer fees and sales tax.
 [*] [b]Player ID[/b]: your login account (not your character name) is shown at the top of every page; click it to copy it for an admin.
 [/list]
 
