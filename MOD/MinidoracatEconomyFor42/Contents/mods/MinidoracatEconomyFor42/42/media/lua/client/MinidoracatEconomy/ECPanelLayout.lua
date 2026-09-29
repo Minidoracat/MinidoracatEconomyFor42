@@ -421,10 +421,12 @@ function L.layout(self)
     -- one value (Panel:onIdentity) -- and it is fitted into the room the money column left, so
     -- it can never climb over a balance, a coin or the title bar's own buttons.
     local idB = self.identityButton
-    local account = self:username()
+    local account, login = self:username(), C.login()
     self.identityName = account
     local unverified = C.identityUnverified == true
     local idLabel = unverified and getText(T .. "Player_IdentityUnverified")
+        or (type(account) == "string" and login ~= nil and login ~= account)
+            and getText(T .. "Player_IdentityMerged", account, login)
         or (type(account) == "string") and getText(T .. "Player_Identity", account)
         or getText(T .. "Player_IdentityUnknown")
     idB:setVisible(open)

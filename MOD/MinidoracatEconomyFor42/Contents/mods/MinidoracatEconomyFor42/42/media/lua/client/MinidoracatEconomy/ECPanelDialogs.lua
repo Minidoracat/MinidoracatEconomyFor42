@@ -1391,8 +1391,7 @@ function TransferDialog:check()
     if ready then return "general", D.transferError({ error = "account_too_new", availableAt = ready }) end
     local to = self:recipient()
     if to == "" then return "to", getText(T .. "Transfer_Error_no_recipient") end
-    local player = getPlayer()
-    if player and to == player:getUsername() then return "to", D.transferError({ error = "self_transfer" }) end
+    if C.isMe(to) then return "to", D.transferError({ error = "self_transfer" }) end
     if self.currency == nil then return "currency", D.transferError({ error = "currency_not_transferable" }) end
     local amount = self:amountValue()
     local min, max = tonumber(info.min) or 1, tonumber(info.maxPerTx)

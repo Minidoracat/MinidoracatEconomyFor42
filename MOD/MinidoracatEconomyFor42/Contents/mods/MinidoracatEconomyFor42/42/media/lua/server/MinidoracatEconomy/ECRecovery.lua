@@ -679,7 +679,7 @@ function R.heldCount(username)
 end
 
 function R.status(username)
-    local player = S.onlinePlayer(username)
+    local player = S.onlineLogin(username)
     local data = player and player:getModData()[EC.PLAYER_MODDATA_KEY] or nil
     local pending = type(data) == "table" and data.pendingOuts or nil
     local durable = S.durableStatus()
@@ -1523,7 +1523,7 @@ end
 -- an old delivery look like a new one) and the survived verdict frozen in, so twenty epochs from
 -- now the same object is still provable instead of unknown again.
 function R.adoptGen0(player, item, origin, ctx)
-    local bound, info = R.judgeGen0(origin, player and player:getUsername() or nil, ctx)
+    local bound, info = R.judgeGen0(origin, player and S.login(player) or nil, ctx)
     if bound then
         local written = pcall(function()
             item:getModData()[EC.PLAYER_MODDATA_KEY] = { proto = R.PROTOCOL, mailId = bound.mailId,
@@ -1714,7 +1714,7 @@ local function judgeRecord(username, id, pend, scan, opts)
                 out.action, out.reason = "hold", "world_unverified"
                 return out
             end
-            if live ~= nil and live.owner ~= username then
+            if live ~= nil and not S.sameAccount(live.owner, username) then
                 out.action, out.reason, out.foreign = "hold", "world_owner", true
                 out.restorable, out.unproven = false, false
                 out.present, out.keys, out.outcome = {}, {}, live.kind
@@ -1757,7 +1757,7 @@ local function judgeRecord(username, id, pend, scan, opts)
             elseif pendVerdict == "survived" then out.action = "clear" end
             return out
         end
-        if live.owner ~= username then
+        if not S.sameAccount(live.owner, username) then
             -- the id names a live operation of another account: never acted on, never accepted
             -- by hand (a rebuild under that id would write a receipt over someone else's
             -- operation), and nothing of that account is named in the answer
@@ -2025,7 +2025,7 @@ function R.beginOut(player, id, items, rec)
     if type(id) ~= "string" or id == "" or type(items) ~= "table" or type(rec) ~= "table" then
         return false, "recovery_unverified", detail("request_malformed", {})
     end
-    local n, username = #items, player:getUsername()
+    local n, username = #items, S.login(player)
     if n < 1 or n > R.ORIGINS_MAX then
         return false, "recovery_capacity", detail("request_unit_count", { qty = n })
     end
@@ -2069,7 +2069,7 @@ function R.beginOut(player, id, items, rec)
                     { index = i, item = info.item or fullTypeOf(items[i]), itemId = origin.nativeId,
                       mailId = info.mailId, opId = info.opId, epoch = info.epoch, seq = info.seq,
                       qty = info.qty, verdict = R.verdict(info.epoch, info.seq),
-                      action = info.reason == "legacy_source_unclaimed" and info.owner ~= username and "admin_review" or nil,
+                      action = info.reason == "legacy_source_unclaimed" and not S.sameAccount(info.owner, username) and "admin_review" or nil,
                       heldKey = (kept and type(info.mailId) == "string") and ("legacy:" .. info.mailId) or nil })
             end
             origin = named
@@ -2121,7 +2121,7 @@ function R.beginOut(player, id, items, rec)
                         return false, "recovery_unverified", detail(problem or "source_membership_missing",
                             { index = i, item = origin.item, itemId = origin.nativeId,
                               mailId = origin.mailId, epoch = origin.epoch, seq = origin.seq,
-                              action = problem == "legacy_source_unclaimed" and origin.owner ~= username and "admin_review" or nil })
+                              action = problem == "legacy_source_unclaimed" and not S.sameAccount(origin.owner, username) and "admin_review" or nil })
                     end
                 end
                 if not found then
@@ -2133,7 +2133,7 @@ function R.beginOut(player, id, items, rec)
                 if source.state == "ready" or source.state == "claiming" then
                     return false, "recovery_pending", detail("source_claim_pending",
                         { index = i, item = origin.item, mailId = origin.mailId,
-                          qty = tonumber(source.qty), action = origin.owner ~= username and "admin_review" or "retry" })
+                          qty = tonumber(source.qty), action = not S.sameAccount(origin.owner, username) and "admin_review" or "retry" })
                 end
             else
                 local verdict = origin.durable == true and "survived" or R.verdict(origin.epoch, origin.seq)
@@ -2221,7 +2221,7 @@ end
 -- pending record is cleared only when every object is back; what could not be returned is held.
 function R.abortOut(player, id, items)
     if not R.ready() then return false, "recovery_unverified" end
-    local username = player:getUsername()
+    local username = S.login(player)
     local p = R.playerData(player)
     local inv = player:getInventory()
     R.releaseOut(id)

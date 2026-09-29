@@ -109,7 +109,7 @@ local function observeSurvival(player, ms)
     local ok, hours, err = pcall(Se.observe, player, ms)
     if ok and (hours ~= nil or err == "not_alive") then return hours end
     local code = ok and (err or "data_unreadable") or "data_unreadable"
-    EC.log("survival observation failed for " .. tostring(player:getUsername())
+    EC.log("survival observation failed for " .. S.claimedName(player)
         .. ": " .. tostring(ok and code or hours))
     return nil, code
 end
@@ -285,7 +285,7 @@ function R.grantMilestones(player, ms)
     if type(hours) ~= "number" then return end
     local season = seasonId()
     if season == nil then return end
-    local username = player:getUsername()
+    local username = S.principal(player)
     local c = claim(username)
     if c == nil then return end
     local daysSurvived = hours / 24
@@ -324,7 +324,7 @@ end
 -- md belongs here: nothing may touch a claim record before the ModData root is installed.
 function R.observe(player, ms)
     if not md then return false, "not_ready" end
-    local username = player:getUsername()
+    local username = S.principal(player)
     local session = sessions[username]
     if session == nil or session.player ~= player then
         sessions[username] = { player = player, at = ms }
@@ -351,8 +351,7 @@ function R.onTick()
     if ms - lastTick < R.TICK_MS then return end
     lastTick = ms
     local seen = {}
-    S.forEachOnline(function(p)
-        local username = p:getUsername()
+    S.forEachOnline(function(p, username)
         local ok, err = pcall(function()
             R.observe(p, ms)
             R.grantMilestones(p, ms)
@@ -546,7 +545,7 @@ end
 -- behind, so a client can never act on the snapshot it sent the request with.
 function R.checkin(player, args)
     local ms = EC.now()
-    local username = player:getUsername()
+    local username = S.principal(player)
     local observed, observeErr = R.observe(player, ms)
     local _, survivalErr = observeSurvival(player, ms)
     local result = observed == false and { ok = false, error = observeErr } or doCheckin(username, ms, args)
@@ -571,7 +570,7 @@ function R.pushState(player, ms)
     ms = ms or EC.now()
     local observed, observeErr = R.observe(player, ms)
     local _, survivalErr = observeSurvival(player, ms)
-    local state, stateErr = R.state(player:getUsername(), ms)
+    local state, stateErr = R.state(S.principal(player), ms)
     if observed == false or state == nil then
         S.reply(player, "rewards.state", { ok = false, error = observeErr or stateErr or "data_unreadable" })
         return
@@ -612,7 +611,7 @@ S.handlers.hello = function(player, args)
     local ms = EC.now()
     if prevHello then prevHello(player, args) end
     local ok, err = pcall(R.observe, player, ms)
-    if not ok then EC.log("reward session start failed for " .. tostring(player:getUsername()) .. ": " .. tostring(err)) end
+    if not ok then EC.log("reward session start failed for " .. S.claimedName(player) .. ": " .. tostring(err)) end
     observeSurvival(player, ms)
 end
 
@@ -625,6 +624,34 @@ function R.onNewGame(player)
     if not md then return end
     local ok, err = pcall(R.observe, player, EC.now())
     if not ok then EC.log("reward session restart failed: " .. tostring(err)) end
+end
+
+-- ---------- account merge (ECMerge) ----------
+
+-- Folds the alias's claim record into the account's (design 5). Both are brought to the reward
+-- day `ms` falls in first. The paid days add up (then trimmed to PAID_DAYS) and the watermark is
+-- the later one; today's claims add up - two logins that each claimed today have used two of
+-- the account's claims - and the connected time is the larger. The season part is
+-- Se.mergeClaim. The alias's record is deleted. Returns what the merge event reports.
+function R.mergeAccount(alias, into, ms)
+    if not md or md.claims[alias] == nil then return nil end
+    local a, aErr = claim(alias)
+    if a == nil then return nil, aErr end
+    local c, cErr = claim(into)
+    if c == nil then return nil, cErr end
+    local day = R.dayKey(ms)
+    touchDay(alias, a, day)
+    touchDay(into, c, day)
+    local out = { claimedBefore = c.claimedCount, milestonesBefore = c.milestones }
+    for d, n in pairs(a.paid) do c.paid[d] = (c.paid[d] or 0) + (tonumber(n) or 0) end
+    prunePaid(c)
+    if a.paidDay ~= nil and (c.paidDay == nil or a.paidDay > c.paidDay) then c.paidDay = a.paidDay end
+    c.claimedCount = c.claimedCount + a.claimedCount
+    c.playedMs = math.max(tonumber(c.playedMs) or 0, tonumber(a.playedMs) or 0)
+    out.participantsDelta = Se.mergeClaim(a, c, alias)
+    md.claims[alias], sessions[alias] = nil, nil
+    out.claimedAfter, out.milestonesAfter = c.claimedCount, c.milestones
+    return out
 end
 
 S.Rewards = R

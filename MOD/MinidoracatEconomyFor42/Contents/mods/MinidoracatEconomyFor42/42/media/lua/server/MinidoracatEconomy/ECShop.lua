@@ -582,12 +582,10 @@ local function accountKey(username, currency)
     return tostring(username) .. "\1" .. tostring(currency)
 end
 
-local function buybackDay(ms, create)
-    local t = dayTable(md.shopBuyback, R.dayKey(ms), create)
-    if not t then return nil end
+-- A bucket from the single-currency shop: one bare coin total and one bare number per account,
+-- all of it minted in the currency the shop had then. Normalised once, in place.
+local function normalizeBuyback(t)
     if t.v ~= Shop.BUYBACK_DAY_VERSION then
-        -- A bucket from the single-currency shop: one bare coin total and one bare number per
-        -- account, all of it minted in the currency the shop had then. Normalised once, here.
         local byCurrency, accounts = {}, {}
         local legacyTotal = tonumber(t.total) or 0
         if legacyTotal > 0 then byCurrency[L.LEGACY_CURRENCY] = legacyTotal end
@@ -603,6 +601,46 @@ local function buybackDay(ms, create)
         t.v = Shop.BUYBACK_DAY_VERSION
     end
     return t
+end
+
+local function buybackDay(ms, create)
+    local t = dayTable(md.shopBuyback, R.dayKey(ms), create)
+    if not t then return nil end
+    return normalizeBuyback(t)
+end
+
+-- ---------- account merge (ECMerge) ----------
+
+-- Every per-person counter of the alias adds into the account's: daily and lifetime purchases
+-- per SKU, and the buyback coins per currency (older day buckets normalised first). The
+-- server-wide totals do not change, so the global cache stays valid.
+function Shop.mergeAccount(alias, into)
+    local function addRow(store)
+        local row = store[alias]
+        if type(row) ~= "table" then return end
+        local mine = type(store[into]) == "table" and store[into] or {}
+        for sku, n in pairs(row) do mine[sku] = (mine[sku] or 0) + (tonumber(n) or 0) end
+        store[into], store[alias] = mine, nil
+    end
+    for _, byDay in pairs(md.shopDaily) do
+        if type(byDay) == "table" then addRow(byDay) end
+    end
+    addRow(md.shopLifetime)
+    local prefix = alias .. "\1"
+    for _, t in pairs(md.shopBuyback) do
+        if type(t) == "table" then
+            normalizeBuyback(t)
+            local keys = {}
+            for key in pairs(t.accounts) do
+                if string.sub(key, 1, #prefix) == prefix then keys[#keys + 1] = key end
+            end
+            for _, key in ipairs(keys) do
+                local target = accountKey(into, string.sub(key, #prefix + 1))
+                t.accounts[target] = (t.accounts[target] or 0) + (tonumber(t.accounts[key]) or 0)
+                t.accounts[key] = nil
+            end
+        end
+    end
 end
 
 function Shop.buybackEnabled()
@@ -711,10 +749,10 @@ end
 -- after an admin took something off the shelf or repriced it.
 function Shop.pushAll()
     local ms = EC.now()
-    S.forEachOnline(function(p)
-        local snap = Shop.snapshot(p:getUsername(), ms)
+    S.forEachOnline(function(p, account)
+        local snap = Shop.snapshot(account, ms)
         snap.atTerminal = T.near(p)
-        snap.unclaimed = M.unclaimed(p:getUsername())
+        snap.unclaimed = M.unclaimed(account)
         S.reply(p, "shop.list", snap)
     end)
 end
@@ -1067,7 +1105,7 @@ end
 -- is too heavy as a whole is claimed later by count; a single unit heavier than the empty backpack
 -- is refused before the debit (unit_too_heavy).
 function Shop.buy(player, args)
-    local username = player:getUsername()
+    local username = S.principal(player)
     if type(args) ~= "table" or not validId(args.id) or type(args.requestId) ~= "string" or args.requestId == "" or #args.requestId > 96 then
         return { ok = false, error = "invalid_args" }
     end
@@ -1163,7 +1201,8 @@ end
 -- the backpack -> mint (same tick). The currency is fixed into the pending record, so a
 -- rollback repays in the very currency the sale was made in.
 function Shop.sell(player, args)
-    local username = player:getUsername()
+    -- the account is paid; the recovery record (receipt, pending out) belongs to this login's save
+    local username, login = S.principal(player), S.login(player)
     if type(args) ~= "table" or not validId(args.id) or type(args.requestId) ~= "string" or args.requestId == "" or #args.requestId > 96 then
         return { ok = false, error = "invalid_args" }
     end
@@ -1240,12 +1279,12 @@ function Shop.sell(player, args)
         txRequestId = requestId, seq = seq, epoch = md.meta.epoch, at = ms }
     local began, beginErr, beginDetail = M.beginOut(player, id, items, rec)
     if not began then
-        return { ok = false, error = beginErr, recovery = M.recoveryStatus(username),
+        return { ok = false, error = beginErr, recovery = M.recoveryStatus(login),
             recoveryDetail = beginDetail }
     end
     -- phase 2: the items are destroyed
     local taken, takeError = M.takeOut(player, id, items)
-    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(username) } end
+    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
     -- phase 3: the mint (same tick). pending stays until reconcile clears it.
     local res = L.credit(username, currency, total, Shop.MINT_ACCOUNT, {
         kind = "shop_sell", requestId = requestId, reasonCode = "shop_sell",
@@ -1259,10 +1298,10 @@ function Shop.sell(player, args)
         -- mid-tick). The very objects that left the backpack go back into it: nothing is
         -- rebuilt from the snapshot, so a refused mint cannot leave a copy behind.
         local returned = M.abortOut(player, id, items)
-        return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(username) }
+        return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(login) }
     end
     -- the world side is committed: the transfer receipt consumes those units exactly once
-    local recorded, recordError = M.finishOut(username, id, rec, "buyback", res.txId)
+    local recorded, recordError = M.finishOut(login, id, rec, "buyback", res.txId)
     if not recorded then error("buyback receipt invariant: " .. tostring(recordError)) end
     noteBuyback(ms, username, currency, sku.id, total, count)
     X.emit("shop.buyback", { username = username, buybackId = id, sku = sku.id, item = sku.item, qty = #ids, count = count, total = total, currency = currency, txId = res.txId })
@@ -1284,7 +1323,10 @@ end
 -- second time. A record whose currency cannot be proved is held: paying it in a guessed currency
 -- would mint money the sale never earned. If the ledger refuses the repayment (balance cap), the
 -- goods go back through the mailbox instead.
-function Shop.restoreFromPending(username, id, pend)
+-- `login` is the login name whose save held the pending record; the repayment, its caps and a
+-- returned letter are its account's.
+function Shop.restoreFromPending(login, id, pend)
+    local username = S.accountOf(login)
     -- only the server's own journal record repays a buyback (report CORE-H1)
     local Rec = S.Recovery
     if Rec == nil or type(Rec.isProven) ~= "function" or not Rec.isProven(pend) then
@@ -1370,7 +1412,7 @@ function Shop.candidates(player, args)
     -- (report ER-09). A partial list is never dressed up as a complete one.
     local inv = player:getInventory()
     if not inv then
-        EC.log("shop candidates: no inventory for " .. tostring(player:getUsername()))
+        EC.log("shop candidates: no inventory for " .. S.claimedName(player))
         return { ok = false, error = "read_failed", id = sku.id, currency = requested }
     end
     local ids = {}
@@ -1388,25 +1430,25 @@ function Shop.candidates(player, args)
         end
     end)
     if not read then
-        EC.log("shop candidates inventory read failed for " .. tostring(player:getUsername()))
+        EC.log("shop candidates inventory read failed for " .. S.claimedName(player))
         return { ok = false, error = "read_failed", id = sku.id, currency = requested }
     end
     local ms = EC.now()
-    local room = Shop.buybackRoom(player:getUsername(), sku.id, ms, requested)
+    local room = Shop.buybackRoom(S.principal(player), sku.id, ms, requested)
     return {
         ok = true, id = sku.id, currency = requested, item = sku.item, itemIds = ids, count = #ids,
         unitQty = sku.qty, bidPrice = quote.bidPrice, revision = Shop.revision(),
         enabled = Shop.buybackEnabled(), accountRemaining = room.account, serverRemaining = room.server,
-        buyback = Shop.buybackView(player:getUsername(), ms, sku.id),
+        buyback = Shop.buybackView(S.principal(player), ms, sku.id),
     }
 end
 
 -- ---------- commands ----------
 
 S.handlers["shop.list"] = function(player, args)
-    local snap = Shop.snapshot(player:getUsername(), EC.now())
+    local snap = Shop.snapshot(S.principal(player), EC.now())
     snap.atTerminal = T.near(player)
-    snap.unclaimed = M.unclaimed(player:getUsername())
+    snap.unclaimed = M.unclaimed(S.principal(player))
     snap.requestId = type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil
     S.reply(player, "shop.list", snap)
 end
@@ -1419,11 +1461,11 @@ S.handlers["shop.buy"] = function(player, args)
     if type(args) == "table" and validId(args.id) then
         local sku = Shop.sku(args.id)
         if sku then
-            res.used = Shop.used(player:getUsername(), sku.id, EC.now())
+            res.used = Shop.used(S.principal(player), sku.id, EC.now())
             if sku.dailyCap > 0 then res.remaining = math.max(0, sku.dailyCap - res.used) end
         end
     end
-    res.unclaimed = M.unclaimed(player:getUsername())
+    res.unclaimed = M.unclaimed(S.principal(player))
     S.reply(player, "shop.buy", res)
 end
 
@@ -1438,7 +1480,7 @@ S.handlers["shop.sell"] = function(player, args)
     res.requestId = type(args) == "table" and args.requestId or nil
     res.revision = Shop.revision()
     local id = type(args) == "table" and validId(args.id) and args.id or nil
-    res.buyback = Shop.buybackView(player:getUsername(), EC.now(), id)
+    res.buyback = Shop.buybackView(S.principal(player), EC.now(), id)
     S.reply(player, "shop.sell", res)
 end
 

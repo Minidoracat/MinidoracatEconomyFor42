@@ -5391,6 +5391,10 @@ function Admin:rebuildAudit()
             if action == "config" then
                 change = configValueText(e.before) .. " > " .. configValueText(e.after)
                 changeToken = "text"
+            elseif action == "ACCOUNT_MERGE_PASS" then
+                -- one line per merge pass (the ring cannot hold one per alias): `after` is the count
+                change = getText(T .. "Admin_Audit_Merged", tostring(tonumber(e.after) or 0))
+                changeToken = "text"
             elseif delta then
                 change = signedText(delta)
                 changeToken = delta >= 0 and "positive" or "negative"
@@ -5946,12 +5950,18 @@ function Admin:selfAdjustAllowed()
     return not (self.serverPerms and self.serverPerms.selfAdjust == false)
 end
 
--- Is the account on the player page this very admin? Freezing it stays refused whatever the
+-- Is `name` this very admin's account? The account or login hello.ack named (C.isMe), or a
+-- login the server's lookup resolved to that account. Freezing it stays refused whatever the
 -- grant says: an admin who locks themselves out cannot unlock themselves again.
+function Admin:isSelfName(name)
+    if name == nil then return false end
+    if C.isMe(name) then return true end
+    local lk = self.lookup
+    return lk ~= nil and lk.username == name and C.isMe(lk.account)
+end
+
 function Admin:isSelfTarget()
-    local player = getPlayer()
-    if player == nil or self.lookupUser == nil then return false end
-    return self.lookupUser == player:getUsername()
+    return self:isSelfName(self.lookupUser)
 end
 
 -- The right the open dialog was opened with, re-asked. A settings dialog asks per option (or
@@ -5983,9 +5993,8 @@ function Admin:updateEnabled()
     local read = write or self:readAllowed()
     local modal = self:isModal()
     for _, b in ipairs(self.subTabButtons) do b:setEnable(read and not modal) end
-    local me = getPlayer() and getPlayer():getUsername() or nil
     local found = self.lookup ~= nil and self.lookup.found == true
-    local selfTarget = me ~= nil and self.lookupUser == me
+    local selfTarget = self:isSelfTarget()
 
     self.picker:setEditable(read and not modal)
     self.lookupButton:setEnable(read and not modal and not isPending("admin.lookup"))
@@ -7648,8 +7657,8 @@ function Admin:prerender()
         self:cancelDeferredSeason(rotation.args.requestId)
     end
     local adjustment = deferred["admin.adjust"]
-    if adjustment and (not self:writeAllowed() or (getPlayer()
-        and adjustment.args.username == getPlayer():getUsername() and not self:selfAdjustAllowed())) then
+    if adjustment and (not self:writeAllowed()
+        or (self:isSelfName(adjustment.args.username) and not self:selfAdjustAllowed())) then
         deferred["admin.adjust"], pendingAt["admin.adjust"] = nil, nil
         self.pendingAdjust = nil
         self:updateEnabled()

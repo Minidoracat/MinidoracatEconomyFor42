@@ -171,14 +171,16 @@ local function wallet(account, currency, create)
     return w
 end
 
+-- Every entry point takes a name and resolves it to its account first (S.accountOf: a merged
+-- login name lands on the account it was merged into), so no money can reach an alias wallet.
 function L.getBalance(account, currency)
-    local w = wallet(account, currency, false)
+    local w = wallet(S.accountOf(account), currency, false)
     if not w then return { available = 0, reserved = 0, rev = 0 } end
     return { available = w.available, reserved = w.reserved, rev = w.rev }
 end
 
 function L.isFrozen(account)
-    return md.frozen[account] ~= nil
+    return md.frozen[S.accountOf(account)] ~= nil
 end
 
 -- ---------- idempotency (bounded LRU keyed by requestId) ----------
@@ -262,7 +264,7 @@ end
 
 -- Oldest first.
 function L.receipts(account)
-    local ring = md.receipts[account]
+    local ring = md.receipts[S.accountOf(account)]
     if not ring then return {} end
     local n = #ring.items
     local start = (n < L.RECEIPT_RING) and 1 or ring.head
@@ -342,8 +344,9 @@ local function validate(tx)
         seen[key] = true
         sums[p.currency] = (sums[p.currency] or 0) + p.amount
         if not L.isSystemAccount(p.account) then
-            -- the exact release of this wallet's own reservation only moves buckets
-            local moving = bucket == "available" and release[p.account .. "\1" .. p.currency] == true
+            -- the exact release of this wallet's own reservation only moves buckets; an account
+            -- merge (tx.merge, server code only) only moves money that already exists
+            local moving = tx.merge == true or (bucket == "available" and release[p.account .. "\1" .. p.currency] == true)
             if not cur.enabled and p.amount > 0 and not moving then return "currency_disabled" end
             if L.isFrozen(p.account) and not tx.allowFrozen then return "account_frozen" end
             local w = wallet(p.account, p.currency, false)
@@ -374,7 +377,11 @@ function L.onCommitted(fn)
 end
 
 -- tx = { kind, requestId, reasonCode, reasonText?, actor?, payload?, allowFrozen?, idemMeta?, commit?,
---        postings = { { account, currency, amount, expectedRev? }, ... } }
+--        merge?, postings = { { account, currency, amount, expectedRev? }, ... } }
+-- Each posting's player account is resolved through S.accountOf in place before validation.
+-- merge=true (the account merge only; set by server code, never by ECIntegration, whose G.post
+-- rebuilds tx from whitelisted fields) exempts its postings from currency_disabled and
+-- balance_cap like a release: it moves money that already exists.
 -- idemMeta is a small flat table kept with the idempotency entry (see L.priorResult).
 -- commit = { into, key, value, stamps } is internal data, never code (ECEntitlements through
 -- ECIntegration's private post; the public G.post rebuilds tx from whitelisted fields and never
@@ -389,6 +396,13 @@ function L.post(tx)
         local prior = idemGet(tx.requestId)
         if prior then
             return { ok = prior.ok, txId = prior.txId, seq = prior.seq, error = prior.error, duplicate = true }
+        end
+    end
+    if type(tx) == "table" and type(tx.postings) == "table" then
+        for _, p in ipairs(tx.postings) do
+            if type(p) == "table" and type(p.account) == "string" and not L.isSystemAccount(p.account) then
+                p.account = S.accountOf(p.account)
+            end
         end
     end
     local err = validate(tx)
@@ -503,6 +517,19 @@ function L.sizeEstimate()
     end
     for _, ring in pairs(md.receipts) do receipts = receipts + #ring.items end
     return wallets * 125 + receipts * 168 + md.idempotency.count * 39
+end
+
+-- ---------- account merge (ECMerge) ----------
+
+-- Why this name's wallets cannot be merged yet, or nil: a currency this server does not know
+-- (L.post would refuse it as unknown_currency) or money still reserved (an auction bid holds it;
+-- only its own release may move it).
+function L.mergeBlocker(name)
+    for currency, w in pairs(md.wallets[name] or {}) do
+        if not EC.CURRENCIES[currency] then return "unknown_currency" end
+        if type(w) ~= "table" or (w.reserved or 0) ~= 0 then return "reserved_funds" end
+    end
+    return nil
 end
 
 S.Ledger = L

@@ -612,6 +612,8 @@ EC.OPTIONS = {
     { key = "AdminAdjustMaxPerTx", group = "admin", kind = "int", min = 1, max = 10000000, default = 5000, unit = "coin", manageOnly = true },
     { key = "AdminAdjustDailyPerAdmin", group = "admin", kind = "int", min = 1, max = 100000000, default = 10000, unit = "coin", manageOnly = true },
     { key = "AdminAdjustServerDaily", group = "admin", kind = "int", min = 1, max = 1000000000, default = 50000, unit = "coin", manageOnly = true },
+    -- false = the merge plan is computed and published, nothing merges (ECMerge)
+    { key = "IdentityAutoMerge", group = "admin", kind = "bool", default = false, manageOnly = true },
     { key = "BalanceMax", group = "currency", kind = "int", min = 1000, max = 1000000000, step = 100000, default = 10000000, unit = "coin", page = "Currencies" },
     { key = "CatRatePointsPerCoin", group = "currency", kind = "int", min = 1, max = 1000000, default = 1, page = "Currencies" },
     { key = "CatPerOrderMin", group = "currency", kind = "int", min = 1, max = 1000000, default = 10, page = "Currencies" },

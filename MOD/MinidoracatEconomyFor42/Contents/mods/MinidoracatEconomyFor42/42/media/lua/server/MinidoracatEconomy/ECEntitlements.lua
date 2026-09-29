@@ -554,8 +554,9 @@ end
 
 -- After a complete change: the owner's client gets the envelope, then each consumer listener
 -- (isolated; a failure is logged and changes nothing that was committed).
+-- Rows belong to login names (the money behind them is the account's, resolved by the ledger).
 local function changed(modId, username, productId)
-    local player = S.onlinePlayer(username)
+    local player = S.onlineLogin(username)
     if player then
         local env = snapshot(modId, username, productId)
         if env then S.reply(player, "entitlement.changed", env) end
@@ -1248,26 +1249,26 @@ local function answer(player, command, args, res)
 end
 
 S.handlers["entitlement.state"] = function(player, args)
-    answer(player, "entitlement.state", args, E.getEntitlement(args.sourceMod, player:getUsername(), args.productId))
+    answer(player, "entitlement.state", args, E.getEntitlement(args.sourceMod, S.login(player), args.productId))
 end
 
 S.handlers["entitlement.quote"] = function(player, args)
     answer(player, "entitlement.quote", args,
-        E.quote(args.sourceMod, player:getUsername(), args.productId, args.kind, args.quantity))
+        E.quote(args.sourceMod, S.login(player), args.productId, args.kind, args.quantity))
 end
 
 S.handlers["entitlement.purchase"] = function(player, args)
-    answer(player, "entitlement.purchase", args, E.purchase(args.sourceMod, player:getUsername(), args.quoteId))
+    answer(player, "entitlement.purchase", args, E.purchase(args.sourceMod, S.login(player), args.quoteId))
 end
 
 S.handlers["entitlement.autoRenew"] = function(player, args)
-    answer(player, "entitlement.autoRenew", args, E.setAutoRenew(args.sourceMod, player:getUsername(), args.productId,
+    answer(player, "entitlement.autoRenew", args, E.setAutoRenew(args.sourceMod, S.login(player), args.productId,
         args.enabled, args.expectedRevision, args.termsRevision))
 end
 
 S.handlers["entitlement.order"] = function(player, args)
     answer(player, "entitlement.order", args,
-        E.getOrder(args.sourceMod, player:getUsername(), args.productId, args.orderId))
+        E.getOrder(args.sourceMod, S.login(player), args.productId, args.orderId))
 end
 
 -- ---------- admin.entitlements ----------
@@ -1295,7 +1296,7 @@ local function adminApply(player, args)
     if bad then return fail(bad) end
     local requestId = requestIdOf(args)
     if not requestId or not validMod(args.sourceMod) or not validProduct(args.productId) then return fail("invalid_args") end
-    local res = P.apply(args.sourceMod, args.productId, args.expectedRevision, args.values, player:getUsername(), reason, requestId)
+    local res = P.apply(args.sourceMod, args.productId, args.expectedRevision, args.values, S.principal(player), reason, requestId)
     if res.ok then res.sourceMod, res.productId = args.sourceMod, args.productId end
     return res
 end
@@ -1314,7 +1315,7 @@ local function adminRefund(player, args)
         return fail("invalid_args")
     end
     local res = E.refund(args.sourceMod, args.username, args.productId, args.orderId,
-        { actor = player:getUsername(), reason = reason })
+        { actor = S.principal(player), reason = reason })
     res.snapshot = nil
     res.username = args.username
     res.entries = accountEntries(args.username, nil, nil)
@@ -1328,7 +1329,7 @@ S.handlers["admin.entitlements"] = function(player, args)
     local write = action == "apply" or action == "refund"
     local allowed = write and A.isAdmin(player) or (not write and A.canRead(player))
     if not allowed then
-        EC.log("admin command admin.entitlements refused for " .. tostring(player:getUsername()) .. " role=" .. A.roleName(player))
+        EC.log("admin command admin.entitlements refused for " .. S.claimedName(player) .. " role=" .. A.roleName(player))
         S.reply(player, "admin.entitlements", { ok = false, error = "forbidden", requestId = requestIdOf(args), action = action })
         return
     end

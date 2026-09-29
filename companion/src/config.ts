@@ -12,6 +12,8 @@ export interface CompanionConfig {
   whitelistDb: string;
   /** Companion state (checkpoint, temp copies) */
   stateDir: string;
+  /** SERVER_NAME: written into the identity export header so Lua can reject another server's file */
+  serverName: string;
   bind: string;
   port: number;
   /** HMAC-SHA256 shared with Watchcord. Empty secret is only tolerated on loopback (local dev). */
@@ -42,6 +44,7 @@ export const config: CompanionConfig = {
   playersDb: path.join(zomboidDir, "Saves", "Multiplayer", serverName, "players.db"),
   whitelistDb: path.join(zomboidDir, "db", `${serverName}.db`),
   stateDir: env("COMPANION_STATE_DIR", path.join(zomboidDir, "Lua", "MinidoracatEconomy", "companion-state")),
+  serverName,
   bind: env("BIND", "127.0.0.1"),
   port: envNumber("PORT", 8477),
   hmacSecret: env("HMAC_SECRET", ""),

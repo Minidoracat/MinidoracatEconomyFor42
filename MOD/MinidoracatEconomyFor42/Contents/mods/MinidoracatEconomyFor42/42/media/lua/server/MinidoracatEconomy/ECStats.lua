@@ -227,8 +227,7 @@ local function census(ms, force)
     for username in pairs(md.frozen or {}) do
         if type(username) == "string" and username ~= "" and not L.isSystemAccount(username) then row(username) end
     end
-    S.forEachOnline(function(p)
-        local username = p:getUsername()
+    S.forEachOnline(function(p, username)
         if type(username) == "string" and username ~= "" and not L.isSystemAccount(username) then
             row(username).online = true
         end
@@ -633,7 +632,7 @@ function St.leaderboard(username, args)
 end
 
 S.handlers["leaderboard"] = function(player, args)
-    S.reply(player, "leaderboard", St.leaderboard(player:getUsername(), type(args) == "table" and args or {}))
+    S.reply(player, "leaderboard", St.leaderboard(S.principal(player), type(args) == "table" and args or {}))
 end
 
 -- ---------- issuance rollups (per currency) ----------

@@ -1967,11 +1967,15 @@ end
 -- the window's own CopyAll. Pressing the chip again closes it, the way every other note chip in
 -- this mod behaves; with no account to name there is nothing to open and nothing is opened.
 -- While the server refuses this name (C.identityUnverified) the chip says so and the window
--- carries the whole message with the account it was refused for.
+-- carries the whole message with the login it was refused for. A login merged into another
+-- account names both and says whose money this window shows.
 function Panel:identityText()
-    local account = self:username()
     if C.identityUnverified then
-        return getText(T .. "Player_IdentityUnverifiedDetail", account or "-")
+        return getText(T .. "Player_IdentityUnverifiedDetail", C.login() or "-")
+    end
+    local account, login = self:username(), C.login()
+    if account ~= nil and login ~= nil and account ~= login then
+        return getText(T .. "Player_IdentityMergedDetail", account, login)
     end
     return account
 end
@@ -1993,18 +1997,12 @@ end
 
 -- ----- market -----
 
--- The player's own account name: an own listing must not be sold back to them, and the server
--- says so too (own_listing) — this only keeps the chip from lying. The fixed header identity
--- reads this very value. Only a real name is ever remembered: in the frames before the player
--- object exists the answer is "not yet", never a "there is none" that would outlive the world's
--- own start-up and leave the header reading "loading" for the rest of the session.
+-- The player's economy account (C.account: hello.ack, else the local name): an own listing must
+-- not be sold back to them, and the server says so too (own_listing) -- this only keeps the chip
+-- from lying. The fixed header identity reads this very value. nil in the frames before the
+-- player object exists: "not yet", never a "there is none".
 function Panel:username()
-    local cached = self.playerName
-    if type(cached) == "string" then return cached end
-    local ok, value = pcall(function() return getPlayer():getUsername() end)
-    if not ok or type(value) ~= "string" or value == "" then return nil end
-    self.playerName = value
-    return value
+    return C.account()
 end
 
 -- The market numbers live in three snapshots (browse, own listings, backpack candidates) and

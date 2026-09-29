@@ -26,9 +26,13 @@
                            樣式（/home/ 路徑、IP、SteamID64、ssh、主機名）當最後防線。
                            攻擊配方與玩家識別資訊機器認不出來，靠撰寫規則（AGENTS.md）
  12b. 伺服器身分入口     — getUsername() 是客戶端送的名字；server/、shared/ 只准身分模組
-                           （ECIdentity.lua）自由使用，其他檔案的次數只准持平或減少（每一處都在
-                           S.dispatch 身分閘門之後），getOnlinePlayers() 只准 ECServer／ECIdentity
-                           （在線迭代必須經 S.forEachOnline 的身分過濾）。`--self-test-identity` 植入違規自證
+                           （ECIdentity.lua）自由使用，ECServer.lua 只准持平或減少（S.login／
+                           S.onlineLogin／S.onlineNames／claimedName 的實作），其他檔一律 0；
+                           getOnlinePlayers() 只准 ECServer／ECIdentity（在線迭代必須經
+                           S.forEachOnline 的身分過濾）
+ 12c. recovery 以登入名為範圍 — ECRecovery.lua、ECRecoveryJournal.lua 不准出現 S.principal( 與
+                           S.onlinePlayer(（帳號可能有多個登入名＝多個存檔；用 S.login／S.onlineLogin）。
+                           `--self-test-identity` 對 12b／12c 植入違規自證
 
 新增檢查時：同步把對應的坑記進 AGENTS.md 踩坑錄，並依「踩坑進化協議」回流到
 pz-mod-template（見 AGENTS.md）。
@@ -149,17 +153,17 @@ if __name__ == "__main__" and "--self-test-lua-limits" in sys.argv:
     sys.exit(0)
 
 # ---- 身分入口（第 12b 項）----
-# 家族約定「玩家身分」：伺服器上 getUsername() 是客戶端送來的名字，身分一律問 S.principal。
-# 既有的呼叫都在 S.dispatch 的身分閘門之後（handler 參數）或是 OnNewGame 的登入名；
-# 新增一處就要人工確認它也在閘門之後，再調高這裡的數字（只准調低以外的變更都要寫理由）。
+# 家族約定「玩家身分」：伺服器上 getUsername() 是客戶端送來的名字，身分一律問 S.login（登入名）
+# 或 S.principal（帳號）。只有 ECServer 的身分輔助函式（S.login 的在線比對、claimedName、
+# onlineNames）讀原始名字；其他檔一律 0，要新增就改用那些函式，不是調高這裡的數字。
 IDENTITY_MODULE = "ECIdentity.lua"
 IDENTITY_ONLINE_OK = {"ECIdentity.lua", "ECServer.lua"}
-IDENTITY_BASELINE = {
-    "ECAdmin.lua": 27, "ECAuction.lua": 9, "ECEntitlements.lua": 8, "ECExchange.lua": 1,
-    "ECMailbox.lua": 10, "ECMarket.lua": 13, "ECRecovery.lua": 3, "ECRewards.lua": 7,
-    "ECSeasons.lua": 1, "ECServer.lua": 3, "ECShop.lua": 13, "ECStats.lua": 2, "ECTerminal.lua": 7,
-    "ECTransfer.lua": 5, "ECWallet.lua": 4,
-}
+IDENTITY_BASELINE = {"ECServer.lua": 4}
+# ---- recovery 以登入名為範圍（第 12c 項）----
+# receipt／hold／journal／pendingOuts 屬於單一存檔（登入名）；帳號可能有多個登入名，拿帳號去找
+# 在線玩家會用 A 角色的背包判斷 B 存檔的 pending（合併設計 §3、§9-5、§9-9）。
+RECOVERY_LOGIN_FILES = {"ECRecovery.lua", "ECRecoveryJournal.lua"}
+_RECOVERY_ACCOUNT_CALL = re.compile(r"\bS\s*\.\s*(principal|onlinePlayer)\s*\(")
 _ID_LONG_COMMENT = re.compile(r"--\[(=*)\[.*?\]\1\]", re.DOTALL)
 _ID_LONG_STRING = re.compile(r"\[(=*)\[.*?\]\1\]", re.DOTALL)
 _ID_SHORT_STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'')
@@ -180,10 +184,20 @@ def identity_issues(sources):
             n = len(re.findall(r"\bgetUsername\s*\(", code))
             allowed = IDENTITY_BASELINE.get(name, 0)
             if n > allowed:
-                issues.append(f"{name}: getUsername() {n} 處，超過基準 {allowed}（身分請問 S.principal；"
-                              "確認在 S.dispatch 閘門之後才可調高 IDENTITY_BASELINE）")
+                issues.append(f"{name}: getUsername() {n} 處，超過基準 {allowed}（登入名問 S.login、帳號問 "
+                              "S.principal、log 用 S.claimedName）")
         if name not in IDENTITY_ONLINE_OK and re.search(r"\bgetOnlinePlayers\s*\(", code):
-            issues.append(f"{name}: 直接呼叫 getOnlinePlayers()（改用 S.forEachOnline／S.onlinePlayer）")
+            issues.append(f"{name}: 直接呼叫 getOnlinePlayers()（改用 S.forEachOnline／S.onlinePlayer／S.onlineLogin）")
+    return issues
+
+
+def recovery_login_issues(sources):
+    """sources: [(檔名, 原始碼)]；只檢查 RECOVERY_LOGIN_FILES。"""
+    issues = []
+    for name, src in sources:
+        if name in RECOVERY_LOGIN_FILES:
+            for mm in _RECOVERY_ACCOUNT_CALL.finditer(lua_code_only(src)):
+                issues.append(f"{name}: S.{mm.group(1)}(（recovery 以登入名為範圍：用 S.login／S.onlineLogin）")
     return issues
 
 
@@ -191,7 +205,8 @@ def self_test_identity():
     base = [(name, "local u = p:getUsername()\n" * count) for name, count in IDENTITY_BASELINE.items()]
     cases = (
         ("基準本身", base, False),
-        ("多一處 getUsername", base + [("ECMarket.lua", "x = p:getUsername()\n")], True),
+        ("ECServer 多一處 getUsername", base + [("ECServer.lua", "x = p:getUsername()\n")], True),
+        ("其他檔一處 getUsername", base + [("ECMarket.lua", "x = p:getUsername()\n")], True),
         ("新檔案的 getUsername", base + [("ECNew.lua", "x = p:getUsername()\n")], True),
         ("註解與字串不算", base + [("ECNew.lua", "-- p:getUsername()\nlocal s = \"getOnlinePlayers()\"\n"
                                              "--[[ getUsername() ]]\n")], False),
@@ -204,7 +219,18 @@ def self_test_identity():
             merged[name] = merged.get(name, "") + src
         if bool(identity_issues(list(merged.items()))) != reject:
             raise AssertionError(label)
-    print("PASS 身分入口：基準、超出基準、新檔、註解與字串、身分模組、直接掃在線玩家")
+    recovery_cases = (
+        ("recovery 用登入名", [("ECRecovery.lua", "local p = S.onlineLogin(u)\nlocal l = S.login(p)\n")], False),
+        ("recovery 問帳號", [("ECRecovery.lua", "local a = S.principal(p)\n")], True),
+        ("journal 以帳號找在線玩家", [("ECRecoveryJournal.lua", "local p = S.onlinePlayer(u)\n")], True),
+        ("recovery 註解與字串不算", [("ECRecovery.lua", "-- S.principal(p)\nlocal s = \"S.onlinePlayer(x)\"\n")], False),
+        ("其他檔可問帳號", [("ECMailbox.lua", "local a = S.principal(p)\nlocal q = S.onlinePlayer(a)\n")], False),
+    )
+    for label, sources, reject in recovery_cases:
+        if bool(recovery_login_issues(sources)) != reject:
+            raise AssertionError(label)
+    print("PASS 身分入口：基準、超出基準、其他檔、新檔、註解與字串、身分模組、直接掃在線玩家；"
+          "recovery 登入名範圍：登入名、帳號、在線帳號、註解與字串、其他檔")
 
 
 if __name__ == "__main__" and "--self-test-identity" in sys.argv:
@@ -494,6 +520,11 @@ for f in LUA_FILES:
 _identity = identity_issues(_identity_sources)
 fail("伺服器身分入口（getUsername／getOnlinePlayers 只經身分閘門）", _identity) if _identity \
     else ok(f"伺服器身分入口（{len(_identity_sources)} 檔）")
+
+# ---- 12c. recovery 以登入名為範圍 ----
+_recovery_login = recovery_login_issues(_identity_sources)
+fail("recovery 以登入名為範圍（不准 S.principal／S.onlinePlayer）", _recovery_login) if _recovery_login \
+    else ok("recovery 以登入名為範圍（" + "、".join(sorted(RECOVERY_LOGIN_FILES)) + "）")
 
 # ---- 13. 不得定義貨幣類 item ----
 # 主規格 §7.2 不變量：倖存幣／貓幣只存在於伺服器帳本，沒有可掉落／交易的硬幣道具。

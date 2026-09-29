@@ -74,8 +74,9 @@ local function validSurvival(c)
         or not finite(c.survivalBest) or c.survivalBest < 0
         or (c.survivalLife ~= nil and (not finite(c.survivalLife) or c.survivalLife < 0)) then return false end
     if c.survivalLife == nil and (c.survivalBest ~= 0 or EC.countKeys(c.survivalBase) ~= 0) then return false end
-    for slot, base in pairs(c.survivalBase) do
-        if (slot ~= "0" and slot ~= "1" and slot ~= "2" and slot ~= "3") or not finite(base) or base < 0 then
+    -- keyed by login name: each character save of the account has its own base (see observe)
+    for login, base in pairs(c.survivalBase) do
+        if type(login) ~= "string" or login == "" or #login > 64 or not finite(base) or base < 0 then
             return false
         end
     end
@@ -168,18 +169,62 @@ function Se.records(selector)
     return records, metaView(target)
 end
 
+-- Bitwise OR of two milestone masks (Kahlua has no bit library).
+local function orMask(x, y)
+    x, y = math.max(0, math.floor(tonumber(x) or 0)), math.max(0, math.floor(tonumber(y) or 0))
+    local out, bit = 0, 1
+    while x > 0 or y > 0 do
+        if x % 2 == 1 or y % 2 == 1 then out = out + bit end
+        x, y, bit = math.floor(x / 2), math.floor(y / 2), bit * 2
+    end
+    return out
+end
+
+-- The season part of an account merge (R.mergeAccount holds both records, already brought to
+-- the running season by Se.claim; `a` is the alias's and is dropped afterwards). A milestone is
+-- paid once per account and season, so the masks OR. The survival bases sit side by side (they
+-- are keyed by login name), the best is the larger, and the running life is the account's own
+-- unless it has none. Two lives becoming one record takes one participant away, keeping
+-- Se.records' count equal to the records. Returns that delta (0 or -1).
+function Se.mergeClaim(a, c, alias)
+    c.milestones = orMask(c.milestones, a.milestones)
+    if type(c.survivalBase) ~= "table" then c.survivalBase = {} end
+    for login, base in pairs(type(a.survivalBase) == "table" and a.survivalBase or {}) do
+        local mine = c.survivalBase[login]
+        if finite(base) then c.survivalBase[login] = (finite(mine) and mine < base) and mine or base end
+    end
+    c.survivalBest = math.max(tonumber(c.survivalBest) or 0, tonumber(a.survivalBest) or 0)
+    local delta = 0
+    if a.survivalLife ~= nil then
+        if c.survivalLife == nil then
+            c.survivalLife = a.survivalLife
+        else
+            local season = current()
+            if season and a.season == season.id and c.season == season.id then
+                season.participants = season.participants - 1
+                delta = -1
+            end
+        end
+    end
+    if alias ~= nil then seen[alias] = nil end
+    return delta
+end
+
+-- The survival base is per login name (one character save each), the claim per account: two
+-- logins of one account must never share a base, or the older character's hours would be
+-- measured from the younger one's start. seen[account][login] = the instance being tracked.
 local function readPlayer(player)
-    return player:getUsername(), player:getPlayerNum(), player:isDead(), player:getHoursSurvived()
+    return S.login(player), player:isDead(), player:getHoursSurvived()
 end
 
 local function observe(player, fromDeath)
-    local ok, username, slot, dead, hours = pcall(readPlayer, player)
-    if not ok or type(username) ~= "string" or username == "" or not whole(slot, 0, 3)
+    local ok, login, dead, hours = pcall(readPlayer, player)
+    if not ok or type(login) ~= "string" or login == ""
         or type(dead) ~= "boolean" or not finite(hours) or hours < 0 then return nil, "data_unreadable" end
     if dead and not fromDeath then return nil, "not_alive" end
-    local key = tostring(slot)
+    local username = S.accountOf(login)
     local slots = seen[username]
-    if fromDeath and (not dead or not slots or slots[key] ~= player) then return nil, "not_alive" end
+    if fromDeath and (not dead or not slots or slots[login] ~= player) then return nil, "not_alive" end
     local c, err = Se.claim(username)
     if not c then return nil, err end
     if not validSurvival(c) then return nil, "data_unreadable" end
@@ -187,19 +232,19 @@ local function observe(player, fromDeath)
         local records, _, recordsErr = Se.records("current")
         if not records then return nil, recordsErr end
     end
-    local base = c.survivalBase[key]
+    local base = c.survivalBase[login]
     -- Do not mistake an older players.db snapshot for a new character and clear the base to 0.
-    -- A slot identifies a server-owned DB row, not an untrusted descriptor or character stamp.
-    if base == nil or not slots or slots[key] ~= player then
+    -- A login names a server-owned DB row, not an untrusted descriptor or character stamp.
+    if base == nil or not slots or slots[login] ~= player then
         base = math.min(base or hours, hours)
-        c.survivalBase[key] = base
+        c.survivalBase[login] = base
     end
     local life = math.max(0, hours - base)
     if c.survivalLife == nil then data.current.participants = data.current.participants + 1 end
     c.survivalLife = life
     c.survivalBest = math.max(c.survivalBest, life)
     if not slots then slots = {}; seen[username] = slots end
-    if fromDeath then slots[key] = nil else slots[key] = player end
+    if fromDeath then slots[login] = nil else slots[login] = player end
     return life, c.survivalBest
 end
 
@@ -373,12 +418,12 @@ end
 local function onDeath(character)
     if not instanceof(character, "IsoPlayer") then return end
     -- Only the tracked instance gets one final sample, and never after its season's deadline.
-    -- It must still be the account it was tracked as (S.principal): a name moved to another
-    -- SteamID since, or a split-screen seat, closes nothing.
-    local ok, username, slot = pcall(readPlayer, character)
-    if not ok or slot ~= 0 or S.principal(character) ~= username then return end
-    local slots = seen[username]
-    if not slots or slots[tostring(slot)] ~= character then return end
+    -- It must still be the login it was tracked as (S.login): a name moved to another SteamID
+    -- since, or a split-screen seat, closes nothing.
+    local ok, login = pcall(S.login, character)
+    if not ok or login == nil then return end
+    local slots = seen[S.principal(character)]
+    if not slots or slots[login] ~= character then return end
     local ms = EC.now()
     if not finite(ms) or not ensureDeadline(ms) then return end
     observe(character, true)
@@ -433,6 +478,16 @@ function Se.init(root)
         end
     end
     md, data = root, root.seasons
+    -- One-time key migration: the survival base used to be keyed by seat, and only seat "0" was
+    -- ever tracked. Every claim written then belonged to one login - its own name - so the "0"
+    -- base becomes that name's, keeping the running life instead of restarting it.
+    for username, c in pairs(root.claims) do
+        local bases = type(c) == "table" and c.survivalBase or nil
+        if type(bases) == "table" and bases["0"] ~= nil and username ~= "0" then
+            if bases[username] == nil then bases[username] = bases["0"] end
+            bases["0"] = nil
+        end
+    end
     initError = nil
     local season, err = current()
     if not season then initError = err; error(err) end

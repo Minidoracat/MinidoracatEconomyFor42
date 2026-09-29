@@ -150,9 +150,10 @@ function T.register(player, args)
     if T.count() >= T.MAX then return { ok = false, error = "too_many" } end
     if not squareHasTerminal(args.x, args.y, args.z) then return { ok = false, error = "no_terminal_object" } end
     local id = S.newId()
-    md.terminals[id] = { x = args.x, y = args.y, z = args.z, kind = kind, by = player:getUsername(), at = EC.now() }
-    X.emit("terminal.registered", { terminalId = id, x = args.x, y = args.y, z = args.z, terminalKind = kind, actor = player:getUsername() })
-    X.audit({ action = "terminal", target = id, field = "register", after = args.x .. "," .. args.y .. "," .. args.z, admin = player:getUsername() })
+    local actor = S.principal(player)
+    md.terminals[id] = { x = args.x, y = args.y, z = args.z, kind = kind, by = actor, at = EC.now() }
+    X.emit("terminal.registered", { terminalId = id, x = args.x, y = args.y, z = args.z, terminalKind = kind, actor = actor })
+    X.audit({ action = "terminal", target = id, field = "register", after = args.x .. "," .. args.y .. "," .. args.z, admin = actor })
     local radioState = radioSync(args.x, args.y, args.z)
     T.pushList()
     -- The terminal IS registered; only the native device failed. The result says so, and the
@@ -172,8 +173,8 @@ function T.unregister(player, args)
         return { ok = false, error = "radio_unavailable" }
     end
     md.terminals[id] = nil
-    X.emit("terminal.unregistered", { terminalId = id, x = t.x, y = t.y, z = t.z, actor = player:getUsername() })
-    X.audit({ action = "terminal", target = id, field = "unregister", before = t.x .. "," .. t.y .. "," .. t.z, admin = player:getUsername() })
+    X.emit("terminal.unregistered", { terminalId = id, x = t.x, y = t.y, z = t.z, actor = S.principal(player) })
+    X.audit({ action = "terminal", target = id, field = "unregister", before = t.x .. "," .. t.y .. "," .. t.z, admin = S.principal(player) })
     radioSync(t.x, t.y, t.z)
     T.pushList()
     return { ok = true, id = id }
@@ -216,12 +217,12 @@ function T.demolish(player, args)
     local id = T.at(args.x, args.y, args.z)
     if id then
         md.terminals[id] = nil
-        X.emit("terminal.unregistered", { terminalId = id, x = args.x, y = args.y, z = args.z, actor = player:getUsername(), demolished = true })
+        X.emit("terminal.unregistered", { terminalId = id, x = args.x, y = args.y, z = args.z, actor = S.principal(player), demolished = true })
     end
     -- the terminal tile is gone either way, so the square must not keep a device standing on it
     radioSync(args.x, args.y, args.z)
     if id then T.pushList() end
-    X.audit({ action = "terminal", target = id or (args.x .. "," .. args.y .. "," .. args.z), field = "demolish", admin = player:getUsername() })
+    X.audit({ action = "terminal", target = id or (args.x .. "," .. args.y .. "," .. args.z), field = "demolish", admin = S.principal(player) })
     return { ok = true, id = id }
 end
 

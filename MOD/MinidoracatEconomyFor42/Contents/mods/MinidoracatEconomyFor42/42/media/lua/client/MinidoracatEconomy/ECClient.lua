@@ -149,6 +149,28 @@ handlers["hello.ack"] = function(args)
         .. " terminals=" .. tostring(args.terminals and #args.terminals or 0))
 end
 
+-- Who this client is to the server (hello.ack): `account` owns the money, the mail and the
+-- records; `login` is the name the character came in with. They differ only after the server
+-- merged this login into another login of the same Steam account. Before hello.ack arrives (or
+-- while the identity is refused, which sends no hello.ack) both fall back to the local name. The
+-- server stays the authority: these only keep self checks and labels from lying.
+local function localName()
+    local ok, value = pcall(function() return getPlayer():getUsername() end)
+    if ok and type(value) == "string" and value ~= "" then return value end
+    return nil
+end
+
+local function sessionName(key)
+    local value = C.session and C.session[key]
+    if type(value) == "string" and value ~= "" then return value end
+    return localName()
+end
+
+function C.account() return sessionName("account") end
+function C.login() return sessionName("login") end
+-- Is `name` this client's own account or login?
+function C.isMe(name) return name ~= nil and (name == C.account() or name == C.login()) end
+
 local leaderboardGate
 local seasonGeneration, leaderboardSentGeneration = 0, nil
 local function optionValue(options, key)

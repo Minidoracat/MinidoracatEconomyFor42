@@ -144,6 +144,19 @@ function Au.ownerCount(username)
     return s and EC.countKeys(s) or 0
 end
 
+-- An account merge (ECMerge) waits while the name sells an auction or has bid on a live one:
+-- the seller, the bidders and the held bid all name it. Every auction ends within its hours.
+function Au.mergeBlocker(name)
+    if Au.ownerCount(name) > 0 then return "auction" end
+    for _, a in pairs(md.auctions.items) do
+        if a.seller == name or (type(a.bidders) == "table" and a.bidders[name])
+            or (type(a.highest) == "table" and a.highest.bidder == name) then
+            return "auction"
+        end
+    end
+    return nil
+end
+
 local function add(a)
     md.auctions.items[a.id] = a
     md.auctions.count = md.auctions.count + 1
@@ -236,7 +249,7 @@ Au.SORTS = {
 -- currency_required rather than answered with a meaningless order (spec contract 7).
 function Au.browse(username, args)
     args = type(args) == "table" and args or {}
-    local seller = type(args.seller) == "string" and args.seller ~= "" and args.seller or nil
+    local seller = type(args.seller) == "string" and args.seller ~= "" and S.accountOf(args.seller) or nil
     local query = type(args.query) == "string" and string.lower(string.sub((string.gsub(args.query, "^%s*(.-)%s*$", "%1")), 1, 64)) or ""
     if query == "" then query = nil end
     local sort = Au.SORTS[args.sort] and args.sort or "ending"
@@ -306,7 +319,8 @@ end
 
 -- args = { itemIds | itemId, startPrice, hours, currency, requestId }
 function Au.create(player, args)
-    local username = player:getUsername()
+    -- the account sells; the recovery record (receipt, pending out) belongs to this login's save
+    local username, login = S.principal(player), S.login(player)
     if not validRequest(args) then return { ok = false, error = "invalid_args" } end
     if type(args.currency) ~= "string" or args.currency == "" then return { ok = false, error = "invalid_args" } end
     local ids = type(args.itemIds) == "table" and args.itemIds or { args.itemId }
@@ -381,12 +395,12 @@ function Au.create(player, args)
         seq = seq, epoch = md.meta.epoch, at = ms }
     local began, beginErr, beginDetail = M.beginOut(player, id, items, rec)
     if not began then
-        return { ok = false, error = beginErr, recovery = M.recoveryStatus(username),
+        return { ok = false, error = beginErr, recovery = M.recoveryStatus(login),
             recoveryDetail = beginDetail }
     end
     -- phase 2: the items leave the backpack
     local taken, takeError = M.takeOut(player, id, items)
-    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(username) } end
+    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
     local name, category = nil, nil
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
     pcall(function() category = items[1]:getDisplayCategory() end)
@@ -409,12 +423,12 @@ function Au.create(player, args)
             -- the snapshot, so a refused fee cannot leave a copy behind
             remove(id)
             local returned = M.abortOut(player, id, items)
-            return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(username) }
+            return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(login) }
         end
     end
     -- the world side is committed: the transfer receipt consumes those origins exactly once,
     -- so a later login with an older save cannot auction them a second time
-    local recorded, recordError = M.finishOut(username, id, rec, "auction", id)
+    local recorded, recordError = M.finishOut(login, id, rec, "auction", id)
     if not recorded then error("auction-out receipt invariant: " .. tostring(recordError)) end
     if fee <= 0 then
         -- a fee percent of 0 moved no money, so the ledger has no transaction to remember this
@@ -469,7 +483,7 @@ end
 -- releases the outbid one in the same transaction: either both happen or neither does, so a
 -- refused release can never strand a reservation whose auction row has already moved on.
 function Au.bid(player, args)
-    local username = player:getUsername()
+    local username = S.principal(player)
     if not validRequest(args) or type(args.auctionId) ~= "string" then return { ok = false, error = "invalid_args" } end
     if type(args.currency) ~= "string" or args.currency == "" then return { ok = false, error = "invalid_args" } end
     local requestId = "abid:" .. username .. ":" .. args.requestId
@@ -640,7 +654,7 @@ end
 
 -- Seller cancel: only while nobody has bid (a bid is a promise to the bidder). Fee not refunded.
 function Au.cancel(player, args)
-    local username = player:getUsername()
+    local username = S.principal(player)
     if not validRequest(args) or type(args.auctionId) ~= "string" then return { ok = false, error = "invalid_args" } end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
     local a = md.auctions.items[args.auctionId]
@@ -675,7 +689,9 @@ end
 
 -- Returns ok, info; every refusal carries an info table so the reconcile can name the held
 -- record without guarding for a missing one.
+-- `username` is the login name whose save held the pending record; the auction is its account's.
 function Au.restoreFromPending(username, id, pend)
+    local seller = S.accountOf(username)
     -- only the server's own journal record rebuilds an auction (report CORE-H1)
     local Rec = S.Recovery
     if Rec == nil or type(Rec.isProven) ~= "function" or not Rec.isProven(pend) then
@@ -698,7 +714,7 @@ function Au.restoreFromPending(username, id, pend)
     end
     local hours = isInt(pend.hours, 1, 8760) and pend.hours or 24
     local a = {
-        id = id, seller = username, item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot, qty = pend.qty or 1,
+        id = id, seller = seller, item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot, qty = pend.qty or 1,
         startPrice = pend.price, currency = currency, tradeSchema = L.TRADE_SCHEMA,
         fee = 0, highest = nil, bids = 0, bidders = {}, at = pend.at or EC.now(),
         expiresAt = (pend.at or EC.now()) + hours * 3600000, hours = hours, category = "other",
@@ -714,8 +730,8 @@ function Au.restoreFromPending(username, id, pend)
         a.category = script:getDisplayCategory() or "other"
     end)
     add(a)
-    X.market(username, { kind = "auction_restored", listingId = id, item = a.item, qty = a.qty, price = a.startPrice, currency = currency })
-    X.emit("auction.restored", { auctionId = id, seller = username, item = a.item, qty = a.qty, startPrice = a.startPrice, currency = currency, expiresAt = a.expiresAt })
+    X.market(seller, { kind = "auction_restored", listingId = id, item = a.item, qty = a.qty, price = a.startPrice, currency = currency })
+    X.emit("auction.restored", { auctionId = id, seller = seller, item = a.item, qty = a.qty, startPrice = a.startPrice, currency = currency, expiresAt = a.expiresAt })
     return true
 end
 
@@ -834,7 +850,7 @@ end
 -- only ever passed by the gated admin handler.
 function Au.history(player, args, admin)
     local command = admin and "admin.auctions" or "auction.history"
-    local username = player:getUsername()
+    local username = S.principal(player)
     args = type(args) == "table" and args or {}
     local extra = { history = true, query = "" }
     if admin then extra.perms = { read = true, write = admin.write == true } end
@@ -878,14 +894,14 @@ end
 -- ---------- commands ----------
 
 S.handlers["auction.browse"] = function(player, args)
-    local res = Au.browse(player:getUsername(), args)
+    local res = Au.browse(S.principal(player), args)
     res.atTerminal = T.near(player)
     res.requestId = type(args) == "table" and type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil
     S.reply(player, "auction.browse", res)
 end
 
 S.handlers["auction.mine"] = function(player, args)
-    local res = Au.mine(player:getUsername())
+    local res = Au.mine(S.principal(player))
     res.atTerminal = T.near(player)
     res.maxAuctions = EC.sandbox("AuctionMaxPerPlayer", 3)
     res.requestId = type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil
@@ -895,7 +911,7 @@ end
 S.handlers["auction.create"] = function(player, args)
     local res = Au.create(player, args)
     res.requestId = type(args) == "table" and args.requestId or nil
-    res.mine = Au.mine(player:getUsername())
+    res.mine = Au.mine(S.principal(player))
     S.reply(player, "auction.create", res)
 end
 
@@ -908,8 +924,8 @@ end
 S.handlers["auction.cancel"] = function(player, args)
     local res = Au.cancel(player, args)
     res.requestId = type(args) == "table" and args.requestId or nil
-    res.mine = Au.mine(player:getUsername())
-    res.unclaimed = M.unclaimed(player:getUsername())
+    res.mine = Au.mine(S.principal(player))
+    res.unclaimed = M.unclaimed(S.principal(player))
     S.reply(player, "auction.cancel", res)
 end
 

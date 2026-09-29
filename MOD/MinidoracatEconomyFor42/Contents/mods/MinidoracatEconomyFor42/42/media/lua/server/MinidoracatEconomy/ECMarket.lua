@@ -91,6 +91,12 @@ function Mk.ownerCount(username)
     return s and EC.countKeys(s) or 0
 end
 
+-- An account merge (ECMerge) waits while the name still sells: a listing names its seller, and
+-- after the merge nothing may point at the alias. It clears itself on sale, cancel or expiry.
+function Mk.mergeBlocker(name)
+    return Mk.ownerCount(name) > 0 and "live_listing" or nil
+end
+
 local function removeListing(id)
     local l = md.market.listings[id]
     if not l then return nil end
@@ -215,7 +221,7 @@ function Mk.browse(username, args)
     -- an account name is bounded: a longer one matches nothing anyway, and it is not worth
     -- carrying through the scan
     local seller = type(args.seller) == "string" and args.seller ~= "" and #args.seller <= 64
-        and args.seller or nil
+        and S.accountOf(args.seller) or nil
     local query = type(args.query) == "string" and string.lower(string.sub((string.gsub(args.query, "^%s*(.-)%s*$", "%1")), 1, Mk.QUERY_MAX)) or ""
     if query == "" then query = nil end
     local sort = Mk.SORTS[args.sort] and args.sort or "time"
@@ -327,7 +333,8 @@ end
 -- level of the backpack; price is for the whole lot, in the currency the seller chose. That
 -- currency is fixed into the listing here and everything downstream reads it off the listing.
 function Mk.list(player, args)
-    local username = player:getUsername()
+    -- the account sells; the recovery record (receipt, pending out) belongs to this login's save
+    local username, login = S.principal(player), S.login(player)
     if not validRequest(args) then return { ok = false, error = "invalid_args" } end
     if type(args.currency) ~= "string" or args.currency == "" then return { ok = false, error = "invalid_args" } end
     local ids = type(args.itemIds) == "table" and args.itemIds or { args.itemId }
@@ -403,12 +410,12 @@ function Mk.list(player, args)
     -- the refusal names the unit it happened on, so the seller is not told "the source could not
     -- be verified" for four different problems
     if not began then
-        return { ok = false, error = beginErr, recovery = M.recoveryStatus(username),
+        return { ok = false, error = beginErr, recovery = M.recoveryStatus(login),
             recoveryDetail = beginDetail }
     end
     -- phase 2: the items leave the backpack
     local taken, takeError = M.takeOut(player, id, items)
-    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(username) } end
+    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
     -- phase 3: listing + fee in ModData (same tick). pending stays until reconcile clears it.
     local name, category = nil, nil
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
@@ -432,12 +439,12 @@ function Mk.list(player, args)
             -- rebuilt from the snapshot, so no copy can outlive the refusal.
             removeListing(id)
             local returned = M.abortOut(player, id, items)
-            return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(username) }
+            return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(login) }
         end
     end
     -- the world side is committed: the transfer receipt consumes those origins exactly once,
     -- so a later login with an older save cannot list them a second time
-    local recorded, recordError = M.finishOut(username, id, rec, "listing", id)
+    local recorded, recordError = M.finishOut(login, id, rec, "listing", id)
     if not recorded then error("list-out receipt invariant: " .. tostring(recordError)) end
     if fee <= 0 then
         -- a fee percent of 0 is a legal configuration, so this listing moved no money and the
@@ -480,7 +487,7 @@ local function returnListing(l, reasonKind, extra)
 end
 
 function Mk.cancel(player, args)
-    local username = player:getUsername()
+    local username = S.principal(player)
     if not validRequest(args) or type(args.listingId) ~= "string" then return { ok = false, error = "invalid_args" } end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
     local l = md.market.listings[args.listingId]
@@ -513,7 +520,7 @@ end
 -- resend never buys twice. `currency` and `price` are the buyer's understanding of the deal and
 -- are checked against the listing's own: they never decide what the sale settles in.
 function Mk.buy(player, args)
-    local username = player:getUsername()
+    local username = S.principal(player)
     if not validRequest(args) or type(args.listingId) ~= "string" then return { ok = false, error = "invalid_args" } end
     if type(args.currency) ~= "string" or args.currency == "" then return { ok = false, error = "invalid_args" } end
     if args.acceptMail ~= nil and type(args.acceptMail) ~= "boolean" then return { ok = false, error = "invalid_args" } end
@@ -617,6 +624,8 @@ end
 -- relisted, because the price was for the whole lot and guessing a share of it would reprice the
 -- seller's goods behind their back. ECMailbox writes the transfer receipt for the restores that
 -- did succeed.
+-- `username` is the login name whose save held the pending record; the relisted listing (and an
+-- auction or buyback restored from here) belongs to its account.
 function Mk.restoreFromPending(username, id, pend)
     -- `pend` here is never the player's own pending: ECMailbox passes the server's journal
     -- record for this operation, marked `proven`. Without that mark the caller skipped the
@@ -649,7 +658,7 @@ function Mk.restoreFromPending(username, id, pend)
             snapshot = pend.snapshot, qty = qty, lotQty = lotQty, price = pend.price }
     end
     local l = {
-        id = id, seller = username, item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot,
+        id = id, seller = S.accountOf(username), item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot,
         qty = pend.qty or 1, price = pend.price, currency = currency, tradeSchema = L.TRADE_SCHEMA, fee = 0,
         at = pend.at or EC.now(), expiresAt = (pend.at or EC.now()) + EC.sandbox("MarketListingDays", 7) * 86400000, category = "other",
     }
@@ -664,7 +673,7 @@ function Mk.restoreFromPending(username, id, pend)
         l.category = script:getDisplayCategory() or "other"
     end)
     addListing(l)
-    X.market(username, { kind = "restored", listingId = id, item = l.item, qty = l.qty, price = l.price, currency = currency })
+    X.market(l.seller, { kind = "restored", listingId = id, item = l.item, qty = l.qty, price = l.price, currency = currency })
     return true
 end
 
@@ -716,14 +725,14 @@ end
 -- ---------- commands ----------
 
 S.handlers["market.browse"] = function(player, args)
-    local res = Mk.browse(player:getUsername(), args)
+    local res = Mk.browse(S.principal(player), args)
     res.atTerminal = T.near(player)
     res.requestId = type(args) == "table" and type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil
     S.reply(player, "market.browse", res)
 end
 
 S.handlers["market.mine"] = function(player, args)
-    S.reply(player, "market.mine", { items = Mk.mine(player:getUsername()), maxListings = EC.sandbox("MarketMaxListings", 5),
+    S.reply(player, "market.mine", { items = Mk.mine(S.principal(player)), maxListings = EC.sandbox("MarketMaxListings", 5),
         atTerminal = T.near(player), requestId = type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil })
 end
 
@@ -732,9 +741,9 @@ S.handlers["market.candidates"] = function(player, args)
         items = Mk.candidates(player), atTerminal = T.near(player),
         feePercent = EC.sandbox("MarketListingFeePercent", 2), taxPercent = EC.sandbox("MarketSalesTaxPercent", 5),
         priceMin = EC.sandbox("MarketPriceMin", 1), priceMax = EC.sandbox("MarketPriceMax", 1000000),
-        mine = Mk.ownerCount(player:getUsername()), maxListings = EC.sandbox("MarketMaxListings", 5),
+        mine = Mk.ownerCount(S.principal(player)), maxListings = EC.sandbox("MarketMaxListings", 5),
         currencies = tradableCurrencies(),
-        usage = M.usage(player:getUsername()),
+        usage = M.usage(S.principal(player)),
     })
 end
 
@@ -764,7 +773,7 @@ S.handlers["market.sellers"] = function(player, args)
     if context == "auction" then owners = (md.auctions and md.auctions.byOwner) or {} end
     -- Active owner sets are bounded by the market/auction limits; count them completely.
     local online = {}
-    S.forEachOnline(function(p) online[p:getUsername()] = true end)
+    S.forEachOnline(function(p, account) online[account] = true end)
     local names = {}
     for name in pairs(owners) do
         if query == "" or string.find(string.lower(name), query, 1, true) then
@@ -787,22 +796,22 @@ end
 S.handlers["market.list"] = function(player, args)
     local res = Mk.list(player, args)
     res.requestId = type(args) == "table" and args.requestId or nil
-    res.mine = Mk.mine(player:getUsername())
+    res.mine = Mk.mine(S.principal(player))
     S.reply(player, "market.list", res)
 end
 
 S.handlers["market.buy"] = function(player, args)
     local res = Mk.buy(player, args)
     res.requestId = type(args) == "table" and args.requestId or nil
-    res.unclaimed = M.unclaimed(player:getUsername())
+    res.unclaimed = M.unclaimed(S.principal(player))
     S.reply(player, "market.buy", res)
 end
 
 S.handlers["market.cancel"] = function(player, args)
     local res = Mk.cancel(player, args)
     res.requestId = type(args) == "table" and args.requestId or nil
-    res.mine = Mk.mine(player:getUsername())
-    res.unclaimed = M.unclaimed(player:getUsername())
+    res.mine = Mk.mine(S.principal(player))
+    res.unclaimed = M.unclaimed(S.principal(player))
     S.reply(player, "market.cancel", res)
 end
 
@@ -811,7 +820,7 @@ end
 -- client can tell this reply from the one it asked for before.
 S.handlers["market.history"] = function(player, args)
     local W = EC.Wallet
-    local username = player:getUsername()
+    local username = S.principal(player)
     local extra = { username = username }
     if type(args) == "table" and args.requestId ~= nil then
         if type(args.requestId) ~= "string" or args.requestId == "" or #args.requestId > 96 then

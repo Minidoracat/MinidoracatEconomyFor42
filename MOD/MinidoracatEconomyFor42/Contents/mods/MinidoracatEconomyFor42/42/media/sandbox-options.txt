@@ -189,6 +189,17 @@ option MinidoracatEconomy.AdminSelfAdjustRoles
     translation = MinidoracatEconomy_AdminSelfAdjustRoles,
 }
 
+/* Account merge (ECMerge): login names bound to one exact SteamID become one account. false =
+   the plan is computed and published (identity/merge-plan.json, admin identity page) but nothing
+   merges; true = eligible aliases merge on start and then a few a minute. */
+option MinidoracatEconomy.IdentityAutoMerge
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_IdentityAutoMerge,
+}
+
 /* Discord points -> Cat Coin deposit (v1 in-only). Boot defaults only: admins override at runtime
    in the admin panel (rateVersion +1, projected to Watchcord via the companion). */
 option MinidoracatEconomy.CatRatePointsPerCoin

@@ -15,7 +15,10 @@ const log: Logger = {
 };
 
 const store = new EventStore({ economyDir: config.economyDir, stateDir: config.stateDir, maxEvents: config.maxEventsInMemory, log });
-const accounts = new Accounts({ whitelistDb: config.whitelistDb, playersDb: config.playersDb, stateDir: config.stateDir, log });
+const accounts = new Accounts({
+  whitelistDb: config.whitelistDb, playersDb: config.playersDb, stateDir: config.stateDir,
+  identityFile: path.join(config.economyDir, "identity", "whitelist.json"), serverName: config.serverName, log,
+});
 const orders = new Orders({ inboxDir: path.join(config.economyDir, "inbox"), stateDir: config.stateDir, store, accounts, log });
 
 // ---- durable watermark from global_mod_data.bin ----

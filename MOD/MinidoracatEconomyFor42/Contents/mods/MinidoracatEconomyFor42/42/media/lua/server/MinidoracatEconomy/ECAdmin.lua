@@ -172,7 +172,7 @@ end
 local function gate(player, command, write, requestId, context)
     local allowed = write and A.isAdmin(player) or (not write and A.canRead(player))
     if not allowed then
-        EC.log("admin command " .. command .. " refused for " .. tostring(player:getUsername()) .. " role=" .. A.roleName(player))
+        EC.log("admin command " .. command .. " refused for " .. S.claimedName(player) .. " role=" .. A.roleName(player))
         S.reply(player, command, { ok = false, error = "forbidden", requestId = requestId, context = context })
     end
     return allowed
@@ -355,6 +355,22 @@ local function ensureBucket(day, ms)     -- write path only
     return t
 end
 
+-- An account merge (ECMerge): what the alias adjusted as an administrator counts toward the
+-- account's daily limits, add and sub kept apart per currency.
+function A.mergeAccount(alias, into)
+    for _, t in pairs(md.adminDaily) do
+        local mine = type(t) == "table" and t.v == A.DAILY_VERSION and t.admins[alias] or nil
+        if type(mine) == "table" then
+            local target = t.admins[into] or {}
+            for currency, v in pairs(mine) do
+                local sum = target[currency] or { add = 0, sub = 0 }
+                target[currency] = { add = sum.add + (tonumber(v.add) or 0), sub = sum.sub + (tonumber(v.sub) or 0) }
+            end
+            t.admins[into], t.admins[alias] = target, nil
+        end
+    end
+end
+
 local function totalsView(day, admin, currency)
     local t = bucketOf(day)
     if not t then return ZERO, ZERO end
@@ -494,13 +510,18 @@ local function rewardsView(username, ms)
     }
 end
 
-function A.lookup(admin, username, write, selfAdjust)
+-- `requested` is the name the administrator typed; it is echoed back as `username` (the panel
+-- matches its reply by it) and keeps the recovery view, which belongs to that login name. Every
+-- account figure is the account's (S.accountOf), and `members` lists its login names.
+function A.lookup(admin, requested, write, selfAdjust)
     local ms = EC.now()
+    local username = S.accountOf(requested)
     local player = onlinePlayer(username)
     local state = W.state(username)
     local info = md.frozen[username]
     return {
-        ok = true, username = username, found = accountExists(username), online = player ~= nil,
+        ok = true, username = requested, account = username, members = S.groupOf(username),
+        found = accountExists(username), online = player ~= nil,
         frozen = info ~= nil,
         -- copy: the reply must not carry a live ModData table
         frozenInfo = info and { by = info.by, ts = info.ts, reason = info.reason } or nil,
@@ -511,7 +532,7 @@ function A.lookup(admin, username, write, selfAdjust)
         auctionsCount = S.Auction.ownerCount(username),
         maxListings = EC.sandbox("MarketMaxListings", 5),
         maxAuctions = EC.sandbox("AuctionMaxPerPlayer", 3),
-        recoveryHeld = M.recoveryStatus(username).held,
+        recoveryHeld = M.recoveryStatus(requested).held,
         adminToday = dailyView(R.dayKey(ms), admin),
         maxPerTx = EC.sandbox("AdminAdjustMaxPerTx", 5000),
         -- Spec 19.2 wants season-to-date earned/spent from a `stats` table. That table does not
@@ -525,9 +546,10 @@ end
 -- ---------- adjust ----------
 
 function A.adjust(player, args)
-    local admin = player:getUsername()
+    local admin = S.principal(player)
     if type(args) ~= "table" then return { ok = false, error = "invalid_args" } end
     local username, currency, delta = args.username, args.currency, args.delta
+    if validUsername(username) then username = S.accountOf(username) end
     if not validUsername(username) or type(currency) ~= "string"
         or not isFiniteInt(delta) or delta == 0 then
         return { ok = false, error = "invalid_args" }
@@ -632,13 +654,14 @@ end
 -- ---------- freeze ----------
 
 function A.freeze(player, args)
-    local admin = player:getUsername()
+    local admin = S.principal(player)
     if type(args) ~= "table" then return { ok = false, error = "invalid_args" } end
     local username = args.username
     -- frozen must be a real boolean: a garbled field must not silently read as "unfreeze".
     if not validUsername(username) or type(args.frozen) ~= "boolean" then
         return { ok = false, error = "invalid_args" }
     end
+    username = S.accountOf(username)
     if username == admin then return { ok = false, error = "self_target" } end
     if not accountExists(username) then return { ok = false, error = "unknown_account" } end
     local rerr, reason = A.reasonError(args.reason)
@@ -673,7 +696,7 @@ end
 -- ---------- config ----------
 
 function A.config(player, args)
-    local admin = player:getUsername()
+    local admin = S.principal(player)
     if type(args) ~= "table" or type(args.currency) ~= "string" or type(args.field) ~= "string" then
         return { ok = false, error = "invalid_args" }
     end
@@ -809,7 +832,7 @@ S.handlers["admin.lookup"] = function(player, args)
         S.reply(player, "admin.lookup", { ok = false, error = "invalid_args" })
         return
     end
-    S.reply(player, "admin.lookup", A.lookup(player:getUsername(), args.username,
+    S.reply(player, "admin.lookup", A.lookup(S.principal(player), args.username,
         A.isAdmin(player), A.canAdjustSelf(player)))
 end
 
@@ -892,8 +915,8 @@ S.handlers["admin.icons"] = function(player, args)
     if not gate(player, "admin.icons", reload) then return end
     local started = false
     if reload then
-        started = I.reload(player:getUsername(), "admin_reload")
-        EC.log("admin " .. tostring(player:getUsername()) .. " icon reload " .. (started and "started" or "refused: busy"))
+        started = I.reload(S.principal(player), "admin_reload")
+        EC.log("admin " .. S.claimedName(player) .. " icon reload " .. (started and "started" or "refused: busy"))
     end
     S.reply(player, "admin.icons", { ok = true, started = started, busy = I.busy(), icons = I.status(), perms = { read = true, write = A.isAdmin(player) } })
 end
@@ -911,7 +934,7 @@ S.handlers["admin.sources"] = function(player, args)
         else
             local ok, err = G.setSource(args.modId, { dailyMintCap = args.dailyMintCap, dailyBurnCap = args.dailyBurnCap, enabled = args.enabled,
                 allowTransfer = args.allowTransfer },
-                player:getUsername(), reason)
+                S.principal(player), reason)
             if not ok then res = { ok = false, error = err } end
         end
         if type(args) == "table" then res.requestId = args.requestId end
@@ -953,7 +976,7 @@ S.handlers["admin.players"] = function(player, args)
         seen[name] = rec
         list[#list + 1] = rec
     end
-    S.forEachOnline(function(p) add(p:getUsername(), true) end)
+    S.forEachOnline(function(p, account) add(account, true) end)
     if query ~= "" then
         for name in pairs(md.wallets) do
             if not L.isSystemAccount(name) then add(name, false) end
@@ -1035,7 +1058,7 @@ S.handlers["admin.option"] = function(player, args)
             res = { ok = false, error = "invalid_args" }
         else
             local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
-            local ok, err, warning = Cfg.setOption(args.key, args.value, player:getUsername(), reason)
+            local ok, err, warning = Cfg.setOption(args.key, args.value, S.principal(player), reason)
             res = ok and { ok = true, warning = warning } or { ok = false, error = err }
             res.key = args.key
         end
@@ -1062,7 +1085,7 @@ function A.startSeason(player, args, requestId)
     end
     local bad, reason = A.reasonError(args.reason)
     if bad then return { ok = false, error = bad } end
-    local res = Se.start(expected, requestId, player:getUsername(), reason, EC.now())
+    local res = Se.start(expected, requestId, S.principal(player), reason, EC.now())
     if type(res) ~= "table" then return { ok = false, error = "not_ready" } end
     return { ok = res.ok == true, error = res.ok ~= true and res.error or nil,
         duplicate = res.duplicate == true or nil, warning = res.warning }
@@ -1178,7 +1201,7 @@ S.handlers["admin.catalog"] = function(player, args)
             res.id = type(args.id) == "string" and args.id or nil
         else
             local ok, err, extra = Shop.update(args.id, skuPatch(args),
-                player:getUsername(), reason, args.revision)
+                S.principal(player), reason, args.revision)
             if not ok then res = { ok = false, error = err or "invalid_args" } end
             res.id = args.id
             catalogExtra(res, extra)
@@ -1190,7 +1213,7 @@ S.handlers["admin.catalog"] = function(player, args)
         else
             local raw = skuPatch(args)
             raw.id, raw.item = args.id, args.item
-            local ok, err, extra = Shop.add(raw, player:getUsername(), reason, args.revision)
+            local ok, err, extra = Shop.add(raw, S.principal(player), reason, args.revision)
             if not ok then res = { ok = false, error = err or "invalid_args" } end
             res.id = type(args.id) == "string" and args.id or nil
             catalogExtra(res, extra)
@@ -1204,7 +1227,7 @@ S.handlers["admin.catalog"] = function(player, args)
             or (args.fields.prices ~= nil and type(args.fields.prices) ~= "table") then
             res = { ok = false, error = "invalid_args" }
         else
-            local ok, err, extra = Shop.updateMany(args.ids, args.fields, player:getUsername(), reason, args.revision)
+            local ok, err, extra = Shop.updateMany(args.ids, args.fields, S.principal(player), reason, args.revision)
             if not ok then res = { ok = false, error = err or "invalid_args" } end
             catalogExtra(res, extra)
         end
@@ -1213,14 +1236,14 @@ S.handlers["admin.catalog"] = function(player, args)
         -- document, a price table that would let someone trade in a circle). "catalog_invalid"
         -- is only the fallback for a writer that names no code: telling an admin the file is
         -- malformed when the disk could not be read sends them to fix the wrong thing.
-        local ok, errText, errorCode, extra = Shop.reload(player:getUsername())
+        local ok, errText, errorCode, extra = Shop.reload(S.principal(player))
         if not ok then
             res = { ok = false, error = errorCode or "catalog_invalid", detail = errText }
             catalogExtra(res, extra)
         end
     end
     if type(args) == "table" then res.requestId = args.requestId end
-    local snap = Shop.snapshot(player:getUsername(), EC.now())
+    local snap = Shop.snapshot(S.principal(player), EC.now())
     mergeSnapshot(res, snap)
     res.perms = { read = true, write = A.isAdmin(player) }
     S.reply(player, "admin.catalog", res)
@@ -1240,11 +1263,11 @@ S.handlers["admin.listings"] = function(player, args)
     local res = { ok = true, requestId = requestId, seller = args.seller }
     if delist then
         local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
-        local ok, err = Mk.delist(player:getUsername(), args.listingId, reason)
+        local ok, err = Mk.delist(S.principal(player), args.listingId, reason)
         if not ok then res.ok, res.error = false, err end
         res.listingId = args.listingId
     end
-    local snap = Mk.browse(player:getUsername(), { page = args.page or 1, query = args.query,
+    local snap = Mk.browse(S.principal(player), { page = args.page or 1, query = args.query,
         seller = args.seller, sort = "time" })
     mergeSnapshot(res, snap)
     res.perms = { read = true, write = A.isAdmin(player) }
@@ -1273,10 +1296,10 @@ S.handlers["admin.auctions"] = function(player, args)
     local res = { ok = true, requestId = requestId, seller = args.seller }
     if action == "cancel" then
         local reason = type(args.reason) == "string" and args.reason or ""
-        local ok, err = Au.adminCancel(player:getUsername(), args.auctionId, reason)
+        local ok, err = Au.adminCancel(S.principal(player), args.auctionId, reason)
         if not ok then res.ok, res.error = false, err end
     end
-    local page = Au.browse(player:getUsername(), { page = args.page or 1, sort = "ending",
+    local page = Au.browse(S.principal(player), { page = args.page or 1, sort = "ending",
         query = args.query, seller = args.seller })
     res.items, res.page, res.pages, res.total = page.items, page.page, page.pages, page.total
     res.perms = { read = true, write = A.isAdmin(player) }
@@ -1293,10 +1316,10 @@ S.handlers["admin.whitelist"] = function(player, args)
     if not gate(player, "admin.whitelist", write, type(args) == "table" and args.requestId or nil) then return end
     local res = { ok = true }
     if action == "set" then
-        local ok, err = Codec.update(args, player:getUsername())
+        local ok, err = Codec.update(args, S.principal(player))
         if not ok then res = { ok = false, error = err } end
     elseif action == "reload" then
-        local ok, err = Codec.reload(player:getUsername())
+        local ok, err = Codec.reload(S.principal(player))
         if not ok then res = { ok = false, error = "whitelist_invalid", detail = err } end
     end
     if write and res.ok then
@@ -1439,18 +1462,20 @@ function A.restoreReclaim(player, args)
     if type(rec.restored) == "table" then
         return { ok = false, error = "reclaim_restored", mailId = rec.restored.mailId, username = rec.username }
     end
-    local admin = player:getUsername()
-    local entry, err = M.add(rec.username, { kind = "restore", item = snapshot.type, qty = 1, snapshot = snapshot })
+    local admin = S.principal(player)
+    -- the reclaim belongs to a login name; the mail it restores goes to that name's account
+    local account = S.accountOf(rec.username)
+    local entry, err = M.add(account, { kind = "restore", item = snapshot.type, qty = 1, snapshot = snapshot })
     if not entry then return { ok = false, error = err or "invalid_args" } end
     rec.restored = { by = admin, at = EC.now(), mailId = entry.id }
     X.emit("recovery.reclaimRestored", { admin = admin, username = rec.username, reclaimId = args.reclaimId,
         opId = rec.opId, item = snapshot.type, mailId = entry.id })
     X.audit({ action = "recovery", admin = admin, target = rec.username, field = rec.opId, after = "restored",
         reason = reason, item = snapshot.type, qty = 1, reclaimId = args.reclaimId, mailId = entry.id })
-    X.changed("mail", rec.username)
-    local holder = onlinePlayer(rec.username)
+    X.changed("mail", account)
+    local holder = S.onlineLogin(rec.username)
     if holder ~= nil then
-        S.reply(holder, "recovery.restored", { item = snapshot.type, qty = 1, unclaimed = M.unclaimed(rec.username) })
+        S.reply(holder, "recovery.restored", { item = snapshot.type, qty = 1, unclaimed = M.unclaimed(account) })
     end
     return { ok = true, mailId = entry.id, username = rec.username, item = snapshot.type }
 end
@@ -1939,7 +1964,7 @@ end
 -- is a limit, not a failure) or the read itself broke. Taken once per account, so every row built
 -- from it describes the same instant and no second row of that account walks again.
 local function accountScan(username)
-    local target = onlinePlayer(username)
+    local target = S.onlineLogin(username)
     if target == nil then return nil, nil, nil, nil end
     local inv = target:getInventory()
     local scan = inv and Rcv.scanUnits(inv) or nil
@@ -2027,7 +2052,7 @@ local function restorePending(username, target, opId, pend, proof, content, succ
     local admitted, admissionError = Rcv.reserveOut(username, opId)
     if not admitted then return false, admissionError or "recovery_not_actionable" end
     S.bumpSeq(successorSeq or tonumber((proof or pend).seq))
-    local entry, addError = M.add(username, { kind = "return", item = snapshot.type, qty = qty,
+    local entry, addError = M.add(S.accountOf(username), { kind = "return", item = snapshot.type, qty = qty,
         snapshot = snapshot, listingId = opId }, pend.returnMailId)
     if not entry then
         Rcv.releaseOut(opId)
@@ -2095,7 +2120,7 @@ local function recoveryReply(player, target, requestId, page, extra)
     local res = extra or {}
     res.ok = res.ok ~= false
     res.requestId, res.username = requestId, target
-    res.online = onlinePlayer(target) ~= nil
+    res.online = S.onlineLogin(target) ~= nil
     res.status = M.recoveryStatus(target)
     res.perms = { read = true, write = A.isAdmin(player) }
     local shown, pageNo, pages, total = EC.filterPage(rows, { perPage = A.RECOVERY_PER_PAGE, page = page })
@@ -2169,7 +2194,7 @@ end
 local function recoveryOnline(accounts, index)
     local online, open = 0, 0
     S.forEachOnline(function(p)
-        local name = p:getUsername()
+        local name = S.login(p)
         if not validUsername(name) then return end
         local data = p:getModData()[EC.PLAYER_MODDATA_KEY]
         local pending = type(data) == "table" and type(data.pendingOuts) == "table"
@@ -2252,7 +2277,7 @@ S.handlers["admin.recovery"] = function(player, args)
     -- account for a per-account call, the scope for the overview - which names no account at all,
     -- because a caller who may not read this must not learn who is waiting either.
     if not (write and A.isAdmin(player) or (not write and A.canRead(player))) then
-        EC.log("admin command admin.recovery refused for " .. tostring(player:getUsername())
+        EC.log("admin command admin.recovery refused for " .. S.claimedName(player)
             .. " role=" .. A.roleName(player))
         if action == "overview" then return overviewRefusal(player, requestId, "forbidden") end
         return recoveryRefusal(player, requestId, type(target) == "string" and target or nil, "forbidden")
@@ -2275,7 +2300,7 @@ S.handlers["admin.recovery"] = function(player, args)
     end
     -- A backpack cannot be walked from here when nobody is holding it, and every write below is
     -- decided from that walk. Offline is a limit, not a failure the page should retry blindly.
-    local online = onlinePlayer(target)
+    local online = S.onlineLogin(target)
     if online == nil then return recoveryRefusal(player, requestId, target, "player_offline") end
     if action == "recheck" then
         local ok, result, err = pcall(M.reconcile, online)
@@ -2285,7 +2310,7 @@ S.handlers["admin.recovery"] = function(player, args)
         end
         return recoveryReply(player, target, requestId, page, { ok = true, rechecked = true })
     end
-    local admin = player:getUsername()
+    local admin = S.principal(player)
     local key = type(args.key) == "string" and args.key ~= "" and #args.key <= A.RECOVERY_KEY_CHARS
         and not string.find(args.key, "%c") and args.key or nil
     local decision = type(args.decision) == "string" and args.decision or nil
@@ -2536,8 +2561,8 @@ X.onViewsChanged = function(publicScopes, adminScopes, byUsername)
     local hasPublic = type(publicScopes) == "table" and EC.countKeys(publicScopes) > 0
     local hasAdmin = type(adminScopes) == "table" and EC.countKeys(adminScopes) > 0
     if not hasPublic and not hasAdmin and not owners then return end
-    S.forEachOnline(function(p)
-        local own = owners and owners[p:getUsername()] or nil
+    S.forEachOnline(function(p, account)
+        local own = owners and owners[account] or nil
         local canRead = hasAdmin and A.canRead(p)
         if not hasPublic and own == nil and not canRead then return end
         local scopes, seen = {}, {}

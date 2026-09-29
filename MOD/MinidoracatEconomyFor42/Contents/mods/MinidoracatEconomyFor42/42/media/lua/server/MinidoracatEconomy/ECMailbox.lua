@@ -77,7 +77,9 @@ local lastPrune = 0
 
 -- ---------- state ----------
 
+-- A mailbox belongs to an account: any login name of it opens the same box (S.accountOf).
 local function owner(username, create)
+    username = S.accountOf(username)
     local o = md.mailbox.byOwner[username]
     if not o and create then
         o = { entries = {}, unclaimed = 0 }
@@ -93,10 +95,23 @@ end
 
 -- One letter by owner and id, for the recovery core: it marks the letters a committed transfer
 -- consumed and reads their state when it judges the source of a unit. The live entry, not a
--- copy - the caller writes on it.
+-- copy - the caller writes on it. A stamp in a player save keeps the owner it was written with,
+-- so a letter not in that account's box is looked for in the boxes of every name sharing the
+-- account (S.groupOf); two of them holding the id is an ambiguity and answers nil.
 function M.entryOf(username, mailId)
+    if type(mailId) ~= "string" then return nil end
     local o = owner(username, false)
-    return o and type(mailId) == "string" and o.entries[mailId] or nil
+    local found = o and o.entries[mailId] or nil
+    if found then return found end
+    for _, name in ipairs(S.groupOf(username)) do
+        local g = md.mailbox.byOwner[name]
+        local entry = g and g.entries[mailId] or nil
+        if entry and entry ~= found then
+            if found then return nil end
+            found = entry
+        end
+    end
+    return found
 end
 
 -- One letter by id when the holder is not known. A generation zero delivery stamp never carried
@@ -116,6 +131,65 @@ function M.findEntry(mailId)
     end
     if not found then return nil, "missing" end
     return found
+end
+
+-- ---------- account merge (ECMerge) ----------
+
+-- A letter an account merge may move: ready and never touched - no delivery history (claim
+-- seq, split parent or child, units a transfer consumed, their proofs) and not a generation
+-- zero letter. Anything else stays with the save that knows its history (design 5, 9-1).
+local function movable(entry, parents)
+    return type(entry) == "table" and entry.state == "ready" and entry.gen0 ~= true
+        and entry.claimSeq == nil and entry.parentMailId == nil and entry.outProof == nil
+        and not (type(entry.outUnits) == "table" and EC.countKeys(entry.outUnits) > 0)
+        and not parents[entry.id]
+end
+
+local function parentsIn(o)
+    local parents = {}
+    for _, entry in pairs(o.entries) do
+        if type(entry) == "table" and type(entry.parentMailId) == "string" then parents[entry.parentMailId] = true end
+    end
+    return parents
+end
+
+-- mail_pending while the name's box holds any letter that is not movable: claiming, claimed or
+-- settled (their TTL clears them), a partial delivery or a generation zero letter (claimed out
+-- by that login).
+function M.mergeBlocker(name)
+    local o = md.mailbox.byOwner[name]
+    if o == nil then return nil end
+    local parents = parentsIn(o)
+    for _, entry in pairs(o.entries) do
+        if not movable(entry, parents) then return "mail_pending" end
+    end
+    return nil
+end
+
+-- Moves every movable letter of `alias` into the box of `into`, rewriting its owner; the
+-- server-wide count stays the same. Returns the ids moved. Safe to run again.
+function M.mergeAccount(alias, into)
+    local o = md.mailbox.byOwner[alias]
+    if o == nil then return {} end
+    local target = md.mailbox.byOwner[into]
+    if target == nil then
+        target = { entries = {}, unclaimed = 0 }
+        md.mailbox.byOwner[into] = target
+    end
+    local parents, moved = parentsIn(o), {}
+    for id, entry in pairs(o.entries) do
+        if movable(entry, parents) and target.entries[id] == nil then moved[#moved + 1] = id end
+    end
+    EC.sortSafe(moved, function(a, b) return a < b end)
+    for _, id in ipairs(moved) do
+        local entry = o.entries[id]
+        o.entries[id], target.entries[id] = nil, entry
+        entry.owner = into
+        o.unclaimed = math.max(0, o.unclaimed - 1)
+        target.unclaimed = target.unclaimed + 1
+    end
+    if EC.countKeys(o.entries) == 0 then md.mailbox.byOwner[alias] = nil end
+    return moved
 end
 
 -- Slots per account (sandbox MailboxPerAccount). A slot is taken by an unclaimed mailbox entry
@@ -166,6 +240,7 @@ end
 -- letter with no third party - a shop purchase, a return, anything written before this field -
 -- simply has none: it is never guessed from a listing that is already gone.
 function M.add(username, fields, restoredId)
+    username = S.accountOf(username)
     local o = owner(username, true)
     local id = restoredId or S.newId()
     if restoredId then
@@ -246,7 +321,9 @@ local function reopen(o, entry)
     entry.claimedAt = nil
 end
 
-local function acceptClaimProof(username, mailId, token, ms)
+-- `login` is the login name whose save proved the claim: the letter remembers which save took
+-- it (entry.claimLogin), so only that save's absence of evidence can ever redeliver it.
+local function acceptClaimProof(username, mailId, token, ms, login)
     local o = owner(username, false)
     local entry = o and o.entries[mailId] or nil
     if not entry or not counted(entry.state) then return false end
@@ -256,7 +333,14 @@ local function acceptClaimProof(username, mailId, token, ms)
         if not found or (entry.outUnits and entry.outUnits[token]) then return false end
     end
     settle(o, entry, "claimed", ms)
+    entry.claimLogin = login
     return true
+end
+
+-- The save a claimed letter went to: claimLogin, or the owner for a letter claimed before the
+-- field existed (one login per account then).
+local function claimedBy(entry)
+    return entry.claimLogin or entry.owner
 end
 
 -- Entries still holding a slot, newest first (client view). `weight` is the script estimate of
@@ -579,6 +663,7 @@ local function splitDelivered(player, o, entry, claimSeq, kept, ms, inPlace)
     local p = R.playerData(player)
     addWitness(p, child.id, md.meta.epoch, claimSeq)
     settle(o, child, "claimed", ms)
+    child.claimLogin = S.login(player)
     child.claimSeq = claimSeq
     R.transmit(player)
     local left = {}
@@ -605,7 +690,9 @@ end
 -- `prepared` is an M.prepare result for this same letter made earlier in the same synchronous
 -- handler (a purchase prepares before it debits): its objects are reused instead of built twice.
 function M.claim(player, mailId, prepared)
-    local username = player:getUsername()
+    -- the account's box; the save that takes the letter is this login's (entry.claimLogin)
+    local login = S.login(player)
+    local username = S.accountOf(login)
     local o = owner(username, false)
     local entry = o and type(mailId) == "string" and o.entries[mailId] or nil
     if not entry then return { ok = false, error = "unknown_mail" } end
@@ -622,6 +709,7 @@ function M.claim(player, mailId, prepared)
         addWitness(p, mailId, md.meta.epoch, claimSeq)
         R.transmit(player)
         settle(o, entry, "claimed", ms)
+        entry.claimLogin = login
         entry.claimSeq = claimSeq
         if res.forced then anomaly(username, mailId, "delivery-kept-all", { qty = total }) end
         X.emit("mail.claimed", { mailId = mailId, username = username, item = entry.item, qty = entry.qty,
@@ -695,7 +783,7 @@ function M.claimAll(player, mailIds)
         if type(id) ~= "string" or id == "" or #id > 96 or seen[id] then return { ok = false, error = "invalid_args" } end
         seen[id] = true
     end
-    local username = player:getUsername()
+    local username = S.principal(player)
     local o = owner(username, false)
     local results, items, checks, more = {}, 0, 0, false
     for i = 1, n do
@@ -883,7 +971,7 @@ local function reclaimStaleCopies(player, username, scan)
                             reclaimId = reclaimId })
                         X.audit({ action = "recovery", admin = "SYSTEM", target = username, field = opId, after = "reclaimed",
                             item = row.fullType, qty = 1, reclaimId = reclaimId, owner = foreign })
-                        X.market(username, { kind = "reclaimed", listingId = opId, item = row.fullType, qty = 1, other = foreign })
+                        X.market(S.accountOf(username), { kind = "reclaimed", listingId = opId, item = row.fullType, qty = 1, other = foreign })
                         EC.log("recovery reclaimed stale " .. row.fullType .. " " .. tostring(id) .. " of " .. opId .. " from " .. username)
                         local notice = noticeOf[row.fullType]
                         if not notice then
@@ -909,7 +997,10 @@ end
 -- would otherwise read "the backpack is unreadable, the account is held" as a completed
 -- reconciliation and report it as a successful recheck.
 function M.reconcile(player)
-    local username = player:getUsername()
+    -- Recovery is judged per save: holds, receipts and pending outs are this login's. The letters
+    -- are the account's, and only the ones this login claimed can be redelivered to it.
+    local username = S.login(player)
+    local account = S.accountOf(username)
     local inv = player:getInventory()
     if not inv then
         R.hold(username, "inventory", "inventory_unreadable", {})
@@ -958,7 +1049,7 @@ function M.reconcile(player)
                 local token = row.stamp and row.stamp.unit
                 if token and available[token] and not scan.duplicates[token] then kept[#kept + 1] = row.item end
             end
-            if #kept > 0 and parent.owner == username then
+            if #kept > 0 and S.sameAccount(parent.owner, username) then
                 local claimSeq = S.nextSeq()
                 if counted(parent.state) then
                     splitDelivered(player, o, parent, claimSeq, kept, ms, true)
@@ -997,14 +1088,17 @@ function M.reconcile(player)
         end
     end
     -- The mail's existence proves its creation survived; its later claim need not have survived.
-    if o then
-        for mailId, entry in pairs(o.entries) do
-            if not blockedLetters[mailId] and (p.claims[mailId] or scan.stamped[mailId]) then
-                if acceptClaimProof(username, mailId, nil, ms) then
-                    anomaly(username, mailId, "mark-claimed")
-                    changed = true
-                end
-            end
+    -- A proof is matched to its letter across the account's names (M.entryOf): a letter a merge
+    -- moved into this account and a world rollback put back under the alias - with merging turned
+    -- off since - is marked claimed where it stands, so the alias cannot claim it a second time.
+    local proofs = {}
+    for mailId in pairs(p.claims) do proofs[mailId] = true end
+    for mailId in pairs(scan.stamped) do proofs[mailId] = true end
+    for mailId in pairs(proofs) do
+        local entry = not blockedLetters[mailId] and M.entryOf(account, mailId) or nil
+        if entry and acceptClaimProof(entry.owner, mailId, nil, ms, username) then
+            anomaly(username, mailId, "mark-claimed", entry.owner ~= account and { owner = entry.owner } or nil)
+            changed = true
         end
     end
     for _, pending in pairs(p.pendingOuts) do
@@ -1015,7 +1109,7 @@ function M.reconcile(player)
                     local consumed, _, proof = R.consumer(origin)
                     if proof == "unreadable" then
                         blockedLetters[origin.mailId] = true
-                    elseif not consumed and acceptClaimProof(origin.owner, origin.mailId, origin.unit, ms) then
+                    elseif not consumed and acceptClaimProof(origin.owner, origin.mailId, origin.unit, ms, username) then
                         anomaly(username, origin.mailId, "mark-claimed", { owner = origin.owner })
                         changed = true
                     end
@@ -1128,7 +1222,7 @@ function M.reconcile(player)
         for mailId, entry in pairs(o.entries) do
             local witness, have = p.claims[mailId], scan.stamped[mailId]
             local avail = availableUnits(entry)
-            if entry.state == "claimed" and not witness and not have and not blockedLetters[mailId] then
+            if entry.state == "claimed" and claimedBy(entry) == username and not witness and not have and not blockedLetters[mailId] then
                 if #avail > 0 then
                     local claimSeq = S.nextSeq()
                     local proxy = { id = entry.id, owner = entry.owner, kind = entry.kind, item = entry.item,
@@ -1137,7 +1231,7 @@ function M.reconcile(player)
                     local result = deliver(player, proxy, claimSeq)
                     if result.ok then
                         addWitness(p, mailId, md.meta.epoch, claimSeq)
-                        entry.claimSeq, entry.claimedAt = claimSeq, ms
+                        entry.claimSeq, entry.claimedAt, entry.claimLogin = claimSeq, ms, username
                         anomaly(username, mailId, "redelivered", { qty = result.qty })
                     elseif result.kept then
                         local child = splitDelivered(player, o, entry, claimSeq, result.kept, ms)
@@ -1281,7 +1375,7 @@ reconcileOuts = function(player, p, scan, username)
                     if currency == nil then
                         info = { reason = "currency_unknown" }
                     elseif type(snapshot) == "table" and type(snapshot.type) == "string" and record.qty >= 1 then
-                        local entry, err = M.add(username, { kind = "return", item = snapshot.type,
+                        local entry, err = M.add(S.accountOf(username), { kind = "return", item = snapshot.type,
                             qty = record.qty, price = record.price, currency = currency,
                             snapshot = snapshot, listingId = id }, record.returnMailId)
                         if entry then
@@ -1338,9 +1432,10 @@ local carryOver = {}
 
 function M.onDeath(character)
     if not md or not instanceof(character, "IsoPlayer") then return end
-    -- Only the account this character really is (S.principal: never a split-screen seat or a
-    -- name its SteamID does not match) may have its mail settled and its records carried over.
-    local username = S.principal(character)
+    -- Only the login this character really is (S.login: never a split-screen seat or a name its
+    -- SteamID does not match) may have its records carried over, and only the letters that very
+    -- save claimed are settled: another login of the same account keeps its own.
+    local username = S.login(character)
     if username == nil then return end
     local okData, data = pcall(function() return character:getModData()[EC.PLAYER_MODDATA_KEY] end)
     if okData and type(data) == "table" and type(data.pendingOuts) == "table" then
@@ -1355,7 +1450,7 @@ function M.onDeath(character)
     if not o then return end
     local n = 0
     for _, entry in pairs(o.entries) do
-        if entry.state == "claimed" then
+        if entry.state == "claimed" and claimedBy(entry) == username then
             entry.state = "settled"
             n = n + 1
         end
@@ -1365,8 +1460,10 @@ function M.onDeath(character)
     end
 end
 
+-- Keyed by login on both sides (the death above): the new character is named with the
+-- connection's login and built with seat index 0 (CreatePlayerPacket.java:288-301).
 function M.onNewGame(player)
-    local ok, username = pcall(function() return player:getUsername() end)
+    local ok, username = pcall(S.login, player)
     if not ok or type(username) ~= "string" then return end
     local pending = carryOver[username]
     if not pending then return end
@@ -1438,9 +1535,9 @@ local function drainProofReady()
         -- taken before the pass, so a ticket the pass took anew - a read that still has to
         -- finish - survives the retirement.
         local mark = R.proofMark()
-        local player = S.onlinePlayer(name)
+        local player = S.onlineLogin(name)
         local ok, err = true, nil
-        if player and player:getUsername() == name then
+        if player then
             ok, err = pcall(M.reconcile, player)
         end
         R.clearProofTickets(name, mark)
@@ -1488,7 +1585,7 @@ local function fillView(res, username)
 end
 
 S.handlers["mail.list"] = function(player, args)
-    local res = fillView({}, player:getUsername())
+    local res = fillView({}, S.principal(player))
     res.atTerminal = T.near(player)
     res.requestId = type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil
     S.reply(player, "mail.list", res)
@@ -1502,7 +1599,7 @@ S.handlers["mail.claim"] = function(player, args)
         res = M.claim(player, type(args) == "table" and args.mailId or nil)
     end
     res.requestId = type(args) == "table" and args.requestId or nil
-    fillView(res, player:getUsername())
+    fillView(res, S.principal(player))
     S.reply(player, "mail.claim", res)
 end
 
@@ -1518,7 +1615,7 @@ S.handlers["mail.claimAll"] = function(player, args)
         res = M.claimAll(player, type(args) == "table" and args.mailIds or nil)
     end
     res.requestId = requestId
-    fillView(res, player:getUsername())
+    fillView(res, S.principal(player))
     S.reply(player, "mail.claimAll", res)
 end
 
@@ -1528,11 +1625,11 @@ S.handlers.hello = function(player, args)
     prevHello(player, args)
     local ok, err = pcall(M.reconcile, player)
     if not ok then
-        EC.log("mailbox reconcile failed for " .. tostring(player:getUsername()) .. ": " .. tostring(err))
+        EC.log("mailbox reconcile failed for " .. S.claimedName(player) .. ": " .. tostring(err))
     elseif err == false then
         -- The pass itself said it could not read what it had to judge; the account is held and
         -- the status reply already said so, but the line in the log is what an operator sees.
-        EC.log("mailbox reconcile incomplete for " .. tostring(player:getUsername()) .. ": read_failed")
+        EC.log("mailbox reconcile incomplete for " .. S.claimedName(player) .. ": read_failed")
     end
 end
 

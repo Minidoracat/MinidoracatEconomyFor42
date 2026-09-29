@@ -9,9 +9,9 @@
 --                                       validated (GlobalModData.java:112-150) -> this table is never
 --                                       transmitted and the client must never transmit it either
 --   player:getUsername()                IsoPlayer.java:6445-6446: the name the client sent. The
---                                       account key is the login name, but only as S.principal
---                                       verified it (ECIdentity: SteamID binding; split-screen
---                                       seats have none). SteamID64 itself is no key: it loses
+--                                       login name counts only as S.login verified it
+--                                       (ECIdentity: SteamID binding; split-screen seats have
+--                                       none); the account is S.accountOf(login). SteamID64 itself is no key: it loses
 --                                       precision as a Lua double (KahluaNumberConverter.java:103-116)
 
 if not MinidoracatEconomy or not MinidoracatEconomy.makeId then
@@ -89,13 +89,48 @@ S.reply = reply
 
 -- getUsername() is whatever name the client sent: a split-screen seat or a respawn may carry any
 -- name that is not online at that moment (ConnectCoopPacket.java:72-97 refuses only an empty or
--- an already connected one; GameServer.java:2830, 2848 then names the seat with it). Every
--- command, push and lookup therefore asks S.principal(player) - the account name this player
--- really is, or nil - and never the raw name. ECIdentity installs it (family convention
--- "player identity": split-screen seats have none, in Steam mode the name must match its bound
--- SteamID). Until that module has loaded nobody is anyone: a missing identity check must fail
--- closed, never open.
+-- an already connected one; GameServer.java:2830, 2848 then names the seat with it). The raw name
+-- is never an identity. Three kinds of name:
+--   S.login(player)      the login name this player verifiably is, or nil. It keys what belongs
+--                        to one character save: recovery receipts/holds/journal, pending outs,
+--                        the season survival base, which save claimed a letter, entitlements.
+--   S.principal(player)  the ACCOUNT: S.accountOf(S.login(player)). Money, caps, claims, mail,
+--                        market, auctions, transfers, shop, boards, pushes, throttling.
+--   S.claimedName(player) the raw name, for log lines only.
+-- ECIdentity installs S.login (family convention "player identity": split-screen seats have
+-- none, in Steam mode the name must match its bound SteamID). Until that module has loaded
+-- nobody is anyone: a missing identity check must fail closed, never open.
+S.login = S.login or function() return nil end
 S.principal = S.principal or function() return nil end
+
+-- The account a login name belongs to: md.identity.merged[name].into when that name was merged
+-- into another, else the name itself. One hop, never chained. The marker lives in Global ModData,
+-- so it rolls back together with the data a merge moved (ServerMap.java:373-409 saves both).
+function S.accountOf(name)
+    local merged = md and md.identity and md.identity.merged
+    local rec = merged and type(name) == "string" and merged[name] or nil
+    if type(rec) == "table" and type(rec.into) == "string" and rec.into ~= "" then return rec.into end
+    return name
+end
+
+function S.sameAccount(a, b)
+    if type(a) ~= "string" or type(b) ~= "string" then return false end
+    return a == b or S.accountOf(a) == S.accountOf(b)
+end
+
+-- Every name sharing this name's account: the account first, then the names merged into it.
+-- The one place other code asks for a group (ECIdentity extends it with the logins bound to
+-- the same exact SteamID, so a rolled-back merge still finds what its names hold).
+function S.groupOf(name)
+    local account = S.accountOf(name)
+    local out = { account }
+    local merged = md and md.identity and md.identity.merged
+    if type(account) ~= "string" or type(merged) ~= "table" then return out end
+    for alias, rec in pairs(merged) do
+        if alias ~= account and type(rec) == "table" and rec.into == account then out[#out + 1] = alias end
+    end
+    return out
+end
 
 -- The raw name, for log lines and for keying a refusal - never an identity.
 function S.claimedName(player)
@@ -124,16 +159,43 @@ function S.forEachOnline(fn)
     end
 end
 
--- The online player who IS this account, or nil. The raw name is compared first so a lookup
--- costs one identity check, not one per online player.
-function S.onlinePlayer(username)
+-- An online player who IS this account (any of its login names), or nil. The raw name is
+-- compared first so a lookup costs one identity check, not one per online player.
+function S.onlinePlayer(account)
     local players = getOnlinePlayers()
     if not players then return nil end
     for i = 0, players:size() - 1 do
         local p = players:get(i)
-        if p and p:getUsername() == username and S.principal(p) == username then return p end
+        local name = p and p:getUsername()
+        if name ~= nil and (name == account or S.accountOf(name) == account) and S.principal(p) == account then return p end
     end
     return nil
+end
+
+-- The online player who IS this login name (this very character save), or nil. Recovery and
+-- every scan that judges a save by its inventory must use this, never S.onlinePlayer: another
+-- login of the same account carries another save.
+function S.onlineLogin(login)
+    local players = getOnlinePlayers()
+    if not players then return nil end
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        if p and p:getUsername() == login and S.login(p) == login then return p end
+    end
+    return nil
+end
+
+-- The raw names of every online seat, verified or not, split-screen included: a set.
+function S.onlineNames()
+    local out = {}
+    local players = getOnlinePlayers()
+    if not players then return out end
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        local ok, name = pcall(function() return p:getUsername() end)
+        if ok and type(name) == "string" then out[name] = true end
+    end
+    return out
 end
 
 -- Push pattern (spec 19.2): a module that changes player-visible state pushes the fresh snapshot
@@ -456,7 +518,10 @@ end
 -- Login handshake (stage A18 shape: the client sends it from its first OnTick, never from
 -- OnGameStart). Everything the client needs to know about this server process goes here.
 handlers.hello = function(player, args)
+    local account = S.principal(player)
     reply(player, "hello.ack", {
+        account = account,              -- whose money and mail this session is
+        login = S.login(player),        -- the login name (character save) it came in with
         epoch = md.meta.epoch,
         loadedSeq = md.meta.loadedSeq,
         schemaVersion = md.schemaVersion,
@@ -470,7 +535,7 @@ handlers.hello = function(player, args)
         seasonState = S.Stats and S.Stats.seasonState() or nil,
         terminals = S.Terminal and S.Terminal.list() or nil,
         terminalRange = EC.TERMINAL_RANGE,
-        unclaimed = S.Mailbox and S.Mailbox.unclaimed(player:getUsername()) or 0,   -- the float button badge
+        unclaimed = S.Mailbox and S.Mailbox.unclaimed(account) or 0,   -- the float button badge
         radio = S.Radio and S.Radio.clientInfo() or nil,   -- channel name registration on the client
     })
 end
@@ -526,6 +591,13 @@ function S.onServerStarted()
         end
     end
     S.pollDurable(true)
+    -- the companion's whitelist export and the account merge pass run once every module is
+    -- ready and before any packet: OnServerStarted fires inside startServer (GameServer.java:828,
+    -- 1533), ahead of the first packet processing (:894, 910, 939)
+    if S.Merge and type(S.Merge.onStarted) == "function" then
+        local ok, err = pcall(S.Merge.onStarted)
+        if not ok then EC.log("identity start pass failed: " .. tostring(err)) end
+    end
     EC.log("server ready version=" .. EC.VERSION .. " schema=" .. tostring(md.schemaVersion)
         .. " epoch=" .. md.meta.epoch .. " loadedSeq=" .. tostring(md.meta.loadedSeq)
         .. " remoteReadOnly=" .. tostring(EC.sandbox("RemoteReadOnly", true)))

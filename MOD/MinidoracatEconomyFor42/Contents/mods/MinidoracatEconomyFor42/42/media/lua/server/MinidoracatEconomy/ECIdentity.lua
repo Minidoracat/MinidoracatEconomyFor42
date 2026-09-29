@@ -1,40 +1,60 @@
 -- MinidoracatEconomyFor42 — player identity (server authority). Family convention "player
 -- identity" (pz-family-docs/conventions.md) is the contract; this file is Economy's half of it.
 --
--- The account key stays the login name; the SteamID is only the factor that proves a player is
--- that name. S.principal(player) (installed here, asked by S.dispatch, S.forEachOnline and
--- S.onlinePlayer) answers, in this order:
+-- The SteamID is only the factor that proves a player is a login name. S.login(player)
+-- (installed here; S.principal = S.accountOf(S.login(player)) is what S.dispatch,
+-- S.forEachOnline and S.onlinePlayer ask) answers, in this order:
 --   1. a split-screen seat (getPlayerNum() ~= 0)          -> nil: it shares the main seat's SteamID
 --   2. no name                                            -> nil
 --   3. no Steam mode (getSteamModeActive() is false)      -> the name: no factor to check
 --   4. the name is bound: not reserved and bound SteamID == player:getSteamID() -> the name, else nil
---   5. the name is not bound: before the first administrator import -> the name, afterwards nil
+--   5. the name is not bound: before the first accepted import -> the name, afterwards nil
+--      (a file with unreadable lines and no import marker counts as imported: fail closed)
+--   and in 4, a name whose whitelist SteamID is another exact text of the same double
+--   (EXACT_MISMATCH) is nil: both Steam accounts pass the double check, so neither is trusted
 --
 -- Bindings live in Lua/MinidoracatEconomy/identity/bindings.json (one JSON object per line,
 -- appended, replayed on start) - never in Global ModData, which any logged-in client can ask for
--- whole (GlobalModDataRequestPacket.java:15,32). Three writers only:
+-- whole (GlobalModDataRequestPacket.java:15,32). Record kinds, the last line of a name winning:
+--   bind     {name, sid, exact?, src, from?, at}   src NEWGAME | IMPORT | COMPANION | REBIND
+--   reserve  {name, src, at}
+--   conflict {name, sid, reason, src, at} | {name, clear = true}   a whitelist row that disagrees
+--   import   {at, by, src?, gen?, count?}          the first one starts the strict mode
+--   canon    {sid, name, rule, src, at}            the account of one exact SteamID group; the
+--                                                  first record of a SteamID wins forever
+-- Writers:
 --   * OnNewGame. On the server only CreatePlayerPacket fires it, after naming the new character
 --     with the connection's login name and giving it the connection's SteamID
---     (CreatePlayerPacket.java:296-301). An unbound name is bound; a bound or reserved one with
---     another SteamID is left alone and audited BIND_CONFLICT.
---   * the administrator's whitelist import (admin.identity import): whitelist rows sent by the
---     admin client (requestUsers -> OnNetworkUsersReceived -> getUsers, isInWhitelist rows only;
---     NetworkUsersPacket.java:30-56). Unbound names are bound, differing ones become conflicts,
---     and names the economy knows that are not whitelist accounts are reserved.
---   * the administrator's confirmation of those conflicts (admin.identity rebind).
+--     (CreatePlayerPacket.java:296-301). An unbound name is bound (a rounded double, exact=false);
+--     a bound or reserved one with another SteamID is left alone and audited BIND_CONFLICT.
+--   * the whitelist import, from two sources sharing one pipeline (applyImport):
+--       - the administrator's (admin.identity import): whitelist rows the admin client read
+--         (requestUsers -> OnNetworkUsersReceived -> getUsers, isInWhitelist rows only;
+--         NetworkUsersPacket.java:30-56);
+--       - the companion's export, Lua/MinidoracatEconomy/identity/whitelist.json (NDJSON: header,
+--         one {id, u, s} row per whitelist account, trailer), read automatically.
+--     Unbound names are bound exactly, a rounded NEWGAME binding with the same double is upgraded
+--     to exact, differing ones become conflicts (recorded once per name and SteamID, never moved),
+--     and names the economy knows that are not whitelist accounts are reserved. The automatic
+--     import never unbinds or rebinds, and reserves only within the thresholds below.
+--   * the administrator's confirmation of those conflicts (admin.identity rebind). A name that
+--     took part in an account merge is never moved (merged_name).
+--   * ECMerge, through Id.recordCanon: the first canonical decision of a SteamID group.
 --
--- SteamIDs are numbers here and are only ever compared as numbers. getSteamID() is a long that
--- reaches Lua as a double (KahluaNumberConverter.java:103-116), rounded to a multiple of 16 for a
--- SteamID64; tonumber() is Double.parseDouble (KahluaUtil.java:290-293) and rounds an exact text
--- to the very same double. A SteamID is never passed to tostring, `..`, %d or %.0f: from 1e14 on
--- tostring prints scientific notation (KahluaUtil.java:180-189) and the format paths go wrong
--- above 2^53. Id.sidText writes the exact decimal of a double from two halves below 1e9.
+-- SteamIDs are numbers here and are only ever compared as numbers - except that two exact
+-- whitelist texts are compared as the strings they are. getSteamID() is a long that reaches Lua
+-- as a double (KahluaNumberConverter.java:103-116), rounded to a multiple of 16 for a SteamID64;
+-- tonumber() is Double.parseDouble (KahluaUtil.java:290-293) and rounds an exact text to the very
+-- same double. A SteamID is never passed to tostring, `..`, %d or %.0f: from 1e14 on tostring
+-- prints scientific notation (KahluaUtil.java:180-189) and the format paths go wrong above 2^53.
+-- Id.sidText writes the exact decimal of a double from two halves below 1e9.
 --
 -- Engine references (snapshot 42.21.0-20260928):
 --   ConnectCoopPacket.java:72-97, 125   a seat's name is the client's; only empty and online names are refused
 --   GameServer.java:2797-2803           Steam mode kicks a connection without a validated SteamID
 --   GameServer.java:2830, 2841-2848     seat index, role from the connection, SteamID, then the name
 --   LuaManager.java:9359-9364           getSteamModeActive -> SteamUtils.isSteamModeEnabled
+--   LuaManager.java:4099-4105           getServerName -> GameServer.serverName on the server
 --   IsoPlayer.java:979, 6412, 6445      getPlayerNum, getSteamID, getUsername
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Admin then
@@ -53,9 +73,17 @@ EC.Identity = EC.Identity or {}
 local Id = EC.Identity
 
 Id.FILE = "MinidoracatEconomy/identity/bindings.json"
+Id.EXPORT_FILE = "MinidoracatEconomy/identity/whitelist.json"
 Id.VERSION = 1
 Id.MAX_LINES = 100000              -- far above any whitelist; a longer file is refused, not cut
 Id.IMPORT_ROWS_MAX = 10000         -- NetworkUsersPacket itself breaks near 6000 accounts (1 MB buffer)
+Id.EXPORT_ROWS_MAX = 50000         -- the companion export's count bound
+Id.EXPORT_POLL_MS = 60000          -- the export's first line is read once a minute
+Id.EXPORT_LINES_PER_TICK = 250     -- a changed export is read this many lines per tick while running
+                                   -- (jsonDecode of 1000 rows took ~25 ms on the game's Kahlua VM)
+Id.AUTO_RESERVE_MAX = 50           -- an automatic import reserves at most this many names at once
+Id.AUTO_DROP_MIN = 5               -- ... and only when it dropped at most max(5, 0.5%) of the last
+Id.AUTO_DROP_RATIO = 0.005         --     accepted export's rows (design 0-6)
 Id.NAME_MAX = 64
 Id.LIST_MAX = 500                  -- names per list in one reply (the counts are always complete)
 Id.NOTICE_MS = 60000               -- identity.unverified at most once a minute per claimed name
@@ -69,14 +97,30 @@ Id.steamMode = function() return getSteamModeActive() == true end
 Id.sidOf = function(player) return player:getSteamID() end
 
 local bindings = {}          -- name -> { sid, text, exact?, src, at } | { reserved = true, src, at }
+local byText = {}            -- exact text -> { n, names = { [name] = true } }: exact bindings, not reserved
+local doubles = {}           -- SteamID double -> how many exact texts round to it (> 1: a collision)
+local disputes = {}          -- name -> { text, reason }: the conflict the file recorded for it
+local canon = {}             -- exact text -> { name, rule, src, at }: the group's account, decided once
 local importedAt, importedBy = nil, nil     -- the first import; strict from then on
 local lastImportAt, lastImportBy = nil, nil
+local markerGen, markerCount = nil, nil     -- the last companion import marker in the file
 local unreadable = false     -- the file exists but could not be read: nobody is verified
+local damaged = false        -- lines were skipped and no import marker survived: strict anyway
 local conflicts = nil        -- name -> { sid, text, reason, bound } of the last import (memory only)
 local lastImport = nil       -- the last import's summary (memory only)
 local refused = {}           -- claimed name -> commands refused since the last flush
 local noticeAt = {}          -- claimed name -> when it was last told
 local lastFlush = 0
+-- the companion export (memory only: the file is read again on every start)
+local export = { status = "none" }
+local acceptedGen = nil      -- generatedAt of the export accepted during this uptime
+local rejectedGen = nil      -- generatedAt of an export whose rows were refused (not read again)
+local rejectAudited = {}     -- generatedAt (or status without one) -> audited already
+local wlIds = {}             -- name -> whitelist id of the accepted export
+local lastNames, lastNamesCount = nil, 0    -- the accepted export's names (this uptime)
+local stream = nil           -- an export being read across ticks
+local lastPoll = 0
+local collisionAudited = {}  -- name .. text -> audited during this uptime
 
 -- ---------- numbers ----------
 
@@ -86,6 +130,10 @@ local function double(n) return n + 0.0 end
 
 local function validSid(v)
     return type(v) == "number" and v > 0 and v < math.huge and v == math.floor(v)
+end
+
+local function whole(v, lo, hi)
+    return type(v) == "number" and v == math.floor(v) and v >= lo and v <= hi
 end
 
 -- The exact decimal text of a SteamID double: two halves below 1e9, each printed exactly.
@@ -117,42 +165,150 @@ end
 
 -- ---------- the principal ----------
 
-function Id.principal(player)
+function Id.login(player)
     if player == nil or player:getPlayerNum() ~= 0 then return nil end
     local name = player:getUsername()
     if type(name) ~= "string" or name == "" then return nil end
     if not Id.steamMode() then return name end
     if unreadable then return nil end
     local b = bindings[name]
-    if b == nil then return importedAt == nil and name or nil end
+    if b == nil then return (importedAt == nil and not damaged) and name or nil end
     -- checked on its own: a reserved record has no SteamID, and a player whose SteamID reads as
     -- nil must not match that nil
-    if b.reserved then return nil end
+    if b.reserved or Id.unresolved(name) == "EXACT_MISMATCH" then return nil end
     return Id.sidOf(player) == b.sid and name or nil
 end
+S.login = Id.login
+
+-- The account the verified login belongs to (ECServer S.accountOf: the ModData merge marker).
+function Id.principal(player)
+    local name = Id.login(player)
+    return name and S.accountOf(name) or nil
+end
 S.principal = Id.principal
+
+-- ---------- bindings and the exact groups ----------
+
+-- Only an exact binding (a whitelist text) that is not reserved joins its SteamID's group; a
+-- rounded OnNewGame double cannot say which of the Steam accounts sharing it the name belongs to.
+local function unindex(name, b)
+    if b == nil or b.reserved or not b.exact then return end
+    local set = byText[b.text]
+    if set == nil or not set.names[name] then return end
+    set.names[name], set.n = nil, set.n - 1
+    if set.n <= 0 then
+        byText[b.text] = nil
+        local d = (doubles[b.sid] or 1) - 1
+        doubles[b.sid] = d > 0 and d or nil
+    end
+end
+
+local function index(name, b)
+    if b == nil or b.reserved or not b.exact then return end
+    local set = byText[b.text]
+    if set == nil then
+        set = { n = 0, names = {} }
+        byText[b.text] = set
+        doubles[b.sid] = (doubles[b.sid] or 0) + 1
+    end
+    if not set.names[name] then set.names[name], set.n = true, set.n + 1 end
+end
+
+local function setBinding(name, b)
+    unindex(name, bindings[name])
+    bindings[name] = b
+    index(name, b)
+end
+
+-- The conflict recorded for this name while its binding still disagrees with it, or nil. A
+-- confirmed rebind moves the binding onto the recorded SteamID, which resolves it.
+function Id.unresolved(name)
+    local d = disputes[name]
+    if d == nil then return nil end
+    local b = bindings[name]
+    if b ~= nil and not b.reserved and b.text == d.text then return nil end
+    return d.reason
+end
+
+-- Two different exact texts that round to one double: the SteamIDs cannot be told apart at login.
+function Id.collides(text)
+    local d = sidFromText(text, Id.SID_EXACT)
+    return d ~= nil and (doubles[d] or 0) > 1
+end
+
+function Id.sidDouble(text)
+    return sidFromText(text, Id.SID_EXACT)
+end
+
+-- Read-only views for ECMerge (never written through).
+function Id.view()
+    return { bindings = bindings, byText = byText, disputes = disputes, canon = canon, wlIds = wlIds }
+end
+
+-- Every name sharing this name's account (ECServer: the account and the names merged into it),
+-- plus every login bound exactly to the same SteamID as the name or its account, so a letter
+-- written under a merged name is still found after a world rollback took the marker away.
+local baseGroupOf = S.groupOf
+function Id.groupOf(name)
+    local out = baseGroupOf(name)
+    local seen, extra = {}, {}
+    for _, n in ipairs(out) do seen[n] = true end
+    local function addText(n)
+        local b = type(n) == "string" and bindings[n] or nil
+        local set = b and not b.reserved and b.exact and byText[b.text] or nil
+        if set == nil then return end
+        for m in pairs(set.names) do
+            if not seen[m] then seen[m] = true; extra[#extra + 1] = m end
+        end
+    end
+    addText(name)
+    addText(out[1])
+    EC.sortSafe(extra, function(a, b) return a < b end)
+    for _, m in ipairs(extra) do out[#out + 1] = m end
+    return out
+end
+S.groupOf = Id.groupOf
 
 -- ---------- the file ----------
 
 local function apply(rec)
     if type(rec) ~= "table" or rec.v ~= Id.VERSION then return false end
     local at = type(rec.at) == "number" and rec.at or 0
+    local src = type(rec.src) == "string" and rec.src or "?"
     if rec.k == "import" then
         local by = type(rec.by) == "string" and rec.by or nil
         if importedAt == nil then importedAt, importedBy = at, by end
         lastImportAt, lastImportBy = at, by
+        if src == "COMPANION" and whole(rec.gen, 1, 9007199254740991) then
+            markerGen, markerCount = rec.gen, tonumber(rec.count)
+        end
+        return true
+    end
+    if rec.k == "canon" then
+        if sidFromText(rec.sid, Id.SID_EXACT) == nil or not validName(rec.name) then return false end
+        if canon[rec.sid] == nil then
+            canon[rec.sid] = { name = rec.name, rule = rec.rule, src = src, at = at }
+        end
         return true
     end
     if not validName(rec.name) then return false end
-    local src = type(rec.src) == "string" and rec.src or "?"
     if rec.k == "bind" then
         local sid = sidFromText(rec.sid)
         if sid == nil then return false end
-        bindings[rec.name] = { sid = sid, text = rec.sid, exact = rec.exact == true or nil, src = src, at = at }
+        setBinding(rec.name, { sid = sid, text = rec.sid, exact = rec.exact == true or nil, src = src, at = at })
         return true
     end
     if rec.k == "reserve" then
-        bindings[rec.name] = { reserved = true, src = src, at = at }
+        setBinding(rec.name, { reserved = true, src = src, at = at })
+        return true
+    end
+    if rec.k == "conflict" then
+        if rec.clear == true then
+            disputes[rec.name] = nil
+            return true
+        end
+        if sidFromText(rec.sid, Id.SID_EXACT) == nil or type(rec.reason) ~= "string" then return false end
+        disputes[rec.name] = { text = rec.sid, reason = rec.reason }
         return true
     end
     return false
@@ -163,8 +319,9 @@ end
 -- cacheFileExists shares its root, :5541-5549) must not read as "nothing bound": Steam mode then
 -- verifies nobody until it can be read, instead of trusting every name.
 function Id.load()
-    bindings, unreadable = {}, false
+    bindings, byText, doubles, disputes, canon, unreadable, damaged = {}, {}, {}, {}, {}, false, false
     importedAt, importedBy, lastImportAt, lastImportBy = nil, nil, nil, nil
+    markerGen, markerCount = nil, nil
     local reader = nil
     local opened = pcall(function() reader = getFileReader(Id.FILE, false) end)
     if not opened or reader == nil then
@@ -192,6 +349,9 @@ function Id.load()
         return
     end
     if bad > 0 then EC.log("identity file: " .. bad .. " of " .. lines .. " lines were not usable and were skipped") end
+    -- the torn line may have been the only import marker: never fall back to trusting names
+    damaged = bad > 0 and importedAt == nil
+    if damaged then EC.log("identity file has no usable import marker next to skipped lines: strict mode until an import is accepted") end
 end
 
 -- One open, every line, one close (the writer flushes only on close). Records are applied to
@@ -209,6 +369,17 @@ local function writeLines(recs)
     local closed = pcall(function() writer:close() end)
     if not (written and closed) then EC.log("identity file write failed") end
     return written and closed
+end
+
+-- The account of one exact SteamID group, decided once (ECMerge). A SteamID that already has a
+-- decision keeps it: returns false and writes nothing.
+function Id.recordCanon(text, name, rule, src, ms)
+    if unreadable or canon[text] ~= nil or sidFromText(text, Id.SID_EXACT) == nil or not validName(name) then return false end
+    if not writeLines({ { v = Id.VERSION, k = "canon", sid = text, name = name, rule = rule, src = src, at = ms } }) then
+        return false
+    end
+    canon[text] = { name = name, rule = rule, src = src, at = ms }
+    return true
 end
 
 -- ---------- audit ----------
@@ -236,7 +407,7 @@ function Id.onNewGame(player)
     if b == nil then
         local at, text = EC.now(), Id.sidText(sid)
         if not writeLines({ { v = Id.VERSION, k = "bind", name = name, sid = text, src = "NEWGAME", at = at } }) then return end
-        bindings[name] = { sid = sid, text = text, src = "NEWGAME", at = at }
+        setBinding(name, { sid = sid, text = text, src = "NEWGAME", at = at })
         audit("BIND", name, "NEWGAME", nil, nil, { steamId = text, exact = false })
     elseif b.reserved or b.sid ~= sid then
         audit("BIND_CONFLICT", name, b.reserved and "RESERVED" or "SID_MISMATCH", nil, nil,
@@ -318,19 +489,36 @@ local function checkRows(rows)
     return n
 end
 
-function Id.import(rows, actor, ms)
+-- How many rows of the last accepted export this one no longer lists, and the most an automatic
+-- import may drop and still reserve (design 0-6). Without the last export's names in memory (the
+-- first read after a start) the counts of the last companion marker stand in.
+local function dropped(listed, n)
+    local base, gone = 0, 0
+    if lastNames ~= nil then
+        base = lastNamesCount
+        for name in pairs(lastNames) do if not listed[name] then gone = gone + 1 end end
+    elseif type(markerCount) == "number" then
+        base = markerCount
+        gone = math.max(0, markerCount - n)
+    end
+    return gone, math.max(Id.AUTO_DROP_MIN, math.floor(base * Id.AUTO_DROP_RATIO))
+end
+
+-- The one import pipeline. rows are checked already; o = { src = "IMPORT" | "COMPANION", actor,
+-- ms, auto?, gen?, count? }. Everything is written in one open and applied only afterwards:
+-- the marker first (a write cut short keeps "imported" and loses bindings - names then refused -
+-- rather than keeping bindings and losing the strict mode they were imported for), and only when
+-- something changes or no import was ever accepted, so the same export read again after a
+-- restart writes nothing.
+local function applyImport(rows, o)
     if unreadable then return nil, "unreadable" end
-    local n, err, errName = checkRows(rows)
-    if n == nil then return nil, err, errName end
-    local res = { at = ms, by = actor, rows = n, bound = 0, same = 0, ignored = 0,
+    local n, ms = #rows, o.ms
+    local res = { at = ms, by = o.actor, src = o.src, rows = n, bound = 0, same = 0, upgraded = 0, ignored = 0,
         missing = {}, reserved = {}, collisions = {}, conflicts = 0 }
-    -- the marker first: a write cut short keeps "imported" and loses bindings (names then refused)
-    -- rather than keeping bindings and losing the strict mode they were imported for
-    local recs = { { v = Id.VERSION, k = "import", at = ms, by = actor } }
-    local listed, bySid, fresh, pending = {}, {}, {}, {}
+    local recs, listed, bySid, fresh, pending, clears = {}, {}, {}, {}, {}, {}
     for i = 1, n do
         local name, text = rows[i].u, rows[i].s
-        listed[name] = true
+        listed[name] = text      -- truthy for every listed row, "" included
         if L.isSystemAccount(name) then
             res.ignored = res.ignored + 1
         elseif text == "" then
@@ -345,61 +533,303 @@ function Id.import(rows, actor, ms)
                 if not first.collided then first.collided = true; res.collisions[#res.collisions + 1] = first.name end
                 res.collisions[#res.collisions + 1] = name
             end
-            local b = bindings[name]
-            if b == nil then
-                recs[#recs + 1] = { v = Id.VERSION, k = "bind", name = name, sid = text, exact = true, src = "IMPORT", at = ms }
-                fresh[name] = { sid = sid, text = text, exact = true, src = "IMPORT", at = ms }
-                res.bound = res.bound + 1
-            elseif not b.reserved and b.sid == sid then
-                res.same = res.same + 1
+            local b, reason = bindings[name], nil
+            if b == nil or (not b.reserved and not b.exact and b.sid == sid) then
+                -- a new exact binding, or the rounded NEWGAME one upgraded to the text it rounds from
+                recs[#recs + 1] = { v = Id.VERSION, k = "bind", name = name, sid = text, exact = true, src = o.src,
+                    from = b and b.src or nil, at = ms }
+                fresh[name] = { sid = sid, text = text, exact = true, src = o.src, at = ms }
+                if b == nil then res.bound = res.bound + 1 else res.upgraded = res.upgraded + 1 end
+            elseif b.reserved then
+                reason = "RESERVED"
+            elseif b.sid ~= sid then
+                reason = "SID_MISMATCH"
+            elseif b.text ~= text then
+                reason = "EXACT_MISMATCH"   -- both exact, one double, two Steam accounts
             else
-                pending[name] = { sid = sid, text = text, reason = b.reserved and "RESERVED" or "SID_MISMATCH", bound = b }
+                res.same = res.same + 1
+            end
+            if reason then
+                pending[name] = { sid = sid, text = text, reason = reason, bound = b }
                 res.conflicts = res.conflicts + 1
+            elseif disputes[name] ~= nil then
+                clears[#clears + 1] = name
             end
         end
     end
+    local candidates = {}
     for name in pairs(knownNames()) do
-        if not listed[name] and bindings[name] == nil then
-            recs[#recs + 1] = { v = Id.VERSION, k = "reserve", name = name, src = "IMPORT", at = ms }
+        if not listed[name] and bindings[name] == nil then candidates[#candidates + 1] = name end
+    end
+    EC.sortSafe(candidates, byName)
+    local gone, dropLimit = dropped(listed, n)
+    if o.auto and #candidates > 0 and (#candidates > Id.AUTO_RESERVE_MAX or (importedAt ~= nil and gone > dropLimit)) then
+        -- an export that suddenly lacks many accounts is more likely cut short than true: bind,
+        -- never lock anybody out on its word (an administrator's import reserves them)
+        res.reserveSkipped, res.dropped = #candidates, gone
+    else
+        for _, name in ipairs(candidates) do
+            recs[#recs + 1] = { v = Id.VERSION, k = "reserve", name = name, src = o.src, at = ms }
             res.reserved[#res.reserved + 1] = name
         end
     end
-    EC.sortSafe(res.reserved, byName)
-    local before = onlineVerdicts()
-    if not writeLines(recs) then return nil, "write_failed" end
-    if importedAt == nil then importedAt, importedBy = ms, actor end
-    lastImportAt, lastImportBy = ms, actor
-    for name, b in pairs(fresh) do bindings[name] = b end
-    for _, name in ipairs(res.reserved) do bindings[name] = { reserved = true, src = "IMPORT", at = ms } end
-    conflicts, lastImport = pending, res
-    announce(before)
-    audit("IDENTITY_IMPORT", "whitelist", nil, actor, { count = n, bound = res.bound, same = res.same,
-        missing = #res.missing, reserved = #res.reserved, conflicts = res.conflicts,
-        collisions = #res.collisions, ignored = res.ignored },
-        { missingNames = res.missing, reservedNames = res.reserved, collisionNames = res.collisions })
-    for _, name in ipairs(res.reserved) do audit("BIND_RESERVED", name, "IMPORT", actor) end
-    for name, c in pairs(pending) do
-        audit("BIND_CONFLICT", name, c.reason, actor, nil, { steamId = c.text, boundSteamId = c.bound.text })
+    local pendingNames, newConflicts = {}, {}
+    for name in pairs(pending) do pendingNames[#pendingNames + 1] = name end
+    EC.sortSafe(pendingNames, byName)
+    for _, name in ipairs(pendingNames) do
+        local c, d = pending[name], disputes[name]
+        -- recorded and audited once per name and SteamID; never moved by an import
+        if d == nil or d.text ~= c.text or d.reason ~= c.reason then
+            recs[#recs + 1] = { v = Id.VERSION, k = "conflict", name = name, sid = c.text, reason = c.reason, src = o.src, at = ms }
+            newConflicts[#newConflicts + 1] = name
+        end
     end
-    for _, name in ipairs(res.collisions) do audit("BIND_CONFLICT", name, "COLLISION", actor) end
+    EC.sortSafe(clears, byName)
+    for _, name in ipairs(clears) do
+        recs[#recs + 1] = { v = Id.VERSION, k = "conflict", name = name, clear = true, src = o.src, at = ms }
+    end
+    local changed = #recs > 0
+    if changed or importedAt == nil then
+        table.insert(recs, 1, { v = Id.VERSION, k = "import", at = ms, by = o.actor, src = o.src, gen = o.gen, count = o.count })
+    end
+    local before = onlineVerdicts()
+    if #recs > 0 and not writeLines(recs) then return nil, "write_failed" end
+    if #recs > 0 then
+        if importedAt == nil then importedAt, importedBy = ms, o.actor end
+        lastImportAt, lastImportBy = ms, o.actor
+        if o.src == "COMPANION" then markerGen, markerCount = o.gen, o.count end
+    end
+    for name, b in pairs(fresh) do setBinding(name, b) end
+    for _, name in ipairs(res.reserved) do setBinding(name, { reserved = true, src = o.src, at = ms }) end
+    for _, name in ipairs(newConflicts) do disputes[name] = { text = pending[name].text, reason = pending[name].reason } end
+    for _, name in ipairs(clears) do disputes[name] = nil end
+    conflicts, lastImport = pending, res
+    res.changed = changed
+    announce(before)
+    -- the administrator's import is always audited; the companion's only when it changed something
+    if o.src ~= "COMPANION" or changed or res.reserveSkipped then
+        audit("IDENTITY_IMPORT", "whitelist", o.src == "COMPANION" and "COMPANION" or "MANUAL", o.actor, {
+            count = n, bound = res.bound, upgraded = res.upgraded, same = res.same, missing = #res.missing,
+            reserved = #res.reserved, conflicts = res.conflicts, collisions = #res.collisions, ignored = res.ignored,
+            gen = o.gen, reserveSkipped = res.reserveSkipped },
+            { missingNames = res.missing, reservedNames = res.reserved, collisionNames = res.collisions })
+    end
+    for _, name in ipairs(res.reserved) do audit("BIND_RESERVED", name, o.src, o.actor) end
+    for _, name in ipairs(newConflicts) do
+        local c = pending[name]
+        audit("BIND_CONFLICT", name, c.reason, o.actor, nil, { steamId = c.text, boundSteamId = c.bound.text })
+    end
+    for _, name in ipairs(res.collisions) do
+        local key = name .. "\1" .. listed[name]    -- listed[name] is the row's SteamID text
+        if not collisionAudited[key] then
+            collisionAudited[key] = true
+            audit("BIND_CONFLICT", name, "COLLISION", o.actor)
+        end
+    end
     return res
+end
+
+-- An import was accepted: the merge plan follows it (ECMerge).
+local function imported(ms)
+    local Mg = S.Merge
+    if Mg == nil or type(Mg.onImport) ~= "function" then return end
+    local ok, err = pcall(Mg.onImport, ms)
+    if not ok then EC.log("merge plan after import failed: " .. tostring(err)) end
+end
+
+function Id.import(rows, actor, ms)
+    if unreadable then return nil, "unreadable" end
+    local n, err, errName = checkRows(rows)
+    if n == nil then return nil, err, errName end
+    local res, applyErr = applyImport(rows, { src = "IMPORT", actor = actor, ms = ms })
+    if res == nil then return nil, applyErr end
+    imported(ms)
+    return res
+end
+
+-- ---------- the companion export ----------
+
+local function serverName()
+    local ok, name = pcall(getServerName)
+    return ok and type(name) == "string" and name or nil
+end
+
+-- The header, in the design's order (7.2 step 1). An equal generatedAt is decided by the caller.
+local function headerError(h)
+    if type(h) ~= "table" or h.type ~= "whitelist" or h.v ~= 1 then return "malformed", "header" end
+    local name = serverName()
+    if name == nil or h.serverName ~= name then return "server_mismatch", "serverName" end
+    if not whole(h.generatedAt, 1, 9007199254740991) then return "malformed", "generatedAt" end
+    local last = acceptedGen or markerGen
+    if last ~= nil and h.generatedAt < last then return "stale", "generatedAt" end
+    if not whole(h.count, 1, Id.EXPORT_ROWS_MAX) then return "malformed", "count" end
+    return nil
+end
+
+-- One refusal: the status says why, and it is audited once per generatedAt (or once per status
+-- when the header carried none). Nothing of the file is applied.
+local function exportReject(status, detail, h)
+    local gen = type(h) == "table" and whole(h.generatedAt, 1, 9007199254740991) and h.generatedAt or nil
+    export = { status = status, generatedAt = gen, count = type(h) == "table" and tonumber(h.count) or nil,
+        acceptedAt = export.acceptedAt, reason = detail }
+    local key = gen or status
+    if rejectAudited[key] then return end
+    rejectAudited[key] = true
+    audit("IDENTITY_EXPORT_REJECTED", "whitelist", status, nil, { generatedAt = gen, reason = detail })
+end
+
+local function rowError(st, r)
+    if not whole(r.id, 1, 9007199254740991) or st.ids[r.id] then return "id" end
+    if not validName(r.u) or st.names[r.u] then return "u" end
+    if type(r.s) ~= "string" or (r.s ~= "" and sidFromText(r.s, Id.SID_EXACT) == nil) then return "s" end
+    st.ids[r.id], st.names[r.u] = true, true
+    return nil
+end
+
+-- Reads up to `budget` lines (all of them when nil). nil while more remains, "ok" when the rows,
+-- the trailer and the end of the file all agree with the header, otherwise status and detail.
+local function readLines(st, budget)
+    local status, detail = nil, nil
+    local ok, err = pcall(function()
+        local left = budget
+        while left == nil or left > 0 do
+            local line = st.reader:readLine()
+            if line == nil then
+                if st.ended then status = "ok" else status, detail = "truncated", "no trailer after " .. #st.rows .. " rows" end
+                return
+            end
+            if left ~= nil then left = left - 1 end
+            if st.ended then status, detail = "malformed", "a line after the trailer"; return end
+            local r = EC.jsonDecode(line)
+            local where = "line " .. tostring(#st.rows + 2)
+            if type(r) ~= "table" then status, detail = "malformed", where; return end
+            if r.type == "end" then
+                if r.count ~= st.header.count then status, detail = "malformed", "trailer count"; return end
+                if #st.rows ~= st.header.count then status, detail = "truncated", #st.rows .. " of " .. st.header.count .. " rows"; return end
+                st.ended = true
+            else
+                if #st.rows >= st.header.count then status, detail = "malformed", "more rows than count"; return end
+                local bad = rowError(st, r)
+                if bad then status, detail = "malformed", where .. ": " .. bad; return end
+                st.rows[#st.rows + 1] = { u = r.u, s = r.s, id = r.id }
+            end
+        end
+    end)
+    if not ok then return "unreadable", tostring(err) end
+    return status, detail
+end
+
+local function finishExport(st, status, detail, ms)
+    pcall(function() st.reader:close() end)
+    if status ~= "ok" then
+        rejectedGen = st.gen      -- refused whole: not read again until a newer export
+        exportReject(status, detail, st.header)
+        return
+    end
+    local res, err = applyImport(st.rows, { src = "COMPANION", actor = "COMPANION", ms = ms, auto = true,
+        gen = st.gen, count = #st.rows })
+    if res == nil then
+        -- our own file failed, not the export: the next poll tries again
+        export.reason = err
+        EC.log("companion whitelist export not applied: " .. tostring(err))
+        return
+    end
+    acceptedGen, rejectedGen = st.gen, nil
+    wlIds, lastNames, lastNamesCount = {}, st.names, #st.rows
+    for _, r in ipairs(st.rows) do wlIds[r.u] = r.id end
+    export = { status = res.reserveSkipped and "reserve_suspect" or "accepted", generatedAt = st.gen,
+        count = #st.rows, acceptedAt = ms,
+        reason = res.reserveSkipped and (tostring(res.reserveSkipped) .. " reservations skipped, " .. tostring(res.dropped) .. " rows dropped") or nil }
+    imported(ms)
+end
+
+-- Reads the export's first line and, when it names a newer export, starts reading it: all of it
+-- at once on `startup` (nothing else runs yet), otherwise Id.EXPORT_LINES_PER_TICK lines a tick
+-- through the same open reader.
+function Id.pollExport(ms, startup)
+    if stream ~= nil or unreadable or not Id.steamMode() then return end
+    local reader = nil
+    local opened = pcall(function() reader = getFileReader(Id.EXPORT_FILE, false) end)
+    if not opened or reader == nil then
+        local ok, exists = pcall(cacheFileExists, Id.EXPORT_FILE)
+        if ok and not exists then
+            export = { status = "missing", acceptedAt = export.acceptedAt }
+        else
+            exportReject("unreadable", "open")
+        end
+        return
+    end
+    local okLine, line = pcall(function() return reader:readLine() end)
+    local h = okLine and type(line) == "string" and EC.jsonDecode(line) or nil
+    local status, detail
+    if not okLine then status, detail = "unreadable", "header" else status, detail = headerError(h) end
+    if status == nil and ((not startup and acceptedGen ~= nil and h.generatedAt <= acceptedGen) or h.generatedAt == rejectedGen) then
+        pcall(function() reader:close() end)      -- unchanged, or refused whole already
+        return
+    end
+    if status ~= nil then
+        pcall(function() reader:close() end)
+        exportReject(status, detail, h)
+        return
+    end
+    local st = { reader = reader, header = h, gen = h.generatedAt, rows = {}, ids = {}, names = {} }
+    if startup then
+        local s, d = readLines(st, nil)
+        finishExport(st, s, d, ms)
+    else
+        stream = st
+    end
+end
+
+function Id.continueExport(ms)
+    local st = stream
+    if st == nil then return end
+    local status, detail = readLines(st, Id.EXPORT_LINES_PER_TICK)
+    if status == nil then return end
+    stream = nil
+    finishExport(st, status, detail, ms)
+end
+
+-- The start-up read (ECMerge.onStarted, after every module's init).
+function Id.startExport(ms)
+    lastPoll = ms
+    Id.pollExport(ms, true)
+end
+
+function Id.whitelistId(name)
+    return wlIds[name]
 end
 
 -- ---------- rebind (the administrator's confirmation) ----------
 
+-- A name that took part in an account merge, as the alias or as the account. Moving it would
+-- hand the merged account to whoever holds the new SteamID.
+local function tookPartInMerge(name)
+    local merged = S.modData().identity.merged
+    if merged[name] ~= nil then return true end
+    for _, rec in pairs(merged) do
+        if type(rec) == "table" and rec.into == name then return true end
+    end
+    return false
+end
+
 -- Moves the named conflicts of the last import to the whitelist's SteamID. A name the last
 -- import did not list as a conflict (or one already moved) is returned as stale. Nothing else
--- can touch a conflicting binding in between: OnNewGame never changes a bound name, and a new
--- import replaces the whole list.
+-- can touch a conflicting binding in between: OnNewGame and the automatic import never change a
+-- bound name, and a new import replaces the whole list.
 function Id.rebind(names, actor, reason, ms)
     if unreadable then return nil, "unreadable" end
     if type(names) ~= "table" or #names < 1 or #names > Id.LIST_MAX or EC.countKeys(names) ~= #names then
         return nil, "invalid_args"
     end
+    for _, name in ipairs(names) do
+        if not validName(name) then return nil, "invalid_args" end
+        if tookPartInMerge(name) then return nil, "merged_name", name end
+    end
     if conflicts == nil then return nil, "import_first" end
     local recs, moved, stale, seen = {}, {}, {}, {}
     for _, name in ipairs(names) do
-        if not validName(name) or seen[name] then return nil, "invalid_args" end
+        if seen[name] then return nil, "invalid_args" end
         seen[name] = true
         local c = conflicts[name]
         if c ~= nil then
@@ -414,7 +844,7 @@ function Id.rebind(names, actor, reason, ms)
         if not writeLines(recs) then return nil, "write_failed" end
         for _, name in ipairs(moved) do
             local c = conflicts[name]
-            bindings[name] = { sid = c.sid, text = c.text, exact = true, src = "REBIND", at = ms }
+            setBinding(name, { sid = c.sid, text = c.text, exact = true, src = "REBIND", at = ms })
             conflicts[name] = nil
             audit("BIND_MOVE", name, "REBIND", actor, { reason = reason },
                 { steamId = c.text, before = c.bound.reserved and "reserved" or c.bound.text })
@@ -442,12 +872,18 @@ function Id.status()
             bound = c.bound.text or "", boundExact = c.bound.exact == true }
     end
     return {
-        steam = Id.steamMode(), unreadable = unreadable,
+        steam = Id.steamMode(), unreadable = unreadable, damaged = (damaged and importedAt == nil) or nil,
         imported = importedAt ~= nil, importedAt = importedAt, importedBy = importedBy,
         lastImportAt = lastImportAt, lastImportBy = lastImportBy,
         bound = bound, reserved = reserved,
         conflicts = list, conflictCount = #names, conflictsTruncated = cut or nil,
     }
+end
+
+-- The companion export as the admin page shows it.
+function Id.exportStatus()
+    return { status = export.status, generatedAt = export.generatedAt, count = export.count,
+        acceptedAt = export.acceptedAt, reason = export.reason }
 end
 
 -- The last import's summary as a reply carries it: lists capped, counts complete.
@@ -505,6 +941,12 @@ end
 
 function Id.onTick()
     local ms = EC.now()
+    if stream ~= nil then
+        Id.continueExport(ms)
+    elseif ms - lastPoll >= Id.EXPORT_POLL_MS then
+        lastPoll = ms
+        Id.pollExport(ms, false)
+    end
     if ms - lastFlush < Id.FLUSH_MS then return end
     lastFlush = ms
     flush(ms)
@@ -514,7 +956,8 @@ end
 
 -- admin.identity { action = "status" | "import" | "rebind", requestId, rows?, names?, reason? }
 -- Exempt from the identity gate (S.IDENTITY_EXEMPT): status needs the read role, import and
--- rebind the write role; roles come from the connection, never from the name.
+-- rebind the write role; roles come from the connection, never from the name. Every reply
+-- carries the status, with the companion export (status.export) and the merge plan (status.merge).
 S.handlers["admin.identity"] = function(player, args)
     args = type(args) == "table" and args or {}
     local action = args.action
@@ -537,9 +980,9 @@ S.handlers["admin.identity"] = function(player, args)
         if rerr then
             res = { ok = false, error = rerr }
         else
-            local out, err = Id.rebind(args.names, actorOf(player), reason, EC.now())
+            local out, err, name = Id.rebind(args.names, actorOf(player), reason, EC.now())
             res = out and { ok = true, rebound = out.rebound, moved = out.moved, stale = out.stale }
-                or { ok = false, error = err }
+                or { ok = false, error = err, name = name }
         end
     else
         res = { ok = true }
@@ -547,6 +990,8 @@ S.handlers["admin.identity"] = function(player, args)
     res.action, res.requestId = action, requestId
     res.perms = { read = A.canRead(player), write = A.isAdmin(player) }
     res.status = Id.status()
+    res.status.export = Id.exportStatus()
+    res.status.merge = S.Merge and S.Merge.status() or nil
     res.last = importView(lastImport)
     S.reply(player, "admin.identity", res)
 end
@@ -554,9 +999,16 @@ end
 -- ---------- lifecycle ----------
 
 -- On every start: the bindings are replayed from the file; what only lived in memory (the
--- last import's conflicts, refusal counters) starts empty.
-function Id.init()
+-- last import's conflicts, refusal counters, the accepted export) starts empty. The export
+-- itself is read again once every module is ready (Id.startExport, from ECMerge).
+function Id.init(md)
     conflicts, lastImport, refused, noticeAt, lastFlush = nil, nil, {}, {}, 0
+    if stream ~= nil then pcall(function() stream.reader:close() end) end
+    export, acceptedGen, rejectedGen, rejectAudited, stream = { status = "none" }, nil, nil, {}, nil
+    wlIds, lastNames, lastNamesCount, lastPoll, collisionAudited = {}, nil, 0, 0, {}
+    md = md or S.modData()
+    if type(md.identity) ~= "table" then md.identity = {} end
+    if type(md.identity.merged) ~= "table" then md.identity.merged = {} end
     Id.load()
 end
 

@@ -217,8 +217,16 @@ end
 --   bytesPerTick       an extra per-tick budget on top of the line count. There is deliberately
 --                      no row pre-filter: a caller that skips a row it did not parse cannot say
 --                      the row was intact, and for a financial read that is the whole question.
+-- One read job per account and command (throttle key); a player without a verified identity
+-- only ever gets here through an exempt path and is keyed apart, under its claimed name.
+local function jobOwner(player)
+    local ok, account = pcall(S.principal, player)
+    if ok and type(account) == "string" then return account end
+    return "?" .. S.claimedName(player)
+end
+
 function W.tail(player, command, paths, extra, projector, strictJson, options)
-    local key = player:getUsername() .. ":" .. command
+    local key = jobOwner(player) .. ":" .. command
     local onComplete = type(options) == "table" and options.onComplete or nil
     local function refuse(code)
         local reply = { entries = {}, total = 0, truncated = false, error = code }
@@ -250,9 +258,7 @@ end
 -- another attempt in the same tick.
 function W.canStartRead(player, command)
     if player == nil or type(command) ~= "string" then return false end
-    local ok, username = pcall(function() return player:getUsername() end)
-    if not ok or type(username) ~= "string" then return false end
-    if jobs[username .. ":" .. command] then return false end
+    if jobs[jobOwner(player) .. ":" .. command] then return false end
     return EC.countKeys(jobs) < W.HISTORY_MAX_JOBS
 end
 
@@ -343,7 +349,7 @@ function W.requestHistory(player, month, requestId)
         S.reply(player, "wallet.history", { month = tostring(month), requestId = requestId, entries = {}, error = "invalid_args" })
         return
     end
-    W.tail(player, "wallet.history", W.receiptPaths(player:getUsername(), months), { month = month, requestId = requestId })
+    W.tail(player, "wallet.history", W.receiptPaths(S.principal(player), months), { month = month, requestId = requestId })
 end
 
 -- ---------- push on change ----------
@@ -385,7 +391,7 @@ function W.init()
 end
 
 S.handlers["wallet.state"] = function(player, args)
-    local res = W.state(player:getUsername())
+    local res = W.state(S.principal(player))
     res.requestId = type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil
     S.reply(player, "wallet.state", res)
 end

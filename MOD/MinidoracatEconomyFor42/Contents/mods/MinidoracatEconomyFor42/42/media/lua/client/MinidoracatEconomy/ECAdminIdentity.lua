@@ -125,7 +125,9 @@ function Page:createChildren()
 end
 
 function Page:errorText(code, name)
-    if code == "invalid_steamid" then return getText(T .. "Admin_Error_invalid_steamid", tostring(name or "-")) end
+    if code == "invalid_steamid" or code == "merged_name" then
+        return getText(T .. "Admin_Error_" .. code, tostring(name or "-"))
+    end
     return U.adminErrorText(code)
 end
 
@@ -292,6 +294,17 @@ end
 
 local function yesNo(v) return tr(v and "Admin_Id_Yes" or "Admin_Id_No") end
 
+-- A server code with its translation, or the code itself when this client has none for it.
+local function codeText(prefix, code)
+    return getTextOrNull(T .. prefix .. tostring(code)) or tostring(code)
+end
+
+local function numText(v) return tostring(tonumber(v) or 0) end
+
+-- status.merge.blocked reasons in reading order; a code this list lacks is still listed after them
+local MERGE_BLOCKERS = { "alias_online", "merge_failed", "frozen", "conflict", "reserved", "unknown_currency",
+    "reserved_funds", "live_listing", "auction", "mail_pending", "canonical_moved" }
+
 function Page:stamp(ms)
     return type(ms) == "number" and U.stampText(ms, self.owner.offsetMin) or "-"
 end
@@ -306,6 +319,63 @@ function Page:nameList(lines, key, names, count, truncated)
     if truncated then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#names), tostring(count)) end
 end
 
+-- status.export: what the server made of the companion's whitelist file (identity/whitelist.json).
+function Page:exportLines(lines, e)
+    if type(e) ~= "table" then return end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = getText(T .. "Admin_Id_Export", codeText("Admin_Id_Export_", e.status or "none"))
+    if e.generatedAt ~= nil or e.count ~= nil then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_ExportFile", self:stamp(e.generatedAt), numText(e.count))
+    end
+    if e.acceptedAt ~= nil then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_ExportAccepted", self:stamp(e.acceptedAt))
+    end
+    if e.reason ~= nil and e.reason ~= "" then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_ExportReason", tostring(e.reason))
+    end
+end
+
+-- status.merge: the account merge plan. With IdentityAutoMerge off it is a preview only; the
+-- group list is capped by the server and says so when it is.
+function Page:mergeLines(lines, m)
+    if type(m) ~= "table" then return end
+    local option = getTextOrNull("Sandbox_MinidoracatEconomy_IdentityAutoMerge") or "IdentityAutoMerge"
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = getText(T .. (m.enabled == true and "Admin_Id_MergeOn" or "Admin_Id_MergeOff"), option)
+    local blocked = type(m.blocked) == "table" and m.blocked or {}
+    local parts, listed, total = {}, {}, 0
+    local function part(code, n)
+        n = tonumber(n) or 0
+        listed[code] = true
+        if n <= 0 then return end
+        total = total + n
+        parts[#parts + 1] = codeText("Admin_Id_Why_", code) .. " " .. tostring(n)
+    end
+    for _, code in ipairs(MERGE_BLOCKERS) do part(code, blocked[code]) end
+    for code, n in pairs(blocked) do
+        if not listed[code] then part(code, n) end
+    end
+    lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeCounts", numText(m.groups), numText(m.aliases),
+        numText(m.merged), numText(m.ready), tostring(total), numText(m.ineligible))
+    if #parts > 0 then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeBlocked", table.concat(parts, ", ")) end
+    if m.planAt ~= nil then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergePlanAt", self:stamp(m.planAt)) end
+    local list = type(m.list) == "table" and m.list or {}
+    for _, g in ipairs(list) do
+        local members = {}
+        for _, mem in ipairs(type(g.members) == "table" and g.members or {}) do
+            local state = codeText("Admin_Id_State_", mem.state)
+            members[#members + 1] = mem.reason ~= nil
+                and getText(T .. "Admin_Id_MemberWhy", tostring(mem.name), state, codeText("Admin_Id_Why_", mem.reason))
+                or getText(T .. "Admin_Id_Member", tostring(mem.name), state)
+        end
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeGroup", tostring(g.account), table.concat(members, ", "))
+    end
+    local groups = tonumber(m.groups) or #list
+    if m.truncated or #list < groups then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#list), tostring(groups))
+    end
+end
+
 function Page:rebuild()
     local lines = {}
     if self.result ~= nil then
@@ -318,6 +388,7 @@ function Page:rebuild()
     else
         lines[#lines + 1] = getText(T .. "Admin_Id_Steam", yesNo(s.steam == true))
         if s.unreadable then lines[#lines + 1] = tr("Admin_Id_Unreadable") end
+        if s.damaged then lines[#lines + 1] = tr("Admin_Id_Damaged") end
         if s.imported then
             lines[#lines + 1] = getText(T .. "Admin_Id_Imported", self:stamp(s.importedAt), tostring(s.importedBy or "-"))
             lines[#lines + 1] = getText(T .. "Admin_Id_LastImport", self:stamp(s.lastImportAt), tostring(s.lastImportBy or "-"))
@@ -325,6 +396,7 @@ function Page:rebuild()
             lines[#lines + 1] = tr("Admin_Id_NotImported")
         end
         lines[#lines + 1] = getText(T .. "Admin_Id_Counts", tostring(s.bound or 0), tostring(s.reserved or 0))
+        self:exportLines(lines, s.export)
         local last = self.last
         lines[#lines + 1] = ""
         if last == nil then
@@ -345,6 +417,7 @@ function Page:rebuild()
         if s.conflictsTruncated then
             lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#list), tostring(total))
         end
+        self:mergeLines(lines, s.merge)
     end
     U.setWrappedText(self.reader, table.concat(lines, "\n"), self.reader.width)
     U.setButtonTitle(self.rebindButton, getText(T .. "Admin_Id_Rebind", tostring(#self:conflicts())))

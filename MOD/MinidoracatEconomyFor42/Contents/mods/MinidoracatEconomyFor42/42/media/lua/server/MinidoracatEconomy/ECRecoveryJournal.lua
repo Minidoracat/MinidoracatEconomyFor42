@@ -708,7 +708,7 @@ local function finishRead(job, reply)
     acct.job = nil
     -- The player who asked has to be the player who is told: a reconnect between the start and
     -- the end of the read is a different session, and nothing of this read carries over to it.
-    local player = S.onlinePlayer(job.username)
+    local player = S.onlineLogin(job.username)
     local same = false
     if player ~= nil and job.player ~= nil then
         local ok, equal = pcall(function() return player == job.player end)
@@ -769,7 +769,7 @@ end
 local function startRead(username)
     local acct = accounts[username]
     if acct == nil or acct.wantedCount == 0 or acct.job then return true end
-    local player = S.onlinePlayer(username)
+    local player = S.onlineLogin(username)
     if player == nil then
         forget(username)                    -- disconnected: the work and its results go with it
         return true
@@ -851,7 +851,7 @@ function J.onTick()
             local acct = accounts[username]
             if acct then
                 expireResults(acct, now)
-                if S.onlinePlayer(username) == nil then
+                if S.onlineLogin(username) == nil then
                     forget(username)
                 elseif acct.wantedCount > 0 and acct.job == nil then
                     enqueueAccount(username)
@@ -866,7 +866,7 @@ function J.onTick()
     for _, username in ipairs(batch) do
         local acct = accounts[username]
         if acct then acct.notify = false end
-        local player = acct and S.onlinePlayer(username) or nil
+        local player = acct and S.onlineLogin(username) or nil
         if player ~= nil then
             for _, fn in ipairs(listeners) do
                 local ok, err = pcall(fn, username, player)

@@ -103,6 +103,26 @@ local function dailyRow(day, create)
     return t
 end
 
+-- An account merge (ECMerge): the alias's deposits of each day count toward the account's cap.
+-- The server totals do not change.
+function Ex.mergeAccount(alias, into)
+    local prefix = alias .. "\1"
+    for _, t in pairs(md.exchange.daily) do
+        local accounts = type(t) == "table" and t.accounts or nil
+        if type(accounts) == "table" then
+            local keys = {}
+            for key in pairs(accounts) do
+                if string.sub(key, 1, #prefix) == prefix then keys[#keys + 1] = key end
+            end
+            for _, key in ipairs(keys) do
+                local target = into .. "\1" .. string.sub(key, #prefix + 1)
+                accounts[target] = (accounts[target] or 0) + (tonumber(accounts[key]) or 0)
+                accounts[key] = nil
+            end
+        end
+    end
+end
+
 local function tombstone(orderId, fields)
     fields.ts = EC.now()
     fields.seq = md.meta.seq
@@ -137,6 +157,8 @@ function Ex.process(order, orderId)
     if type(username) ~= "string" or username == "" or #username > Ex.USERNAME_MAX or string.find(username, "%c") then return fail("invalid_order") end
     if type(currency) ~= "string" or not EC.CURRENCIES[currency] then return fail("unknown_currency") end
     if L.isSystemAccount(username) then return fail("invalid_order") end
+    -- the order names a login; its caps, its money and its notice are that login's account
+    local account = S.accountOf(username)
     local cur = Cfg.currency(currency)
     local ex = cur and cur.exchange
     if type(ex) ~= "table" then return fail("not_exchangeable") end
@@ -153,11 +175,11 @@ function Ex.process(order, orderId)
     local ms = EC.now()
     local day = R.dayKey(ms)
     local row = dailyRow(day, false)
-    local usedAccount = row and (row.accounts[username .. "\1" .. currency] or 0) or 0
+    local usedAccount = row and (row.accounts[account .. "\1" .. currency] or 0) or 0
     local usedServer = row and (row.total[currency] or 0) or 0
     if usedAccount + order.amount > ex.perAccountDaily then return fail("daily_cap", { scope = "account", cap = ex.perAccountDaily, used = usedAccount }) end
     if usedServer + order.amount > ex.serverDaily then return fail("daily_cap", { scope = "server", cap = ex.serverDaily, used = usedServer }) end
-    local res = L.credit(username, currency, order.amount, Ex.ACCOUNT_PREFIX .. currency, {
+    local res = L.credit(account, currency, order.amount, Ex.ACCOUNT_PREFIX .. currency, {
         kind = "exchange_deposit", requestId = "discord:" .. orderId, reasonCode = "exchange_deposit",
         payload = { orderId = orderId, points = order.points, rateSnapshot = order.rateSnapshot, rateVersion = order.rateVersion, sourceMod = "discord" },
     })
@@ -165,20 +187,19 @@ function Ex.process(order, orderId)
     row = dailyRow(day, true)
     if type(row.total) ~= "table" then row.total = {} end
     row.total[currency] = (row.total[currency] or 0) + order.amount
-    row.accounts[username .. "\1" .. currency] = usedAccount + order.amount
-    tombstone(orderId, { status = "deposited", txId = res.txId, username = username, currency = currency, amount = order.amount })
+    row.accounts[account .. "\1" .. currency] = usedAccount + order.amount
+    tombstone(orderId, { status = "deposited", txId = res.txId, username = username, account = account, currency = currency, amount = order.amount })
     X.emit("exchange.deposited", {
-        orderId = orderId, username = username, currency = currency, points = order.points, amount = order.amount,
+        orderId = orderId, username = username, account = account, currency = currency, points = order.points, amount = order.amount,
         rateSnapshot = order.rateSnapshot, rateVersion = order.rateVersion, txId = res.txId, creditSeq = res.seq,
     })
-    EC.log("deposit " .. orderId .. ": " .. username .. " +" .. tostring(order.amount) .. " " .. currency)
+    EC.log("deposit " .. orderId .. ": " .. account .. " +" .. tostring(order.amount) .. " " .. currency)
     -- the player hears about it when online; offline, the statement shows the receipt at the next login
-    W.pushState(username)
-    S.forEachOnline(function(p)
-        if p:getUsername() == username then
-            S.reply(p, "exchange.notice", { orderId = orderId, currency = currency, amount = order.amount, points = order.points })
-        end
-    end)
+    W.pushState(account)
+    local p = S.onlinePlayer(account)
+    if p then
+        S.reply(p, "exchange.notice", { orderId = orderId, currency = currency, amount = order.amount, points = order.points })
+    end
     return "deposited"
 end
 

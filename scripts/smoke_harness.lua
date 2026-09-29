@@ -67,6 +67,9 @@ function getOnlinePlayers() return javaList(onlinePlayers) end
 -- 身分情境改成 true。全域：主函式已逼近 200 個 local。
 steamModeActive = false
 function getSteamModeActive() return steamModeActive end
+-- getServerName()（LuaManager.java:4099-4105：伺服器上回 GameServer.serverName）；companion 匯出檔的 header 要對上它。
+serverNameFake = "servertest"
+function getServerName() return serverNameFake end
 
 -- getRoles()：原生角色清單（LuaManager.java:3359-3365 -> Roles.getRoles，專用伺服器上也回得出來），
 -- size()/get(i) 0-based，每個 Role 有 getName()／getPosition()（原版 ISRolesList.lua:74-79 的用法）。
@@ -940,6 +943,7 @@ require("MinidoracatEconomy/ECAdmin")
 require("MinidoracatEconomy/ECEntitlements")
 require("MinidoracatEconomy/ECTransfer")
 require("MinidoracatEconomy/ECIdentity")
+require("MinidoracatEconomy/ECMerge")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
@@ -951,6 +955,9 @@ local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
 local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3 + 6 + 25   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller). +6: a split-screen seat is not an economy identity (scenario SP; scenario 89's three split-slot checks now say the seat is never observed). +25: the identity bound to the SteamID (scenario ID: principal matrix, OnNewGame, import, confirmation, refusals, replay).
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing one account (scenario MA, identity v2 step 2a)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7   -- +7: review fixes: EXACT_MISMATCH fails closed, a merge stopped midway resumes (2), a rollback with merging off closes the alias's letter (3), a torn import marker stays strict (2); one old duplicate-key check replaced
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -15193,7 +15200,7 @@ local sellers = lastSent("market.sellers").args.players
 check(#sellers == 1 and sellers[1].username == "sp-ann" and sellers[1].online == false,
     "the seller picker does not call an account online because a split-screen seat carries its name")
 md.market.byOwner["sp-ann"] = nil
-md.mailbox.byOwner["sp-ann"] = { entries = { ["sp-m1"] = { id = "sp-m1", state = "claimed", at = nowMs, claimedAt = nowMs } }, unclaimed = 0 }
+md.mailbox.byOwner["sp-ann"] = { entries = { ["sp-m1"] = { id = "sp-m1", owner = "sp-ann", state = "claimed", at = nowMs, claimedAt = nowMs } }, unclaimed = 0 }
 seat.modData[KEY] = { pendingOuts = { ["sp-o1"] = { kind = "market", epoch = md.meta.epoch, seq = 1 } } }
 seat.dead = true
 fire("OnCharacterDeath", seat)
@@ -15365,11 +15372,11 @@ local imp = admin(boss, { action = "import", requestId = "i4", rows = ROWS })
 local last = imp.last or {}
 local reserved = table.concat(last.reserved or {}, ",")
 local collisions = table.concat(last.collisions or {}, ",")
-check(imp.ok == true and last.rows == 8 and last.bound == 4 and last.same == 1 and last.ignored == 1
+check(imp.ok == true and last.rows == 8 and last.bound == 4 and last.same == 0 and last.upgraded == 1 and last.ignored == 1
     and table.concat(last.missing or {}, ",") == "id-cat" and reserved == "id-gone,id-seat"
     and collisions == "id-dan,id-dee" and last.conflicts == 1 and imp.status.conflicts[1].name == "id-fay"
     and imp.status.conflicts[1].reason == "SID_MISMATCH" and imp.status.conflicts[1].whitelist == "76561198000000112",
-    "the import reports new, unchanged, no-SteamID, reserved, conflicting and colliding names - and system accounts are left out")
+    "the import reports new, upgraded (a NEWGAME double the whitelist text rounds to), no-SteamID, reserved, conflicting and colliding names - and system accounts are left out")
 recs = fileRecs()
 check(recs[linesBefore + 1].k == "import" and recs[linesBefore + 1].by == "id-boss"
     and imp.status.imported == true and imp.perms.write == true,
@@ -15451,6 +15458,818 @@ check(brokenBob == nil and broken.error == "unreadable" and broken.status.unread
 SandboxVars.MinidoracatEconomy.AdminRoles = "admin;gm"
 steamModeActive = false
 onlinePlayers = {}
+end)()
+
+-- ===== 情境 MA：兩個登入名共用一個帳號（身分 v2 第 2a 步；合併標記手動寫入 ModData）=====
+-- 2a 只拆名字：S.login = 存檔（登入名）、S.principal = 帳號。這裡直接寫 md.identity.merged，
+-- 驗證每個「以存檔為範圍」與「以帳號為範圍」的分界都守住。
+io.write("scenario MA: two login names sharing one account\n")
+;(function()
+local M, Mk, Se, V = S.Mailbox, S.Market, S.Seasons, EC.v1
+local KEY = EC.PLAYER_MODDATA_KEY
+local SV = SandboxVars.MinidoracatEconomy
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local md = S.modData()
+local initOk = type(md.identity) == "table" and type(md.identity.merged) == "table"
+md.identity.merged["ma-alt"] = { into = "ma-main" }
+local main, alt, seat = fakePlayer("ma-main"), fakePlayer("ma-alt"), fakePlayer("ma-seat")
+main.role, main.hours, alt.hours, seat.playerNum = "admin", 100, 5, 1
+onlinePlayers = { alt, main, seat }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    sentCommands = {}
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args or {})
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local group = {}
+for _, name in ipairs(S.groupOf("ma-alt")) do group[name] = true end
+check(initOk and S.login(alt) == "ma-alt" and S.principal(alt) == "ma-main" and S.principal(main) == "ma-main"
+    and S.accountOf("ma-alt") == "ma-main" and S.accountOf("ma-main") == "ma-main" and S.sameAccount("ma-alt", "ma-main")
+    and group["ma-main"] and group["ma-alt"] and EC.countKeys(group) == 2,
+    "a merged login name is its own login but its account's principal, one hop, and both names are one group")
+cmd(alt, "hello")
+local ack = lastSent("hello.ack") and lastSent("hello.ack").args or {}
+check(ack.account == "ma-main" and ack.login == "ma-alt", "hello.ack tells the client its account and the login it came in with")
+local visits = {}
+S.forEachOnline(function(p, account) visits[#visits + 1] = account end)
+check(S.onlinePlayer("ma-main") == alt and S.onlinePlayer("ma-alt") == nil and S.onlineLogin("ma-alt") == alt
+    and S.onlineLogin("ma-main") == main and S.onlineLogin("ma-seat") == nil and S.onlineNames()["ma-seat"] == true
+    and #visits == 2 and visits[1] == "ma-main" and visits[2] == "ma-main",
+    "onlinePlayer finds any seat of the account, onlineLogin only that very login, onlineNames every raw seat")
+-- ledger: an alias is never a wallet of its own
+local credited = L.credit("ma-alt", "survivor", 100, "SYSTEM_MINT", { requestId = "ma-c1", reasonCode = "t" })
+check(credited.ok and md.wallets["ma-alt"] == nil and L.getBalance("ma-main", "survivor").available == 100
+    and L.getBalance("ma-alt", "survivor").available == 100 and #L.receipts("ma-alt") == 1,
+    "a credit to a merged name lands on the account, and the name reads the account's balance and receipts")
+-- merge=true is server code only: the integration API rebuilds the tx and cannot carry it
+local src = V.registerSource({ modId = "MaMod", currencies = { "survivor" }, reasonCodes = { "ma" } })
+md.config.currencies.survivor = md.config.currencies.survivor or {}
+md.config.currencies.survivor.enabled = false
+local legs = function() return { { account = "ma-main", currency = "survivor", amount = -5 },
+    { account = "ma-other", currency = "survivor", amount = 5 } } end
+local viaApi = src.post({ requestId = "ma-m1", reasonCode = "ma", merge = true, postings = legs() })
+local direct = L.post({ kind = "account_merge", requestId = "ma-m2", reasonCode = "account_merge", merge = true, postings = legs() })
+md.config.currencies.survivor.enabled = nil
+check(viaApi.ok == false and viaApi.error == "currency_disabled" and direct.ok == true
+    and L.getBalance("ma-other", "survivor").available == 5,
+    "merge=true exempts a server posting from a disabled currency, and an integration post cannot smuggle it in")
+-- transfers and admin pages compare accounts
+SV.TransferEnabled = true
+md.config.currencies.survivor.directTransfer = true
+local self = cmd(main, "wallet.transfer", { to = "ma-alt", currency = "survivor", amount = 10, fee = 1, requestId = "ma-t1" })
+SV.TransferEnabled = nil
+md.config.currencies.survivor.directTransfer = nil
+check(self.ok == false and self.error == "self_transfer" and L.getBalance("ma-main", "survivor").available == 95,
+    "a transfer to another login name of your own account is a self transfer")
+local look = cmd(main, "admin.lookup", { username = "ma-alt" })
+local members = {}
+for _, name in ipairs(look.members or {}) do members[name] = true end
+local frozen = cmd(main, "admin.freeze", { username = "ma-alt", frozen = true, reason = "self" })
+check(look.username == "ma-alt" and look.account == "ma-main" and members["ma-main"] and members["ma-alt"]
+    and look.balances and frozen.error == "self_target" and md.frozen["ma-main"] == nil and md.frozen["ma-alt"] == nil,
+    "the admin lookup of a merged name answers for its account and lists its logins; freezing it is freezing yourself")
+-- the survival base belongs to each login's save, the claim to the account
+Se.observe(main, nowMs); Se.observe(alt, nowMs)
+local bases = md.claims["ma-main"] and md.claims["ma-main"].survivalBase or {}
+check(bases["ma-main"] == 100 and bases["ma-alt"] == 5 and md.claims["ma-alt"] == nil,
+    "two logins of one account keep their own survival base inside the account's claim")
+-- recovery looks at this login's save only
+alt.modData[KEY].pendingOuts = { ["ma-op"] = { kind = "listing", epoch = md.meta.epoch, seq = 1 } }
+local rec = cmd(main, "admin.recovery", { action = "list", username = "ma-alt", requestId = "ma-r1" })
+check(M.recoveryStatus("ma-main").open == 0 and M.recoveryStatus("ma-alt").open == 1 and rec.online == true,
+    "a recovery status and the admin recovery page read the save of that very login, never another login of its account")
+-- mail: the account's box, claimed by one save
+local letter = M.add("ma-alt", { kind = "shop", item = "Base.Bandage", qty = 1, txId = "ma-tx" })
+local claimed = M.claim(alt, letter.id)
+check(letter.owner == "ma-main" and md.mailbox.byOwner["ma-alt"] == nil and claimed.ok == true
+    and letter.claimLogin == "ma-alt" and alt.inventory.count("Base.Bandage") == 1,
+    "a letter to a merged name is the account's, and the claim remembers which login took it")
+cmd(main, "hello")
+check(main.inventory.count("Base.Bandage") == 0 and letter.state == "claimed",
+    "another login's reconcile, with neither witness nor item, never redelivers what the first login claimed")
+fire("OnCharacterDeath", main)
+check(letter.state == "claimed", "the death of another login of the account does not settle that letter")
+fire("OnCharacterDeath", alt)
+local newMain, newAlt = fakePlayer("ma-main"), fakePlayer("ma-alt")
+fire("OnNewGame", newMain, nil)
+fire("OnNewGame", newAlt, nil)
+local carriedMain = newMain.modData[KEY] and newMain.modData[KEY].pendingOuts or {}
+local carriedAlt = newAlt.modData[KEY] and newAlt.modData[KEY].pendingOuts or {}
+check(letter.state == "settled" and carriedMain["ma-op"] == nil and carriedAlt["ma-op"] ~= nil,
+    "the claiming login's own death settles it, and its pending records go to that login's next character only")
+-- a stamp names the owner it was written with: the letter is found in any box of the group, once
+md.identity.merged["ma-third"] = { into = "ma-main" }
+local stray = { id = "ma-x", owner = "ma-alt", state = "claimed" }
+md.mailbox.byOwner["ma-alt"] = { entries = { ["ma-x"] = stray }, unclaimed = 0 }
+local found = M.entryOf("ma-main", "ma-x") == stray and M.entryOf("ma-alt", "ma-x") == stray
+md.mailbox.byOwner["ma-third"] = { entries = { ["ma-x"] = { id = "ma-x", owner = "ma-third", state = "claimed" } }, unclaimed = 0 }
+check(found and M.entryOf("ma-main", "ma-x") == nil,
+    "a letter left under a merged name is found through the group, and two names holding the id answer nothing")
+md.mailbox.byOwner["ma-alt"], md.mailbox.byOwner["ma-third"], md.identity.merged["ma-third"] = nil, nil, nil
+-- restore rebuilds for the account, whichever login's save held the record
+local R = S.Recovery
+local function proven(kind)
+    local pend = { kind = kind, qty = 1, lotQty = 1, snapshot = { type = "Base.Bandage" }, price = 10, hours = 24,
+        currency = "survivor", tradeSchema = L.TRADE_SCHEMA, at = nowMs }
+    R.markProven(pend)
+    return pend
+end
+local relisted = Mk.restoreFromPending("ma-alt", "ma-l1", proven("listing"))
+local reopened = Mk.restoreFromPending("ma-alt", "ma-a1", proven("auction"))
+check(relisted and reopened and md.market.listings["ma-l1"].seller == "ma-main"
+    and md.auctions.items["ma-a1"].seller == "ma-main" and Mk.ownerCount("ma-alt") == 0,
+    "a listing or auction restored from a merged login's save is the account's")
+-- the survival base keyed by seat "0" becomes its owner's login, keeping the running life
+local c = md.claims["ma-main"]
+c.survivalBase = { ["0"] = 10 }
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local veteran = fakePlayer("ma-main"); veteran.hours = 20
+onlinePlayers = { veteran }
+local life = Se.observe(veteran, nowMs)
+check(life == 10 and c.survivalBase["ma-main"] == 10 and c.survivalBase["0"] == nil,
+    "the legacy seat key moves to the owner's login once, without restarting the life it measured")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 MG：companion 白名單匯出、SteamID 群組與帳號合併（身分 v2 第 2b／2c 步）=====
+-- 匯出檔每一種拒收都「完全沒套用」；精確升級、EXACT_MISMATCH、保留門檻；群組只收精確綁定、
+-- 碰撞不成群、canon 只決定一次；合併在一次呼叫內搬錢（逐幣守恆）、簽到、上限計數與乾淨信件，
+-- 每一種擋點各一例並自然解除；回滾後別名先恢復獨立、再自動合併一次，仍守恆。
+io.write("scenario MG: companion export, SteamID groups and the account merge\n")
+-- exact multiples of 16 in the SteamID64 range: every one is its own double
+function mgT(k) return string.format("7656119820%07d", k * 16) end
+-- the same double written as another exact text (last digit + 1 rounds back down)
+function mgTwin(text) return string.sub(text, 1, 16) .. tostring(tonumber(string.sub(text, 17)) + 1) end
+function mgSid(text) return tonumber(text) + 0.0 end
+function mgPlayer(name, text)
+    local p = fakePlayer(name)
+    p.steamId = text and mgSid(text) or nil
+    return p
+end
+mgGen = 1790000000000
+-- rows = { { id, u, s }, ... }; opts: gen, serverName, count, trailerCount, noTrailer, extra (lines)
+function mgExport(rows, opts)
+    opts = opts or {}
+    if not opts.gen then mgGen = mgGen + 1 end
+    local lines = { EC.jsonEncode({ type = "whitelist", v = 1, serverName = opts.serverName or "servertest",
+        generatedAt = opts.gen or mgGen, count = opts.count or #rows, invalidSteamIds = 0 }) }
+    for _, r in ipairs(rows) do lines[#lines + 1] = EC.jsonEncode({ id = r[1], u = r[2], s = r[3] }) end
+    if not opts.noTrailer then lines[#lines + 1] = EC.jsonEncode({ type = "end", count = opts.trailerCount or opts.count or #rows }) end
+    for _, l in ipairs(opts.extra or {}) do lines[#lines + 1] = l end
+    files[EC.Identity.EXPORT_FILE] = { lines = lines }
+end
+-- one header poll, then the streamed read
+function mgPoll()
+    nowMs = nowMs + EC.Identity.EXPORT_POLL_MS + 1
+    fire("OnTickEvenPaused")
+    fire("OnTickEvenPaused")
+end
+function mgRecs(kind)
+    local out = {}
+    for _, line in ipairs(files[EC.Identity.FILE] and files[EC.Identity.FILE].lines or {}) do
+        local rec = EC.jsonDecode(line)
+        if kind == nil or (type(rec) == "table" and rec.k == kind) then out[#out + 1] = rec end
+    end
+    return out
+end
+function mgAudits(action, field)
+    local n = 0
+    for _, e in ipairs(X.auditEntries()) do
+        if e.action == action and (field == nil or e.field == field) then n = n + 1 end
+    end
+    return n
+end
+function mgMember(name)
+    for _, g in ipairs(S.Merge.status().list) do
+        for _, m in ipairs(g.members) do if m.name == name then return m, g end end
+    end
+    return nil
+end
+function mgWorld()
+    modDataStore[EC.MODDATA_KEY] = nil
+    files, sentCommands, onlinePlayers = {}, {}, {}
+    nowMs = nowMs + 61000
+    steamModeActive = true
+    -- scripts/test_entitlements.lua clears its own getServerName fake when it is done
+    getServerName = function() return serverNameFake end
+    SandboxVars.MinidoracatEconomy.IdentityAutoMerge = nil
+    SandboxVars.MinidoracatEconomy.AdminRoles = "admin"
+    fire("OnServerStarted")
+    return S.modData()
+end
+function mgEvents(kind)
+    proofSettle()
+    local out = {}
+    for path, f in pairs(files) do
+        if string.find(path, "/events-", 1, true) then
+            for _, line in ipairs(f.lines or {}) do
+                local rec = EC.jsonDecode(line)
+                if type(rec) == "table" and rec.type == kind then out[#out + 1] = rec end
+            end
+        end
+    end
+    return out
+end
+
+-- ----- MG-1: the export is read, refused whole, or applied once -----
+;(function()
+local Id = EC.Identity
+local md = mgWorld()
+fire("OnNewGame", mgPlayer("mg-ann", mgT(1)), nil)         -- a rounded NEWGAME binding the export upgrades
+fire("OnNewGame", mgPlayer("mg-fay", mgT(3)), nil)         -- the whitelist says another Steam account
+fire("OnNewGame", mgPlayer("mg-man", mgT(6)), nil)         -- upgraded later by an administrator's import
+L.credit("mg-gone", "survivor", 5, "SYSTEM_MINT", { requestId = "mg-gone", reasonCode = "t" })
+L.credit("mg-cat", "survivor", 5, "SYSTEM_MINT", { requestId = "mg-cat", reasonCode = "t" })
+local ROWS = { { 1, "mg-boss", mgT(9) }, { 2, "mg-ann", mgT(1) }, { 3, "mg-alt", mgT(1) }, { 4, "mg-fay", mgT(4) },
+    { 5, "mg-exa", mgT(5) }, { 6, "mg-cat", "" }, { 7, "mg-p1", mgT(7) }, { 8, "mg-p2", mgT(8) } }
+local base = #mgRecs()
+local function untouched() return #mgRecs() == base and Id.status().bound == 3 and Id.status().imported == false end
+local function rejected(variant, opts, rows)
+    mgExport(rows or ROWS, opts)
+    mgPoll()
+    return Id.exportStatus().status == variant and untouched()
+end
+check(rejected("server_mismatch", { serverName = "another-server" }), "an export for another server name is refused and nothing of it is applied")
+check(rejected("truncated", { noTrailer = true }), "an export without its trailer line is refused whole: truncated")
+check(rejected("truncated", { count = 9, trailerCount = 9 }), "an export with fewer rows than its count is refused whole: truncated")
+local dupName = { { 1, "mg-boss", mgT(9) }, { 2, "mg-boss", mgT(1) } }
+check(rejected("malformed", nil, dupName), "a name listed twice refuses the whole export")
+check(rejected("malformed", nil, { { 1, "mg-boss", "7.6561198E16" }, { 2, "mg-ann", mgT(1) } }),
+    "a SteamID text that is not seventeen digits refuses the whole export")
+check(rejected("malformed", nil, { { 1, "mg-boss", mgT(9) }, { 1, "mg-ann", mgT(1) } }), "a repeated whitelist id refuses the whole export")
+check(rejected("malformed", { extra = { "{\"id\":9,\"u\":\"mg-late\",\"s\":\"\"}" } }), "a line after the trailer refuses the whole export")
+local rejectedGen = mgGen
+mgPoll(); mgPoll()
+check(mgAudits("IDENTITY_EXPORT_REJECTED") == 7 and mgAudits("IDENTITY_EXPORT_REJECTED", "malformed") == 4
+    and Id.exportStatus().generatedAt == rejectedGen and untouched(),
+    "every refused export is audited once per generatedAt, however often the same file is polled again")
+check(rejected("malformed", { count = 0, trailerCount = 0 }, {}), "a count outside 1..50000 refuses the export")
+local realReader = getFileReader
+getFileReader = function(path, create) if path == Id.EXPORT_FILE then return nil end return realReader(path, create) end
+mgExport(ROWS)
+mgPoll()
+getFileReader = realReader
+check(Id.exportStatus().status == "unreadable" and untouched(),
+    "an export that exists but cannot be opened is unreadable, never taken for a missing one, and nothing is applied")
+-- accepted
+mgExport(ROWS)
+local acceptedGen = mgGen
+mgPoll()
+local recs = mgRecs()
+local marker = recs[base + 1] or {}
+local ann = Id.view().bindings["mg-ann"]
+check(Id.exportStatus().status == "accepted" and Id.exportStatus().generatedAt == acceptedGen and Id.exportStatus().count == 8
+    and marker.k == "import" and marker.src == "COMPANION" and marker.gen == acceptedGen,
+    "a whole export is accepted and applied in one write, its import marker (with generatedAt) first")
+check(ann and ann.exact == true and ann.text == mgT(1) and Id.view().bindings["mg-alt"].src == "COMPANION"
+    and mgAudits("IDENTITY_IMPORT", "COMPANION") == 1,
+    "a rounded NEWGAME binding is upgraded to the exact text it rounds from, a new name is bound exactly, and the import is audited as COMPANION")
+local upgrade = nil
+for _, rec in ipairs(mgRecs("bind")) do if rec.name == "mg-ann" and rec.exact == true then upgrade = rec end end
+check(upgrade and upgrade.from == "NEWGAME" and upgrade.src == "COMPANION" and upgrade.sid == mgT(1),
+    "the upgrade is a bind record of its own, naming the rounded binding it replaces")
+local fay = Id.view().bindings["mg-fay"]
+check(fay.text == Id.sidText(mgSid(mgT(3))) and fay.exact == nil and Id.unresolved("mg-fay") == "SID_MISMATCH"
+    and S.login(mgPlayer("mg-fay", mgT(3))) == "mg-fay" and S.login(mgPlayer("mg-fay", mgT(4))) == nil,
+    "a whitelist SteamID that differs is recorded as a conflict and never moves the binding")
+check(Id.view().bindings["mg-gone"].reserved == true and Id.view().bindings["mg-cat"] == nil
+    and S.login(mgPlayer("mg-zed", mgT(10))) == nil,
+    "the first accepted export reserves the economy's unlisted names and starts the strict mode")
+-- the same file again, an older one, a restart
+local lines = #mgRecs()
+mgPoll()
+mgExport(ROWS, { gen = acceptedGen - 5 })
+mgPoll()
+check(#mgRecs() == lines and Id.exportStatus().status == "stale", "an unchanged export writes nothing, and an older generatedAt is refused as stale")
+check(mgAudits("IDENTITY_IMPORT", "COMPANION") == 1, "an export that changes nothing is not audited again")
+mgExport(ROWS, { gen = acceptedGen })
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+check(#mgRecs() == lines and Id.exportStatus().status == "accepted" and Id.view().bindings["mg-ann"].exact == true,
+    "after a restart the same export is read again at start and changes nothing")
+-- exact mismatch, recorded once
+local rows2 = {}
+for i, r in ipairs(ROWS) do rows2[i] = r end
+rows2[5] = { 5, "mg-exa", mgTwin(mgT(5)) }
+mgExport(rows2)
+mgPoll()
+local conflictsFay, conflictsExa = 0, 0
+for _, rec in ipairs(mgRecs("conflict")) do
+    if rec.name == "mg-fay" then conflictsFay = conflictsFay + 1 end
+    if rec.name == "mg-exa" then conflictsExa = conflictsExa + 1 end
+end
+check(mgSid(mgTwin(mgT(5))) == mgSid(mgT(5)) and Id.unresolved("mg-exa") == "EXACT_MISMATCH"
+    and Id.view().bindings["mg-exa"].text == mgT(5) and mgAudits("BIND_CONFLICT", "EXACT_MISMATCH") == 1,
+    "two exact texts of one double are two Steam accounts: EXACT_MISMATCH, and the binding stays")
+check(S.login(mgPlayer("mg-exa", mgT(5))) == nil and S.login(mgPlayer("mg-exa", mgTwin(mgT(5)))) == nil
+    and S.login(mgPlayer("mg-ann", mgT(1))) == "mg-ann",
+    "a name under EXACT_MISMATCH verifies nobody (both Steam accounts pass the double); other names are unaffected")
+check(conflictsFay == 1 and conflictsExa == 1 and mgAudits("BIND_CONFLICT", "SID_MISMATCH") == 1,
+    "a conflict is recorded and audited once per name and SteamID, not once per export")
+-- reservation thresholds of an automatic import
+local short = { ROWS[1], ROWS[2] }
+mgExport(short)
+mgPoll()
+check(Id.exportStatus().status == "reserve_suspect" and Id.view().bindings["mg-cat"] == nil,
+    "an export that suddenly lacks more than max(5, 0.5%) of the last one's rows reserves nobody (reserve_suspect)")
+for i = 1, 51 do md.firstSeen["mg-k" .. i] = 1 end
+mgExport(ROWS)
+mgPoll()
+local fiftyOne = Id.exportStatus().status
+md.firstSeen["mg-k51"] = nil
+mgExport(ROWS)
+mgPoll()
+check(fiftyOne == "reserve_suspect" and Id.exportStatus().status == "accepted" and Id.view().bindings["mg-k50"].reserved == true
+    and Id.view().bindings["mg-k51"] == nil and #mgRecs("reserve") == 51,
+    "an automatic import reserves at most 50 new names at once; within the thresholds it reserves them all")
+-- the administrator's import shares the pipeline
+local boss = mgPlayer("mg-boss", mgT(9)); boss.role = "admin"
+onlinePlayers = { boss }
+nowMs = nowMs + 700
+sentCommands = {}
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "import", requestId = "mg-i1",
+    rows = { { u = "mg-boss", s = mgT(9) }, { u = "mg-man", s = mgT(6) }, { u = "mg-exa", s = mgTwin(mgT(5)) } } })
+local reply = lastSent("admin.identity").args
+local exaListed = false
+for _, c in ipairs(reply.status.conflicts or {}) do
+    if c.name == "mg-exa" and c.reason == "EXACT_MISMATCH" then exaListed = true end
+end
+check(reply.ok == true and reply.last.upgraded == 1 and Id.view().bindings["mg-man"].exact == true and exaListed
+    and mgAudits("IDENTITY_IMPORT", "MANUAL") == 1,
+    "an administrator's import upgrades exactly and reports EXACT_MISMATCH through the same pipeline")
+check(reply.status.export.status == "accepted" and reply.status.merge ~= nil and reply.status.merge.enabled == false,
+    "every admin.identity reply carries the export status and the merge summary")
+onlinePlayers = {}
+steamModeActive = false
+end)()
+
+-- ----- MG-2: groups, the canonical, the preview and the pass -----
+;(function()
+local Id, Mg = EC.Identity, S.Merge
+local SV = SandboxVars.MinidoracatEconomy
+local md = mgWorld()
+local G, C1, H = mgT(20), mgT(21), mgT(22)
+md.firstSeen["mg-g1"], md.firstSeen["mg-g3"] = 200, 100
+fire("OnNewGame", mgPlayer("mg-grnd", G), nil)             -- a rounded double equal to G, never whitelisted
+local ROWS = { { 1, "mg-boss", mgT(9) }, { 10, "mg-g1", G }, { 5, "mg-g2", G }, { 7, "mg-g3", G },
+    { 11, "mg-c1", C1 }, { 12, "mg-c2", C1 }, { 13, "mg-c3", mgTwin(C1) } }
+mgExport(ROWS)
+mgPoll()
+local g3, gGroup = mgMember("mg-g3")
+local canon = mgRecs("canon")
+check(g3 and g3.state == "canonical" and gGroup.account == "mg-g3" and #canon == 1 and canon[1].sid == G
+    and canon[1].name == "mg-g3" and canon[1].rule == "firstSeen",
+    "the group's account is the oldest economy name, decided once and written to the identity file")
+local grnd = mgMember("mg-grnd")
+check(grnd and grnd.state == "ineligible" and grnd.reason == "not_exact" and mgMember("mg-g2").state == "ready",
+    "a name bound only by a rounded double is listed but never joins; the exact members are ready")
+local c1 = mgMember("mg-c1")
+check(mgSid(mgTwin(C1)) == mgSid(C1) and c1 and c1.state == "ineligible" and c1.reason == "collision"
+    and mgMember("mg-c2").reason == "collision" and #mgRecs("canon") == 1,
+    "two exact texts of one double never form a group: its members are ineligible (collision) and no account is chosen")
+-- a later member with an older firstSeen is an alias of the recorded account
+md.firstSeen["mg-g0"] = 1
+local rows2 = { ROWS[1], ROWS[2], ROWS[3], ROWS[4], ROWS[5], ROWS[6], ROWS[7], { 14, "mg-g0", G } }
+mgExport(rows2)
+mgPoll()
+check(mgMember("mg-g0").state == "ready" and mgMember("mg-g3").state == "canonical" and #mgRecs("canon") == 1,
+    "a member joining later is an alias even with an older firstSeen: the decision is never recomputed")
+-- a manual import (no whitelist ids) decides by name
+local boss = mgPlayer("mg-boss", mgT(9)); boss.role = "admin"
+onlinePlayers = { boss }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "import", requestId = "mg-i2",
+    rows = { { u = "mg-boss", s = mgT(9) }, { u = "mg-h2", s = H }, { u = "mg-h1", s = H } } })
+local _, hGroup = mgMember("mg-h2")
+check(hGroup and hGroup.account == "mg-h1" and mgMember("mg-h2").state == "ready" and #mgRecs("canon") == 2,
+    "without firstSeen or whitelist ids the name decides, and an administrator's import updates the plan too")
+onlinePlayers = {}
+L.credit("mg-g1", "survivor", 50, "SYSTEM_MINT", { requestId = "mg-g1f", reasonCode = "t" })
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+local _, gAfter = mgMember("mg-g1")
+local _, hAfter = mgMember("mg-h2")
+check(gAfter and gAfter.account == "mg-g3" and hAfter and hAfter.account == "mg-h1" and #mgRecs("canon") == 2,
+    "after a restart every group keeps its recorded account and nothing is decided again")
+-- the preview, then the pass
+local ready = {}
+for _, g in ipairs(Mg.status().list) do
+    for _, m in ipairs(g.members) do if m.state == "ready" then ready[#ready + 1] = m.name end end
+end
+EC.sortSafe(ready, function(a, b) return a < b end)
+local planFile = files[Mg.PLAN_FILE] and files[Mg.PLAN_FILE].lines or {}
+local summary = EC.jsonDecode(planFile[1] or "") or {}
+check(table.concat(ready, ",") == "mg-g0,mg-g1,mg-g2,mg-h2" and EC.countKeys(md.identity.merged) == 0
+    and summary.type == "merge-plan" and summary.enabled == false and summary.ready == 4 and #planFile == 1 + summary.groups,
+    "with IdentityAutoMerge off the plan is published (a summary line, then one line per group) and nothing merges")
+local gLine, g1Row = nil, nil
+for i = 2, #planFile do
+    local rec = EC.jsonDecode(planFile[i])
+    if type(rec) == "table" and rec.sid == G then gLine = rec end
+end
+for _, m in ipairs(gLine and gLine.members or {}) do if m.name == "mg-g1" then g1Row = m end end
+check(gLine and gLine.account == "mg-g3" and gLine.rule == "firstSeen" and g1Row and g1Row.state == "ready"
+    and g1Row.balances.survivor.available == 50 and g1Row.whitelistId == 10,
+    "each group line names its SteamID, account and rule, and every member's state, balances and whitelist id")
+local consG = L.conservation("survivor")
+SV.IdentityAutoMerge = true
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+local done = {}
+for name in pairs(md.identity.merged) do done[#done + 1] = name end
+EC.sortSafe(done, function(a, b) return a < b end)
+check(table.concat(done, ",") == table.concat(ready, ",") and md.identity.merged["mg-g0"].into == "mg-g3"
+    and md.identity.merged["mg-h2"].into == "mg-h1" and mgAudits("ACCOUNT_MERGE_PASS") == 1,
+    "the pass merges exactly the aliases the preview called ready, audited once for the pass")
+check(md.firstSeen["mg-g3"] == 1 and md.firstSeen["mg-g0"] == nil,
+    "the account is as old as its oldest login")
+check(L.conservation("survivor") == consG and L.getBalance("mg-g3", "survivor").available == 50 and md.wallets["mg-g1"] == nil,
+    "the pass moves the aliases' money to the account, conserved")
+local events = mgEvents("identity.merged")
+local private = events[1] and events[1].private or {}
+local leaked = false
+for _, e in ipairs(X.auditEntries()) do if e.steamId ~= nil then leaked = true end end
+check(#events == 4 and (private.steamId == G or private.steamId == H) and events[1].steamId == nil and not leaked,
+    "each merge emits identity.merged with the SteamID only in its private block, never in the audit ring")
+-- a running pass merges at most TICK_MAX aliases
+local many = { { 1, "mg-boss", mgT(9) } }
+for i = 1, 13 do many[#many + 1] = { 100 + i, "mg-m" .. string.format("%02d", i), mgT(30) } end
+mgExport(many)
+mgPoll()
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+local first = EC.countKeys(md.identity.merged) - 4
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+check(first == Mg.TICK_MAX and EC.countKeys(md.identity.merged) - 4 == 12 and md.identity.merged["mg-m13"].into == "mg-m01",
+    "a running pass merges at most ten aliases; the next pass takes the rest")
+local more = { { 1, "mg-boss", mgT(9) } }
+for i = 1, 12 do more[#more + 1] = { 200 + i, "mg-s" .. string.format("%02d", i), mgT(31) } end
+mgExport(more)
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+md = S.modData()
+local startMerged = 0
+for i = 2, 12 do
+    local rec = md.identity.merged["mg-s" .. string.format("%02d", i)]
+    if rec and rec.into == "mg-s01" then startMerged = startMerged + 1 end
+end
+check(startMerged == 11 and mgAudits("ACCOUNT_MERGE_PASS", "start") == 1,
+    "the start-up pass merges every ready alias at once, before any player can connect")
+SV.IdentityAutoMerge = nil
+steamModeActive = false
+end)()
+
+-- ----- MG-3: one merge moves everything, and a rollback merges it again -----
+;(function()
+local Id, Mg, M, Mk, Se = EC.Identity, S.Merge, S.Mailbox, S.Market, S.Seasons
+local Rw, Rc = EC.Rewards, S.Recovery
+local SV = SandboxVars.MinidoracatEconomy
+local md = mgWorld()
+local P = mgT(40)
+local ROWS = { { 1, "mg-boss", mgT(9) }, { 2, "mg-main", P }, { 3, "mg-side", P }, { 4, "mg-oth", mgT(41) } }
+mgExport(ROWS)
+mgPoll()
+local main, side, boss = mgPlayer("mg-main", P), mgPlayer("mg-side", P), mgPlayer("mg-boss", mgT(9))
+boss.role, main.hours, side.hours = "admin", 50, 30
+-- money, above the cap and in a paused currency
+L.credit("mg-main", "survivor", 100, "SYSTEM_MINT", { requestId = "mg-f1", reasonCode = "t" })
+L.credit("mg-side", "survivor", 300, "SYSTEM_MINT", { requestId = "mg-f2", reasonCode = "t" })
+L.credit("mg-side", "cat", 20, "SYSTEM_MINT", { requestId = "mg-f3", reasonCode = "t" })
+md.config.currencies.survivor = md.config.currencies.survivor or {}
+md.config.currencies.cat = md.config.currencies.cat or {}
+md.config.currencies.survivor.balanceMax = 250
+md.config.currencies.cat.enabled = false
+-- today's claims, milestones, lives
+SV.CheckinDailyLimit = 2
+onlinePlayers = { main, side }
+Se.observe(main, nowMs); Se.observe(side, nowMs)
+onlinePlayers = {}
+local day = Rw.dayKey(nowMs)
+for name, bit in pairs({ ["mg-main"] = 1, ["mg-side"] = 2 }) do
+    local c = md.claims[name]
+    c.day, c.paid, c.paidDay, c.claimedCount, c.playedMs, c.milestones = day, { [day] = 1 }, day, 1, 1000 * bit, bit
+end
+local _, metaBefore = Se.records("current")
+-- counters
+md.transferDaily[day] = { ["mg-main"] = 10, ["mg-side"] = 40 }
+md.transferRecent["mg-main"] = { "mg-x", "mg-side" }
+md.transferRecent["mg-side"] = { "mg-main", "mg-y", "mg-x" }
+md.shopDaily[day] = { ["mg-main"] = { skuA = 2 }, ["mg-side"] = { skuA = 1 } }
+md.shopLifetime["mg-side"] = { skuA = 5 }
+md.shopBuyback[day] = { v = 2, byCurrency = { survivor = 5 }, accounts = { ["mg-side\1survivor"] = 5 }, skus = {} }
+md.exchange.daily[day] = { total = { cat = 7 }, accounts = { ["mg-side\1cat"] = 7 } }
+md.adminDaily[day] = { v = A.DAILY_VERSION, server = {}, admins = { ["mg-side"] = { survivor = { add = 3, sub = 1 } },
+    ["mg-main"] = { survivor = { add = 2, sub = 0 } } } }
+local letter = M.add("mg-side", { kind = "shop", item = "Base.Bandage", qty = 1, txId = "mg-tx" })
+local unclaimedAll = md.mailbox.unclaimed
+local consSurvivor, consCat = L.conservation("survivor"), L.conservation("cat")
+local snap = proofSnapshot()
+-- the merge
+SV.IdentityAutoMerge = true
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+local mark = md.identity.merged["mg-side"]
+check(mark and mark.into == "mg-main" and type(mark.mergeId) == "string" and mark.epoch == md.meta.epoch
+    and type(mark.seq) == "number" and type(mark.at) == "number",
+    "the merge writes md.identity.merged[alias] = { into, mergeId, epoch, seq, at }")
+check(mgMember("mg-side").state == "merged" and mgMember("mg-main").state == "canonical" and Mg.status().merged == 1,
+    "the plan shows the alias as merged into its account")
+check(L.getBalance("mg-main", "survivor").available == 400 and L.getBalance("mg-main", "cat").available == 20
+    and md.wallets["mg-side"] == nil,
+    "every currency's balance moves, above the balance cap and in a paused currency: merge money already exists")
+check(L.conservation("survivor") == consSurvivor and L.conservation("cat") == consCat,
+    "each currency is conserved across the account_merge transaction")
+local receipts = L.receipts("mg-main")
+local last = receipts[#receipts] or {}
+check(last.kind == "account_merge" and last.counterparty == "mg-side" and md.receipts["mg-side"] == nil,
+    "the account's statement shows the merge-in and the alias's receipt ring is gone")
+md.config.currencies.survivor.balanceMax = nil          -- the cap gates new money again
+L.credit("mg-side", "survivor", 1, "SYSTEM_MINT", { requestId = "mg-f4", reasonCode = "t" })
+check(md.wallets["mg-side"] == nil and L.getBalance("mg-main", "survivor").available == 401,
+    "after the merge a credit to the alias lands on the account")
+local state = Rw.state("mg-main", nowMs)
+check(state.claimedCount == 2 and state.remainingClaims == 0 and md.claims["mg-side"] == nil,
+    "two logins that each claimed today have used two of the account's claims")
+local records, metaAfter = Se.records("current")
+local cm = md.claims["mg-main"]
+check(cm.milestones == 3 and records ~= nil and metaAfter.participants == metaBefore.participants - 1
+    and records["mg-side"] == nil and records["mg-main"] ~= nil,
+    "milestones combine (never paid twice) and the season still reads, one participant fewer")
+check(cm.survivalBase["mg-main"] == 50 and cm.survivalBase["mg-side"] == 30 and cm.playedMs == 2000,
+    "each login keeps its own survival base inside the account's claim, and the connected time is the larger")
+local recent = table.concat(md.transferRecent["mg-main"] or {}, ",")
+check(md.transferDaily[day]["mg-main"] == 50 and md.transferDaily[day]["mg-side"] == nil and recent == "mg-x,mg-y"
+    and md.transferRecent["mg-side"] == nil,
+    "the daily transfer totals add up and the recent list keeps neither login of the account")
+check(md.shopDaily[day]["mg-main"].skuA == 3 and md.shopLifetime["mg-main"].skuA == 5
+    and md.shopBuyback[day].accounts["mg-main\1survivor"] == 5 and md.shopBuyback[day].accounts["mg-side\1survivor"] == nil
+    and md.exchange.daily[day].accounts["mg-main\1cat"] == 7 and md.adminDaily[day].admins["mg-main"].survivor.add == 5
+    and md.adminDaily[day].admins["mg-main"].survivor.sub == 1 and md.adminDaily[day].admins["mg-side"] == nil,
+    "every per-person cap counter adds up: shop daily/lifetime/buyback, Discord deposits, admin adjustments")
+check(md.mailbox.byOwner["mg-main"].entries[letter.id] == letter and letter.owner == "mg-main"
+    and md.mailbox.byOwner["mg-side"] == nil and md.mailbox.unclaimed == unclaimedAll,
+    "a clean ready letter moves to the account's box and the server-wide count stays")
+local ev = mgEvents("identity.merged")[1] or {}
+check(ev.alias == "mg-side" and ev.into == "mg-main" and ev.moved and ev.moved.survivor == 300 and ev.moved.cat == 20
+    and ev.participantsDelta == -1 and ev.letters and ev.letters[1] == letter.id and type(ev.txId) == "string",
+    "the merge event names the transaction, the amounts, the letters and the participant change")
+-- the alias logs in: the account's
+onlinePlayers = { side, boss }
+local visits = {}
+S.forEachOnline(function(p, account) visits[#visits + 1] = account end)
+check(S.login(side) == "mg-side" and S.principal(side) == "mg-main" and S.onlinePlayer("mg-main") == side
+    and S.onlineLogin("mg-side") == side and visits[1] == "mg-main",
+    "a merged login is its own login and its account's principal everywhere")
+local claimed = M.claim(side, letter.id)
+check(claimed.ok == true and letter.claimLogin == "mg-side" and side.inventory.count("Base.Bandage") == 1,
+    "the moved letter is claimed by the alias's login")
+local _, scanned, scanTarget = A.recoveryRows("mg-side")
+check(scanTarget == side and scanned ~= nil,
+    "the administrator's recovery page walks the backpack of that very login, never another login of its account")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "terminal.register", boss, { x = 100, y = 200, z = 0, kind = "atm", requestId = "mg-term" })
+local axe = instanceItem("Base.Axe")
+side.inventory:AddItem(axe)
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "market.list", side, { itemId = axe.id, price = 200, currency = "survivor", requestId = "mg-list" })
+local listed = lastSent("market.list") and lastSent("market.list").args or {}
+proofSettle()
+check(listed.ok == true and md.market.listings[listed.listingId].seller == "mg-main"
+    and proofJournalRowOf("mg-side", listed.listingId) ~= nil and proofJournalRowOf("mg-main", listed.listingId) == nil,
+    "a listing by the alias belongs to the account, while its recovery receipt stays with the login whose save it left")
+onlinePlayers = { main, boss }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", main, {})
+fire("OnCharacterDeath", main)
+check(main.inventory.count("Base.Bandage") == 0 and letter.state == "claimed",
+    "the other login neither receives it again at login nor settles it with its death")
+local main2 = mgPlayer("mg-main", P)
+onlinePlayers = { main2, side, boss }
+SV.TransferEnabled = true
+md.config.currencies.survivor.directTransfer = true
+nowMs = nowMs + 700
+sentCommands = {}
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.transfer", main2, { to = "mg-side", currency = "survivor", amount = 5, fee = 1, requestId = "mg-t1" })
+local selfT = lastSent("wallet.transfer") and lastSent("wallet.transfer").args or {}
+SV.TransferEnabled, md.config.currencies.survivor.directTransfer = nil, nil
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", boss, { username = "mg-side", frozen = true, reason = "merge test" })
+local frozenAccount = md.frozen["mg-main"] ~= nil and md.frozen["mg-side"] == nil
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.freeze", boss, { username = "mg-side", frozen = false, reason = "merge test" })
+local pend = { kind = "listing", qty = 1, lotQty = 1, snapshot = { type = "Base.Bandage" }, price = 10, currency = "survivor",
+    tradeSchema = L.TRADE_SCHEMA, at = nowMs }
+Rc.markProven(pend)
+local relisted = Mk.restoreFromPending("mg-side", "mg-l1", pend)
+check(selfT.error == "self_transfer" and frozenAccount and md.frozen["mg-main"] == nil and relisted
+    and md.market.listings["mg-l1"].seller == "mg-main",
+    "the alias's name everywhere else is its account: a transfer to it is a self transfer, a freeze freezes the account, a restore relists for it")
+md.market.listings["mg-l1"], md.market.byOwner["mg-main"] = nil, nil
+nowMs = nowMs + 700
+sentCommands = {}
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "rebind", requestId = "mg-r1", names = { "mg-side" }, reason = "moved" })
+local r1 = lastSent("admin.identity").args
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "rebind", requestId = "mg-r2", names = { "mg-main" }, reason = "moved" })
+local r2 = lastSent("admin.identity").args
+check(r1.error == "merged_name" and r1.name == "mg-side" and r2.error == "merged_name" and r2.name == "mg-main",
+    "a name that took part in a merge, alias or account, is never rebound")
+-- rollback: the world save from before the merge, the files kept
+onlinePlayers = {}
+SV.IdentityAutoMerge = nil
+proofRestartFrom(snap)
+md = S.modData()
+local group = {}
+for _, name in ipairs(S.groupOf("mg-main")) do group[name] = true end
+check(S.accountOf("mg-side") == "mg-side" and L.getBalance("mg-side", "survivor").available == 300
+    and md.mailbox.byOwner["mg-side"].entries[letter.id] ~= nil and mgMember("mg-side").state == "ready" and group["mg-side"],
+    "after a rollback the alias is independent again, and its SteamID group still links it to the account")
+local found = M.entryOf("mg-main", letter.id)
+check(found ~= nil and found.owner == "mg-side",
+    "a stamp naming the account still finds its letter in the alias's box after the rollback")
+SV.IdentityAutoMerge = true
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+check(md.identity.merged["mg-side"] ~= nil and L.getBalance("mg-main", "survivor").available == 400
+    and L.conservation("survivor") == consSurvivor and L.conservation("cat") == consCat and #mgEvents("identity.merged") == 2,
+    "the next pass merges it again, conserved, under the same ledger key the rollback forgot")
+SV.IdentityAutoMerge, SV.CheckinDailyLimit = nil, nil
+md.config.currencies.survivor.balanceMax, md.config.currencies.cat.enabled = nil, nil
+steamModeActive = false
+onlinePlayers = {}
+end)()
+
+-- ----- MG-4: every blocker, and one that clears itself -----
+;(function()
+local Id, Mg, Mk, Rc = EC.Identity, S.Merge, S.Market, S.Recovery
+local SV = SandboxVars.MinidoracatEconomy
+local md = mgWorld()
+local ROWS = { { 1, "mg-boss", mgT(9) } }
+for i = 1, 11 do
+    ROWS[#ROWS + 1] = { 10 * i, "mg-c" .. i, mgT(50 + i) }
+    if i ~= 9 then ROWS[#ROWS + 1] = { 10 * i + 1, "mg-a" .. i, mgT(50 + i) } end
+end
+ROWS[#ROWS + 1] = { 200, "mg-b10", mgT(60) }                 -- a second alias of group 10
+md.firstSeen["mg-a9"] = 1                                    -- known, not whitelisted: reserved
+mgExport(ROWS)
+mgPoll()
+local function proven(kind)
+    local pend = { kind = kind, qty = 1, lotQty = 1, snapshot = { type = "Base.Bandage" }, price = 10, hours = 24,
+        currency = "survivor", tradeSchema = L.TRADE_SCHEMA, at = nowMs }
+    Rc.markProven(pend)
+    return pend
+end
+onlinePlayers = { mgPlayer("mg-a1", mgT(51)) }
+md.frozen["mg-a2"] = { by = "mg-boss", ts = nowMs, reason = "t" }
+L.credit("mg-a3", "survivor", 10, "SYSTEM_MINT", { requestId = "mg-b3", reasonCode = "t" })
+L.post({ kind = "bid", requestId = "mg-b3r", reasonCode = "t", postings = {
+    { account = "mg-a3", currency = "survivor", amount = -5 }, { account = "mg-a3", currency = "survivor", amount = 5, bucket = "reserved" } } })
+md.wallets["mg-a4"] = { zzz = { available = 3, reserved = 0, rev = 1 } }
+Mk.restoreFromPending("mg-a5", "mg-l5", proven("listing"))
+Mk.restoreFromPending("mg-a6", "mg-u6", proven("auction"))
+md.mailbox.byOwner["mg-a7"] = { entries = { ["mg-m7"] = { id = "mg-m7", owner = "mg-a7", state = "claimed", claimedAt = nowMs } }, unclaimed = 0 }
+-- a conflict on an alias, a reservation listed under a SteamID, a canonical that moved
+local rows2 = {}
+for i, r in ipairs(ROWS) do rows2[i] = r end
+for i, r in ipairs(rows2) do
+    if r[2] == "mg-a8" then rows2[i] = { r[1], "mg-a8", mgTwin(mgT(58)) } end
+    if r[2] == "mg-c10" then rows2[i] = { r[1], "mg-c10", mgT(70) } end
+end
+rows2[#rows2 + 1] = { 300, "mg-a9", mgT(59) }
+mgExport(rows2)
+mgPoll()
+local boss = mgPlayer("mg-boss", mgT(9)); boss.role = "admin"
+onlinePlayers = { boss, mgPlayer("mg-a1", mgT(51)), mgPlayer("mg-c11", mgT(61)) }   -- an online account holds nothing back
+nowMs = nowMs + 700
+sentCommands = {}
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "rebind", requestId = "mg-r3", names = { "mg-c10" }, reason = "moved" })
+local rebound = lastSent("admin.identity").args
+Mg.plan(nowMs)
+local expect = { "alias_online", "frozen", "reserved_funds", "unknown_currency", "live_listing", "auction", "mail_pending", "conflict", "reserved", "canonical_moved" }
+for i, reason in ipairs(expect) do
+    local m = mgMember(i == 9 and "mg-a9" or ("mg-a" .. i))
+    check(m ~= nil and m.state == "blocked" and m.reason == reason, "an alias is held back by " .. reason)
+end
+check(rebound.ok == true and mgMember("mg-b10").reason == "canonical_moved" and mgMember("mg-a11").state == "ready"
+    and Mg.status().blocked.canonical_moved == 2,
+    "a group whose account was rebound elsewhere is frozen whole, and a clean alias is ready")
+local st = Mg.status()
+local blockedTotal = 0
+for _, n in pairs(st.blocked) do blockedTotal = blockedTotal + n end
+check(st.groups == 11 and st.ready == 1 and blockedTotal == 11 and st.ineligible == 0 and st.merged == 0 and st.aliases == 12,
+    "the status counts every group, ready alias and blocked reason")
+SV.IdentityAutoMerge = true
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+local merged = {}
+for name in pairs(md.identity.merged) do merged[#merged + 1] = name end
+check(#merged == 1 and merged[1] == "mg-a11", "the pass merges the clean alias only; every blocked one stays itself")
+local r1, e1 = Mg.mergeOne("mg-a2", "mg-c2")
+local _, e2 = Mg.mergeOne("mg-a11", "mg-c11")
+local _, e3 = Mg.mergeOne("mg-a8", "mg-c8")
+local _, e4 = Mg.mergeOne("mg-c3", "mg-a3")
+check(r1 == nil and e1 == "frozen" and e2 == "already_merged" and e3 == "conflict" and e4 == "canonical_moved"
+    and md.identity.merged["mg-a2"] == nil,
+    "a direct merge checks everything again and refuses with the blocker's code, changing nothing")
+md.frozen["mg-a2"] = nil
+L.credit("mg-a2", "survivor", 10, "SYSTEM_MINT", { requestId = "mg-a2f", reasonCode = "t" })
+local c2Before, consBefore = L.getBalance("mg-c2", "survivor").available, L.conservation("survivor")
+local shopMerge = S.Shop.mergeAccount
+S.Shop.mergeAccount = function() error("injected") end
+local r5, e5 = Mg.mergeOne("mg-a2", "mg-c2")
+S.Shop.mergeAccount = shopMerge
+local _, e6 = Mg.mergeOne("mg-a2", "mg-c2")
+check(r5 == nil and e5 == "merge_failed" and e6 == "merge_failed" and md.identity.merged["mg-a2"] == nil
+    and L.getBalance("mg-a2", "survivor").available == 0 and L.getBalance("mg-c2", "survivor").available == c2Before + 10
+    and L.conservation("survivor") == consBefore,
+    "a merge that stops midway keeps the money it moved conserved in the account, marks nothing and waits for a restart")
+L.credit("mg-a2", "survivor", 4, "SYSTEM_MINT", { requestId = "mg-a2g", reasonCode = "t" })
+Mg.init()
+local r7 = Mg.mergeOne("mg-a2", "mg-c2")
+check(r7 ~= nil and md.identity.merged["mg-a2"] ~= nil and md.wallets["mg-a2"] == nil
+    and L.getBalance("mg-c2", "survivor").available == c2Before + 14,
+    "after a restart the merge runs again: what the alias got since moves under a fresh key and the marker lands")
+-- a live listing clears itself: it expires, comes home as a clean letter, and that letter moves too
+md.market.listings["mg-l5"].expiresAt = nowMs - 1
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+local box = md.mailbox.byOwner["mg-c5"]
+local returned = nil
+for _, e in pairs(box and box.entries or {}) do if e.kind == "return" and e.listingId == "mg-l5" then returned = e end end
+check(md.identity.merged["mg-a5"] ~= nil and md.identity.merged["mg-a5"].into == "mg-c5" and returned ~= nil
+    and returned.owner == "mg-c5" and md.mailbox.byOwner["mg-a5"] == nil,
+    "an expired listing comes home as a clean return letter and the alias then merges with it")
+SV.IdentityAutoMerge = nil
+steamModeActive = false
+onlinePlayers = {}
+end)()
+
+-- ----- MG-5: a rollback with merging turned off: the account's claim still closes the letter -----
+;(function()
+local Mg, M = S.Merge, S.Mailbox
+local SV = SandboxVars.MinidoracatEconomy
+local md = mgWorld()
+local P = mgT(50)
+mgExport({ { 1, "mg-c50", P }, { 2, "mg-a50", P } })
+mgPoll()
+local canon, alias = mgPlayer("mg-c50", P), mgPlayer("mg-a50", P)
+local letter = M.add("mg-a50", { kind = "shop", item = "Base.Bandage", qty = 1, txId = "mg-tx50" })
+local snap = proofSnapshot()
+SV.IdentityAutoMerge = true
+nowMs = nowMs + Mg.TICK_MS + 1
+fire("OnTickEvenPaused")
+onlinePlayers = { canon }
+local claimed = M.claim(canon, letter.id)
+check(md.identity.merged["mg-a50"] ~= nil and claimed.ok == true and letter.owner == "mg-c50"
+    and canon.inventory.count("Base.Bandage") == 1,
+    "the alias's letter moved into the account and the account's own login claimed it")
+-- the world goes back to before the merge, the account's save keeps the bandage, merging is off
+onlinePlayers = {}
+SV.IdentityAutoMerge = nil
+proofRestartFrom(snap)
+md = S.modData()
+local back = md.mailbox.byOwner["mg-a50"].entries[letter.id]
+onlinePlayers = { canon }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", canon, {})
+check(md.identity.merged["mg-a50"] == nil and back.state == "claimed" and back.claimLogin == "mg-c50",
+    "the account's login closes the letter that the rollback put back under the alias")
+onlinePlayers = { alias }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", alias, {})
+local again = M.claim(alias, letter.id)
+check(not (again and again.ok) and alias.inventory.count("Base.Bandage") == 0 and canon.inventory.count("Base.Bandage") == 1,
+    "the alias cannot claim that letter a second time")
+steamModeActive = false
+onlinePlayers = {}
+end)()
+
+-- ----- MG-6: a torn import marker never brings back the trust of names -----
+;(function()
+local Id = EC.Identity
+mgWorld()
+files[Id.FILE] = { opens = 0, lines = {
+    EC.jsonEncode({ v = 1, k = "bind", name = "mg-old", sid = mgT(60), src = "NEWGAME", at = 1 }),
+    '{"v":1,"k":"import","at":2,"by":"COMPA',
+} }
+fire("OnServerStarted")
+check(Id.status().damaged == true and Id.status().imported == false
+    and S.login(mgPlayer("mg-new", mgT(61))) == nil and S.login(mgPlayer("mg-old", mgT(60))) == "mg-old",
+    "a file whose only import marker is torn stays strict: an unbound name is refused, a bound one still verifies")
+mgExport({ { 1, "mg-old", mgT(60) }, { 2, "mg-new", mgT(61) } })
+mgPoll()
+check(Id.status().damaged == nil and Id.status().imported == true and S.login(mgPlayer("mg-new", mgT(61))) == "mg-new",
+    "the next accepted import writes a marker and binds the name")
+steamModeActive = false
 end)()
 
 io.write("\n")

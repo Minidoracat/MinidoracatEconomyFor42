@@ -170,6 +170,9 @@ function Tr.execute(req)
         return fail("invalid_args")
     end
     if not L.validRequestKey(req.key) then return fail("request_too_long") end
+    -- both ends are accounts: a login name merged into another is that account, so paying one of
+    -- your own names is a self transfer and the money never lands on an alias
+    from, to = S.accountOf(from), S.accountOf(to)
     local order = { kind = "transfer", from = from, to = to, currency = currency, amount = amount,
         quoted = req.fee or -1, memo = req.memo or "" }
     local prior = L.priorResult(req.key)
@@ -244,7 +247,7 @@ local function remaining(s, sent)
 end
 
 S.handlers["transfer.info"] = function(player, args)
-    local username = player:getUsername()
+    local username = S.principal(player)
     local s, now = Tr.settings(), EC.now()
     local sent = Tr.sentOn(R.dayKey(now), username)
     S.reply(player, "transfer.info", {
@@ -258,16 +261,15 @@ end
 -- Online players whose name contains the query (case-insensitive), the caller's last 10
 -- counterparties, and an exact case-sensitive match of any known account; never the caller.
 S.handlers["transfer.recipients"] = function(player, args)
-    local me = player:getUsername()
+    local me = S.principal(player)
     local query = args.query
     if type(query) ~= "string" or #query > Tr.QUERY_MAX or string.find(query, "%c") then query = nil end
     local out = { requestId = requestId(args.requestId), query = query or "", items = {} }
     if query ~= nil and Tr.settings().enabled then
         local needle = string.lower(query)
         local online = {}
-        S.forEachOnline(function(p)
-            local u = p:getUsername()
-            if validName(u) then online[u] = true end
+        S.forEachOnline(function(p, account)
+            if validName(account) then online[account] = true end
         end)
         local seen = { [me] = true }
         local function add(u)
@@ -278,8 +280,10 @@ S.handlers["transfer.recipients"] = function(player, args)
         local function matches(u)
             return needle == "" or string.find(string.lower(u), needle, 1, true) ~= nil
         end
-        if query ~= "" and Tr.known(query) then add(query) end
+        if query ~= "" and Tr.known(query) then add(S.accountOf(query)) end
+        -- resolved as read: a counterparty merged since is shown as its account, once, never as me
         for _, u in ipairs(md.transferRecent[me] or {}) do
+            u = S.accountOf(u)
             if matches(u) then add(u) end
         end
         local names = {}
@@ -298,7 +302,7 @@ S.handlers["transfer.recipients"] = function(player, args)
 end
 
 S.handlers["wallet.transfer"] = function(player, args)
-    local username = player:getUsername()
+    local username = S.principal(player)
     local id = requestId(args.requestId)
     local memo = args.memo
     if memo == "" then memo = nil end
@@ -329,7 +333,7 @@ end
 -- The first sighting of an account starts its clock (the client's first command is hello).
 local prevHello = S.handlers.hello
 S.handlers.hello = function(player, args)
-    Tr.noteSeen(player:getUsername())
+    Tr.noteSeen(S.principal(player))
     prevHello(player, args)
 end
 
@@ -356,6 +360,34 @@ function Tr.init(root)
         md.firstSeen = seen
         EC.log("transfer: account age tracking starts; " .. n .. " existing accounts grandfathered")
     end
+end
+
+-- ---------- account merge (ECMerge) ----------
+
+-- The account is as old as its oldest login (0 = older than the tracking, the earliest), its
+-- daily sent totals add up (the cap is per person, it must not widen), and its recent list is
+-- its own first, then the alias's, without itself or duplicates, at most RECENT_MAX. Returns
+-- the firstSeen before and after.
+function Tr.mergeAccount(alias, into)
+    local fa, fi = md.firstSeen[alias], md.firstSeen[into]
+    if type(fa) == "number" and (type(fi) ~= "number" or fa < fi) then md.firstSeen[into] = fa end
+    md.firstSeen[alias] = nil
+    for _, byDay in pairs(md.transferDaily) do
+        local n = type(byDay) == "table" and byDay[alias] or nil
+        if n then byDay[into], byDay[alias] = (byDay[into] or 0) + n, nil end
+    end
+    local list, seen = {}, { [alias] = true, [into] = true }
+    for _, source in ipairs({ md.transferRecent[into] or {}, md.transferRecent[alias] or {} }) do
+        for _, name in ipairs(source) do
+            if #list < Tr.RECENT_MAX and not seen[name] and S.accountOf(name) ~= into then
+                seen[name] = true
+                list[#list + 1] = name
+            end
+        end
+    end
+    if #list > 0 or md.transferRecent[into] ~= nil then md.transferRecent[into] = list end
+    md.transferRecent[alias] = nil
+    return { firstSeenBefore = fi, firstSeenAfter = md.firstSeen[into] }
 end
 
 S.Transfer = Tr
