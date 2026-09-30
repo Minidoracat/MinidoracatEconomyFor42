@@ -769,8 +769,10 @@ end
 --     only ever adds to it (GameTime.java:519, 540-546), so "save hours < claim hours" proves
 --     the save was written before the claim.
 --   * a claim is anchored on its letter (claimSess, claimHours, claimLife) in Global ModData.
---   * a life is a character of one login name: the main seat's death, or a lifeBreak judged to
---     be a new character, starts the next one (lives[login].life).
+--   * a life is a character of one login name: only a death of the main seat the server saw
+--     (ECMailbox.onDeath) starts the next one (lives[login].life). A character made without a
+--     death (a lifeBreak mark) is never taken as one: a reconnect is a new object of the same
+--     character, so what the mark covers is held for an administrator instead.
 --   * the ledger (ECRecoveryJournal, one file per epoch) keeps what a world rollback forgets:
 --     claims, session starts and lives, written at the moment they happen. Global ModData only
 --     reaches the disk with the world save (ServerMap.java:409); the file does not roll back.
@@ -829,11 +831,11 @@ function R.life(login)
     return rec and tonumber(rec.life) or 0
 end
 
--- The next character of this login: the main seat died, or a lifeBreak was judged a new life.
+-- The next character of this login: the main seat died while the server watched (M.onDeath).
 function R.newLife(login)
     local rec = lifeRec(login, true)
     rec.life = (tonumber(rec.life) or 0) + 1
-    -- this world save watched the life begin (a death, a judged new character)
+    -- this world save watched the life begin (a death)
     rec.seen = rec.life
     ledger({ k = "life", l = login, s = S.nextSeq(), life = rec.life })
     return rec.life
@@ -985,9 +987,12 @@ end
 -- "contained" | "excluded" | "tie" | "unanchored" (a line written before anchors existed) |
 -- "life_unproven" (only the ledger says that life ended: the save may be the old character) |
 -- "ledger_incomplete" (a ledger file up to the commit could not be read).
--- The save's hours must be past the commit by more than a tick, unless this world save itself
--- watched the transfer's life end (seen). No start of the transfer's life after its commit may
--- have loaded a save at or below it (a fork); a trimmed start is a fork nobody can rule out.
+-- A transfer of a life this world save did not watch end (seen <= life < lifeNow) is always
+-- life_unproven: the save may be that character or a later one, and hours of two characters are
+-- not one clock, so neither "past the commit" nor "below it" proves anything.
+-- Otherwise the save's hours must be past the commit by more than a tick, unless this world save
+-- itself watched the transfer's life end (seen). No start of the transfer's life after its commit
+-- may have loaded a save at or below it (a fork); a trimmed start is a fork nobody can rule out.
 function R.outOrder(login, first, player)
     local h = type(first) == "table" and tonumber(first.h) or nil
     if h == nil then return "unanchored" end
@@ -997,6 +1002,7 @@ function R.outOrder(login, first, player)
     local seen = rec and math.min(tonumber(rec.seen) or lifeNow, lifeNow) or 0
     local life, eps = tonumber(first.life) or 0, R.tickEps()
     if life > lifeNow then return "excluded" end
+    if life < lifeNow and life >= seen then return "life_unproven" end
     local order = "contained"
     if life >= seen then
         local p = player or S.onlineLogin(login)
@@ -1007,7 +1013,6 @@ function R.outOrder(login, first, player)
     if order == "contained" and R.forkedAfter(login, life, first.epoch, first.seq, h + eps, true) ~= false then
         order = "excluded"
     end
-    if order ~= "contained" and life < lifeNow and life >= seen then return "life_unproven" end
     return order
 end
 

@@ -1027,9 +1027,30 @@ local function noteRefused(session, login, mailId, order)
     anomaly(login, mailId, "redelivery-refused", { reason = order })
 end
 
-local function redeliverOne(player, login, box, entry, ms)
+-- A claimed letter the server will not hand over again by itself: it stays claimed and one record
+-- (key "mail:<id>") asks an administrator - restore hands it over to the save in hand, discard
+-- settles it (M.resolveHeldLetter). The anomaly is written once, when the record opens.
+local function holdLetter(login, entry, reason, extra)
+    local fields = { kind = "letter", mailId = entry.id, item = entry.item, qty = #availableUnits(entry) }
+    for k, v in pairs(extra or {}) do fields[k] = v end
+    if R.hold(login, "mail:" .. entry.id, reason, fields) then
+        anomaly(login, entry.id, "redelivery-held", { reason = reason, epoch = fields.epoch })
+        return true
+    end
+    return false
+end
+
+-- The one entry of every automatic delivery of an already-claimed letter. A ledger file up to the
+-- letter's epoch that could not be read in full may hide the life that took it (the death line of
+-- R.newLife): hours cannot tell that character from this one, so the letter stays claimed and is
+-- held - the same gap M.claim refuses on. `byAdmin` is an administrator's decision to hand it over.
+local function redeliverOne(player, login, box, entry, ms, byAdmin)
     local avail = availableUnits(entry)
     if #avail == 0 then return false end
+    local gap = not byAdmin and R.ledgerGap((EC.parseId(entry.id))) or nil
+    if gap then
+        return holdLetter(login, entry, "ledger_unreadable", { epoch = gap })
+    end
     local claimSeq = S.nextSeq()
     local proxy = { id = entry.id, owner = entry.owner, kind = entry.kind, item = entry.item,
         qty = #avail, units = avail, txId = entry.txId, snapshot = entry.snapshot,
@@ -1052,13 +1073,15 @@ end
 
 -- A claimed letter this login took, with no stamped object of it in this backpack, is handed over
 -- again only when its anchor proves this save was written before the claim (R.claimOrder
--- "predates"). A letter claimed by an older life of this login - or a lifeBreak that turns out
--- to be a new character (hours back below the claim) - went with that character and is settled.
--- A lifeBreak names the main-seat session that was online when the character was created
--- (M.onNewGame): only another session - the object that replaced it - may take it as a new
--- life. `true` = nobody was online then, so the next session is the new character.
+-- "predates"). A letter claimed by an older life of this login is settled: a life only ever ends
+-- with a death the server saw (M.onDeath, or its ledger line harvested after a rollback).
+-- A lifeBreak (M.onNewGame) proves nothing by itself: a character was created while this letter
+-- was claimed, but a split-screen seat fires the same event under this login, and a reconnect
+-- makes a new object and session for the same character (ServerPlayerDB.java:255-259,
+-- GameServer.java:2814). So a save that predates a marked claim is neither a new life nor owed
+-- the letter: it stays claimed and is held for an administrator (holdLetter).
 local function redeliverMissing(player, login, account, scan, blockedLetters, ms)
-    local session, lifeNow, changed, newLife = R.session(player), R.life(login), false, false
+    local session, lifeNow, changed = R.session(player), R.life(login), false
     local todo = {}
     for _, box in ipairs(groupBoxes(account)) do
         for mailId, entry in pairs(box.entries) do
@@ -1072,24 +1095,50 @@ local function redeliverMissing(player, login, account, scan, blockedLetters, ms
         local entry = item.entry
         local order = R.claimOrder(entry, player)
         local brk = entry.lifeBreak
-        local mine = brk == true or (type(brk) == "string" and brk ~= session.sid)
-        if order == "predates" and mine then
-            if not newLife then newLife, lifeNow = true, R.newLife(login) end
+        if tonumber(entry.claimLife) ~= nil and tonumber(entry.claimLife) < lifeNow then
             entry.state, entry.lifeBreak = "settled", nil
-            anomaly(login, entry.id, "settled-new-life")
-            changed = true
-        elseif tonumber(entry.claimLife) ~= nil and tonumber(entry.claimLife) < lifeNow then
-            entry.state, entry.lifeBreak = "settled", nil
+            R.resolveHold(login, "mail:" .. entry.id, "settled")
             anomaly(login, entry.id, "settled-old-life")
             changed = true
+        elseif order == "predates" and brk ~= nil then
+            changed = holdLetter(login, entry, "lifebreak_unproven") or changed
         elseif order == "predates" then
             changed = redeliverOne(player, login, item.box, entry, ms) or changed
         else
-            if order == "contained" and mine then entry.lifeBreak = nil end
+            -- a later object of this login holding the claim is the same character: the mark
+            -- (and a record it opened) is spent. The object online when it was made proves nothing.
+            if order == "contained" and (brk == true or (type(brk) == "string" and brk ~= session.sid)) then
+                entry.lifeBreak = nil
+                changed = R.resolveHold(login, "mail:" .. entry.id, "contained") or changed
+            end
             noteRefused(session, login, entry.id, order)
         end
     end
     return changed
+end
+
+-- An administrator's decision on a letter holdLetter kept: "restore" hands it over to the save of
+-- `login` online now (once, anchored to this session), "discard" settles it. A letter that is no
+-- longer claimed by that login leaves nothing to decide but closing the record.
+function M.resolveHeldLetter(player, login, mailId, decision)
+    if not md or type(mailId) ~= "string" then return false, "unknown_mail" end
+    for _, box in ipairs(groupBoxes(S.accountOf(login))) do
+        local entry = box.entries[mailId]
+        if entry then
+            if entry.state ~= "claimed" or claimedBy(entry) ~= login then
+                return decision == "discard", "letter_not_held"
+            end
+            if decision == "discard" then
+                entry.state, entry.lifeBreak = "settled", nil
+                anomaly(login, mailId, "settled-admin")
+                return true
+            end
+            entry.lifeBreak = nil
+            if not redeliverOne(player, login, box, entry, EC.now(), true) then return false, "nothing_to_deliver" end
+            return true
+        end
+    end
+    return decision == "discard", "unknown_mail"
 end
 
 -- ---------- claims the world lost (rollback ledger, harvested at start) ----------
@@ -1683,7 +1732,10 @@ function M.onDeath(character)
         end
     end
     local settled = claimedLetters(username)
-    for _, entry in ipairs(settled) do entry.state = "settled" end
+    for _, entry in ipairs(settled) do
+        entry.state, entry.lifeBreak = "settled", nil
+        R.resolveHold(username, "mail:" .. entry.id, "settled")
+    end
     if #settled > 0 then
         X.emit("mailbox.settled", { username = username, count = #settled })
     end
@@ -1697,10 +1749,10 @@ end
 -- A new character can also be made without a death (CreatePlayerPacket.java:179-305 does not ask
 -- whether the old one died), and the event carries no seat: the event object is a temporary one,
 -- never given a player index (:288-303), so a split-screen seat's character fires it under the
--- main login too. So nothing is settled here - the claimed letters are marked with the session
--- of the main-seat object online right now, and only a different session of this login (the
--- object that replaces it) may judge them a new life (redeliverMissing). With nobody online the
--- mark is `true`: the first session to come is the new character.
+-- main login too. So nothing is settled here and no life starts - the claimed letters are marked
+-- with the session of the main-seat object online right now (`true` with nobody online). A save
+-- that predates a marked claim is held for an administrator (redeliverMissing); a later object of
+-- this login whose save holds the claim spends the mark.
 function M.onNewGame(player)
     local ok, username = pcall(S.login, player)
     if not ok or type(username) ~= "string" or not md then return end
