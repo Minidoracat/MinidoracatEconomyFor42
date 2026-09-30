@@ -26,7 +26,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]Player transfers (server option)[/h3]
 [list]
 [*] When allowed, the wallet page has a Transfer button. By default you must be at a terminal or ATM.
-[*] Before you confirm, the screen shows the fee (paid on top by the sender), the total, your balance afterwards and today's remaining limit.
+[*] Before you confirm, the screen shows the fee (paid by the sender), the total, your balance afterwards and today's remaining limit.
 [*] The recipient box lists online players and recent recipients; for offline players type the full account name, matching case.
 [*] The recipient is notified. A resend never charges twice and [b]a sent transfer cannot be undone[/b]; limits and the new-account wait are set by the server.
 [/list]
@@ -36,7 +36,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]Map ATMs[/b]: vanilla floor and wall ATMs work within 2 tiles on the same floor, no registration needed (the server can turn this off).
 [*] [b]Custom terminals[/b] (machine, catgirl or supported cabinets) are registered by an admin as an ATM or a trade station; only trade stations have the market radio.
 [*] [b]One shared market[/b]: list at station A, someone buys at station B, you collect at station C.
-[*] [b]Map ATM protection[/b]: ordinary players cannot sledgehammer or disassemble supported vanilla ATMs; admins can. Fire, explosions and other mods are not covered.
+[*] [b]Map ATM protection[/b]: ordinary players cannot sledgehammer or disassemble supported vanilla ATMs; admins can.
 [/list]
 
 [h3]System shop[/h3]
@@ -78,14 +78,14 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]Market radio (server option)[/h3]
 [list]
 [*] Trade stations can broadcast text market summaries, shown in your own game language.
-[*] Turn on a radio, walkie-talkie, world radio or car radio, pick "Market Radio" from the presets and press tune; it uses none of your preset slots.
+[*] Turn on a radio, walkie-talkie, world radio or car radio, pick "Market Radio" from the presets and press tune.
 [*] Voice pickup is [b]off by default[/b].
 [/list]
 
 [h3]Interface and controls[/h3]
 [list]
 [*] Clicking a row only opens a floating detail view; it never buys, cancels or bids.
-[*] Keyboard (Tab, arrows, Enter, Esc) and controller (A, B, LB/RB) work on every page. Window position, size and preferences are remembered.
+[*] Keyboard (Tab, arrows, Enter, Esc) and controller (A, B, LB/RB) work on every page.
 [/list]
 
 [h3]Paid slots for other mods[/h3]
@@ -97,7 +97,7 @@ Supporting mods (Vehicle Manager first) can sell permanent or rented extra slots
 [*] [b]Why can't I list my item?[/b] Listing needs the server whitelist plus supported item types and state checks, so [b]not every modded item can be traded[/b]. Containers, keys, furniture, maps, animals, rotten food, equipped or broken items, written or locked notes, poisoned food, dishes with added ingredients, fertilized eggs, mixed fluids and devices holding a disc cannot be listed; the picker explains why.
 [*] [b]Can I list clothing?[/b] Yes, once the server opens the clothing categories; holes, patches, blood, dirt and colour are kept. Take it off first. A patch sewn over a hole cannot be kept: remove it, or at Tailoring 8+ remove it and repair the hole with the same fabric.
 [*] [b]Does food spoil while listed?[/b] Yes.
-[*] [b]It says "Identity not verified".[/b] The server checks your SteamID; another Steam account on this name, or split-screen players 2-4, cannot use the economy. If it is yours, give an admin your Player ID.
+[*] [b]It says "Identity not verified".[/b] The server checks your SteamID; another Steam account on this name, or split-screen players 2-4, cannot use the economy. By default a Steam account uses the economy with one login only (the first); your other logins are told so and keep their wallets. If it is yours, give an admin your Player ID.
 [*] [b]The system took an item out of my bag?[/b] After a crash an older save can bring back items already listed, auctioned or sold. Once the trade is in a world save, the copy is taken back at login with a notice and a line in My market history; worn, hotbar and non-empty bag items are left alone. If it looks wrong, give an admin your Player ID.
 [*] [b]I can't hear the market radio.[/b] Check the device is on, volume is not 0, the band fits and you are in range; after picking "Market Radio" press tune.
 [*] [b]Can I use radio voice as private chat?[/b] No; nearby or lower-floor devices may hear it.
