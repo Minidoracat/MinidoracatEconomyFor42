@@ -959,7 +959,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 27   -- +27: first-sight binding, rename evidence, one account per Steam account, identity alerts (scenario FS)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 19   -- +19: identity review fixes, two rounds (scenario FS2)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 20   -- +20: identity review fixes, three rounds (scenario FS2)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16829,6 +16829,18 @@ local j2 = fsPlayer("fs2-j2", J_, 29)
 onlinePlayers = { j2 }
 check(j1ok and S.principal(j1b) ~= nil and S.login(j2) == "fs2-j2" and alertOf("rename", "fs2-j2") == nil,
     "the occupant object follows the login on its seat: a death before a reconnect does not make the next account switch a rename")
+local L_ = mgT(257)
+fire("OnNewGame", fsPlayer("fs2-l1", L_, 59), nil)          -- bound long ago: no new-character evidence left
+nowMs = nowMs + 300000
+local l1 = fsPlayer("fs2-l1", L_, 30)
+onlinePlayers = { l1 }
+local l1ok = S.login(l1) == "fs2-l1"                        -- asked about once, before any scan saw it
+l1.dead = true                                               -- health 0, no event, no scan
+nowMs = nowMs + 5000
+local l2 = fsPlayer("fs2-l2", L_, 30)
+onlinePlayers = { l2 }
+check(l1ok and S.login(l2) == nil and alertOf("rename", "fs2-l2") ~= nil,
+    "a bound login's new object is recorded on its seat the first time it is asked about, so its death still catches the rename")
 
 -- ----- a rename refused where the one-account policy would refuse too says so -----
 md = fresh()

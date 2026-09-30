@@ -688,6 +688,14 @@ local function verdict(player, peek)
         if importedAt ~= nil or damaged then return nil end
         return firstSight(player, name, peek)
     end
+    -- the slot rule reads the previous occupant object's own death, so that object must have been
+    -- seen: a bound login is recorded on its seat the first time anything asks about a new object,
+    -- not only by the once-a-second scan (one lookup on the hot path; a new object pays for observe)
+    if not peek then
+        local id = seatId(player)
+        local r = id and slots[id] or nil
+        if id ~= nil and (r == nil or r.obj ~= player) then Id.observe(player) end
+    end
     -- checked on its own: a reserved record has no SteamID, and a player whose SteamID reads as
     -- nil must not match that nil
     if b.reserved or Id.unresolved(name) == "EXACT_MISMATCH" then return nil end
