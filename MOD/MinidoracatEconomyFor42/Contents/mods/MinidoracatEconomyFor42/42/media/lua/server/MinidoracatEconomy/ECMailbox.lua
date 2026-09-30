@@ -1282,13 +1282,22 @@ end
 -- The claimed letters of `login` are marked (lifeBreak, M.onNewGame): a later save that predates
 -- a marked claim is refused its redelivery, and any later save that contains it spends the mark.
 -- The mark goes to the rollback ledger as well (R.noteMark): a world rollback to before it but
--- after the claims would otherwise forget it (harvestLedger puts it back).
+-- after the claims would otherwise forget it (harvestLedger puts it back). A client can repeat
+-- CreatePlayer without dying (LuaManager.java:6617-6635 -> CreatePlayerPacket), and the ledger is
+-- read in full at every start, so a line is written only when this call marks a letter no mark
+-- covered yet. Two different marks on one letter become `true` (every later session refused).
 local function markLetters(login, mark, why)
-    local marked = claimedLetters(login)
-    for _, entry in ipairs(marked) do entry.lifeBreak = mark end
-    if #marked > 0 then
+    local marked, fresh = claimedLetters(login), 0
+    for _, entry in ipairs(marked) do
+        if entry.lifeBreak == nil then
+            entry.lifeBreak, fresh = mark, fresh + 1
+        elseif entry.lifeBreak ~= mark then
+            entry.lifeBreak = true
+        end
+    end
+    if fresh > 0 then
         R.noteMark(login)
-        X.emit("mailbox.lifeBreak", { username = login, count = #marked, unverified = why == "unverified" or nil })
+        X.emit("mailbox.lifeBreak", { username = login, count = fresh, unverified = why == "unverified" or nil })
     end
     return #marked
 end

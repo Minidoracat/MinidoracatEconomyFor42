@@ -986,6 +986,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: merged logins (RV-13 in 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: deaths and new characters (scenario DU: unverified death, impostor, unseen death at first sight and at the prune, a late event, an alive logout; MD-19b: the refusal a split-screen mark costs; RV-4e: the unreadable ledger on the System page)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: review of the death fixes: a save within a tick of the commit is held, not voided (LG-tie); an unflagged impostor's death only marks (DU-2b); a never-verified object dead without its event marks, at the next first sighting and at the prune (DU-6, DU-6b)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: final pass: a later login does not turn a tie start into proof (LG-tie2); a lifeBreak mark survives a world rollback through the ledger (DU-7 unverified death, spent, stays spent; DU-8 CreatePlayer; DU-9 a lost claim older than a lost mark)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a repeated CreatePlayer does not grow the rollback ledger (DU-10)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -18199,6 +18200,31 @@ local againT = M.claim(ta2, lt.id)
 check(M.entryOf("du-t", lt.id).state == "claimed" and M.entryOf("du-t", lt.id).lifeBreak ~= nil
     and againT.ok ~= true and ta2.inventory.count("Base.Bandage") == 0,
     "DU-9: a lost claim older than a lost mark is claimed and marked, never left ready for the new character")
+
+-- DU-10: CreatePlayer repeated without a death marks letters already marked: no new ledger line
+local function brkLines(name)
+    proofSettle()
+    local n = 0
+    for _, f in pairs(files) do
+        for _, line in ipairs(f.lines or {}) do
+            if string.find(line, '"k":"brk"', 1, true) and string.find(line, '"l":"' .. name .. '"', 1, true) then n = n + 1 end
+        end
+    end
+    return n
+end
+local za = seat("du-z", mgT(216), 20, 10)
+onlinePlayers = { za }
+tick()
+local lz = M.add("du-z", { item = "Base.Bandage", qty = 1, kind = "shop" })
+assert(M.claim(za, lz.id).ok)
+for _ = 1, 10 do fire("OnNewGame", seat("du-z", mgT(216), nil, 0), nil) end
+local tenZ = brkLines("du-z")
+local lz2 = M.add("du-z", { item = "Base.Bandage", qty = 1, kind = "shop" })
+assert(M.claim(za, lz2.id).ok)
+fire("OnNewGame", seat("du-z", mgT(216), nil, 0), nil)
+check(tenZ == 1 and brkLines("du-z") == 2 and M.entryOf("du-z", lz.id).lifeBreak ~= nil
+    and M.entryOf("du-z", lz2.id).lifeBreak ~= nil,
+    "DU-10: ten CreatePlayers over the same claims write one ledger mark; a new claim after them one more")
 
 -- DU-3..5 without Steam mode: the seat is the login, the question is only whether the death came
 steamModeActive = false
