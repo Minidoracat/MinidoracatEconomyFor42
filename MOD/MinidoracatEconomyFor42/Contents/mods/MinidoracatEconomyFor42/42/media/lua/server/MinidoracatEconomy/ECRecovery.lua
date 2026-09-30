@@ -327,7 +327,7 @@ function R.init(root)
     -- a new process has no player objects yet: every session starts over
     sessions, outAnchors, claimedHourly, unanchoredNoted = {}, {}, {}, {}
     epsProbe, epsProbeH, epsNow, epsPrev, epsAt = nil, nil, 0, 0, 0
-    ledgerGaps = {}
+    ledgerGaps, R.ledgerGapsAt = {}, nil
     for _, receipt in pairs(rec.ops) do indexReceipt(receipt) end
 end
 
@@ -934,6 +934,18 @@ end
 -- ledger-backed decision asks: may something up to `epoch` be missing from what was read?
 function R.setLedgerGaps(gaps)
     ledgerGaps = type(gaps) == "table" and gaps or {}
+    R.ledgerGapsAt = EC.now()
+end
+
+-- For the admin System page: every epoch whose ledger could not be read in full, oldest first,
+-- with why and when this start found it (the harvest runs once, at start).
+function R.ledgerGaps()
+    local out = {}
+    for epoch, why in pairs(ledgerGaps) do
+        out[#out + 1] = { epoch = epoch, reason = type(why) == "string" and why or "incomplete", at = R.ledgerGapsAt }
+    end
+    EC.sortSafe(out, function(a, b) return tostring(a.epoch) < tostring(b.epoch) end)
+    return out
 end
 
 function R.ledgerGap(epoch)
@@ -1053,8 +1065,27 @@ function R.observeSessions(onFirst)
     end
 end
 
--- On the minute clock: forget the objects that left.
-function R.pruneSessions()
+-- Objects of `login` this process still knows (sessions are pruned each minute) whose character
+-- is dead but whose death M.onDeath never processed (s.died). A seat can be taken over by
+-- ConnectCoop between the frame BodyDamage set health 0 and the next one where die() fires
+-- OnCharacterDeath (IsoGameCharacter.java:9054 vs :9177-9179): ConnectCoopPacket.java:69 only
+-- asks isDead() and :94 disconnectPlayer removes the object, so that event may never come.
+-- `except` is the object asking (the new one).
+function R.unsettledDeaths(login, except)
+    local out = {}
+    for p, s in pairs(sessions) do
+        if p ~= except and s.login == login and not s.died then
+            local ok, dead = pcall(function() return p:isDead() end)
+            if ok and dead == true then out[#out + 1] = p end
+        end
+    end
+    return out
+end
+
+-- On the minute clock: forget the objects that left. A departing object that is dead and whose
+-- death nobody processed is handed to `onDeadGone(player, login, session)` first, so a prune that
+-- runs before the login's next object is seen does not lose that death (R.unsettledDeaths).
+function R.pruneSessions(onDeadGone)
     local players, online, gone = S.seats(), {}, {}
     for i = 0, (players and players:size() or 0) - 1 do
         local p = players:get(i)
@@ -1063,7 +1094,17 @@ function R.pruneSessions()
     for p in pairs(sessions) do
         if not online[p] then gone[#gone + 1] = p end
     end
-    for _, p in ipairs(gone) do sessions[p] = nil end
+    for _, p in ipairs(gone) do
+        local s = sessions[p]
+        if onDeadGone ~= nil and type(s.login) == "string" and not s.died then
+            local okDead, dead = pcall(function() return p:isDead() end)
+            if okDead and dead == true then
+                local ok, err = pcall(onDeadGone, p, s.login, s)
+                if not ok then EC.log("unseen death of " .. s.login .. " failed: " .. tostring(err)) end
+            end
+        end
+        sessions[p] = nil
+    end
 end
 
 -- One event per operation per process for a journal line older than the anchors.
@@ -1295,6 +1336,38 @@ function R.finishOut(username, id, rec, kind, ref)
     X.emit("recovery.out", { username = username, opId = id, kind = receipt.kind, ref = receipt.ref,
         qty = receipt.qty, units = #units })
     R.resolveHold(username, "receipt:" .. id, "committed")
+    return true
+end
+
+-- discard: the operation is declared void against the *world*, not merely deleted from one
+-- player save. finishOut writes the receipt with nothing in it, so hasOut answers true from now
+-- on and an older save that logs in with the same pending record finds it closed (judgePending,
+-- receipt kind "discard") instead of resurrecting it at every login. One function for the
+-- administrator's discard (ECAdmin) and the automatic one of a pending the save never had
+-- (ECMailbox reconcileOuts, pending_not_in_save).
+function R.discardPending(username, target, opId, pend, proof, successorSeq)
+    local admitted, admissionError = R.reserveOut(username, opId)
+    if not admitted then return false, admissionError or "recovery_not_actionable" end
+    -- same chain rule as a return: the new point comes after the successor's
+    S.bumpSeq(successorSeq or tonumber((proof or pend).seq))
+    local record = R.copyReplay(proof or pend)
+    -- The record itself has to say what it is. The envelope's kind reaches the journal, but
+    -- the replay inside it kept the original listing/auction/return kind, and the reader that
+    -- later walks this operation's file judges the replay: a discard wearing "listing" with
+    -- no origins reads as a malformed line and poisons the whole chain - the very rollback
+    -- this decision exists to close would then have no reviewable successor at all. The
+    -- original kind is kept beside it, because "what was discarded" is part of the record.
+    record.originalKind = record.originalKind or record.kind
+    record.kind = "discard"
+    record.origins, record.qty, record.lotQty = {}, 0, nil
+    record.protocol = R.PROTOCOL
+    record.epoch, record.seq = md.meta.epoch, S.nextSeq()
+    local committed, commitError = R.finishOut(username, opId, record, "discard", opId)
+    if not committed then
+        R.releaseOut(opId)
+        return false, commitError or "recovery_not_actionable"
+    end
+    R.transmit(target)
     return true
 end
 

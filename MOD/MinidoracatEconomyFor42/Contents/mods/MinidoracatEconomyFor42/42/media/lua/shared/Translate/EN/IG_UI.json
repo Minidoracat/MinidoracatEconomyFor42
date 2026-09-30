@@ -652,6 +652,7 @@
   "IGUI_MinidoracatEconomy_Admin_Cmd_catalog": "Shop catalog",
   "IGUI_MinidoracatEconomy_Admin_Sys_Terminals": "Registered terminals",
   "IGUI_MinidoracatEconomy_Admin_Sys_Mailbox": "Mailbox entries waiting (server-wide)",
+  "IGUI_MinidoracatEconomy_Admin_Sys_LedgerGap": "A rollback ledger from a server start could not be read in full (epoch %1, found at %2): letters sent before it cannot be claimed and transfers before it are held until it leaves the recent-starts history. Check the server disk and the ledger files under Lua/MinidoracatEconomy.",
   "IGUI_MinidoracatEconomy_Admin_Sys_Catalog": "Shop catalog",
   "IGUI_MinidoracatEconomy_Wallet_Balances": "Balances",
   "IGUI_MinidoracatEconomy_Wallet_Period": "Period",

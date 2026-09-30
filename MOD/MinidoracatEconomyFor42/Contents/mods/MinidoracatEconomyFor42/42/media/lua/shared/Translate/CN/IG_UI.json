@@ -652,6 +652,7 @@
   "IGUI_MinidoracatEconomy_Admin_Cmd_catalog": "商店目录",
   "IGUI_MinidoracatEconomy_Admin_Sys_Terminals": "已登录终端",
   "IGUI_MinidoracatEconomy_Admin_Sys_Mailbox": "全服待领取信箱项目",
+  "IGUI_MinidoracatEconomy_Admin_Sys_LedgerGap": "回滚帐本读不完整（服务器启动区段 %1，于 %2 发现）：在它之前寄出的信件暂时不能领取、在它之前的转出会保留待处理，直到它离开最近几次启动的纪录为止。请检查服务器磁盘与 Lua/MinidoracatEconomy 下的帐本文件。",
   "IGUI_MinidoracatEconomy_Admin_Sys_Catalog": "商店目录",
   "IGUI_MinidoracatEconomy_Wallet_Balances": "余额",
   "IGUI_MinidoracatEconomy_Wallet_Period": "期间",

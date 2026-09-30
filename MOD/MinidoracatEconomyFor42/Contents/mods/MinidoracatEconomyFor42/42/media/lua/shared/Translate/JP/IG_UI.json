@@ -652,6 +652,7 @@
   "IGUI_MinidoracatEconomy_Admin_Cmd_catalog": "ショップカタログ",
   "IGUI_MinidoracatEconomy_Admin_Sys_Terminals": "登録済みターミナル",
   "IGUI_MinidoracatEconomy_Admin_Sys_Mailbox": "サーバー全体の未受取項目",
+  "IGUI_MinidoracatEconomy_Admin_Sys_LedgerGap": "サーバー起動時のロールバック台帳を最後まで読めませんでした（起動区間 %1、%2 に検出）。それより前に送られた郵便は受け取れず、それより前の移送は保留され、最近の起動履歴から外れるまで続きます。サーバーのディスクと Lua/MinidoracatEconomy の台帳ファイルを確認してください。",
   "IGUI_MinidoracatEconomy_Admin_Sys_Catalog": "ショップカタログ",
   "IGUI_MinidoracatEconomy_Wallet_Balances": "残高",
   "IGUI_MinidoracatEconomy_Wallet_Period": "期間",

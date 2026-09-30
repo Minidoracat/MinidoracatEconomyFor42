@@ -2934,6 +2934,15 @@ function Admin:refreshSystemReader()
             lines[#lines + 1] = getText(T .. "Admin_Sys_Accounts", tostring(sys.accounts or 0), tostring(sys.frozen or 0))
             addReaderLine(lines, tr("Admin_Sys_Terminals"), amountText(sys.terminals or 0))
             addReaderLine(lines, tr("Admin_Sys_Mailbox"), amountText(sys.mailboxUnclaimed or 0))
+            -- a rollback ledger this start could not read in full: what it blocks, until when, and
+            -- where to look (ECRecovery.ledgerGaps; one line whatever the count)
+            local gaps = type(sys.ledgerGaps) == "table" and sys.ledgerGaps or {}
+            if #gaps > 0 then
+                local epochs = {}
+                for _, g in ipairs(gaps) do epochs[#epochs + 1] = tostring(g.epoch) end
+                lines[#lines + 1] = getText(T .. "Admin_Sys_LedgerGap", table.concat(epochs, ", "),
+                    stampText(gaps[1].at, self.offsetMin))
+            end
             local cat = type(sys.catalog) == "table" and sys.catalog or {}
             -- the catalog now names its failure with a code (file_unreadable / catalog_invalid /
             -- arbitrage_rejected / file_write_failed) plus the file's own text; the code is

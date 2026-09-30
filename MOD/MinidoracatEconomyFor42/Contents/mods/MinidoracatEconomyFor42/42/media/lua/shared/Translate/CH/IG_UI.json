@@ -652,6 +652,7 @@
   "IGUI_MinidoracatEconomy_Admin_Cmd_catalog": "商店目錄",
   "IGUI_MinidoracatEconomy_Admin_Sys_Terminals": "已登錄終端",
   "IGUI_MinidoracatEconomy_Admin_Sys_Mailbox": "全服待領取信箱項目",
+  "IGUI_MinidoracatEconomy_Admin_Sys_LedgerGap": "回滾帳本讀不完整（伺服器啟動區段 %1，於 %2 發現）：在它之前寄出的信件暫時不能領取、在它之前的轉出會保留待處理，直到它離開最近幾次啟動的紀錄為止。請檢查伺服器磁碟與 Lua/MinidoracatEconomy 下的帳本檔案。",
   "IGUI_MinidoracatEconomy_Admin_Sys_Catalog": "商店目錄",
   "IGUI_MinidoracatEconomy_Wallet_Balances": "餘額",
   "IGUI_MinidoracatEconomy_Wallet_Period": "期間",

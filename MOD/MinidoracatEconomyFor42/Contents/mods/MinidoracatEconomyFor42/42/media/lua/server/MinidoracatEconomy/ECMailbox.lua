@@ -1244,6 +1244,46 @@ local function settleLostClaims(login, ms)
     end
 end
 
+-- ---------- a character's end (rule five, part one) ----------
+
+-- The claimed letters of one login, wherever they stand in its account group: another login of
+-- the same account keeps its own.
+local function claimedLetters(login)
+    local out = {}
+    for _, box in ipairs(groupBoxes(S.accountOf(login))) do
+        for _, entry in pairs(box.entries) do
+            if entry.state == "claimed" and claimedBy(entry) == login then out[#out + 1] = entry end
+        end
+    end
+    return out
+end
+
+-- A death of `login`'s character: the letters that very login claimed went with it (settled),
+-- and the next character is a new life - a world rollback to before this death still settles
+-- them (the ledger's life line outlives the world save). `how`: nil for the verified seat whose
+-- OnCharacterDeath ran, "unverified" for a seat whose binding verdict was nil (Id.seatName),
+-- "unseen" for a dead object whose event never came (R.unsettledDeaths).
+local function settleDeath(login, how)
+    local settled = claimedLetters(login)
+    for _, entry in ipairs(settled) do entry.state, entry.lifeBreak = "settled", nil end
+    if #settled > 0 then
+        X.emit("mailbox.settled", { username = login, count = #settled,
+            unverified = how == "unverified" or nil, unseen = how == "unseen" or nil })
+    end
+    if how ~= nil then
+        EC.log("mailbox death of " .. login .. " (" .. how .. "): " .. tostring(#settled) .. " claimed letter(s) settled")
+    end
+    R.newLife(login)
+end
+
+-- A dead object of `login` whose death M.onDeath never processed, found at the first sighting of
+-- the login's next object or when the prune drops it: settled like a death, once.
+local function settleUnseenDeath(_, login, session)
+    if session.died then return end
+    session.died = true
+    settleDeath(login, "unseen")
+end
+
 -- Once per session, the first tick its login is verified (or the first command, whichever
 -- comes first): the session start goes into the ledger, the claims the world lost are settled,
 -- and the stamps in the backpack exactly as the save loaded them - before the client has had a
@@ -1251,7 +1291,10 @@ end
 -- so a client that is not ready yet misses nothing.
 function M.firstSight(player, login, session)
     if session.proved or type(login) ~= "string" then return end
-    session.proved = true
+    session.proved, session.login = true, login
+    -- a dead object of this login the death event never reached is its last character: settled
+    -- before this one's start line, lost claims and redelivery are judged
+    for _, dead in ipairs(R.unsettledDeaths(login, player)) do settleUnseenDeath(dead, login, R.session(dead)) end
     local ms = EC.now()
     R.noteStart(login, session)
     -- a save whose hours cannot be read proves nothing either way: its lost claims wait
@@ -1319,8 +1362,10 @@ function M.reconcile(player)
     local receipts, changed = R.ownerReceipts(username), false
     local protected, blockedLetters = {}, {}
     -- An older player may have no pending at all. Insure current commitments before changing that save.
+    -- A discard is no commitment: nothing was handed out, and its decision lives in the journal
+    -- (R.discardPending), so there is nothing to insure - and its empty record is no pending.
     for _, receipt in ipairs(receipts) do
-        if R.receiptVerdict(receipt) == "current" and not p.pendingOuts[receipt.id] then
+        if R.receiptVerdict(receipt) == "current" and not p.pendingOuts[receipt.id] and receipt.kind ~= "discard" then
             if type(receipt.replay) == "table" and EC.countKeys(p.pendingOuts) < R.PENDING_MAX then
                 p.pendingOuts[receipt.id] = R.copyReplay(receipt.replay)
                 changed = true
@@ -1536,6 +1581,32 @@ function M.reconcile(player)
     return true
 end
 
+-- A pending the loaded save never had (pending_not_in_save: the save predates the transfer, or a
+-- same-tick tie, and the original is absent) is in practice a replayed or forged record, and it
+-- could never be rebuilt - the administrator's only choice was discard. That discard is done here
+-- by the same function (R.discardPending: a journal discard line, a void receipt, nothing
+-- refunded), the pending is dropped and no record is opened, so it never counts against the
+-- account's held limit. SYSTEM audit line and one anomaly name what it was.
+local function autoDiscard(player, username, id, pend, verdict)
+    local proof = type(verdict.replay) == "table" and verdict.replay or nil
+    local ok, err = R.discardPending(username, player, id, pend, proof, tonumber(verdict.serverSeq))
+    if not ok then
+        EC.log("mailbox auto-discard of " .. id .. " for " .. username .. " refused: " .. tostring(err))
+        return false
+    end
+    local src = proof or pend
+    local snapshot = type(src.snapshot) == "table" and src.snapshot or nil
+    local item = verdict.item or (snapshot and snapshot.type) or nil
+    local qty = tonumber(src.qty)
+    R.resolveHold(username, "pend:" .. id, "auto_discard")
+    X.emit("ledger.anomaly", { kind = "mailbox", username = username, opId = id, resolution = "pending-auto-discarded",
+        reason = verdict.saveOrder, item = item, qty = qty, opKind = src.kind })
+    X.audit({ action = "recovery", admin = "SYSTEM", target = username, field = id, before = "pending_not_in_save",
+        after = "discard", item = item, qty = qty })
+    EC.log("mailbox auto-discarded pending " .. id .. " of " .. username .. " (" .. tostring(verdict.saveOrder) .. ")")
+    return true
+end
+
 -- ---------- login reconciliation of list-out (rule three rows 4-6) ----------
 
 -- pendingOuts[opId] = { protocol = 2, origins = { {src, unit (token)?, nativeId, mailId?, owner?,
@@ -1673,6 +1744,10 @@ reconcileOuts = function(player, p, scan, username)
                 changed = true
             end
             end
+        elseif verdict.action == "hold" and verdict.reason == "pending_not_in_save"
+            and autoDiscard(player, username, id, pend, verdict) then
+            p.pendingOuts[id] = nil
+            changed = true
         elseif verdict.action == "hold" then
             local key = "pend:" .. id
             local prev = R.heldRecord(username, key)
@@ -1705,27 +1780,36 @@ end
 -- character exists (OnNewGame) and write them into that one (spec 19.7 rule five, part two).
 local carryOver = {}
 
--- The claimed letters of one login, wherever they stand in its account group: another login of
--- the same account keeps its own.
-local function claimedLetters(login)
-    local out = {}
-    for _, box in ipairs(groupBoxes(S.accountOf(login))) do
-        for _, entry in pairs(box.entries) do
-            if entry.state == "claimed" and claimedBy(entry) == login then out[#out + 1] = entry end
-        end
-    end
-    return out
+local function deadNow(player)
+    local ok, dead = pcall(function() return player:isDead() end)
+    return ok and dead == true
 end
 
+-- The login whose bookkeeping a death or a new character of this seat is: the binding verdict,
+-- or - only for what withholds (settling, marking) - the seat's own name (Id.seatName). Second
+-- value: true when that name is not a verified identity.
+local function bookkeepingLogin(player)
+    local ok, login = pcall(S.login, player)
+    if ok and type(login) == "string" then return login, false end
+    local Id = S.Identity
+    local okSeat, name = pcall(function() return Id and Id.seatName(player) or nil end)
+    if okSeat and type(name) == "string" then return name, true end
+    return nil
+end
+
+-- Once per object (R.session(...).died): the death of an unverified seat settles too, or a login
+-- entered from another Steam account could die with its claims still owed and have them handed
+-- over again after a crash; the event may also come after R.unsettledDeaths already took it.
+-- Only a verified seat's pendingOuts travel on: an unverified seat's table is client data.
 function M.onDeath(character)
     if not md or not instanceof(character, "IsoPlayer") then return end
-    -- Only the login this character really is (S.login: never a split-screen seat or a name its
-    -- SteamID does not match) may have its records carried over, and only the letters that very
-    -- save claimed are settled.
-    local username = S.login(character)
+    local username, unverified = bookkeepingLogin(character)
     if username == nil then return end
+    local session = R.session(character)
+    if session.died then return end
+    session.died = true
     local okData, data = pcall(function() return character:getModData()[EC.PLAYER_MODDATA_KEY] end)
-    if okData and type(data) == "table" and type(data.pendingOuts) == "table" then
+    if not unverified and okData and type(data) == "table" and type(data.pendingOuts) == "table" then
         -- the table is the client's: only what a server path could have written travels on
         local copy, n = {}, 0
         for id, pend in pairs(data.pendingOuts) do
@@ -1736,14 +1820,7 @@ function M.onDeath(character)
             X.emit("player.died", { username = username, pendingOuts = n })
         end
     end
-    local settled = claimedLetters(username)
-    for _, entry in ipairs(settled) do entry.state, entry.lifeBreak = "settled", nil end
-    if #settled > 0 then
-        X.emit("mailbox.settled", { username = username, count = #settled })
-    end
-    -- the next character is a new life: a world rollback to before this death still settles
-    -- what this one claimed (the ledger line outlives the world save)
-    R.newLife(username)
+    settleDeath(username, unverified and "unverified" or nil)
 end
 
 -- Keyed by login on both sides (the death above): the new character is named with the
@@ -1755,15 +1832,22 @@ end
 -- with the session of the main-seat object online right now (`true` with nobody online). A save
 -- that predates a marked claim is refused its redelivery (redeliverMissing); a later object of
 -- this login whose save holds the claim spends the mark.
+-- While that main-seat object is online and alive nothing is marked: ConnectCoop refuses a seat
+-- whose player is alive (ConnectCoopPacket.java:69), so the event is a split-screen seat's
+-- character or a CreatePlayer that cannot take the living seat, and a mark would only refuse a
+-- legitimate redelivery after a crash.
 function M.onNewGame(player)
-    local ok, username = pcall(S.login, player)
-    if not ok or type(username) ~= "string" or not md then return end
+    if not md then return end
+    local username, unverified = bookkeepingLogin(player)
+    if username == nil then return end
     local current = S.onlineLogin(username)
-    local mark = current and current ~= player and R.session(current).sid or true
-    local marked = claimedLetters(username)
-    for _, entry in ipairs(marked) do entry.lifeBreak = mark end
-    if #marked > 0 then X.emit("mailbox.lifeBreak", { username = username, count = #marked }) end
-    local pending = carryOver[username]
+    if not (current ~= nil and current ~= player and not deadNow(current)) then
+        local mark = current and current ~= player and R.session(current).sid or true
+        local marked = claimedLetters(username)
+        for _, entry in ipairs(marked) do entry.lifeBreak = mark end
+        if #marked > 0 then X.emit("mailbox.lifeBreak", { username = username, count = #marked }) end
+    end
+    local pending = not unverified and carryOver[username] or nil
     if not pending then return end
     carryOver[username] = nil
     local p = R.playerData(player)
@@ -1856,7 +1940,7 @@ function M.onTick()
     drainProofReady()
     if ms - lastPrune < M.PRUNE_EVERY_MS then return end
     lastPrune = ms
-    R.pruneSessions()
+    R.pruneSessions(settleUnseenDeath)
     for username, o in pairs(md.mailbox.byOwner) do
         local dead = {}
         local left = 0
