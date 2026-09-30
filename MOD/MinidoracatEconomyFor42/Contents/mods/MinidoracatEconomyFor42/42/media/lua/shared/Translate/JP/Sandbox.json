@@ -30,6 +30,8 @@
   "Sandbox_MinidoracatEconomy_AdminSelfAdjustRoles_tooltip": "既定では許可しません。選択したロールも経済の書き込み権限が必要です。テストやイベントで自分の残高を調整できますが、1回・日次上限、理由、残高の版、監査は引き続き適用され、自分の凍結はできません。ここではセミコロンで区切るか、経済管理画面から選択してください。",
   "Sandbox_MinidoracatEconomy_IdentityAutoMerge": "同じ Steam アカウントのログイン名を統合",
   "Sandbox_MinidoracatEconomy_IdentityAutoMerge_tooltip": "既定ではオフ：ホワイトリストを取り込むたびに統合計画は計算され、身元ページ（と identity/merge-plan.json）に表示されますが、統合はしません。オンにすると、同じ正確な SteamID に結び付いたログイン名は、妨げるものがなくなった時点で 1 つの経済アカウント（残高、日次上限、チェックイン、マイルストーン、未処理の郵便）に統合されます。最初の統合はサーバー起動時に行われます。統合はゲーム内で元に戻せません。",
+  "Sandbox_MinidoracatEconomy_IdentityMultiAccount": "同じ Steam アカウントで複数の経済アカウントを許可",
+  "Sandbox_MinidoracatEconomy_IdentityMultiAccount_tooltip": "既定ではオフ：Steam アカウント 1 つにつき使える経済アカウントは 1 つです。同じ Steam アカウントの他のログイン名には経済システムは応答しません（メインに統合済みのものを除く）。メインは最初に経済システムを使ったもので、本人確認ページに一覧表示されます。オンにすると、同じ Steam アカウントの各ログイン名がそれぞれ独立した経済アカウントになります。1 つにまとめたい場合は「同じ Steam アカウントのログイン名を統合」（IdentityAutoMerge）をオンにする方法もあります。",
   "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin": "ネココイン入金レート（1 コインあたりのポイント）",
   "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin_tooltip": "Discord ポイントを入金するとき、何ポイントで 1 ネココインになるか（既定 1 ＝ 1:1）。起動時の既定値です。管理者は管理パネルでいつでも変更でき、レートのバージョンが上がって Discord 側に同期され、新しい注文から新レートが使われます。",
   "Sandbox_MinidoracatEconomy_CatPerOrderMin": "ネココイン 1 回あたり最小入金額",

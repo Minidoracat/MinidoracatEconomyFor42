@@ -8,25 +8,33 @@
 --   2. no name                                            -> nil
 --   3. no Steam mode (getSteamModeActive() is false)      -> the name: no factor to check
 --   4. the name is bound: not reserved and bound SteamID == player:getSteamID() -> the name, else nil
---   5. the name is not bound: before the first accepted import -> the name, afterwards nil
---      (a file with unreadable lines and no import marker counts as imported: fail closed)
+--   5. the name is not bound: before the first accepted import it is bound on first sight (src
+--      LOGIN, see "first sight" at the principal) or nil; afterwards nil (a file with unreadable
+--      lines and no import marker counts as imported: fail closed)
+--   6. IdentityMultiAccount off (the default): the login must be its Steam account's economy
+--      account (see "one account per Steam account" at the principal), else nil, reason one_account
 --   and in 4, a name whose whitelist SteamID is another exact text of the same double
 --   (EXACT_MISMATCH) is nil: both Steam accounts pass the double check, so neither is trusted
 --
 -- Bindings live in Lua/MinidoracatEconomy/identity/bindings.json (one JSON object per line,
 -- appended, replayed on start) - never in Global ModData, which any logged-in client can ask for
 -- whole (GlobalModDataRequestPacket.java:15,32). Record kinds, the last line of a name winning:
---   bind     {name, sid, exact?, src, from?, at}   src NEWGAME | IMPORT | COMPANION | REBIND
+--   bind     {name, sid, exact?, src, from?, at}   src NEWGAME | LOGIN | IMPORT | COMPANION | REBIND
 --   reserve  {name, src, at}
 --   conflict {name, sid, reason, src, at} | {name, clear = true}   a whitelist row that disagrees
 --   import   {at, by, src?, gen?, count?}          the first one starts the strict mode
 --   canon    {sid, name, rule, src, at}            the account of one exact SteamID group; the
 --                                                  first record of a SteamID wins forever
+--   primary  {sid, name, rule, src, at}            the one-account primary of a SteamID (sid: the
+--                                                  double's decimal, or the exact text when two
+--                                                  texts share the double); the last one wins
 -- Writers:
 --   * OnNewGame. On the server only CreatePlayerPacket fires it, after naming the new character
 --     with the connection's login name and giving it the connection's SteamID
 --     (CreatePlayerPacket.java:296-301). An unbound name is bound (a rounded double, exact=false);
 --     a bound or reserved one with another SteamID is left alone and audited BIND_CONFLICT.
+--   * first sight (Id.login), before the first accepted import: an unbound name is bound to the
+--     SteamID it is first seen with (a rounded double, exact=false) when nothing says it was renamed.
 --   * the whitelist import, from two sources sharing one pipeline (applyImport):
 --       - the administrator's (admin.identity import): whitelist rows the admin client read
 --         (requestUsers -> OnNetworkUsersReceived -> getUsers, isInWhitelist rows only;
@@ -40,6 +48,7 @@
 --   * the administrator's confirmation of those conflicts (admin.identity rebind). A name that
 --     took part in an account merge is never moved (merged_name).
 --   * ECMerge, through Id.recordCanon: the first canonical decision of a SteamID group.
+--   * the one-account policy: the primary of a SteamID with two or more logins, decided once.
 --
 -- SteamIDs are numbers here and are only ever compared as numbers - except that two exact
 -- whitelist texts are compared as the strings they are. getSteamID() is a long that reaches Lua
@@ -50,12 +59,14 @@
 -- Id.sidText writes the exact decimal of a double from two halves below 1e9.
 --
 -- Engine references (snapshot 42.21.0-20260928):
---   ConnectCoopPacket.java:72-97, 125   a seat's name is the client's; only empty and online names are refused
+--   ConnectCoopPacket.java:72-108, 125  a seat's name is the client's; only empty and online names are
+--                                       refused; seat 0 replaces a dead player and keeps its onlineID (:93)
 --   GameServer.java:2797-2803           Steam mode kicks a connection without a validated SteamID
 --   GameServer.java:2830, 2841-2848     seat index, role from the connection, SteamID, then the name
 --   LuaManager.java:9359-9364           getSteamModeActive -> SteamUtils.isSteamModeEnabled
 --   LuaManager.java:4099-4105           getServerName -> GameServer.serverName on the server
---   IsoPlayer.java:979, 6412, 6445      getPlayerNum, getSteamID, getUsername
+--   IsoPlayer.java:979, 6412, 6445, 6490   getPlayerNum, getSteamID, getUsername, getOnlineID
+--   IsoGameCharacter.java:4913          isDead
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Admin then
     require "MinidoracatEconomy/ECAdmin"
@@ -90,6 +101,15 @@ Id.NOTICE_MS = 60000               -- identity.unverified at most once a minute 
 Id.FLUSH_MS = 60000                -- IDENTITY_UNVERIFIED audit lines are aggregated per minute
 Id.FLUSH_LINES = 10                -- at most this many names per minute, the rest in one "*" line
 Id.SID_EXACT = "^7656119%d%d%d%d%d%d%d%d%d%d$"   -- a whitelist text (conventions, point 4)
+Id.SCAN_MS = 1000                  -- the online main seats are observed once a second (Id.observe)
+Id.SLOT_GAP_MS = 120000            -- a seat unseen this long was a disconnect: its next occupant starts a
+                                   -- new occupancy (a respawn replaces the seat within seconds)
+Id.NEWGAME_WINDOW_MS = 600000      -- CreatePlayer and ConnectCoop are sent back to back; ten minutes is
+                                   -- far above a slow client and still short of a whole play session
+Id.ALERT_RING = 50                 -- identity alerts kept in memory for the admin page
+Id.ALERT_TOAST_MS = 10000          -- at most one admin toast every ten seconds, server-wide
+Id.MULTI_LIST_MAX = 50             -- Steam accounts with several logins listed in one reply (counts complete)
+Id.MULTI_MEMBERS_MAX = 20          -- logins listed per Steam account (the count is complete)
 
 -- Overridable on purpose: the E2E scenarios run a no-steam server and replace these two with a
 -- Steam mode and a SteamID per connection slot. Everything below calls them through Id.
@@ -98,6 +118,8 @@ Id.sidOf = function(player) return player:getSteamID() end
 
 local bindings = {}          -- name -> { sid, text, exact?, src, at } | { reserved = true, src, at }
 local byText = {}            -- exact text -> { n, names = { [name] = true } }: exact bindings, not reserved
+local bySid = {}             -- SteamID double -> { n, names }: every binding, exact or rounded, not reserved
+local primaries = {}         -- policy key -> { name, rule, at }: the one-account primary (file records)
 local doubles = {}           -- SteamID double -> how many exact texts round to it (> 1: a collision)
 local disputes = {}          -- name -> { text, reason }: the conflict the file recorded for it
 local canon = {}             -- exact text -> { name, rule, src, at }: the group's account, decided once
@@ -121,6 +143,14 @@ local lastNames, lastNamesCount = nil, 0    -- the accepted export's names (this
 local stream = nil           -- an export being read across ticks
 local lastPoll = 0
 local collisionAudited = {}  -- name .. text -> audited during this uptime
+-- first sight and the alerts (memory only: this uptime)
+local slots = {}             -- onlineID -> { name, sid, seen, suspect, other }: the seat's occupancy
+local newGames = {}          -- SteamID double -> { name, at }: the last OnNewGame of that Steam account
+local alerts, alertTotal = {}, 0     -- the last Id.ALERT_RING alerts, and how many this uptime
+local alerted = {}           -- kind, name and SteamID -> alerted already
+local lastToast, lastScan = 0, 0
+local multiWas = nil         -- IdentityMultiAccount at the last scan (a change is announced)
+local peekMulti = nil        -- the policy value a verdict is computed under while set
 
 -- ---------- numbers ----------
 
@@ -163,36 +193,19 @@ local function validName(name)
     return type(name) == "string" and name ~= "" and #name <= Id.NAME_MAX and not string.find(name, "%c")
 end
 
--- ---------- the principal ----------
-
-function Id.login(player)
-    if player == nil or player:getPlayerNum() ~= 0 then return nil end
-    local name = player:getUsername()
-    if type(name) ~= "string" or name == "" then return nil end
-    if not Id.steamMode() then return name end
-    if unreadable then return nil end
-    local b = bindings[name]
-    if b == nil then return (importedAt == nil and not damaged) and name or nil end
-    -- checked on its own: a reserved record has no SteamID, and a player whose SteamID reads as
-    -- nil must not match that nil
-    if b.reserved or Id.unresolved(name) == "EXACT_MISMATCH" then return nil end
-    return Id.sidOf(player) == b.sid and name or nil
-end
-S.login = Id.login
-
--- The account the verified login belongs to (ECServer S.accountOf: the ModData merge marker).
-function Id.principal(player)
-    local name = Id.login(player)
-    return name and S.accountOf(name) or nil
-end
-S.principal = Id.principal
-
 -- ---------- bindings and the exact groups ----------
 
--- Only an exact binding (a whitelist text) that is not reserved joins its SteamID's group; a
--- rounded OnNewGame double cannot say which of the Steam accounts sharing it the name belongs to.
+-- Every binding that is not reserved counts for its SteamID double (the one-account policy);
+-- only an exact binding (a whitelist text) joins its SteamID's exact group: a rounded double
+-- cannot say which of the Steam accounts sharing it the name belongs to.
 local function unindex(name, b)
-    if b == nil or b.reserved or not b.exact then return end
+    if b == nil or b.reserved then return end
+    local all = bySid[b.sid]
+    if all ~= nil and all.names[name] then
+        all.names[name], all.n = nil, all.n - 1
+        if all.n <= 0 then bySid[b.sid] = nil end
+    end
+    if not b.exact then return end
     local set = byText[b.text]
     if set == nil or not set.names[name] then return end
     set.names[name], set.n = nil, set.n - 1
@@ -204,7 +217,14 @@ local function unindex(name, b)
 end
 
 local function index(name, b)
-    if b == nil or b.reserved or not b.exact then return end
+    if b == nil or b.reserved then return end
+    local all = bySid[b.sid]
+    if all == nil then
+        all = { n = 0, names = {} }
+        bySid[b.sid] = all
+    end
+    if not all.names[name] then all.names[name], all.n = true, all.n + 1 end
+    if not b.exact then return end
     local set = byText[b.text]
     if set == nil then
         set = { n = 0, names = {} }
@@ -284,6 +304,11 @@ local function apply(rec)
         end
         return true
     end
+    if rec.k == "primary" then
+        if sidFromText(rec.sid) == nil or not validName(rec.name) then return false end
+        primaries[rec.sid] = { name = rec.name, rule = rec.rule, at = at }
+        return true
+    end
     if rec.k == "canon" then
         if sidFromText(rec.sid, Id.SID_EXACT) == nil or not validName(rec.name) then return false end
         if canon[rec.sid] == nil then
@@ -319,7 +344,8 @@ end
 -- cacheFileExists shares its root, :5541-5549) must not read as "nothing bound": Steam mode then
 -- verifies nobody until it can be read, instead of trusting every name.
 function Id.load()
-    bindings, byText, doubles, disputes, canon, unreadable, damaged = {}, {}, {}, {}, {}, false, false
+    bindings, byText, bySid, doubles, disputes, canon, primaries = {}, {}, {}, {}, {}, {}, {}
+    unreadable, damaged = false, false
     importedAt, importedBy, lastImportAt, lastImportBy = nil, nil, nil, nil
     markerGen, markerCount, markerDigest = nil, nil, nil
     local reader = nil
@@ -397,18 +423,257 @@ local function actorOf(player)
     return Id.principal(player) or ("?" .. S.claimedName(player))
 end
 
+-- ---------- the principal ----------
+
+-- First sight. Before the first accepted import an unbound name is bound to the SteamID it is
+-- first seen with - but the name a seat carries is the client's after a respawn: seat 0 may
+-- replace a dead player under any name that is not online (ConnectCoopPacket.java:73-108, keeping
+-- the onlineID, :93) and GameServer.receivePlayerConnect names the player with it (:2848), while
+-- the character is still the login's own (GameServer.java:2814). A respawn with a new character
+-- sends CreatePlayer first (util/AddCoopPlayer.java:48-50: OnNewGame under the true login); a seat
+-- reconnected with an existing object sends none (LuaManager.java:6555-6596) and reloads the
+-- login's last saved row, a dead one at health 0 (ServerPlayerDB.java:281). So first sight binds
+-- only an alive player with a valid name (not a system account) and SteamID, whose seat occupancy
+-- carries no rename evidence, and whom the one-account policy lets in; otherwise the name is nil.
+--
+-- Rename evidence (Id.observe, this uptime): slots[onlineID] = { name, sid, seen, suspect, other }.
+-- An occupancy is one name and one SteamID seen on a seat with gaps under Id.SLOT_GAP_MS; a new
+-- one is suspect when the previous occupant had the same SteamID, another name and was seen
+-- within Id.SLOT_GAP_MS (slot rule), or when OnNewGame made a character for another login of the
+-- same SteamID within Id.NEWGAME_WINDOW_MS (newgame rule). The flag lasts as long as the occupancy:
+-- waiting out the window does not clear it.
+-- ponytail: a seat that stays out of getOnlinePlayers longer than Id.SLOT_GAP_MS and comes back
+-- renamed more than Id.NEWGAME_WINDOW_MS after its CreatePlayer passes both rules; only "alive"
+-- and the one-account policy stand then. The import (strict mode) closes it for good.
+--
+-- One account per Steam account (IdentityMultiAccount off, Steam mode). Among the bound, not
+-- reserved names of one SteamID double (bySid) one is the primary: the group's exact canon
+-- (ECMerge) when there is one, else the recorded primary while it is still bound there, else the
+-- (firstSeen, whitelist id, name) smallest, recorded once (k = "primary"). A login is allowed when
+-- its account is the primary's (an alias merged into it is). Two exact texts sharing one double
+-- are two Steam accounts (Id.collides): each text is its own group, and a rounded binding on such
+-- a double cannot be attributed, so the policy leaves it alone.
+
+local function multiAllowed()
+    if peekMulti ~= nil then return peekMulti end
+    return EC.sandbox("IdentityMultiAccount", false) == true
+end
+
+local function firstName(names)
+    local best = nil
+    for n in pairs(names) do
+        if best == nil or n < best then best = n end
+    end
+    return best
+end
+
+local function seatId(player)
+    local ok, id = pcall(function() return player:getOnlineID() end)
+    return ok and type(id) == "number" and id >= 0 and id or nil
+end
+
+-- The administrators online (the read role or more, from the connection) get a toast.
+local function tellAdmins(payload)
+    local players = getOnlinePlayers()
+    if not players then return end
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        if p and p:getPlayerNum() == 0 and A.canRead(p) then S.reply(p, "identity.alert", payload) end
+    end
+end
+
+-- One alert per (kind, name, SteamID) and uptime: an IDENTITY_ALERT audit line (the SteamID only
+-- in the private part), the in-memory ring, and for rename and sid_mismatch a toast to the
+-- administrators online, at most one every Id.ALERT_TOAST_MS server-wide.
+local function alert(kind, name, sid, other)
+    local text = validSid(sid) and Id.sidText(sid) or ""
+    local key = kind .. "\1" .. name .. "\1" .. text
+    if alerted[key] then return end
+    alerted[key] = true
+    local ms = EC.now()
+    alertTotal = alertTotal + 1
+    alerts[#alerts + 1] = { kind = kind, name = name, other = other, at = ms }
+    if #alerts > Id.ALERT_RING then table.remove(alerts, 1) end
+    audit("IDENTITY_ALERT", name, kind, nil, { other = other }, { steamId = text })
+    if (kind == "rename" or kind == "sid_mismatch") and ms - lastToast >= Id.ALERT_TOAST_MS then
+        lastToast = ms
+        local ok, err = pcall(tellAdmins, { kind = kind, name = name, other = other, at = ms })
+        if not ok then EC.log("identity alert push failed: " .. tostring(err)) end
+    end
+end
+
+-- The seat's occupancy after seeing this player now (nil without an onlineID).
+function Id.observe(player, ms)
+    local id = seatId(player)
+    if id == nil then return nil end
+    ms = ms or EC.now()
+    local name, sid = S.claimedName(player), Id.sidOf(player)
+    local r = slots[id]
+    if r ~= nil and r.name == name and r.sid == sid and ms - r.seen <= Id.SLOT_GAP_MS then
+        r.seen = ms
+        return r
+    end
+    local other = nil
+    if validSid(sid) then
+        local ng = newGames[sid]
+        if r ~= nil and r.sid == sid and r.name ~= name and ms - r.seen <= Id.SLOT_GAP_MS then
+            other = r.name
+        elseif ng ~= nil and ng.name ~= name and ms - ng.at <= Id.NEWGAME_WINDOW_MS then
+            other = ng.name
+        end
+    end
+    r = { name = name, sid = sid, seen = ms, suspect = other ~= nil, other = other }
+    slots[id] = r
+    if other ~= nil and Id.steamMode() then
+        -- a seat renamed back to the login bound to this very SteamID is its owner coming back:
+        -- flagged like any rename (the binding decides it anyway), not worth an administrator's toast
+        local b = bindings[name]
+        if not (b and not b.reserved and b.sid == sid) then alert("rename", name, sid, other) end
+    end
+    return r
+end
+
+-- The smallest (md.firstSeen or +inf, whitelist id or +inf, name bytes): the oldest economy
+-- account first (0 = older than the tracking), then the oldest whitelist row (the companion's
+-- export carries the AUTOINCREMENT id; a manual import has none), then the name. `rule` names
+-- the part that decided. `names` holds two or more. ECMerge's canonical and the policy's primary.
+function Id.pickCanonical(md, names)
+    local list = {}
+    for i, name in ipairs(names) do
+        local fs = md.firstSeen and md.firstSeen[name]
+        list[i] = { name = name, f = type(fs) == "number" and fs or math.huge, w = Id.whitelistId(name) or math.huge }
+    end
+    EC.sortSafe(list, function(a, b)
+        if a.f ~= b.f then return a.f < b.f end
+        if a.w ~= b.w then return a.w < b.w end
+        return a.name < b.name
+    end)
+    local a, b = list[1], list[2]
+    return a.name, (a.f ~= b.f and "firstSeen") or (a.w ~= b.w and "whitelistId") or "name"
+end
+
+-- The primary of one policy group (names: a set of bound names). `peek` decides without writing.
+local function primaryOf(key, names, peek)
+    for n in pairs(names) do
+        local b = bindings[n]
+        local c = b and b.exact and canon[b.text] or nil
+        if c ~= nil and names[c.name] then return c.name end
+    end
+    local p = primaries[key]
+    if p ~= nil and names[p.name] then return p.name end
+    local list = {}
+    for n in pairs(names) do list[#list + 1] = n end
+    if #list == 1 then return list[1] end
+    local name, rule = Id.pickCanonical(S.modData(), list)
+    local at = EC.now()
+    if not peek and writeLines({ { v = Id.VERSION, k = "primary", sid = key, name = name, rule = rule, src = "POLICY", at = at } }) then
+        primaries[key] = { name = name, rule = rule, at = at }
+    end
+    return name
+end
+
+-- The primary that keeps `name` (bound as b, or { sid } for a first sight) out, or nil when the
+-- policy lets it in.
+local function oneAccountBlock(name, b, peek)
+    local key, set = nil, nil
+    if (doubles[b.sid] or 0) > 1 then
+        if not b.exact then return nil end
+        key, set = b.text, byText[b.text]
+    else
+        set = bySid[b.sid]
+    end
+    if set == nil or set.n == 0 or (set.n == 1 and set.names[name]) or multiAllowed() then return nil end
+    local primary = primaryOf(key or Id.sidText(b.sid), set.names, peek)
+    if S.accountOf(name) == S.accountOf(primary) then return nil end
+    return primary
+end
+
+local function firstSight(player, name, peek)
+    local sid = Id.sidOf(player)
+    if not validName(name) or L.isSystemAccount(name) or not validSid(sid) then return nil end
+    local okDead, dead = pcall(function() return player:isDead() end)
+    if not okDead or dead then return nil end
+    local r
+    if peek then
+        local id = seatId(player)
+        r = id and slots[id] or nil
+    else
+        r = Id.observe(player)
+    end
+    if r == nil or r.suspect then return nil end
+    local primary = oneAccountBlock(name, { sid = sid }, peek)
+    if primary ~= nil then
+        if not peek then alert("one_account", name, sid, primary) end
+        return nil, "one_account"
+    end
+    if peek then return name end
+    local others = bySid[sid] and firstName(bySid[sid].names) or nil
+    local at, text = EC.now(), Id.sidText(sid)
+    if not writeLines({ { v = Id.VERSION, k = "bind", name = name, sid = text, src = "LOGIN", at = at } }) then return nil end
+    setBinding(name, { sid = sid, text = text, src = "LOGIN", at = at })
+    audit("BIND", name, "LOGIN", nil, nil, { steamId = text, exact = false })
+    if others ~= nil and multiAllowed() then alert("shared_steam", name, sid, others) end
+    return name
+end
+
+-- The verified login and, when the one-account policy refused it, the reason. `peek` answers
+-- what the login would be without writing a binding, a primary or an alert.
+local function verdict(player, peek)
+    if player == nil or player:getPlayerNum() ~= 0 then return nil end
+    local name = player:getUsername()
+    if type(name) ~= "string" or name == "" then return nil end
+    if not Id.steamMode() then return name end
+    if unreadable then return nil end
+    local b = bindings[name]
+    if b == nil then
+        if importedAt ~= nil or damaged then return nil end
+        return firstSight(player, name, peek)
+    end
+    -- checked on its own: a reserved record has no SteamID, and a player whose SteamID reads as
+    -- nil must not match that nil
+    if b.reserved or Id.unresolved(name) == "EXACT_MISMATCH" then return nil end
+    local sid = Id.sidOf(player)
+    if sid ~= b.sid then
+        if not peek and validSid(sid) then alert("sid_mismatch", name, sid, nil) end
+        return nil
+    end
+    local primary = oneAccountBlock(name, b, peek)
+    if primary ~= nil then
+        if not peek then alert("one_account", name, sid, primary) end
+        return nil, "one_account"
+    end
+    return name
+end
+
+function Id.login(player)
+    local name = verdict(player)
+    return name
+end
+S.login = Id.login
+
+-- The account the verified login belongs to (ECServer S.accountOf: the ModData merge marker).
+function Id.principal(player)
+    local name = Id.login(player)
+    return name and S.accountOf(name) or nil
+end
+S.principal = Id.principal
+
 -- ---------- OnNewGame ----------
 
 function Id.onNewGame(player)
     if player == nil or unreadable or not Id.steamMode() then return end
     local name, sid = player:getUsername(), Id.sidOf(player)
     if not validName(name) or not validSid(sid) or L.isSystemAccount(name) then return end
+    -- the rename evidence: the login this Steam account last made a character for (Id.observe)
+    newGames[sid] = { name = name, at = EC.now() }
     local b = bindings[name]
     if b == nil then
         local at, text = EC.now(), Id.sidText(sid)
+        local other = bySid[sid] and firstName(bySid[sid].names) or nil
         if not writeLines({ { v = Id.VERSION, k = "bind", name = name, sid = text, src = "NEWGAME", at = at } }) then return end
         setBinding(name, { sid = sid, text = text, src = "NEWGAME", at = at })
         audit("BIND", name, "NEWGAME", nil, nil, { steamId = text, exact = false })
+        if other ~= nil and multiAllowed() then alert("shared_steam", name, sid, other) end
     elseif b.reserved or b.sid ~= sid then
         audit("BIND_CONFLICT", name, b.reserved and "RESERVED" or "SID_MISMATCH", nil, nil,
             { steamId = Id.sidText(sid), boundSteamId = b.text })
@@ -417,13 +682,17 @@ end
 
 -- ---------- online players whose identity an operation changed ----------
 
+-- Who each main seat is right now, computed without writing anything (the verdict "before").
 local function onlineVerdicts()
     local out = {}
     local players = getOnlinePlayers()
     if not players then return out end
     for i = 0, players:size() - 1 do
         local p = players:get(i)
-        if p and p:getPlayerNum() == 0 then out[#out + 1] = { player = p, who = Id.principal(p) } end
+        if p and p:getPlayerNum() == 0 then
+            local login = verdict(p, true)
+            out[#out + 1] = { player = p, who = login and S.accountOf(login) or nil }
+        end
     end
     return out
 end
@@ -432,12 +701,13 @@ end
 -- gets its session) or no longer verified (the client shows why).
 local function announce(before)
     for _, entry in ipairs(before) do
-        local now = Id.principal(entry.player)
+        local login, why = verdict(entry.player)
+        local now = login and S.accountOf(login) or nil
         if now ~= nil and entry.who == nil then
             S.reply(entry.player, "identity.verified", {})
         elseif now == nil and entry.who ~= nil then
             noticeAt[S.claimedName(entry.player)] = EC.now()
-            S.reply(entry.player, "identity.unverified", {})
+            S.reply(entry.player, "identity.unverified", { reason = why })
         end
     end
 end
@@ -865,11 +1135,56 @@ end
 
 -- ---------- status ----------
 
+-- status.multi: every Steam account with two or more bound logins, as the one-account policy
+-- sees it right now (decided without writing): each login is the primary, merged into it,
+-- blocked by the policy, or allowed. Lists capped, counts complete.
+local function multiView()
+    local groups, logins, blocked = {}, 0, 0
+    local function add(key, set)
+        local primary = primaryOf(key, set.names, true)
+        local members = {}
+        for name in pairs(set.names) do
+            local state = "allowed"
+            if name == primary then
+                state = "primary"
+            elseif S.accountOf(name) == S.accountOf(primary) then
+                state = "merged"
+            elseif oneAccountBlock(name, bindings[name], true) ~= nil then
+                state, blocked = "blocked", blocked + 1
+            end
+            members[#members + 1] = { name = name, state = state }
+        end
+        EC.sortSafe(members, function(a, b)
+            if (a.state == "primary") ~= (b.state == "primary") then return a.state == "primary" end
+            return a.name < b.name
+        end)
+        local shown = {}
+        for i = 1, math.min(#members, Id.MULTI_MEMBERS_MAX) do shown[i] = members[i] end
+        logins = logins + #members
+        groups[#groups + 1] = { primary = primary, count = #members, members = shown }
+    end
+    for d, set in pairs(bySid) do
+        if set.n >= 2 and (doubles[d] or 0) <= 1 then add(Id.sidText(d), set) end
+    end
+    -- a double two Steam accounts share: each exact text is its own group
+    for text, set in pairs(byText) do
+        local d = set.n >= 2 and sidFromText(text, Id.SID_EXACT) or nil
+        if d ~= nil and (doubles[d] or 0) > 1 then add(text, set) end
+    end
+    EC.sortSafe(groups, function(a, b) return a.primary < b.primary end)
+    local list = {}
+    for i = 1, math.min(#groups, Id.MULTI_LIST_MAX) do list[i] = groups[i] end
+    return { steamIds = #groups, logins = logins, blocked = blocked, list = list,
+        truncated = #groups > Id.MULTI_LIST_MAX or nil }
+end
+
 function Id.status()
     local bound, reserved = 0, 0
     for _, b in pairs(bindings) do
         if b.reserved then reserved = reserved + 1 else bound = bound + 1 end
     end
+    local alertList = {}
+    for i = #alerts, 1, -1 do alertList[#alertList + 1] = alerts[i] end   -- newest first
     local names = {}
     for name in pairs(conflicts or {}) do names[#names + 1] = name end
     EC.sortSafe(names, byName)
@@ -886,6 +1201,10 @@ function Id.status()
         lastImportAt = lastImportAt, lastImportBy = lastImportBy,
         bound = bound, reserved = reserved,
         conflicts = list, conflictCount = #names, conflictsTruncated = cut or nil,
+        -- before the first import: unbound names are bound on first sight (with the rename checks)
+        firstSight = (Id.steamMode() and not unreadable and importedAt == nil and not damaged) or nil,
+        multiAccount = multiAllowed(), multi = multiView(),
+        alerts = alertList, alertCount = alertTotal,
     }
 end
 
@@ -920,7 +1239,10 @@ function Id.refuse(player, command)
     refused[name] = (refused[name] or 0) + 1
     if ms - (noticeAt[name] or 0) >= Id.NOTICE_MS then
         noticeAt[name] = ms
-        S.reply(player, "identity.unverified", {})
+        -- only the one-account refusal says which rule it is: telling an impostor which check
+        -- caught them would only help the next attempt
+        local _, why = verdict(player, true)
+        S.reply(player, "identity.unverified", { reason = why })
     end
 end
 
@@ -948,6 +1270,27 @@ local function flush(ms)
     end
 end
 
+-- Once a second: every online main seat is observed (the rename evidence), and a change of
+-- IdentityMultiAccount (admin.option or the sandbox file) re-evaluates everybody online under the
+-- old and the new value and tells each seat whose verdict flipped.
+local function scan(ms)
+    if Id.steamMode() then
+        local players = getOnlinePlayers()
+        for i = 0, (players and players:size() or 0) - 1 do
+            local p = players:get(i)
+            if p and p:getPlayerNum() == 0 then Id.observe(p, ms) end
+        end
+    end
+    local multi = EC.sandbox("IdentityMultiAccount", false) == true
+    if multiWas ~= nil and multi ~= multiWas then
+        peekMulti = multiWas
+        local ok, before = pcall(onlineVerdicts)
+        peekMulti = nil
+        if ok then announce(before) else EC.log("identity policy change: " .. tostring(before)) end
+    end
+    multiWas = multi
+end
+
 function Id.onTick()
     local ms = EC.now()
     if stream ~= nil then
@@ -955,6 +1298,10 @@ function Id.onTick()
     elseif ms - lastPoll >= Id.EXPORT_POLL_MS then
         lastPoll = ms
         Id.pollExport(ms, false)
+    end
+    if ms - lastScan >= Id.SCAN_MS then
+        lastScan = ms
+        scan(ms)
     end
     if ms - lastFlush < Id.FLUSH_MS then return end
     lastFlush = ms
@@ -1015,6 +1362,8 @@ function Id.init(md)
     if stream ~= nil then pcall(function() stream.reader:close() end) end
     export, acceptedGen, rejectedGen, rejectAudited, stream = { status = "none" }, nil, nil, {}, nil
     wlIds, lastNames, lastNamesCount, lastPoll, collisionAudited = {}, nil, 0, 0, {}
+    slots, newGames, alerts, alertTotal, alerted = {}, {}, {}, 0, {}
+    lastToast, lastScan, multiWas, peekMulti = 0, 0, nil, nil
     md = md or S.modData()
     if type(md.identity) ~= "table" then md.identity = {} end
     if type(md.identity.merged) ~= "table" then md.identity.merged = {} end
@@ -1023,7 +1372,14 @@ end
 
 S.Identity = Id
 S.onInit(Id.init)
+-- OnNewGame binds (and records the rename evidence) before anything else asks who the player is:
+-- ECMailbox and ECRewards, loaded earlier, ask S.login synchronously in theirs, and a first sight
+-- there would bind under LOGIN and judge the seat before this character's newGames record exists.
+-- Handlers run in the order they were added, so theirs go back in after ours.
+local later = { S.Mailbox and S.Mailbox.onNewGame, S.Rewards and S.Rewards.onNewGame }
+for _, fn in ipairs(later) do Events.OnNewGame.Remove(fn) end
 Events.OnNewGame.Add(Id.onNewGame)
+for _, fn in ipairs(later) do Events.OnNewGame.Add(fn) end
 Events.OnTickEvenPaused.Add(Id.onTick)
 
 return Id

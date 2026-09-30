@@ -1025,19 +1025,33 @@ end
 -- minute) instead of any reply, and with identity.verified once an administrator's import or
 -- confirmation fixed it. The flag is what the panel paints; listeners (the panel) repaint on it.
 -- Every other command from the server means the server is answering this player as its account
--- again (a respawn under the right name), so it clears the flag as well.
+-- again (a respawn under the right name), so it clears the flag as well. C.identityReason is
+-- "one_account" when the server refused this login because its Steam account already uses the
+-- economy under another login (IdentityMultiAccount off); every other refusal carries no reason.
 C.identityUnverified = false
+C.identityReason = nil
 C.identityListeners = {}
 function C.onIdentity(fn) C.identityListeners[#C.identityListeners + 1] = fn end
-local function setIdentity(unverified)
-    if C.identityUnverified == unverified then return end
-    C.identityUnverified = unverified
+local function setIdentity(unverified, reason)
+    local changed = C.identityUnverified ~= unverified or C.identityReason ~= reason
+    C.identityUnverified, C.identityReason = unverified, reason
+    if not changed then return end
     notify(C.identityListeners, "identity", unverified and "unverified" or "verified", {})
 end
 
-handlers["identity.unverified"] = function()
-    setIdentity(true)
-    C.toast(getText("IGUI_MinidoracatEconomy_Identity_Unverified"))
+handlers["identity.unverified"] = function(args)
+    local reason = args.reason == "one_account" and "one_account" or nil
+    setIdentity(true, reason)
+    C.toast(getText(reason and "IGUI_MinidoracatEconomy_Identity_OneAccount" or "IGUI_MinidoracatEconomy_Identity_Unverified"))
+end
+
+-- An identity alert (a suspected respawn rename, a bound name worn by another SteamID) the server
+-- pushes to the administrators online; it says nothing about this player's own identity.
+handlers["identity.alert"] = function(args)
+    local panel = C.AdminPanel
+    if not (panel and panel.canRead and panel.canRead()) then return end
+    local kind = getTextOrNull("IGUI_MinidoracatEconomy_Admin_Id_Alert_" .. tostring(args.kind)) or tostring(args.kind)
+    C.toast(getText("IGUI_MinidoracatEconomy_Identity_Alert", tostring(args.name), kind))
 end
 
 -- The session this client never received while it was refused: say hello again.
@@ -1046,11 +1060,13 @@ handlers["identity.verified"] = function()
     send("hello")
 end
 
--- admin.identity is answered even while the name is unverified (S.IDENTITY_EXEMPT), so its reply
--- says nothing about this player's own identity.
+-- admin.identity is answered even while the name is unverified (S.IDENTITY_EXEMPT), and
+-- identity.alert goes to administrators whoever they are, so neither says anything about this
+-- player's own identity.
+local IDENTITY_NEUTRAL = { ["identity.unverified"] = true, ["admin.identity"] = true, ["identity.alert"] = true }
 local function onServerCommand(module, command, args)
     if module ~= EC.COMMAND_MODULE then return end
-    if command ~= "identity.unverified" and command ~= "admin.identity" then setIdentity(false) end
+    if not IDENTITY_NEUTRAL[command] then setIdentity(false) end
     local handler = handlers[command]
     if not handler then return end
     local ok, err = pcall(handler, args or {})
@@ -1079,7 +1095,7 @@ local function onGameStart()
         Events.OnTick.Remove(snapshotPump)
     end
     sent = false
-    C.identityUnverified = false
+    C.identityUnverified, C.identityReason = false, nil
     C.session = nil
     C.unclaimed = 0
     C.wallet = nil

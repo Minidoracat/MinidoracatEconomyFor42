@@ -1967,11 +1967,13 @@ end
 -- the window's own CopyAll. Pressing the chip again closes it, the way every other note chip in
 -- this mod behaves; with no account to name there is nothing to open and nothing is opened.
 -- While the server refuses this name (C.identityUnverified) the chip says so and the window
--- carries the whole message with the login it was refused for. A login merged into another
--- account names both and says whose money this window shows.
+-- carries the whole message with the login it was refused for - the one-account message when
+-- that is the rule that refused it. A login merged into another account names both and says
+-- whose money this window shows.
 function Panel:identityText()
     if C.identityUnverified then
-        return getText(T .. "Player_IdentityUnverifiedDetail", C.login() or "-")
+        local key = C.identityReason == "one_account" and "Player_IdentityOneAccountDetail" or "Player_IdentityUnverifiedDetail"
+        return getText(T .. key, C.login() or "-")
     end
     local account, login = self:username(), C.login()
     if account ~= nil and login ~= nil and account ~= login then

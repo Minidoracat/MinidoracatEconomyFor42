@@ -53,27 +53,6 @@ end
 
 local function byName(a, b) return a < b end
 
--- ---------- the canonical ----------
-
--- The smallest (md.firstSeen or +inf, whitelist id or +inf, name bytes): the oldest economy
--- account first (0 = older than the tracking), then the oldest whitelist row (the companion's
--- export carries the AUTOINCREMENT id; a manual import has none), then the name. `rule` names
--- the part that decided.
-local function pickCanonical(md, names)
-    local list = {}
-    for i, name in ipairs(names) do
-        local fs = md.firstSeen and md.firstSeen[name]
-        list[i] = { name = name, f = type(fs) == "number" and fs or math.huge, w = Id.whitelistId(name) or math.huge }
-    end
-    EC.sortSafe(list, function(a, b)
-        if a.f ~= b.f then return a.f < b.f end
-        if a.w ~= b.w then return a.w < b.w end
-        return a.name < b.name
-    end)
-    local a, b = list[1], list[2]
-    return a.name, (a.f ~= b.f and "firstSeen") or (a.w ~= b.w and "whitelistId") or "name"
-end
-
 -- ---------- blockers ----------
 
 -- Why `alias` cannot be merged into `into` right now (codes in order); empty when it can. The
@@ -164,7 +143,7 @@ local function decide(g, md, online, ms)
     local c = v.canon[g.sid]
     if account == nil and c ~= nil then account, rule = c.name, c.rule end
     if account == nil and #eligible >= 2 then
-        account, rule = pickCanonical(md, eligible)
+        account, rule = Id.pickCanonical(md, eligible)
         local b = v.bindings[account]
         Id.recordCanon(g.sid, account, rule, b and b.src or "?", ms)
     end

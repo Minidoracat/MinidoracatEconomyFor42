@@ -200,6 +200,17 @@ option MinidoracatEconomy.IdentityAutoMerge
     translation = MinidoracatEconomy_IdentityAutoMerge,
 }
 
+/* One economy account per Steam account (ECIdentity). false = in Steam mode another login of a
+   SteamID that already uses the economy is refused unless it was merged into that account; true =
+   every login of one Steam account is its own economy account (still listed and alerted). */
+option MinidoracatEconomy.IdentityMultiAccount
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_IdentityMultiAccount,
+}
+
 /* Discord points -> Cat Coin deposit (v1 in-only). Boot defaults only: admins override at runtime
    in the admin panel (rateVersion +1, projected to Watchcord via the companion). */
 option MinidoracatEconomy.CatRatePointsPerCoin

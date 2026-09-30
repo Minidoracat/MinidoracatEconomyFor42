@@ -335,11 +335,16 @@ function Page:exportLines(lines, e)
     end
 end
 
+-- A sandbox option by its translated label (the settings page shows the same one).
+local function optionLabel(key)
+    return getTextOrNull("Sandbox_MinidoracatEconomy_" .. key) or key
+end
+
 -- status.merge: the account merge plan. With IdentityAutoMerge off it is a preview only; the
 -- group list is capped by the server and says so when it is.
 function Page:mergeLines(lines, m)
     if type(m) ~= "table" then return end
-    local option = getTextOrNull("Sandbox_MinidoracatEconomy_IdentityAutoMerge") or "IdentityAutoMerge"
+    local option = optionLabel("IdentityAutoMerge")
     lines[#lines + 1] = ""
     lines[#lines + 1] = getText(T .. (m.enabled == true and "Admin_Id_MergeOn" or "Admin_Id_MergeOff"), option)
     local blocked = type(m.blocked) == "table" and m.blocked or {}
@@ -376,6 +381,50 @@ function Page:mergeLines(lines, m)
     end
 end
 
+-- The one-account policy (IdentityMultiAccount) and status.multi: every Steam account with two or
+-- more bound logins, with its primary and what the policy makes of each other login. The server
+-- caps both lists and says so; the counts are complete.
+function Page:multiLines(lines, s)
+    local option = optionLabel("IdentityMultiAccount")
+    lines[#lines + 1] = getText(T .. (s.multiAccount == true and "Admin_Id_PolicyMulti" or "Admin_Id_PolicyOne"), option)
+    local m = s.multi
+    if type(m) ~= "table" or (tonumber(m.steamIds) or 0) <= 0 then return end
+    lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Multi", numText(m.steamIds), numText(m.logins), numText(m.blocked))
+    local list = type(m.list) == "table" and m.list or {}
+    for _, g in ipairs(list) do
+        local members = type(g.members) == "table" and g.members or {}
+        local parts = {}
+        for _, mem in ipairs(members) do
+            parts[#parts + 1] = getText(T .. "Admin_Id_Member", tostring(mem.name), codeText("Admin_Id_State_", mem.state))
+        end
+        local count = tonumber(g.count) or #members
+        if count > #members then parts[#parts + 1] = getText(T .. "Admin_Id_Truncated", tostring(#members), tostring(count)) end
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeGroup", tostring(g.primary), table.concat(parts, ", "))
+    end
+    local total = tonumber(m.steamIds) or #list
+    if m.truncated or #list < total then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#list), tostring(total))
+    end
+    lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MultiHint", option, optionLabel("IdentityAutoMerge"))
+end
+
+-- status.alerts: the server's last identity alerts, newest first (this uptime only).
+function Page:alertLines(lines, s)
+    local list = type(s.alerts) == "table" and s.alerts or {}
+    lines[#lines + 1] = ""
+    if #list == 0 then
+        lines[#lines + 1] = tr("Admin_Id_AlertsNone")
+        return
+    end
+    lines[#lines + 1] = getText(T .. "Admin_Id_Alerts", numText(s.alertCount), tostring(#list))
+    for _, a in ipairs(list) do
+        local kind = codeText("Admin_Id_Alert_", a.kind)
+        lines[#lines + 1] = "  " .. (a.other ~= nil
+            and getText(T .. "Admin_Id_AlertLineOther", self:stamp(a.at), kind, tostring(a.name), tostring(a.other))
+            or getText(T .. "Admin_Id_AlertLine", self:stamp(a.at), kind, tostring(a.name)))
+    end
+end
+
 function Page:rebuild()
     local lines = {}
     if self.result ~= nil then
@@ -396,6 +445,8 @@ function Page:rebuild()
             lines[#lines + 1] = tr("Admin_Id_NotImported")
         end
         lines[#lines + 1] = getText(T .. "Admin_Id_Counts", tostring(s.bound or 0), tostring(s.reserved or 0))
+        self:multiLines(lines, s)
+        self:alertLines(lines, s)
         self:exportLines(lines, s.export)
         local last = self.last
         lines[#lines + 1] = ""

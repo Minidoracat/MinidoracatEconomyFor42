@@ -958,6 +958,7 @@ local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing one account (scenario MA, identity v2 step 2a)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 26   -- +26: first-sight binding, rename evidence, one account per Steam account, identity alerts (scenario FS)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -15295,7 +15296,12 @@ steamModeActive = true
 fire("OnServerStarted")
 local md = S.modData()
 local function sid(text) return tonumber(text) + 0.0 end   -- the double the engine hands Lua
-local function steamPlayer(name, steamId) local p = fakePlayer(name); p.steamId = steamId; return p end
+-- every player object sits on its own seat (onlineID): first sight needs one to judge the occupancy
+local nextSeat = 100
+local function steamPlayer(name, steamId)
+    local p = fakePlayer(name); p.steamId = steamId; p.onlineId = nextSeat; nextSeat = nextSeat + 1
+    return p
+end
 local function fileRecs()
     local out = {}
     for _, line in ipairs(files[FILE] and files[FILE].lines or {}) do out[#out + 1] = EC.jsonDecode(line) end
@@ -15348,8 +15354,11 @@ check(#recs == 1 and recs[1].k == "bind" and recs[1].name == "id-ann" and recs[1
 local ann = steamPlayer("id-ann", SID_ANN)
 local fake = steamPlayer("id-ann", SID_EVE)            -- another Steam account wearing ann's name
 local bob = steamPlayer("id-bob", SID_BOB)             -- has not made a character since the update: unbound
-check(Id.principal(ann) == "id-ann" and Id.principal(fake) == nil and Id.principal(bob) == "id-bob",
-    "before the first import a bound name needs its own SteamID, while an unbound name is still taken at its word")
+-- (first-sight binding replaced "an unbound name is taken at its word": bob's first sighting binds
+-- the name to his SteamID - LOGIN - instead of trusting it on every command)
+check(Id.principal(ann) == "id-ann" and Id.principal(fake) == nil and Id.principal(bob) == "id-bob"
+    and fileRecs()[2].src == "LOGIN" and fileRecs()[2].name == "id-bob",
+    "before the first import a bound name needs its own SteamID, while an unbound name is bound on first sight")
 local seat = steamPlayer("id-ann", SID_ANN); seat.playerNum = 1
 steamModeActive = false
 local noSteam = Id.principal(fake)
@@ -15359,14 +15368,14 @@ check(Id.principal(seat) == nil and Id.principal(steamPlayer("", SID_ANN)) == ni
 fire("OnNewGame", steamPlayer("id-ann", SID_EVE), nil)
 local afterWrong = { Id.principal(ann), Id.principal(fake) }
 fire("OnNewGame", steamPlayer("id-ann", SID_ANN), nil)
-check(#fileRecs() == 1 and afterWrong[1] == "id-ann" and afterWrong[2] == nil
+check(#fileRecs() == 2 and afterWrong[1] == "id-ann" and afterWrong[2] == nil
     and Id.principal(ann) == "id-ann" and Id.principal(fake) == nil
     and ringHas("BIND_CONFLICT", "id-ann", "SID_MISMATCH") ~= nil,
     "a new character with another SteamID never moves a binding: it is audited as a conflict and the name stays with its owner")
 steamModeActive = false
 fire("OnNewGame", steamPlayer("id-nos", SID_EVE), nil)
 steamModeActive = true
-check(#fileRecs() == 1, "without Steam mode a new character binds nothing: there is no SteamID to trust")
+check(#fileRecs() == 2, "without Steam mode a new character binds nothing: there is no SteamID to trust")
 local bindRing = ringHas("BIND", "id-ann", "NEWGAME")
 local bindFile = fileAudits("BIND")[1]
 check(bindRing ~= nil and bindRing.steamId == nil and bindFile ~= nil and bindFile.steamId == "76561198000000016",
@@ -15416,6 +15425,7 @@ local ROWS = {
     { u = "id-fay", s = "76561198000000112" },          -- fay's account moved to another Steam account
     { u = "SYSTEM_X", s = "" },
 }
+Id.principal(boss)     -- the administrator's own first sighting binds id-boss (LOGIN) before the import
 local linesBefore = #fileRecs()
 local bad = admin(boss, { action = "import", requestId = "i0", rows = { { u = "id-x", s = "7.6561198E16" } } })
 local dup = admin(boss, { action = "import", requestId = "i1", rows = { { u = "id-x", s = "" }, { u = "id-x", s = "" } } })
@@ -15432,11 +15442,12 @@ local imp = admin(boss, { action = "import", requestId = "i4", rows = ROWS })
 local last = imp.last or {}
 local reserved = table.concat(last.reserved or {}, ",")
 local collisions = table.concat(last.collisions or {}, ",")
-check(imp.ok == true and last.rows == 8 and last.bound == 4 and last.same == 0 and last.upgraded == 1 and last.ignored == 1
+-- (first sight bound id-boss and id-bob before the import: they are upgraded now, not new)
+check(imp.ok == true and last.rows == 8 and last.bound == 2 and last.same == 0 and last.upgraded == 3 and last.ignored == 1
     and table.concat(last.missing or {}, ",") == "id-cat" and reserved == "id-gone,id-seat"
     and collisions == "id-dan,id-dee" and last.conflicts == 1 and imp.status.conflicts[1].name == "id-fay"
     and imp.status.conflicts[1].reason == "SID_MISMATCH" and imp.status.conflicts[1].whitelist == "76561198000000112",
-    "the import reports new, upgraded (a NEWGAME double the whitelist text rounds to), no-SteamID, reserved, conflicting and colliding names - and system accounts are left out")
+    "the import reports new, upgraded (a NEWGAME or first-sight double the whitelist text rounds to), no-SteamID, reserved, conflicting and colliding names - and system accounts are left out")
 recs = fileRecs()
 check(recs[linesBefore + 1].k == "import" and recs[linesBefore + 1].by == "id-boss"
     and imp.status.imported == true and imp.perms.write == true,
@@ -15718,6 +15729,10 @@ function mgWorld()
     -- scripts/test_entitlements.lua clears its own getServerName fake when it is done
     getServerName = function() return serverNameFake end
     SandboxVars.MinidoracatEconomy.IdentityAutoMerge = nil
+    -- the merge scenarios let aliases use the economy as their own accounts before they merge:
+    -- with the one-account policy on (the default) an unmerged alias is refused at login instead
+    -- (scenario FS covers that side)
+    SandboxVars.MinidoracatEconomy.IdentityMultiAccount = true
     SandboxVars.MinidoracatEconomy.AdminRoles = "admin"
     fire("OnServerStarted")
     return S.modData()
@@ -16365,6 +16380,252 @@ mgPoll()
 check(Id.status().damaged == nil and Id.status().imported == true and S.login(mgPlayer("mg-new", mgT(61))) == "mg-new",
     "the next accepted import writes a marker and binds the name")
 steamModeActive = false
+end)()
+
+-- ===== 情境 FS：首次看到即綁定、改名證據、一個 Steam 帳號一個經濟帳號、身分警示 =====
+-- 首次匯入前，沒有綁定的名字只有在「活著、名字與 SteamID 有效、座位沒有改名證據、一人一帳號
+-- 政策允許」時才綁定（LOGIN）；改名證據按座位（onlineID）黏住整段佔用。政策關閉時同一 Steam
+-- 帳號的第二個登入名照綁並記 shared_steam；開啟（預設）時只有主帳號（或已併入主帳號的別名）通過。
+io.write("scenario FS: first-sight binding, rename evidence, one account per Steam account, alerts\n")
+;(function()
+local Id = EC.Identity
+local SV = SandboxVars.MinidoracatEconomy
+local md = mgWorld()
+SV.IdentityMultiAccount = nil
+local function fsPlayer(name, text, seat)
+    local p = mgPlayer(name, text)
+    p.onlineId = seat
+    return p
+end
+local function bindsOf(name)
+    local n = 0
+    for _, r in ipairs(mgRecs("bind")) do if r.name == name then n = n + 1 end end
+    return n
+end
+local function alertOf(kind, name)
+    for _, a in ipairs(Id.status().alerts) do
+        if a.kind == kind and a.name == name then return a end
+    end
+end
+local function pushes(p, command)
+    local out = {}
+    for _, s in ipairs(sentCommands) do
+        if s.player == p and s.command == command then out[#out + 1] = s.args end
+    end
+    return out
+end
+local function fileAudit(action, target)
+    proofSettle()
+    for _, line in ipairs(files[X.auditPath(nowMs)] and files[X.auditPath(nowMs)].lines or {}) do
+        local rec = EC.jsonDecode(line)
+        if type(rec) == "table" and rec.action == action and rec.target == target then return rec end
+    end
+end
+local function ringAudit(action, target, field)
+    local n, last = 0, nil
+    for _, e in ipairs(X.auditEntries()) do
+        if e.action == action and e.target == target and (field == nil or e.field == field) then n, last = n + 1, e end
+    end
+    return n, last
+end
+local function tick(ms)
+    nowMs = nowMs + (ms or Id.SCAN_MS)
+    fire("OnTickEvenPaused")
+end
+local boss = fsPlayer("fs-boss", mgT(130), 30); boss.role = "admin"
+
+-- ----- first sight -----
+local ann = fsPlayer("fs-ann", mgT(101), 1)
+onlinePlayers = { boss, ann }
+local annRec = nil
+local okAnn = S.login(ann) == "fs-ann"
+for _, r in ipairs(mgRecs("bind")) do if r.name == "fs-ann" then annRec = r end end
+local _, annRing = ringAudit("BIND", "fs-ann", "LOGIN")
+local annFile = fileAudit("BIND", "fs-ann")
+check(okAnn and annRec ~= nil and annRec.src == "LOGIN" and annRec.sid == mgT(101) and annRec.exact == nil
+    and annRing ~= nil and annRing.steamId == nil and annFile ~= nil and annFile.steamId == mgT(101)
+    and Id.status().firstSight == true,
+    "before the first import an unbound name is bound on first sight: LOGIN, rounded, audited with the SteamID only in the file")
+local dead = fsPlayer("fs-dead", mgT(102), 2); dead.dead = true
+check(S.login(dead) == nil and bindsOf("fs-dead") == 0,
+    "a dead character is never bound on first sight (a seat reconnected without CreatePlayer reloads the login's last row)")
+local noSid = fsPlayer("fs-nosid", nil, 4); noSid.steamId = 0        -- what a connection without Steam reports
+check(S.login(fsPlayer("SYSTEM_MINT", mgT(103), 3)) == nil and S.login(noSid) == nil
+    and S.login(fsPlayer("fs-noseat", mgT(104), nil)) == nil
+    and bindsOf("SYSTEM_MINT") == 0 and bindsOf("fs-nosid") == 0 and bindsOf("fs-noseat") == 0,
+    "a system account, a SteamID of 0 and a seat without an onlineID are never bound on first sight")
+
+-- ----- rename evidence (the policy allows several logins here, so only the evidence refuses) -----
+SV.IdentityMultiAccount = true
+local X_ = mgT(110)
+fire("OnNewGame", fsPlayer("fs-atk", X_, 10), nil)          -- CreatePlayer under the true login
+local vic = fsPlayer("fs-vic", X_, 11)                      -- ConnectCoop names the seat fs-vic
+onlinePlayers = { boss, vic }
+sentCommands = {}
+local renamed = S.login(vic)
+local ren = alertOf("rename", "fs-vic")
+check(renamed == nil and bindsOf("fs-vic") == 0 and ren ~= nil and ren.other == "fs-atk"
+    and ringAudit("IDENTITY_ALERT", "fs-vic", "rename") == 1,
+    "newgame rule: a seat named after another login right after this Steam account made a character is refused, with a rename alert")
+local toast = pushes(boss, "identity.alert")
+check(#toast == 1 and toast[1].kind == "rename" and toast[1].name == "fs-vic" and toast[1].other == "fs-atk"
+    and #pushes(vic, "identity.alert") == 0,
+    "the rename alert reaches the administrator online as identity.alert, and nobody without the read role")
+for _ = 1, 11 do tick(60000) end                           -- 11 minutes, seen every minute
+check(S.login(vic) == nil and bindsOf("fs-vic") == 0,
+    "the rename flag lasts for the seat's whole occupancy: waiting out the new-character window does not clear it")
+onlinePlayers = { boss }
+tick(Id.SLOT_GAP_MS + 1)
+onlinePlayers = { boss, vic }
+local fresh = S.login(vic)
+check(fresh == "fs-vic" and bindsOf("fs-vic") == 1,
+    "a seat unseen for longer than the gap starts a new occupancy: the flag is gone and the name binds")
+local shared = alertOf("shared_steam", "fs-vic")
+check(shared ~= nil and shared.other == "fs-atk" and ringAudit("IDENTITY_ALERT", "fs-vic", "shared_steam") == 1,
+    "with IdentityMultiAccount on, a second login of a bound Steam account is bound and recorded as a shared_steam alert")
+local Y_ = mgT(120)
+local sam = fsPlayer("fs-sam", Y_, 20)
+onlinePlayers = { boss, sam }
+tick()
+local samOk = S.login(sam) == "fs-sam"
+local sly = fsPlayer("fs-sly", Y_, 20)                      -- the same seat, respawned without CreatePlayer
+onlinePlayers = { boss, sly }
+tick(3000)
+local slyAlert = alertOf("rename", "fs-sly")
+check(samOk and S.login(sly) == nil and bindsOf("fs-sly") == 0 and slyAlert ~= nil and slyAlert.other == "fs-sam",
+    "slot rule: a seat whose previous occupant had the same SteamID and another name moments ago is refused, with a rename alert")
+local samBack = fsPlayer("fs-sam", Y_, 20)                  -- and respawned back to the seat's own login
+onlinePlayers = { boss, samBack }
+tick(3000)
+check(S.login(samBack) == "fs-sam" and alertOf("rename", "fs-sam") == nil,
+    "a seat renamed back to the login bound to its own SteamID verifies by that binding and raises no rename alert")
+local late = fsPlayer("fs-late", Y_, 21)                   -- another login of that Steam account, not judged yet
+onlinePlayers = { boss, samBack, late }
+sentCommands = {}
+SV.IdentityMultiAccount = nil                              -- the policy goes back on while it is online
+tick()
+local lateTold = pushes(late, "identity.unverified")
+check(bindsOf("fs-late") == 0 and #lateTold == 1 and lateTold[1].reason == "one_account",
+    "turning the policy on re-judges an online seat without binding anything under the old value: the second login is told it is refused")
+onlinePlayers = { boss, samBack }
+
+-- ----- alerts: throttle, once per kind, name and SteamID, SteamID only in the file -----
+nowMs = nowMs + Id.ALERT_TOAST_MS
+sentCommands = {}
+local wrongAnn, wrongSam = fsPlayer("fs-ann", mgT(141), 31), fsPlayer("fs-sam", mgT(142), 32)
+S.login(wrongAnn); S.login(wrongSam)
+local toasts = pushes(boss, "identity.alert")
+check(#toasts == 1 and toasts[1].kind == "sid_mismatch" and toasts[1].name == "fs-ann"
+    and alertOf("sid_mismatch", "fs-ann") ~= nil and alertOf("sid_mismatch", "fs-sam") ~= nil,
+    "sid_mismatch alerts are all recorded, but the administrators get at most one toast per ALERT_TOAST_MS")
+local ringBefore, countBefore = ringAudit("IDENTITY_ALERT", "fs-ann", "sid_mismatch"), Id.status().alertCount
+nowMs = nowMs + Id.ALERT_TOAST_MS
+sentCommands = {}
+S.login(wrongAnn); S.login(fsPlayer("fs-ann", mgT(141), 33))
+local _, mismatchRing = ringAudit("IDENTITY_ALERT", "fs-ann", "sid_mismatch")
+local mismatchFile = fileAudit("IDENTITY_ALERT", "fs-ann")
+check(ringBefore == 1 and ringAudit("IDENTITY_ALERT", "fs-ann", "sid_mismatch") == 1 and Id.status().alertCount == countBefore
+    and #pushes(boss, "identity.alert") == 0 and mismatchRing.steamId == nil and mismatchFile ~= nil
+    and mismatchFile.steamId == mgT(141),
+    "the same alert again is neither audited, listed nor toasted twice, and its SteamID reaches the audit file only")
+
+-- ----- one account per Steam account (the default) -----
+SV.IdentityMultiAccount = nil
+md.firstSeen["fs-vic"] = 0
+local atk = fsPlayer("fs-atk", X_, 12)
+local atkLogin, vicLogin = S.login(atk), S.login(vic)
+local prim = mgRecs("primary")
+local one = alertOf("one_account", "fs-atk")
+check(atkLogin == nil and vicLogin == "fs-vic" and #prim == 1 and prim[1].name == "fs-vic" and prim[1].sid == X_
+    and prim[1].rule == "firstSeen" and one ~= nil and one.other == "fs-vic",
+    "with the policy on only the Steam account's primary verifies: decided by firstSeen, recorded once, the other login alerted")
+sentCommands = {}
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", atk, { requestId = "fs-w1" })
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", wrongSam, { requestId = "fs-w2" })
+local told, other = pushes(atk, "identity.unverified"), pushes(wrongSam, "identity.unverified")
+check(#told == 1 and told[1].reason == "one_account" and #other == 1 and other[1].reason == nil,
+    "a login the policy refuses is told so (reason one_account); any other refusal says nothing about which rule caught it")
+local Z_ = mgT(150)
+local zed, zoe = fsPlayer("fs-zed", Z_, 40), fsPlayer("fs-zoe", Z_, 41)
+local zedLogin, zoeLogin = S.login(zed), S.login(zoe)
+check(zedLogin == "fs-zed" and zoeLogin == nil and bindsOf("fs-zoe") == 0
+    and alertOf("one_account", "fs-zoe") ~= nil and alertOf("one_account", "fs-zoe").other == "fs-zed",
+    "first sight refuses, and does not bind, a second login of a Steam account that already uses the economy")
+md.identity.merged["fs-atk"] = { into = "fs-vic" }
+local mergedLogin, mergedAccount = S.login(atk), S.principal(atk)
+md.identity.merged["fs-atk"] = nil
+check(mergedLogin == "fs-atk" and mergedAccount == "fs-vic",
+    "a login merged into the primary's account is let in: it is the same economy account")
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+md = S.modData()
+md.firstSeen["fs-vic"], md.firstSeen["fs-atk"] = nil, 0
+check(S.login(fsPlayer("fs-vic", X_, 11)) == "fs-vic" and S.login(fsPlayer("fs-atk", X_, 12)) == nil
+    and #mgRecs("primary") == 1,
+    "the recorded primary survives a restart even when the ordering would now pick another login")
+fire("OnNewGame", fsPlayer("fs-ax3", X_, 13), nil)
+files[Id.FILE].lines[#files[Id.FILE].lines + 1] = EC.jsonEncode({ v = 1, k = "bind", name = "fs-vic", sid = mgT(160),
+    exact = true, src = "REBIND", at = nowMs })
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+md = S.modData()
+local atkAgain, ax3Login = S.login(fsPlayer("fs-atk", X_, 12)), S.login(fsPlayer("fs-ax3", X_, 13))
+prim = mgRecs("primary")
+check(atkAgain == "fs-atk" and ax3Login == nil and #prim == 2 and prim[2].name == "fs-atk",
+    "a recorded primary no longer bound to that SteamID is decided again among the logins still there, and recorded")
+
+-- ----- after the import: strict, imported alts, two Steam accounts sharing one double -----
+local P_, C_ = mgT(170), mgT(180)
+mgExport({ { 1, "fs-boss", mgT(130) }, { 2, "fs-ann", mgT(101) }, { 4, "fs-atk", X_ }, { 8, "fs-ax3", X_ },
+    { 9, "fs-vic", mgT(160) }, { 10, "fs-sam", Y_ }, { 11, "fs-zed", Z_ }, { 5, "fs-p1", P_ }, { 3, "fs-p2", P_ },
+    { 6, "fs-c1", C_ }, { 7, "fs-c2", mgTwin(C_) } })
+mgPoll()
+local p1, p2 = fsPlayer("fs-p1", P_, 70), fsPlayer("fs-p2", P_, 71)
+md.firstSeen["fs-p1"] = 0          -- after the import's merge plan chose fs-p2 by whitelist id
+check(Id.status().imported == true and S.login(p1) == nil and S.login(p2) == "fs-p2",
+    "two imported logins of one exact SteamID: only the group's canonical verifies, even when firstSeen would now pick the other")
+check(S.login(fsPlayer("fs-c1", C_, 72)) == "fs-c1" and S.login(fsPlayer("fs-c2", mgTwin(C_), 73)) == "fs-c2",
+    "two exact texts sharing one double are two Steam accounts: the policy refuses neither because of the other")
+check(S.login(fsPlayer("fs-new", mgT(190), 74)) == nil and bindsOf("fs-new") == 0 and Id.status().firstSight == nil,
+    "after an accepted import there is no first sight: an unbound name is nobody")
+onlinePlayers = { boss }
+sentCommands = {}
+nowMs = nowMs + 1000
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "status", requestId = "fs-s1" })
+local st = lastSent("admin.identity") and lastSent("admin.identity").args.status or {}
+local multi = st.multi or {}
+local g1 = multi.list and multi.list[1] or {}
+local m1 = g1.members or {}
+check(st.multiAccount == false and multi.steamIds == 2 and multi.logins == 4 and multi.blocked == 2
+    and g1.primary == "fs-atk" and g1.count == 2 and m1[1].name == "fs-atk" and m1[1].state == "primary"
+    and m1[2].name == "fs-ax3" and m1[2].state == "blocked" and multi.list[2].primary == "fs-p2"
+    and type(st.alerts) == "table" and #st.alerts == st.alertCount and st.alerts[1].at >= st.alerts[#st.alerts].at,
+    "admin.identity status lists every Steam account with several logins (primary, blocked), the policy and the alerts newest first")
+
+-- ----- changing the option re-evaluates everybody online -----
+onlinePlayers = { boss, p1, p2 }
+tick()
+sentCommands = {}
+SV.IdentityMultiAccount = true
+tick()
+local flipOn = { #pushes(p1, "identity.verified"), #pushes(p2, "identity.verified") + #pushes(p2, "identity.unverified") }
+sentCommands = {}
+SV.IdentityMultiAccount = nil
+tick()
+local back = pushes(p1, "identity.unverified")
+check(flipOn[1] == 1 and flipOn[2] == 0,
+    "turning IdentityMultiAccount on tells the login it now lets in to say hello again, and nobody else")
+check(#back == 1 and back[1].reason == "one_account",
+    "turning it off again tells that login it is refused, with the one-account reason")
+
+-- ----- no Steam: nothing to check, nothing written -----
+steamModeActive = false
+local linesNow = #mgRecs()
+check(S.login(fsPlayer("fs-free", nil, 80)) == "fs-free" and #mgRecs() == linesNow,
+    "without Steam mode a name is taken as it is and nothing is bound")
+SV.IdentityMultiAccount = nil
+onlinePlayers = {}
 end)()
 
 io.write("\n")
