@@ -816,6 +816,9 @@ function A.system(write, manage)
         market = Mk.stats(),
         auctions = S.Auction and S.Auction.stats() or nil,
         whitelist = Codec.status(),
+        -- rollback ledgers this start could not read in full: letters minted up to one are not
+        -- claimable and transfers up to one are held until it leaves the recent-starts history
+        ledgerGaps = S.Recovery and S.Recovery.ledgerGaps() or nil,
     }
 end
 
@@ -2086,36 +2089,6 @@ local function restorePending(username, target, opId, pend, proof, content, succ
     return true, nil, entry.id, qty
 end
 
--- discard: the operation is declared void against the *world*, not merely deleted from one
--- player save. finishOut writes the receipt with nothing in it, so hasOut answers true from now
--- on and an older save that logs in with the same pending record finds it closed (judgePending,
--- receipt kind "discard") instead of resurrecting it at every login.
-local function discardPending(username, target, opId, pend, proof, successorSeq)
-    local admitted, admissionError = Rcv.reserveOut(username, opId)
-    if not admitted then return false, admissionError or "recovery_not_actionable" end
-    -- same chain rule as a return: the new point comes after the successor's
-    S.bumpSeq(successorSeq or tonumber((proof or pend).seq))
-    local record = Rcv.copyReplay(proof or pend)
-    -- The record itself has to say what it is. The envelope's kind reaches the journal, but
-    -- the replay inside it kept the original listing/auction/return kind, and the reader that
-    -- later walks this operation's file judges the replay: a discard wearing "listing" with
-    -- no origins reads as a malformed line and poisons the whole chain - the very rollback
-    -- this decision exists to close would then have no reviewable successor at all. The
-    -- original kind is kept beside it, because "what was discarded" is part of the record.
-    record.originalKind = record.originalKind or record.kind
-    record.kind = "discard"
-    record.origins, record.qty, record.lotQty = {}, 0, nil
-    record.protocol = Rcv.PROTOCOL
-    record.epoch, record.seq = md.meta.epoch, S.nextSeq()
-    local committed, commitError = Rcv.finishOut(username, opId, record, "discard", opId)
-    if not committed then
-        Rcv.releaseOut(opId)
-        return false, commitError or "recovery_not_actionable"
-    end
-    Rcv.transmit(target)
-    return true
-end
-
 -- Every reply of this command, refusals included, echoes the requestId *and* the account it was
 -- about: the page holds one command slot per account and releases it on both, so a refusal that
 -- named neither would leave it waiting.
@@ -2528,7 +2501,7 @@ S.handlers["admin.recovery"] = function(player, args)
         ok, failure, mailId, qty = restorePending(target, online, row.opId, pend, proof, previous,
             successorSeq, judged)
     else
-        ok, failure = discardPending(target, online, row.opId, pend, proof, successorSeq)
+        ok, failure = Rcv.discardPending(target, online, row.opId, pend, proof, successorSeq)
     end
     if not ok then
         return recoveryReply(player, target, requestId, page,

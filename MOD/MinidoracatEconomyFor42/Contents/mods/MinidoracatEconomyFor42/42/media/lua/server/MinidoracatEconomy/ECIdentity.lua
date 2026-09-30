@@ -585,6 +585,27 @@ function Id.observe(player, ms)
     return r
 end
 
+-- The seat's own name for the no-duplicate bookkeeping of a death or a new character when the
+-- binding verdict is nil - never an identity, never a key for anything the player gains, and
+-- only ever used to mark claimed letters (which refuses a later redelivery), never to settle
+-- them. An existing account may be entered from any Steam account that knows its password
+-- (ServerWorldDatabase.authClient :1026-1135 compares only the password; LoginPacket.java:208-209
+-- then overwrites whitelist.steamid), so a login that dies while unverified must not leave its
+-- claims redeliverable. Only the main seat, never an animal (IsoAnimal extends IsoPlayer), a
+-- valid non-system name, and never an occupancy flagged as a suspected rename. "Not flagged" is
+-- no proof (a client that waits out the rename windows is not flagged), which is why a mark is
+-- all it may cause.
+function Id.seatName(player)
+    if player == nil or instanceof(player, "IsoAnimal") then return nil end
+    local okNum, num = pcall(function() return player:getPlayerNum() end)
+    if not okNum or num ~= 0 then return nil end
+    local okName, name = pcall(function() return player:getUsername() end)
+    if not okName or not validName(name) or L.isSystemAccount(name) then return nil end
+    local r = Id.observe(player)
+    if r ~= nil and r.suspect then return nil end
+    return name
+end
+
 -- The smallest (md.firstSeen or +inf, whitelist id or +inf, name bytes): the oldest economy
 -- account first (0 = older than the tracking), then the oldest whitelist row (the companion's
 -- export carries the AUTOINCREMENT id; a manual import has none), then the name. `rule` names
