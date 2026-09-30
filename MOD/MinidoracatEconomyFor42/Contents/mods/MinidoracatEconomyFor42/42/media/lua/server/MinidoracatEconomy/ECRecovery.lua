@@ -848,6 +848,16 @@ function R.raiseLife(login, life)
     if life > (tonumber(rec.life) or 0) then rec.life = life end
 end
 
+-- A lifeBreak mark on `login`'s claimed letters (ECMailbox) goes to the ledger too: a world
+-- rollback to before it would otherwise forget that a character was made or died unverified
+-- after those claims, and hand them over again to the new character's early row. Harvested, it
+-- is re-applied to that login's claims older than it (ECMailbox harvestLedger); it never settles
+-- anything and never raises a life.
+function R.noteMark(login)
+    if type(login) ~= "string" or md == nil then return end
+    ledger({ k = "brk", l = login, s = S.nextSeq() })
+end
+
 -- (e, s) after (epoch, seq)? Epochs are the start wall clock; unreadable order counts as after.
 local function later(e, s, epoch, seq)
     local a, b = tonumber(e), tonumber(epoch)
@@ -930,6 +940,23 @@ function R.forkedAfter(login, life, epoch, seq, bound, inclusive)
     return false
 end
 
+-- A fork that proves a save of this life never had what was committed at (epoch, seq): a recorded
+-- start of exactly this life, one this world save watched begin (seen == life), that loaded a save
+-- strictly below `below` (the commit's hours less a tick). A start inside the tick band may be
+-- the save written right after the commit, and a start of an unproven life range may be another
+-- character: both may still refuse a rebuild, neither authorises voiding it.
+function R.provenFork(login, life, epoch, seq, below)
+    local rec = lifeRec(login, false)
+    for _, st in ipairs(rec and type(rec.starts) == "table" and rec.starts or {}) do
+        local h, top = tonumber(st.h), tonumber(st.life) or 0
+        if h ~= nil and h < below and top == life and (tonumber(st.seen) or top) >= top
+            and later(st.e, st.s, epoch, seq) then
+            return true
+        end
+    end
+    return false
+end
+
 -- Ledger files this start could not read in full (ECMailbox harvest), and the question every
 -- ledger-backed decision asks: may something up to `epoch` be missing from what was read?
 function R.setLedgerGaps(gaps)
@@ -972,7 +999,7 @@ end
 -- unknown, only that it is not after this save: 0 = "every save of this life has it". A live
 -- claim is also written to the ledger, so a world rollback cannot forget that it happened.
 function R.anchorClaim(entry, player, login, fromProof)
-    entry.claimSess = R.session(player).sid
+    entry.claimSess, entry.claimEpoch = R.session(player).sid, md.meta.epoch
     entry.claimHours = (not fromProof) and hoursOf(player) or 0
     entry.claimLife = R.life(login)
     entry.lifeBreak = nil
@@ -1007,9 +1034,11 @@ end
 -- tick. No start of the transfer's life after its commit may have loaded a save at or below it
 -- (a fork); a trimmed start is a fork nobody can rule out.
 -- The second value says how an "excluded" was reached: "hours" (this save loaded below the
--- commit, same life) and "fork" (a recorded start of that life loaded below it) are proof the
--- save never had the transfer; "floor" (only a trimmed start could be one) and "life_ahead" are
--- not - like "tie", they only fail to prove it has it.
+-- commit by more than a tick, same life) and "fork" (a recorded start of that same, proven life
+-- loaded below the commit by more than a tick) are proof the save never had the transfer;
+-- "fork_unproven" (a start within the tick band, or of a life range only the ledger knows),
+-- "floor" (only a trimmed start could be one) and "life_ahead" are not - like "tie", they only
+-- fail to prove it has it.
 function R.outOrder(login, first, player)
     local h = type(first) == "table" and tonumber(first.h) or nil
     if h == nil then return "unanchored" end
@@ -1029,7 +1058,8 @@ function R.outOrder(login, first, player)
     end
     if order == "contained" then
         local fork = R.forkedAfter(login, life, first.epoch, first.seq, h + eps, true)
-        if fork == true then order, why = "excluded", "fork"
+        if fork == true then
+            order, why = "excluded", R.provenFork(login, life, first.epoch, first.seq, h - eps) and "fork" or "fork_unproven"
         elseif fork == "unknown" then order, why = "excluded", "floor" end
     end
     return order, why
