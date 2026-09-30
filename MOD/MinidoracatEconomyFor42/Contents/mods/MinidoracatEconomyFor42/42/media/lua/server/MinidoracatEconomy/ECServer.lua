@@ -94,8 +94,10 @@ S.reply = reply
 --   S.login(player)      the login name this player verifiably is, or nil. It keys what belongs
 --                        to one character save: recovery receipts/holds/journal, pending outs,
 --                        the season survival base, which save claimed a letter, entitlements.
---   S.principal(player)  the ACCOUNT: S.accountOf(S.login(player)). Money, caps, claims, mail,
---                        market, auctions, transfers, shop, boards, pushes, throttling.
+--   S.principal(player)  the ACCOUNT: S.accountOf(S.login(player)), or nil while the one-account
+--                        policy (IdentityMultiAccount off) keeps that login out - S.login stays
+--                        set then, so the save's own bookkeeping keeps running. Money, caps,
+--                        claims, mail, market, auctions, transfers, shop, boards, pushes, throttling.
 --   S.claimedName(player) the raw name, for log lines only.
 -- ECIdentity installs S.login (family convention "player identity": split-screen seats have
 -- none, in Steam mode the name must match its bound SteamID). Until that module has loaded
@@ -139,9 +141,13 @@ function S.claimedName(player)
 end
 
 -- Commands a player without a verified identity may still send, each gated on its own terms:
--- the identity import only on the role, which comes from the connection and not from the name
--- (GameServer.java:2841), so an administrator whose own binding is wrong can repair it.
-S.IDENTITY_EXEMPT = { ["admin.identity"] = true }
+-- the identity page, the settings page and the system overview (where the settings page reads the
+-- options) only on the role, which comes from the connection and not from the name
+-- (GameServer.java:2841), so an administrator whose own binding is wrong can repair it and one the
+-- one-account policy refuses can still change IdentityMultiAccount. admin.system answers
+-- server-wide figures only, nothing of the caller's account. Such a caller is throttled under
+-- "?<claimed name>" (below); the writers audit it as its login, or that claim.
+S.IDENTITY_EXEMPT = { ["admin.identity"] = true, ["admin.option"] = true, ["admin.system"] = true }
 
 -- Server-side player list (LuaManager.java:4453-4463); the client-side getConnectedPlayers is
 -- unavailable on a dedicated server (AGENTS.md API table).
