@@ -96,6 +96,9 @@ local reserved, reservedCount, consumedIndex = {}, 0, {}
 -- Process memory of the player sessions (see "player sessions" below).
 local sessions, outAnchors, claimedHourly, unanchoredNoted = {}, {}, {}, {}
 local epsProbe, epsProbeH, epsNow, epsPrev, epsAt = nil, nil, 0, 0, 0
+-- Epochs whose ledger file this start could not read in full (ECMailbox harvest): what they held
+-- is unknown, so nothing that happened up to them is decided from the ledger's silence.
+local ledgerGaps = {}
 
 -- ---------- resume tickets for cold proof reads ----------
 --
@@ -311,14 +314,20 @@ function R.init(root)
     if type(rec.floorAt) ~= "number" then rec.floorAt = 0 end
     if type(rec.floorCount) ~= "number" then rec.floorCount = 0 end
     if type(rec.reclaims) ~= "table" then rec.reclaims = {} end
-    -- lives[login] = { life, starts[] }; lost[login][mailId] = a claim the world lost (ECMailbox)
+    -- lives[login] = { life, seen, starts[], floor }; lost[login][mailId] = the claims the world
+    -- lost (ECMailbox). `seen` is the life this world save itself watched begin: a life only the
+    -- ledger harvest raised is not proof that the save that loads is that later character.
     if type(rec.lives) ~= "table" then rec.lives = {} end
     if type(rec.lost) ~= "table" then rec.lost = {} end
+    for _, life in pairs(rec.lives) do
+        if type(life) == "table" and tonumber(life.seen) == nil then life.seen = tonumber(life.life) or 0 end
+    end
     root.recovery = rec
     reserved, reservedCount, consumedIndex = {}, 0, {}
     -- a new process has no player objects yet: every session starts over
     sessions, outAnchors, claimedHourly, unanchoredNoted = {}, {}, {}, {}
     epsProbe, epsProbeH, epsNow, epsPrev, epsAt = nil, nil, 0, 0, 0
+    ledgerGaps = {}
     for _, receipt in pairs(rec.ops) do indexReceipt(receipt) end
 end
 
@@ -800,11 +809,20 @@ end
 local function lifeRec(login, create)
     local rec = md.recovery.lives[login]
     if type(rec) ~= "table" and create then
-        rec = { life = 0, starts = {} }
+        rec = { life = 0, seen = 0, starts = {} }
         md.recovery.lives[login] = rec
     end
     return type(rec) == "table" and rec or nil
 end
+
+-- A ledger number written as text: the shared JSON encoder prints six decimals (ECCore), and an
+-- hours value rounded up by that would read a tie as a fork. Kahlua's number text keeps the
+-- double (see ECRecoveryJournal "snapshot wire form"); tonumber reads either form back.
+local function numText(v)
+    if type(v) ~= "number" then return nil end
+    return tostring(v)
+end
+R.numText = numText
 
 function R.life(login)
     local rec = type(login) == "string" and md ~= nil and lifeRec(login, false) or nil
@@ -815,6 +833,8 @@ end
 function R.newLife(login)
     local rec = lifeRec(login, true)
     rec.life = (tonumber(rec.life) or 0) + 1
+    -- this world save watched the life begin (a death, a judged new character)
+    rec.seen = rec.life
     ledger({ k = "life", l = login, s = S.nextSeq(), life = rec.life })
     return rec.life
 end
@@ -835,6 +855,9 @@ local function later(e, s, epoch, seq)
 end
 R.later = later
 
+-- Bounded per login name. The oldest start that has to go leaves its commit point behind as the
+-- floor: a claim or transfer before the floor may have a fork this server no longer remembers,
+-- so R.forkedAfter answers "unknown" for it instead of "no fork".
 local function addStart(rec, start)
     if type(rec.starts) ~= "table" then rec.starts = {} end
     for _, st in ipairs(rec.starts) do
@@ -843,22 +866,29 @@ local function addStart(rec, start)
     rec.starts[#rec.starts + 1] = start
     if #rec.starts > R.STARTS_MAX then
         EC.sortSafe(rec.starts, function(a, b) return later(b.e, b.s, a.e, a.s) end)
-        table.remove(rec.starts, 1)
+        local gone = table.remove(rec.starts, 1)
+        local floor = type(rec.floor) == "table" and rec.floor or nil
+        if floor == nil or later(gone.e, gone.s, floor.e, floor.s) then rec.floor = { e = gone.e, s = gone.s } end
     end
 end
 
--- A session of this login began: in the world (bounded, trimmed at start) and in the ledger.
+-- A session of this login began: in the world (bounded, trimmed at start) and in the ledger. It
+-- carries both the life counter and `seen`, the life this world save itself watched begin: when
+-- only the ledger harvest raised the counter, the character that loaded may still be any of them.
 function R.noteStart(login, s)
-    s.life = R.life(login)
-    addStart(lifeRec(login, true), { e = md.meta.epoch, s = s.seq, h = s.h0, life = s.life })
-    ledger({ k = "start", l = login, s = s.seq, h = s.h0, life = s.life })
+    local rec = lifeRec(login, true)
+    s.life = tonumber(rec.life) or 0
+    s.seen = math.min(tonumber(rec.seen) or s.life, s.life)
+    addStart(rec, { e = md.meta.epoch, s = s.seq, h = s.h0, life = s.life, seen = s.seen })
+    ledger({ k = "start", l = login, s = s.seq, h = numText(s.h0), life = s.life, sn = s.seen })
 end
 
 function R.harvestStart(login, start)
     if type(login) == "string" then addStart(lifeRec(login, true), start) end
 end
 
--- Starts only matter inside the bounded epoch history (R.verdict answers "unknown" beyond it).
+-- Starts only matter inside the bounded epoch history (R.verdict answers "unknown" beyond it);
+-- a floor in an epoch that left it is older than every commit point still judged.
 function R.trimStarts()
     local keep, empty = { [md.meta.epoch] = true }, {}
     for _, h in ipairs(md.meta.history) do keep[h.epoch] = true end
@@ -867,7 +897,8 @@ function R.trimStarts()
         for _, st in ipairs(type(rec) == "table" and type(rec.starts) == "table" and rec.starts or {}) do
             if keep[st.e] then starts[#starts + 1] = st end
         end
-        if type(rec) ~= "table" or (#starts == 0 and (tonumber(rec.life) or 0) == 0) then
+        if type(rec) == "table" and type(rec.floor) == "table" and not keep[rec.floor.e] then rec.floor = nil end
+        if type(rec) ~= "table" or (#starts == 0 and rec.floor == nil and (tonumber(rec.life) or 0) == 0) then
             empty[#empty + 1] = login
         else
             rec.starts = starts
@@ -876,19 +907,40 @@ function R.trimStarts()
     for _, login in ipairs(empty) do md.recovery.lives[login] = nil end
 end
 
--- Did this life load a save at or below `bound` hours after (epoch, seq)? That session started
+-- Did a save of this life load at or below `bound` hours after (epoch, seq)? That session started
 -- from a save older than the claim or transfer at (epoch, seq), so every later save of that life
 -- may lack it, whatever hours it reached since. `inclusive` false leaves an equal start out.
+-- A start whose character was not proven (seen < life) may be any life in between and counts for
+-- each of them. true | false | "unknown" (a start after the commit was trimmed: the floor).
 function R.forkedAfter(login, life, epoch, seq, bound, inclusive)
     local rec = lifeRec(login, false)
     for _, st in ipairs(rec and type(rec.starts) == "table" and rec.starts or {}) do
         local h = tonumber(st.h) or -1
-        if (tonumber(st.life) or 0) == life and later(st.e, st.s, epoch, seq)
+        local top = tonumber(st.life) or 0
+        local low = math.min(tonumber(st.seen) or top, top)
+        if low <= life and life <= top and later(st.e, st.s, epoch, seq)
             and (h < bound or (inclusive and h == bound)) then
             return true
         end
     end
+    local floor = rec and type(rec.floor) == "table" and rec.floor or nil
+    if floor ~= nil and later(floor.e, floor.s, epoch, seq) then return "unknown" end
     return false
+end
+
+-- Ledger files this start could not read in full (ECMailbox harvest), and the question every
+-- ledger-backed decision asks: may something up to `epoch` be missing from what was read?
+function R.setLedgerGaps(gaps)
+    ledgerGaps = type(gaps) == "table" and gaps or {}
+end
+
+function R.ledgerGap(epoch)
+    local n = tonumber(epoch)
+    for gap in pairs(ledgerGaps) do
+        local g = tonumber(gap)
+        if n == nil or g == nil or n <= g then return gap end
+    end
+    return nil
 end
 
 -- The claims the world lost for one login (ECMailbox owns their meaning).
@@ -913,7 +965,7 @@ function R.anchorClaim(entry, player, login, fromProof)
     if not fromProof then
         local child = type(entry.parentMailId) == "string"
         ledger({ k = "claim", l = login, m = entry.id, o = entry.owner, s = entry.claimSeq,
-            h = entry.claimHours, life = entry.claimLife, p = child and entry.parentMailId or nil,
+            h = numText(entry.claimHours), life = entry.claimLife, p = child and entry.parentMailId or nil,
             u = child and entry.units or nil })
     end
 end
@@ -930,23 +982,33 @@ function R.claimOrder(entry, player)
 end
 
 -- Is the transfer whose first journal line is `first` inside the save this login loaded?
--- "contained" | "excluded" | "tie" | "unanchored" (a line written before anchors existed).
--- Same life: the save's hours must be past the commit by more than a tick. Every life: no start
--- of the transfer's life after its commit may have loaded a save at or below it (a fork).
+-- "contained" | "excluded" | "tie" | "unanchored" (a line written before anchors existed) |
+-- "life_unproven" (only the ledger says that life ended: the save may be the old character) |
+-- "ledger_incomplete" (a ledger file up to the commit could not be read).
+-- The save's hours must be past the commit by more than a tick, unless this world save itself
+-- watched the transfer's life end (seen). No start of the transfer's life after its commit may
+-- have loaded a save at or below it (a fork); a trimmed start is a fork nobody can rule out.
 function R.outOrder(login, first, player)
     local h = type(first) == "table" and tonumber(first.h) or nil
     if h == nil then return "unanchored" end
-    local life, lifeNow, eps = tonumber(first.life) or 0, R.life(login), R.tickEps()
+    if R.ledgerGap(first.epoch) then return "ledger_incomplete" end
+    local rec = lifeRec(login, false)
+    local lifeNow = rec and tonumber(rec.life) or 0
+    local seen = rec and math.min(tonumber(rec.seen) or lifeNow, lifeNow) or 0
+    local life, eps = tonumber(first.life) or 0, R.tickEps()
     if life > lifeNow then return "excluded" end
-    if life == lifeNow then
+    local order = "contained"
+    if life >= seen then
         local p = player or S.onlineLogin(login)
         local h0 = p and R.session(p).h0 or nil
-        if h0 == nil then return "tie" end
-        if h0 < h - eps then return "excluded" end
-        if h0 <= h + eps then return "tie" end
+        if h0 == nil or (h0 <= h + eps and h0 >= h - eps) then order = "tie"
+        elseif h0 < h - eps then order = "excluded" end
     end
-    if R.forkedAfter(login, life, first.epoch, first.seq, h + eps, true) then return "excluded" end
-    return "contained"
+    if order == "contained" and R.forkedAfter(login, life, first.epoch, first.seq, h + eps, true) ~= false then
+        order = "excluded"
+    end
+    if order ~= "contained" and life < lifeNow and life >= seen then return "life_unproven" end
+    return order
 end
 
 -- Once per tick (ECMailbox.onTick): every online object gets its session on the first tick it
@@ -2253,6 +2315,11 @@ local function judgeSuccessor(username, id, replay, detail, scan, out, opts)
         if order == "excluded" or order == "tie" then
             out.action, out.reason, out.discardable = "hold", "pending_not_in_save", true
             out.restorable, out.preview = false, nil
+        elseif order == "life_unproven" or order == "ledger_incomplete" then
+            -- the server cannot tell which way it is: never rebuilt by itself, but the journal
+            -- record stays in hand and an administrator may rebuild from it or close it
+            out.action, out.reason, out.discardable = "hold", order == "life_unproven"
+                and "pending_life_unproven" or "ledger_incomplete", true
         elseif order == "unanchored" then
             R.noteUnanchored(username, id)
         end
@@ -2373,6 +2440,15 @@ function R.beginOut(player, id, items, rec)
     if p.pendingOuts[id] ~= nil then
         return false, "recovery_pending", detail("operation_in_flight", { opId = id })
     end
+    -- The table is the client's: one past the cap is more than any server path writes, and it is
+    -- refused before a single record of it is looked into (ECMailbox holds it as pend:oversized).
+    local held = 0
+    for _ in pairs(p.pendingOuts) do
+        held = held + 1
+        if held > R.PENDING_MAX then
+            return false, "recovery_pending", detail("pending_cap_unconfirmed", { qty = held })
+        end
+    end
     local origins, byKey, legacy = {}, {}, nil
     for i = 1, n do
         local origin, err, why = R.originOf(items[i])
@@ -2491,7 +2567,9 @@ function R.beginOut(player, id, items, rec)
     for pid, pend in pairs(p.pendingOuts) do
         -- a value this server never wrote (the player's table is the client's) is not an operation
         if type(pend) == "table" then open = open + 1 end
-        for _, origin in ipairs(type(pend) == "table" and type(pend.origins) == "table" and pend.origins or {}) do
+        local list = type(pend) == "table" and type(pend.origins) == "table" and pend.origins or {}
+        for at, origin in ipairs(list) do
+            if at > R.ORIGINS_MAX then break end   -- no operation this server wrote has more
             local key = type(origin) == "table" and originKey(origin) or nil
             local index = key and byKey[key] or nil
             if index == nil and type(origin) == "table" and origin.nativeId ~= nil then

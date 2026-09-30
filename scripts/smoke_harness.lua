@@ -978,6 +978,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, Steam
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 24   -- +24: the player's own modData decides nothing (scenario MD, moddata trust boundary P0)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: what a world rollback forgot is judged from the ledger (scenario LG, moddata trust boundary P1)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: review of the moddata fix (RV in scenario LG): every lost claim kept and the per-letter bound, harvested life (3), trimmed starts, ledger completeness (5), split-screen lifeBreak, lossless hours, oversized pendings (2)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16614,13 +16615,14 @@ v.modData[KEY] = { claims = { [V3.id] = { epoch = S.modData().meta.epoch, seq = 
 hello(v)
 check(V3.state == "ready" and (v.modData[KEY].claims == nil), "MD-17: a current-epoch witness closes nothing and the table is dropped")
 
--- MD-18/19: a new character without a death
+-- MD-18/19: a new character without a death. OnNewGame fires on a temporary object while the old
+-- main-seat object is still online (CreatePlayerPacket.java:288-303); the new object comes after.
 local i1 = player("md-i", 10)
 local L18 = letter("md-i", 1)
 assert(M.claim(i1, L18.id).ok)
+fire("OnNewGame", fakePlayer("md-i"), nil)
 local i2 = fakePlayer("md-i"); i2.x, i2.y = 101, 200
 for n, p in ipairs(onlinePlayers) do if p == i1 then onlinePlayers[n] = i2 end end
-fire("OnNewGame", i2, nil)
 hello(i2)
 check(L18.state == "settled" and i2.inventory.count("Base.Bandage") == 0,
     "MD-18: a new character (hours back below the claim) settles the old one's letter instead of receiving it")
@@ -16631,8 +16633,8 @@ drop(j, "Base.Bandage")
 local seat = fakePlayer("md-j")
 fire("OnNewGame", seat, nil)            -- a split-screen seat's character fires it under the main login
 hello(j)
-check(L19.state == "claimed" and L19.lifeBreak == nil and j.inventory.count("Base.Bandage") == 0,
-    "MD-19: the same character going on keeps its letter claimed and loses the mark")
+check(L19.state == "claimed" and L19.lifeBreak ~= nil and j.inventory.count("Base.Bandage") == 0,
+    "MD-19: the same character going on keeps its letter claimed; the mark waits for another object")
 
 -- MD-20: a pending table no server path could fill is one record, not a flood
 local k = player("md-k")
@@ -16892,7 +16894,9 @@ local fresh = fakePlayer("rl-j"); fresh.hours = 10 + Rc.TICK_EPS_MIN / 2
 local first = { h = 10, life = 0, epoch = S.modData().meta.epoch, seq = S.modData().meta.seq }
 check(Rc.outOrder("rl-j", first, fresh) == "tie" and Rc.outOrder("rl-j", first, newSave(fresh, 5)) == "excluded",
     "LG-9: a save within one tick of the commit is a tie, one below it is excluded, whether or not its start is on record")
--- LG-10: listed, died, the pending rode to the new character, then the world lost all of it
+-- LG-10: listed, died, the pending rode to the new character, then the world lost all of it. Only
+-- the ledger says the old life ended, so the save that loads may be either character: held, and
+-- the administrator may rebuild it from the journal record
 id, before = listed("rl-k", 10)
 local k1 = onlinePlayers[#onlinePlayers]
 fire("OnCharacterDeath", k1)
@@ -16903,8 +16907,14 @@ local carried = deep(k2.modData)
 crash(before)
 local k3 = login("rl-k", 1, fakeInventory(1000), carried)
 hello(k3); proofPump("rl-k")
-check(Mk.listingExists(id) and k3.inventory.count("Base.Axe") == 0,
-    "LG-10: a listing carried over a death is rebuilt for the new life, whose hours start again")
+onlinePlayers[#onlinePlayers + 1] = admin
+local row10 = nil
+for _, r in ipairs(cmd(admin, "admin.recovery", { action = "list", username = "rl-k" }).records or {}) do
+    if r.key == "pend:" .. id then row10 = r end
+end
+check(not Mk.listingExists(id) and reason("rl-k", id) == "pending_life_unproven"
+    and row10 ~= nil and row10.actions.restore == true and row10.actions.discard == true,
+    "LG-10: a listing carried over a death the world lost is held, and the administrator may rebuild or close it")
 -- LG-legacy: a journal line from before the anchors keeps the old judgement and says so
 id, before, replay = listed("rl-l", 10)
 proofSettle()
@@ -16928,6 +16938,181 @@ fire("OnTickEvenPaused")               -- one step of 1 h (3 -> 4) seen by the p
 q.hours = 4.5
 fire("OnTickEvenPaused")               -- then a smaller one
 check(Rc.tickEps() == 1, "LG-13: the tie band follows the largest per-tick hours step seen")
+
+-- ===== RV: the review of the moddata fix (five findings, two residuals) =====
+local J = S.RecoveryJournal
+-- RV-1: a claim the first crash excluded, a legitimate re-claim, a second crash: the save holds
+-- the re-claim, so the letter is not handed over a third time
+do
+    local pa, la, snapA = claimed("rv-a", 10)
+    assert(M.claim(pa, la.id).ok)
+    crash(snapA)
+    local pa2 = login("rv-a", 5)
+    assert(M.entryOf("rv-a", la.id).state == "ready")
+    pa2.hours = 6
+    assert(M.claim(pa2, la.id).ok)
+    pa2.inventory.items = {}
+    crash(snapA)
+    local pa3 = login("rv-a", 7)
+    check(M.entryOf("rv-a", la.id).state == "claimed" and cmd(pa3, "mail.claim", { mailId = la.id }).error == "already_claimed"
+        and pa3.inventory.count("Base.Bandage") == 0,
+        "RV-1: every lost claim of a letter is kept: the re-claim after a first crash still closes it after a second")
+end
+-- RV-2: listed, died, both saves back below the listing: the harvested life is no proof the old
+-- character is gone, so a replayed pending on it is not rebuilt
+do
+    local idB, beforeB, replayB = listed("rv-b", 10)
+    fire("OnCharacterDeath", onlinePlayers[#onlinePlayers])
+    crash(beforeB)
+    local gb = login("rv-b", 5, fakeInventory(1000), deep(replayB))
+    hello(gb); proofPump("rv-b")
+    check(not Mk.listingExists(idB) and reason("rv-b", idB) == "pending_life_unproven",
+        "RV-2: a life only the ledger raised does not skip the save's hours: the old character's replay is held")
+    -- the old character plays past the listing and loads again: its earlier start was one of
+    -- either life, so it is still a fork of the old one
+    local gb2 = login("rv-b", 20, fakeInventory(1000), deep(replayB))
+    hello(gb2); proofPump("rv-b")
+    check(not Mk.listingExists(idB) and reason("rv-b", idB) == "pending_life_unproven",
+        "RV-2c: a start whose character was not proven counts as a fork of the old life too")
+    local meta = S.modData().meta
+    S.modData().recovery.lives["rv-x"] = { life = 1, seen = 0, starts = {} }
+    local px = fakePlayer("rv-x"); px.hours = 5
+    check(Rc.outOrder("rv-x", { h = 10, life = 0, epoch = meta.epoch, seq = meta.seq }, px) == "life_unproven",
+        "RV-2b: with no start on record the save's own hours still decide across a life only the ledger raised")
+end
+-- RV-9: a letter with more lost claims than kept is judged claimed outright
+do
+    world()
+    local lo = M.add("rv-o", { item = "Base.Bandage", qty = 1, kind = "shop" })
+    S.modData().recovery.lost["rv-o"] = { [lo.id] = { l = "rv-o", claims = {}, n = M.LOST_PER_LETTER, over = true } }
+    login("rv-o", 10)
+    check(M.entryOf("rv-o", lo.id).state == "claimed", "RV-9: past the per-letter bound the letter is claimed, never left ready")
+end
+-- RV-3: the fork start is pushed out by more sessions than a login keeps: its trace stays
+do
+    local idC, beforeC, replayC = listed("rv-c", 10)
+    crash(beforeC)
+    login("rv-c", 5)                     -- the fork: a save below the listing, still holding the axe
+    for i = 1, Rc.STARTS_MAX + 1 do login("rv-c", 20 + i) end
+    local gc = login("rv-c", 200, fakeInventory(1000), deep(replayC))
+    hello(gc); proofPump("rv-c")
+    check(not Mk.listingExists(idC) and reason("rv-c", idC) == "pending_not_in_save",
+        "RV-3: trimming the start lines leaves a floor: a transfer before it is never taken for one with no fork")
+end
+-- RV-4a: a lost claim far down a long ledger file is still found
+do
+    local pd, ld, snapD = claimed("rv-d", 10)
+    local epochD = S.modData().meta.epoch
+    assert(M.claim(pd, ld.id).ok)
+    pd.inventory.items = {}
+    proofSettle()
+    local fd = files[J.ledgerPath(epochD)]
+    local real, pad = fd.lines, 200000
+    local filler = '{"k":"start","l":"rv-pad","life":0,"s":1,"t":"recovery.ledger","v":1}'
+    fd.lines = setmetatable({}, { __index = function(_, i) if i <= pad then return filler end return real[i - pad] end })
+    crash(snapD)
+    local pd2 = login("rv-d", 12)
+    check(M.entryOf("rv-d", ld.id).state == "claimed" and cmd(pd2, "mail.claim", { mailId = ld.id }).error == "already_claimed",
+        "RV-4a: the ledger is read to its end: a claim after two hundred thousand rows still closes its letter")
+end
+-- RV-4b: a ledger file that exists and cannot be opened: old letters and old transfers wait
+do
+    world()
+    local pe = login("rv-e", 10)
+    L.credit("rv-e", "survivor", 1000, "SYSTEM_MINT", { requestId = "rv-e-seed", reasonCode = "t" })
+    local axe = instanceItem("Base.Axe"); pe.inventory:AddItem(axe)
+    local le = M.add("rv-e", { item = "Base.Bandage", qty = 1, kind = "shop" })
+    local beforeE, epochE = proofSnapshot(), S.modData().meta.epoch
+    assert(M.claim(pe, le.id).ok)
+    local outE = cmd(pe, "market.list", { itemId = axe.id, price = 10 })
+    assert(outE.ok, tostring(outE.error))
+    local replayE = deep(pe.modData)
+    local pathE, realReader = J.ledgerPath(epochE), getFileReader
+    getFileReader = function(fp, create) if fp == pathE then return nil end return realReader(fp, create) end
+    crash(beforeE)
+    getFileReader = realReader
+    local pe2 = login("rv-e", 12, fakeInventory(1000), replayE)
+    hello(pe2); proofPump("rv-e")
+    local refusedE = cmd(pe2, "mail.claim", { mailId = le.id })
+    check(refusedE.error == "ledger_unreadable" and pe2.inventory.count("Base.Bandage") == 0,
+        "RV-4b: a letter up to an unreadable ledger is not handed over, and the reply says why")
+    check(not Mk.listingExists(outE.listingId) and reason("rv-e", outE.listingId) == "ledger_incomplete",
+        "RV-4b: a transfer up to an unreadable ledger is held, not rebuilt")
+    local freshE = M.add("rv-e", { item = "Base.Bandage", qty = 1, kind = "shop" })
+    check(M.claim(pe2, freshE.id).ok == true, "RV-4b: a letter minted after the unreadable ledger is claimed as usual")
+end
+-- RV-4c/d: a broken row inside the file is an incomplete read; a torn last row is the known tail
+do
+    for _, where in ipairs({ "middle", "end" }) do
+        local name = "rv-t" .. where
+        local pt, lt, snapT = claimed(name, 10)
+        local epochT = S.modData().meta.epoch
+        assert(M.claim(pt, lt.id).ok)
+        pt.inventory.items = {}
+        proofSettle()
+        local lines = files[J.ledgerPath(epochT)].lines
+        if where == "middle" then table.insert(lines, 1, '{"k":"cla') else lines[#lines + 1] = '{"k":"cla' end
+        crash(snapT)
+        local pt2 = login(name, 12)
+        local rt = M.claim(pt2, lt.id)
+        if where == "middle" then
+            check(rt.error == "ledger_unreadable", "RV-4c: a row that cannot be decoded inside the ledger makes it incomplete")
+        else
+            check(rt.error == "already_claimed" and M.entryOf(name, lt.id).state == "claimed"
+                and (Rc.ledgerGap == nil or Rc.ledgerGap(epochT) == nil),
+                "RV-4d: a torn last row is the line cut by the crash: the rest is read and judged as usual")
+        end
+    end
+end
+-- RV-5: an older save of the main character, and a split-screen character made before any command
+do
+    world()
+    local pf = login("rv-f", 10)
+    local lf = M.add("rv-f", { item = "Base.Bandage", qty = 2, kind = "shop" })
+    assert(M.claim(pf, lf.id).ok)
+    local older = login("rv-f", 5)       -- the world keeps the claim, this save lacks it (V3)
+    fire("OnNewGame", fakePlayer("rv-f"), nil)
+    hello(older)
+    check(older.inventory.count("Base.Bandage") == 2 and M.entryOf("rv-f", lf.id).state == "claimed",
+        "RV-5: a split-screen character does not turn the main seat's older save into a new life: it gets its letter")
+end
+-- RV-6: hours beyond six decimals survive the ledger: a save at exactly the claim's hours holds it
+do
+    local pg, lg, snapG = claimed("rv-g", 10.1234567)
+    assert(M.claim(pg, lg.id).ok)
+    pg.inventory.items = {}
+    crash(snapG)
+    login("rv-g", 10.1234567)
+    check(M.entryOf("rv-g", lg.id).state == "claimed",
+        "RV-6: the ledger keeps the hours whole: a tie is not read as a fork")
+end
+-- RV-7/8: an oversized pending table costs a count, nothing more
+do
+    world()
+    local pk = login("rv-k", 10)
+    L.credit("rv-k", "survivor", 1000, "SYSTEM_MINT", { requestId = "rv-k-seed", reasonCode = "t" })
+    local hits = 0
+    local origins = setmetatable({}, { __index = function(_, i)
+        hits = hits + 1
+        if i <= 3 then return { src = "native", nativeId = -i } end
+    end })
+    local big = {}
+    for n = 1, Rc.PENDING_MAX + 1 do big["rv-big:" .. n] = { protocol = 2, origins = origins } end
+    pk.modData[EC.PLAYER_MODDATA_KEY] = { pendingOuts = big }
+    local parsed, realParse = 0, EC.parseId
+    EC.parseId = function(id)
+        if type(id) == "string" and string.sub(id, 1, 7) == "rv-big:" then parsed = parsed + 1 end
+        return realParse(id)
+    end
+    M.reconcile(pk)
+    EC.parseId = realParse
+    check(parsed == 0 and Rc.heldRecord("rv-k", "pend:oversized") ~= nil,
+        "RV-7: the reconcile counts an oversized pending table and stops before parsing a single key")
+    local saw = instanceItem("Base.Saw"); pk.inventory:AddItem(saw)
+    local outK = cmd(pk, "market.list", { itemId = saw.id, price = 10 })
+    check(outK.ok ~= true and hits == 0 and pk.inventory:contains(saw),
+        "RV-8: a list-out with an oversized pending table is refused before any of its origins is read")
+end
 X.emit = realEmit
 onlinePlayers = {}
 end)()
