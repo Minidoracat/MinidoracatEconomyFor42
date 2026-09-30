@@ -980,6 +980,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 24   -- +24: the player's own modDat
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: what a world rollback forgot is judged from the ledger (scenario LG, moddata trust boundary P1)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: review of the moddata fix (RV in scenario LG): every lost claim kept and the per-letter bound, harvested life (3), trimmed starts, ledger completeness (5), split-screen lifeBreak, lossless hours, oversized pendings (2)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7    -- +7: second review (RV-10..12 in scenario LG): a lifeBreak never starts a life (reconnect, one refusal event, mark spent by a later save, cleared by a death), an unreadable ledger refuses the automatic redelivery and the claimed TTL takes the letter, an unproven life (the current one included) is never judged by hours
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: merged logins (RV-13 in scenario LG): a lost claim of another login of the account blocks the letter until that login's save judged it (refused, then claimed; judged and put back; excluded then claimable; the parent of a lost split child)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -17202,6 +17203,60 @@ do
     local watched = Rc.outOrder("rv-y", { h = 10, life = 1, epoch = meta.epoch, seq = meta.seq }, py)
     check(old == "life_unproven" and cur == "life_unproven" and watched == "contained",
         "RV-12: a save's hours past the commit do not prove it holds a transfer of an unproven life")
+end
+-- RV-13: two logins merged into one account share one mailbox, but a lost claim is judged only by
+-- the save of the login that made it. Until that login has been seen, no other login of the group
+-- may take the letter (nor the parent of a lost split child): its save may hold the items.
+local function mergedPair(tag, capacity, qty, item)
+    world()
+    S.modData().identity.merged["rv-" .. tag .. "b"] = { into = "rv-" .. tag .. "a" }
+    local pb = login("rv-" .. tag .. "b", 10, fakeInventory(capacity or 1000))
+    local lm = M.add("rv-" .. tag .. "a", { item = item or "Base.Bandage", qty = qty or 2, kind = "shop" })
+    return pb, lm, proofSnapshot()
+end
+do
+    local pb, lm, snapM = mergedPair("m")
+    assert(M.claim(pb, lm.id).ok)
+    crash(snapM)
+    local pa = login("rv-ma", 10)
+    local early = cmd(pa, "mail.claim", { mailId = lm.id })
+    check(early.error == "lost_claim_pending" and pa.inventory.count("Base.Bandage") == 0
+        and M.entryOf("rv-ma", lm.id).state == "ready",
+        "RV-13: another login of the account cannot take a letter whose lost claim its maker's save has not judged")
+    local pb2 = login("rv-mb", 12)
+    local after = cmd(pa, "mail.claim", { mailId = lm.id })
+    check(M.entryOf("rv-ma", lm.id).state == "claimed" and after.error == "already_claimed"
+        and pa.inventory.count("Base.Bandage") == 0 and pb2.inventory.count("Base.Bandage") == 0,
+        "RV-13b: the maker's save holding the claim marks it claimed; the other login still gets nothing")
+    -- an older save of the maker, too full to take it back: the letter is back to ready, and the
+    -- judgement already made is not asked for again
+    local pb3 = login("rv-mb", 5, fakeInventory(0))
+    hello(pb3)
+    local reopened = M.entryOf("rv-ma", lm.id).state == "ready"
+    local again = cmd(pa, "mail.claim", { mailId = lm.id })
+    check(reopened and again.ok == true and pa.inventory.count("Base.Bandage") == 2
+        and pb3.inventory.count("Base.Bandage") == 0,
+        "RV-13e: a letter the maker's save already judged and the server put back is claimable by the other login")
+end
+do
+    local pb, lm, snapN = mergedPair("n")
+    assert(M.claim(pb, lm.id).ok)
+    crash(snapN)
+    local pa = login("rv-na", 10)
+    login("rv-nb", 5)                      -- the maker's save predates its claim: excluded
+    local out = cmd(pa, "mail.claim", { mailId = lm.id })
+    check(out.ok == true and pa.inventory.count("Base.Bandage") == 2,
+        "RV-13c: once the maker's save proves it never had the claim, the other login may take the letter")
+end
+do
+    local pb, lm, snapP = mergedPair("p", 7, 5, "Base.Plank")
+    local partial = M.claim(pb, lm.id)
+    assert(partial.error == "delivery_partial" and partial.deliveredQty == 2)
+    crash(snapP)
+    local pa = login("rv-pa", 10)
+    local out = cmd(pa, "mail.claim", { mailId = lm.id })
+    check(out.error == "lost_claim_pending" and pa.inventory.count("Base.Plank") == 0,
+        "RV-13d: the parent of a lost split child is not handed over before the child's maker is seen")
 end
 X.emit = realEmit
 onlinePlayers = {}

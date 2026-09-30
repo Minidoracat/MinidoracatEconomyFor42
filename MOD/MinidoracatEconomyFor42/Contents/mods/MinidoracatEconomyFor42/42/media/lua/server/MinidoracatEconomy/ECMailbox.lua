@@ -684,6 +684,27 @@ local function splitDelivered(player, o, entry, claimSeq, kept, ms, inPlace)
     return child
 end
 
+-- A claim of this letter - or of a split child cut from it (rec.p) - that the world lost, made by
+-- any login of this account whose save has not judged it yet. Merged logins share one mailbox,
+-- but a lost claim is judged only by the save of the login that made it (settleLostClaims marks
+-- the record judged; a claim a later harvest adds clears the mark). Until then that save may hold
+-- the items, so no login of the group takes the letter. A record whose claims are all excluded
+-- proves the letter is owed; records age out with their epoch (harvestLedger). Cheap: one small
+-- table per login of the group. Returns the login that has to be seen first, or nil.
+local function lostClaimPending(login, mailId)
+    for _, name in ipairs(S.groupOf(login)) do
+        for key, rec in pairs(R.lostClaims(name, false) or {}) do
+            if type(rec) == "table" and not rec.judged and (key == mailId or rec.p == mailId) then
+                if rec.over then return name end
+                for _, c in pairs(type(rec.claims) == "table" and rec.claims or {}) do
+                    if type(c) == "table" and not c.excluded then return name end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- Returns { ok = true, mailId, item, qty, deliveredQty, remainingQty } or
 -- { ok = false, error, deliveredQty, remainingQty, childMailId? } plus, when the room decided it
 -- (backpack_full, or a delivery_partial that took what fit), the numbers the player can act on:
@@ -706,6 +727,11 @@ function M.claim(player, mailId, prepared)
     if gap then
         anomaly(username, mailId, "claim-refused-ledger", { epoch = gap })
         return { ok = false, error = "ledger_unreadable", mailId = mailId }
+    end
+    local waiting = lostClaimPending(login, mailId)
+    if waiting then
+        anomaly(username, mailId, "claim-refused-lost", { login = waiting })
+        return { ok = false, error = "lost_claim_pending", mailId = mailId }
     end
     local ms = EC.now()
     local total = #availableUnits(entry)
@@ -1205,6 +1231,9 @@ local function settleLostClaims(login, ms)
                 local box = entry and md.mailbox.byOwner[entry.owner] or nil
                 if box then
                     settle(box, entry, state, ms)
+                    -- this login's own save has decided the letter: other logins of the account
+                    -- no longer wait on it (lostClaimPending)
+                    rec.judged = true
                     entry.claimLogin, entry.claimSess, entry.lifeBreak = login, nil, nil
                     if c then entry.claimSeq, entry.claimHours, entry.claimLife = c.s, c.h, tonumber(c.life) or 0 end
                     anomaly(login, mailId, state == "claimed" and "mark-claimed-ledger" or "settled-old-life",
@@ -1954,9 +1983,12 @@ local function noteLost(row, epoch, s)
     end
     local key = tostring(epoch) .. ":" .. tostring(s)
     if rec.claims[key] ~= nil then return end
-    if rec.n >= M.LOST_PER_LETTER then rec.over = true; return end
+    if rec.n >= M.LOST_PER_LETTER then
+        if not rec.over then rec.over, rec.judged = true, nil end
+        return
+    end
     rec.claims[key] = { s = s, e = epoch, h = h, life = tonumber(row.life) or 0 }
-    rec.n = rec.n + 1
+    rec.n, rec.judged = rec.n + 1, nil
     if fresh then R.lostClaims(row.l, true)[row.m] = rec end
 end
 

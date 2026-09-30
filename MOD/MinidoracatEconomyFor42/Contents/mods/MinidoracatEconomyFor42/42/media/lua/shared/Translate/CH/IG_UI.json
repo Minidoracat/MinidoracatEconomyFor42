@@ -1456,6 +1456,7 @@
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_pending_life_unproven": "伺服器無法確認玩家載入的是舊角色還是之後的新角色，不會自行重建；可依伺服器紀錄重建，或關閉這筆。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_ledger_incomplete": "有一份崩潰前的回滾帳本讀不完整，無法確認這筆轉出之後的存檔紀錄，不會自行重建；可依伺服器紀錄重建，或關閉這筆。",
   "IGUI_MinidoracatEconomy_Shop_Error_ledger_unreadable": "伺服器的回滾紀錄有一段讀不到，這封較早的信件暫時不能領取，請通知管理員。",
+  "IGUI_MinidoracatEconomy_Shop_Error_lost_claim_pending": "伺服器回滾前，這個帳號曾領取過這封信；須等當時領取的登入名上線、伺服器確認存檔後才能領取。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_remove_unconfirmed": "尚未確認物品已從容器移除，紀錄保留待處理。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_stale_native_copy": "這件物品和一筆已完成的轉出是同一件，是崩潰前舊存檔留下的副本，不能再上架、拍賣或賣出。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_stale_copy_unsaved": "這件物品是崩潰前舊存檔留下的副本，但它對應的轉出還沒寫進世界存檔：現在收回，世界回滾時物品會消失。存檔確認後，玩家重新登入或管理員按「重新檢查」時會自動收回。",
