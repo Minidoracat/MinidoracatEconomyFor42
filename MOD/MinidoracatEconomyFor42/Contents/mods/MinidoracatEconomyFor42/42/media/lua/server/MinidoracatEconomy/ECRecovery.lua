@@ -1006,6 +1006,10 @@ end
 -- Otherwise (life == seen == lifeNow) the save's hours must be past the commit by more than a
 -- tick. No start of the transfer's life after its commit may have loaded a save at or below it
 -- (a fork); a trimmed start is a fork nobody can rule out.
+-- The second value says how an "excluded" was reached: "hours" (this save loaded below the
+-- commit, same life) and "fork" (a recorded start of that life loaded below it) are proof the
+-- save never had the transfer; "floor" (only a trimmed start could be one) and "life_ahead" are
+-- not - like "tie", they only fail to prove it has it.
 function R.outOrder(login, first, player)
     local h = type(first) == "table" and tonumber(first.h) or nil
     if h == nil then return "unanchored" end
@@ -1014,19 +1018,21 @@ function R.outOrder(login, first, player)
     local lifeNow = rec and tonumber(rec.life) or 0
     local seen = rec and math.min(tonumber(rec.seen) or lifeNow, lifeNow) or 0
     local life, eps = tonumber(first.life) or 0, R.tickEps()
-    if life > lifeNow then return "excluded" end
+    if life > lifeNow then return "excluded", "life_ahead" end
     if seen < lifeNow and life >= seen then return "life_unproven" end
-    local order = "contained"
+    local order, why = "contained", nil
     if life >= seen then
         local p = player or S.onlineLogin(login)
         local h0 = p and R.session(p).h0 or nil
         if h0 == nil or (h0 <= h + eps and h0 >= h - eps) then order = "tie"
-        elseif h0 < h - eps then order = "excluded" end
+        elseif h0 < h - eps then order, why = "excluded", "hours" end
     end
-    if order == "contained" and R.forkedAfter(login, life, first.epoch, first.seq, h + eps, true) ~= false then
-        order = "excluded"
+    if order == "contained" then
+        local fork = R.forkedAfter(login, life, first.epoch, first.seq, h + eps, true)
+        if fork == true then order, why = "excluded", "fork"
+        elseif fork == "unknown" then order, why = "excluded", "floor" end
     end
-    return order
+    return order, why
 end
 
 -- Once per tick (ECMailbox.onTick): every online object gets its session on the first tick it
@@ -1055,6 +1061,13 @@ function R.observeSessions(onFirst)
                 if ok and type(login) == "string" then
                     local done, err = pcall(onFirst, p, login, s)
                     if not done then EC.log("first sighting failed for " .. login .. ": " .. tostring(err)) end
+                else
+                    -- an object the binding does not vouch for keeps the name its seat may be
+                    -- held to for a death nobody processed (R.unsettledDeaths): the same rules as
+                    -- an unverified death, refreshed with every retry (a rename flag clears it)
+                    local Id = S.Identity
+                    local okSeat, name = pcall(function() return Id and Id.seatName(p) or nil end)
+                    s.seat = okSeat and type(name) == "string" and name or nil
                 end
             end
         end
@@ -1070,21 +1083,28 @@ end
 -- ConnectCoop between the frame BodyDamage set health 0 and the next one where die() fires
 -- OnCharacterDeath (IsoGameCharacter.java:9054 vs :9177-9179): ConnectCoopPacket.java:69 only
 -- asks isDead() and :94 disconnectPlayer removes the object, so that event may never come.
--- `except` is the object asking (the new one).
+-- An object verified at its first sighting counts under s.login; one never verified under the
+-- seat name it last showed (s.seat, Id.seatName), and is reported unverified.
+-- `except` is the object asking (the new one). Returns { { player, unverified } }.
+local function deadUnprocessed(p, s)
+    if s.died then return false end
+    local ok, dead = pcall(function() return p:isDead() end)
+    return ok and dead == true
+end
+
 function R.unsettledDeaths(login, except)
     local out = {}
     for p, s in pairs(sessions) do
-        if p ~= except and s.login == login and not s.died then
-            local ok, dead = pcall(function() return p:isDead() end)
-            if ok and dead == true then out[#out + 1] = p end
+        if p ~= except and (s.login == login or (s.login == nil and s.seat == login)) and deadUnprocessed(p, s) then
+            out[#out + 1] = { player = p, unverified = s.login == nil }
         end
     end
     return out
 end
 
 -- On the minute clock: forget the objects that left. A departing object that is dead and whose
--- death nobody processed is handed to `onDeadGone(player, login, session)` first, so a prune that
--- runs before the login's next object is seen does not lose that death (R.unsettledDeaths).
+-- death nobody processed is handed to `onDeadGone(player, name, session, unverified)` first, so a
+-- prune that runs before the login's next object is seen does not lose that death.
 function R.pruneSessions(onDeadGone)
     local players, online, gone = S.seats(), {}, {}
     for i = 0, (players and players:size() or 0) - 1 do
@@ -1096,12 +1116,10 @@ function R.pruneSessions(onDeadGone)
     end
     for _, p in ipairs(gone) do
         local s = sessions[p]
-        if onDeadGone ~= nil and type(s.login) == "string" and not s.died then
-            local okDead, dead = pcall(function() return p:isDead() end)
-            if okDead and dead == true then
-                local ok, err = pcall(onDeadGone, p, s.login, s)
-                if not ok then EC.log("unseen death of " .. s.login .. " failed: " .. tostring(err)) end
-            end
+        local name = type(s.login) == "string" and s.login or s.seat
+        if onDeadGone ~= nil and type(name) == "string" and deadUnprocessed(p, s) then
+            local ok, err = pcall(onDeadGone, p, name, s, s.login == nil)
+            if not ok then EC.log("unseen death of " .. name .. " failed: " .. tostring(err)) end
         end
         sessions[p] = nil
     end
@@ -2389,10 +2407,13 @@ local function judgeSuccessor(username, id, replay, detail, scan, out, opts)
     -- out: a save from before the transfer still had them, and a replayed pending plus a dropped
     -- original would then be two (moddata trust boundary, R.outOrder).
     if out.action == "restore" or out.action == "partial" then
-        local order = R.outOrder(username, detail.first, type(opts) == "table" and opts.player or nil)
-        out.saveOrder = order
+        local order, why = R.outOrder(username, detail.first, type(opts) == "table" and opts.player or nil)
+        out.saveOrder, out.saveProof = order, why
         if order == "excluded" or order == "tie" then
             out.action, out.reason, out.discardable = "hold", "pending_not_in_save", true
+            -- only a proven exclusion may be voided by the server itself (ECMailbox autoDiscard);
+            -- a tie or a floor stays a hold the administrator closes
+            out.autoDiscard = order == "excluded" and (why == "hours" or why == "fork") or nil
             out.restorable, out.preview = false, nil
         elseif order == "life_unproven" or order == "ledger_incomplete" then
             -- the server cannot tell which way it is: never rebuilt by itself, but the journal

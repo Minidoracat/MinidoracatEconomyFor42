@@ -983,7 +983,8 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: what a world rollback f
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: review of the moddata fix (RV in scenario LG): every lost claim kept and the per-letter bound, harvested life (3), trimmed starts, ledger completeness (5), split-screen lifeBreak, lossless hours, oversized pendings (2)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7    -- +7: second review (RV-10..12 in scenario LG): a lifeBreak never starts a life (reconnect, one refusal event, mark spent by a later save, cleared by a death), an unreadable ledger refuses the automatic redelivery and the claimed TTL takes the letter, an unproven life (the current one included) is never judged by hours
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: merged logins (RV-13 in scenario LG): a lost claim of another login of the account blocks the letter until that login's save judged it (refused, then claimed; judged and put back; excluded then claimable; the parent of a lost split child)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: deaths and new characters (scenario DU: unverified death, impostor, unseen death at first sight and at the prune, a late event, an alive logout; MD-19b: a split-screen character beside an alive seat refuses nothing; RV-4e: the unreadable ledger on the System page)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: deaths and new characters (scenario DU: unverified death, impostor, unseen death at first sight and at the prune, a late event, an alive logout; MD-19b: the refusal a split-screen mark costs; RV-4e: the unreadable ledger on the System page)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: review of the death fixes: a save within a tick of the commit is held, not voided (LG-tie); an unflagged impostor's death only marks (DU-2b); a never-verified object dead without its event marks, at the next first sighting and at the prune (DU-6, DU-6b)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16911,21 +16912,22 @@ v.modData[KEY] = { claims = { [V3.id] = { epoch = S.modData().meta.epoch, seq = 
 hello(v)
 check(V3.state == "ready" and (v.modData[KEY].claims == nil), "MD-17: a current-epoch witness closes nothing and the table is dropped")
 
--- MD-18/19: a new character without a death. OnNewGame fires on a temporary object; the new
--- object comes after. With the login offline the mark is `true`: nothing proves which save is next.
+-- MD-18/19: a new character without a death. OnNewGame fires on a temporary object while the old
+-- main-seat object is still online (CreatePlayerPacket.java:288-303); the new object comes after.
+-- CreatePlayer writes the new row at once (:302-303) whether or not the old one died, so the mark
+-- is set beside a living seat too.
 local i1 = player("md-i", 10)
 local L18 = letter("md-i", 1)
 assert(M.claim(i1, L18.id).ok)
-for n, p in ipairs(onlinePlayers) do if p == i1 then table.remove(onlinePlayers, n) break end end
 fire("OnNewGame", fakePlayer("md-i"), nil)
 local i2 = fakePlayer("md-i"); i2.x, i2.y = 101, 200
-onlinePlayers[#onlinePlayers + 1] = i2
+for n, p in ipairs(onlinePlayers) do if p == i1 then onlinePlayers[n] = i2 end end
 hello(i2)
 -- A lifeBreak mark alone never starts a life (only a death the server saw does): the letter stays
 -- claimed, nothing is handed over, and no record waits on an administrator
 check(L18.state == "claimed" and i2.inventory.count("Base.Bandage") == 0 and Rc.life("md-i") == 0
     and #Rc.heldRecords("md-i") == 0,
-    "MD-18: a new character made while the login is offline leaves the old letter claimed, handed over to nobody")
+    "MD-18: a new character made without a death leaves the old letter claimed, handed over to nobody")
 local j = player("md-j", 10)
 local L19 = letter("md-j", 1)
 assert(M.claim(j, L19.id).ok)
@@ -16933,14 +16935,15 @@ drop(j, "Base.Bandage")
 local seat = fakePlayer("md-j")
 fire("OnNewGame", seat, nil)            -- a split-screen seat's character fires it under the main login
 hello(j)
--- ConnectCoop refuses a seat whose player is alive (ConnectCoopPacket.java:69): with the main
--- seat online and alive the event cannot be its next character, and nothing is marked
-check(L19.state == "claimed" and L19.lifeBreak == nil and j.inventory.count("Base.Bandage") == 0,
-    "MD-19: a character made while the main seat is online and alive marks nothing; the letter stays claimed")
-local j2 = newSave(j, 5)                -- then a crash: the world kept the claim, this save lacks it (V3)
+check(L19.state == "claimed" and L19.lifeBreak ~= nil and j.inventory.count("Base.Bandage") == 0,
+    "MD-19: the same character going on keeps its letter claimed; the mark waits for another object")
+-- the cost of marking beside a living seat: an older save of that main character (V3) is refused
+-- its redelivery - one event naming the item, for an administrator to make good by hand
+local j2 = newSave(j, 5)
 hello(j2)
-check(L19.state == "claimed" and j2.inventory.count("Base.Bandage") == 1,
-    "MD-19b: that split-screen character does not refuse the older save its legitimate redelivery")
+check(L19.state == "claimed" and j2.inventory.count("Base.Bandage") == 0
+    and count("redelivery-refused", L19.id, "lifebreak_unproven") == 1,
+    "MD-19b: the cost of that mark: an older save of the main seat is refused its redelivery, with one event")
 
 -- MD-20: a pending table no server path could fill is one record, not a flood
 local k = player("md-k")
@@ -17162,10 +17165,10 @@ local function reason(name, id)
     local rec = Rc.heldRecord(name, "pend:" .. id)
     return rec and not rec.resolvedAt and rec.reason or nil
 end
--- A pending the save never had is discarded by the server itself, exactly as the administrator's
--- discard did (a void receipt, nothing refunded), with one event and a SYSTEM audit line; no
--- record is opened, so nothing counts against the held limit
-local function autoDiscarded(name, id, who)
+-- A pending the save provably never had is discarded by the server itself, exactly as the
+-- administrator's discard did (a void receipt, nothing refunded), with one event naming how it was
+-- proven and a SYSTEM audit line; no record is opened, so nothing counts against the held limit
+local function autoDiscarded(name, id, who, proof)
     local ev, audited = nil, false
     for _, e in ipairs(events) do
         if e.resolution == "pending-auto-discarded" and e.opId == id then ev = e end
@@ -17178,14 +17181,14 @@ local function autoDiscarded(name, id, who)
     local pend = type(data) == "table" and type(data.pendingOuts) == "table" and data.pendingOuts[id] or nil
     return not Mk.listingExists(id) and reason(name, id) == nil and Rc.heldCount(name, true) == 0
         and receipt ~= nil and receipt.kind == "discard" and pend == nil
-        and ev ~= nil and ev.item == "Base.Axe" and ev.qty == 1 and audited
+        and ev ~= nil and ev.item == "Base.Axe" and ev.qty == 1 and ev.proof == proof and audited
 end
 -- LG-6: both went back below the listing; the client replays the pending and drops the axe
 local id, before, replay = listed("rl-g", 10)
 crash(before)
 local g = login("rl-g", 5, fakeInventory(1000), deep(replay))
 hello(g); proofPump("rl-g")
-check(autoDiscarded("rl-g", id, g),
+check(autoDiscarded("rl-g", id, g, "hours"),
     "LG-6: a replayed pending on a save from before the listing is discarded by the server, never rebuilt")
 local admin = fakePlayer("rl-boss"); admin.role = "admin"
 onlinePlayers[#onlinePlayers + 1] = admin
@@ -17194,7 +17197,7 @@ for _, r in ipairs(cmd(admin, "admin.recovery", { action = "list", username = "r
     if r.key == "pend:" .. id then row = r end
 end
 hello(g); proofPump("rl-g")
-check(row == nil and autoDiscarded("rl-g", id, g) and g.inventory.count("Base.Axe") == 0,
+check(row == nil and autoDiscarded("rl-g", id, g, "hours") and g.inventory.count("Base.Axe") == 0,
     "LG-admin: nothing is left for the administrator, and a later login stays closed")
 -- LG-7: the older save played on first, then replayed
 id, before, replay = listed("rl-h", 10)
@@ -17204,8 +17207,26 @@ h1.inventory:AddItem(instanceItem("Base.Axe"))
 hello(h1)
 local h2 = login("rl-h", 20, fakeInventory(1000), deep(replay))
 hello(h2); proofPump("rl-h")
-check(autoDiscarded("rl-h", id, h2),
+check(autoDiscarded("rl-h", id, h2, "fork"),
     "LG-7: a save that loaded below the listing stays excluded after playing past it")
+-- LG-tie: a save within one tick of the commit may be the one written right after it: nothing
+-- proves it lacks the transfer, so the server does not void it - it stays a hold the
+-- administrator can close (and cannot rebuild)
+do
+    local idT, beforeT, replayT = listed("rl-t", 10)
+    crash(beforeT)
+    local gt = login("rl-t", 10 + Rc.TICK_EPS_MIN / 2, fakeInventory(1000), deep(replayT))
+    hello(gt); proofPump("rl-t")
+    onlinePlayers[#onlinePlayers + 1] = admin
+    local rowT = nil
+    for _, r in ipairs(cmd(admin, "admin.recovery", { action = "list", username = "rl-t" }).records or {}) do
+        if r.key == "pend:" .. idT then rowT = r end
+    end
+    check(reason("rl-t", idT) == "pending_not_in_save" and Rc.receipt(idT) == nil and not Mk.listingExists(idT)
+        and rowT ~= nil
+        and rowT.actions.discard == true and rowT.actions.restore == false,
+        "LG-tie: a save within a tick of the commit is held for the administrator, never voided by the server")
+end
 -- LG-8: the ordinary crash - the player save is newer than the world save - still rebuilds
 id, before, replay = listed("rl-i", 10)
 crash(before)
@@ -17321,8 +17342,10 @@ do
     for i = 1, Rc.STARTS_MAX + 1 do login("rv-c", 20 + i) end
     local gc = login("rv-c", 200, fakeInventory(1000), deep(replayC))
     hello(gc); proofPump("rv-c")
-    check(autoDiscarded("rv-c", idC, gc),
-        "RV-3: trimming the start lines leaves a floor: a transfer before it is never taken for one with no fork")
+    -- only the trimmed-start floor says a fork may have happened: no proof either way, so it is
+    -- held for the administrator (discard-only), never voided by the server
+    check(not Mk.listingExists(idC) and reason("rv-c", idC) == "pending_not_in_save" and Rc.receipt(idC) == nil,
+        "RV-3: trimming the start lines leaves a floor: a transfer before it is held, neither rebuilt nor voided")
 end
 -- RV-4a: a lost claim far down a long ledger file is still found
 do
@@ -17400,9 +17423,7 @@ do
         end
     end
 end
--- RV-5: an older save of the main character, and a split-screen character made while that main
--- seat is online and alive: ConnectCoop cannot hand an alive seat a new character
--- (ConnectCoopPacket.java:69), so nothing is marked and the older save gets its letter
+-- RV-5: an older save of the main character, and a split-screen character made before any command
 do
     world()
     local pf = login("rv-f", 10)
@@ -17411,9 +17432,9 @@ do
     local older = login("rv-f", 5)       -- the world keeps the claim, this save lacks it (V3)
     fire("OnNewGame", fakePlayer("rv-f"), nil)
     hello(older)
-    check(older.inventory.count("Base.Bandage") == 2 and M.entryOf("rv-f", lf.id).state == "claimed"
+    check(older.inventory.count("Base.Bandage") == 0 and M.entryOf("rv-f", lf.id).state == "claimed"
         and #Rc.heldRecords("rv-f") == 0 and Rc.life("rv-f") == 0,
-        "RV-5: a split-screen character beside an alive main seat is neither a new life nor a refusal: the older save gets its letter")
+        "RV-5: an older save with a new-character mark is neither a new life nor redelivered")
 end
 -- RV-6: hours beyond six decimals survive the ledger: a save at exactly the claim's hours holds it
 do
@@ -17452,9 +17473,9 @@ do
     check(outK.ok ~= true and hits == 0 and pk.inventory:contains(saw),
         "RV-8: a list-out with an oversized pending table is refused before any of its origins is read")
 end
--- RV-10: V3, a character made while the login is offline, a reconnect of the same main character:
--- a different session is not a different character, so no life starts, nothing is settled and
--- nothing is handed over: the refusal is one event per letter, and no record waits on anyone
+-- RV-10: V3, a split-screen character, a reconnect of the same main character: a different
+-- session is not a different character, so no life starts, nothing is settled and nothing is
+-- handed over: the refusal is one event per letter, and no record waits on an administrator
 local function refusals(id, why)
     local n, last = 0, nil
     for _, e in ipairs(events) do
@@ -17475,7 +17496,6 @@ do
     ph.hours = 3
     assert(M.claim(ph, lh3.id).ok)          -- claimLife 0, so a raised life would settle it too
     login("rv-h", 5)                          -- the older save (V3), seen by one tick only
-    onlinePlayers = {}                        -- the login goes offline and a character is made
     fire("OnNewGame", fakePlayer("rv-h"), nil)
     local again = login("rv-h", 5)            -- reconnect: the same character, a new object
     hello(again)
@@ -17933,11 +17953,14 @@ io.write("scenario DU: a death the identity could not verify, or whose event nev
 ;(function()
 local M, Rc = S.Mailbox, S.Recovery
 local md = mgWorld()
-local settledEvents, diedNames = {}, {}
+local settledEvents, diedNames, refused = {}, {}, {}
 local realEmit = X.emit
 X.emit = function(kind, fields)
     if kind == "mailbox.settled" then settledEvents[#settledEvents + 1] = fields end
     if kind == "player.died" then diedNames[#diedNames + 1] = fields.username end
+    if kind == "ledger.anomaly" and fields.resolution == "redelivery-refused" then
+        refused[#refused + 1] = { mailId = fields.mailId, reason = fields.reason }
+    end
     return realEmit(kind, fields)
 end
 local function tick(ms)
@@ -17956,10 +17979,16 @@ local function settledFor(name, flag)
         if e.username == name and (flag == nil or e[flag] == true) then return e end
     end
 end
+local function refusedCount(id)
+    local n = 0
+    for _, e in ipairs(refused) do if e.mailId == id and e.reason == "lifebreak_unproven" then n = n + 1 end end
+    return n
+end
 
 -- DU-1: login du-m (bound to Steam A) claims, stashes the bandages, logs into du-m from Steam B
 -- (the password is all the server checks: ServerWorldDatabase.authClient), dies unverified,
--- respawns, and comes back from Steam A on the new character's early row
+-- respawns, and comes back from Steam A on the new character's early row. The unverified death
+-- settles nothing (its name is no proof) but marks the claim, so the early row is refused it.
 local A_, B_ = mgT(201), mgT(202)
 local ma = seat("du-m", A_, 5, 10)
 onlinePlayers = { ma }
@@ -17983,10 +18012,10 @@ local ma2 = seat("du-m", A_, 5, 0.5)
 onlinePlayers = { ma2 }
 tick()
 hello(ma2)
-local evM = settledFor("du-m", "unverified")
-check(M.entryOf("du-m", lm.id).state == "settled" and ma2.inventory.count("Base.Bandage") == 0
-    and Rc.life("du-m") == 1 and evM ~= nil and evM.count == 1 and #diedNames == 0,
-    "DU-1: a death while the seat was unverified still settles the login's claims: nothing comes back on the verified return")
+local entryM = M.entryOf("du-m", lm.id)
+check(entryM.state == "claimed" and entryM.lifeBreak ~= nil and ma2.inventory.count("Base.Bandage") == 0
+    and Rc.life("du-m") == 0 and settledFor("du-m") == nil and refusedCount(lm.id) == 1 and #diedNames == 0,
+    "DU-1: a death while the seat was unverified marks the login's claims: nothing comes back on the verified return, nothing is settled")
 
 -- DU-2: an impostor renamed to a victim's login (a suspected rename) dies: the victim's claims stay
 local vv = seat("du-v", mgT(203), 6, 10)
@@ -18010,8 +18039,76 @@ local suspect = EC.Identity.observe(xv)
 xv.dead = true
 fire("OnCharacterDeath", xv)
 check(suspect ~= nil and suspect.suspect == true and M.entryOf("du-v", lv.id).state == "claimed"
-    and Rc.life("du-v") == 0 and settledFor("du-v") == nil,
-    "DU-2: an impostor dying under a victim's name settles nothing of the victim's")
+    and M.entryOf("du-v", lv.id).lifeBreak == nil and Rc.life("du-v") == 0 and settledFor("du-v") == nil,
+    "DU-2: an impostor flagged as a rename dying under a victim's name touches nothing of the victim's")
+
+-- DU-2b: an impostor the rename rules did not flag (it waited out the windows) dies under the
+-- victim's name: the victim's letter is only marked, and the victim's next save spends the mark
+local vw = seat("du-w", mgT(205), 13, 10)
+onlinePlayers = { vw }
+tick()
+assert(S.login(vw) == "du-w")
+local lw = M.add("du-w", { item = "Base.Bandage", qty = 1, kind = "shop" })
+assert(M.claim(vw, lw.id).ok)
+local iw = seat("du-w", mgT(206), 14, 2)
+onlinePlayers = { iw }
+tick()
+local flagW = EC.Identity.observe(iw)
+iw.dead = true
+fire("OnCharacterDeath", iw)
+local markedW = M.entryOf("du-w", lw.id).lifeBreak == true and M.entryOf("du-w", lw.id).state == "claimed"
+local vw2 = seat("du-w", mgT(205), 13, 12)
+onlinePlayers = { vw2 }
+tick()
+hello(vw2)
+check(S.login(iw) == nil and flagW ~= nil and flagW.suspect ~= true and markedW and Rc.life("du-w") == 0
+    and settledFor("du-w") == nil and M.entryOf("du-w", lw.id).lifeBreak == nil
+    and M.entryOf("du-w", lw.id).state == "claimed" and vw2.inventory.count("Base.Bandage") == 0,
+    "DU-2b: an unflagged impostor's death only marks the victim's letter, and the victim's next save spends the mark")
+
+-- DU-6: the Steam-B death whose event never came (ConnectCoop took the seat first) and the object
+-- was never verified: at the verified object's first sighting its claims are marked, not settled
+local A6, B6 = mgT(207), mgT(208)
+local na = seat("du-n", A6, 15, 10)
+onlinePlayers = { na }
+tick()
+local ln = M.add("du-n", { item = "Base.Bandage", qty = 2, kind = "shop" })
+assert(M.claim(na, ln.id).ok)
+na.inventory.items = {}
+local nb = seat("du-n", B6, 15, 12)
+onlinePlayers = { nb }
+tick()
+assert(S.login(nb) == nil)
+nb.dead = true                               -- no OnCharacterDeath, no CreatePlayer
+local na2 = seat("du-n", A6, 15, 0.5)
+onlinePlayers = { na2 }
+tick()
+hello(na2)
+check(M.entryOf("du-n", ln.id).state == "claimed" and na2.inventory.count("Base.Bandage") == 0
+    and Rc.life("du-n") == 0 and refusedCount(ln.id) == 1,
+    "DU-6: a never-verified object dead without its event marks the name's claims at the next first sighting: no redelivery")
+-- DU-6b: the same object pruned before the next one comes
+local A7, B7 = mgT(209), mgT(210)
+local oa = seat("du-o", A7, 16, 10)
+onlinePlayers = { oa }
+tick()
+local lo = M.add("du-o", { item = "Base.Bandage", qty = 1, kind = "shop" })
+assert(M.claim(oa, lo.id).ok)
+oa.inventory.items = {}
+local ob = seat("du-o", B7, 16, 12)
+onlinePlayers = { ob }
+tick()
+ob.dead = true
+onlinePlayers = {}
+tick(M.PRUNE_EVERY_MS + 1000)
+local markedO = M.entryOf("du-o", lo.id).lifeBreak == true
+local oa2 = seat("du-o", A7, 16, 0.5)
+onlinePlayers = { oa2 }
+tick()
+hello(oa2)
+check(markedO and M.entryOf("du-o", lo.id).state == "claimed" and oa2.inventory.count("Base.Bandage") == 0
+    and Rc.life("du-o") == 0,
+    "DU-6b: a never-verified dead object dropped by the prune marks the name's claims first: no redelivery")
 
 -- DU-3..5 without Steam mode: the seat is the login, the question is only whether the death came
 steamModeActive = false
