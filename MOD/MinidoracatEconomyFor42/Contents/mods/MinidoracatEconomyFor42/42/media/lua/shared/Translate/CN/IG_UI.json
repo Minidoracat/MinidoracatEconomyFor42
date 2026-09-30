@@ -1455,8 +1455,6 @@
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_pending_overflow": "本小时新开的未证实转出纪录已达上限，其余合并记在这一笔；玩家撤回后自动结案。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_pending_life_unproven": "服务器无法确认玩家加载的是旧角色还是之后的新角色，不会自行重建；可依服务器纪录重建，或关闭这笔。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_ledger_incomplete": "有一份崩溃前的回滚帐本读不完整，无法确认这笔转出之后的存盘纪录，不会自行重建；可依服务器纪录重建，或关闭这笔。",
-  "IGUI_MinidoracatEconomy_Admin_Rec_Reason_lifebreak_unproven": "这封信领取后，此帐号创建过新角色，但服务器没看到角色死亡，无法确认玩家加载的是同一角色的旧存盘还是新角色，不会自动再交付；可交付给目前上线的存盘，或结清这封。",
-  "IGUI_MinidoracatEconomy_Admin_Rec_Reason_ledger_unreadable": "有一份崩溃前的回滚帐本读不完整，服务器无法确认这封已领取的信件之后角色是否死亡过，不会自动再交付；可交付给目前上线的存盘，或结清这封。",
   "IGUI_MinidoracatEconomy_Shop_Error_ledger_unreadable": "服务器的回滚纪录有一段读不到，这封较早的信件暂时不能领取，请通知管理员。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_remove_unconfirmed": "尚未确认物品已从容器移除，纪录保留待处理。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_stale_native_copy": "这件物品和一笔已完成的转出是同一件，是崩溃前旧存盘留下的副本，不能再上架、拍卖或卖出。",

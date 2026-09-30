@@ -1735,20 +1735,6 @@ local function recoveryRow(username, rec, scan, pdata)
         fingerprint.blocked = blocked
         fingerprint.letter = entry and { state = entry.state, claimSeq = entry.claimSeq,
             owner = entry.owner, units = entry.units, outUnits = entry.outUnits } or "none"
-    elseif rec.kind == "letter" and type(rec.mailId) == "string" then
-        -- A claimed letter the mailbox would not hand over again by itself (a character made
-        -- without a death, or an unreadable ledger up to it): restore hands it over to the save
-        -- online now, discard settles it. Once the letter is no longer this login's claim there
-        -- is nothing left to decide but closing the record.
-        local entry = M.entryOf(username, rec.mailId)
-        local live = entry ~= nil and entry.state == "claimed" and (entry.claimLogin or entry.owner) == username
-        out.kind = "letter"
-        out.item = (entry and entry.item) or out.item
-        out.sourceState = live and "present" or "unknown"
-        out.actions.restore = scan ~= nil and live
-        out.actions.discard = scan ~= nil
-        fingerprint.letter = entry and { state = entry.state, claimSeq = entry.claimSeq,
-            claimLogin = entry.claimLogin, qty = entry.qty, units = entry.units } or "none"
     elseif type(rec.opId) == "string" and (A.RECOVERY_MANUAL_REASONS[rec.reason]
         or A.RECOVERY_JOURNAL_REASONS[rec.reason] or rec.reason == "receipt_forgotten") then
         local pend = pdata and pdata.pendingOuts[rec.opId] or nil
@@ -2456,22 +2442,6 @@ S.handlers["admin.recovery"] = function(player, args)
         if done then done.decision = decision end
         return recoveryReply(player, target, requestId, page,
             { ok = true, key = key, decision = decision, removed = dropped })
-    end
-    if row.kind == "letter" then
-        local ok, failure = M.resolveHeldLetter(online, target, row.mailId, decision)
-        if not ok then
-            return recoveryReply(player, target, requestId, page,
-                { ok = false, error = "recovery_not_actionable", detail = failure, key = key })
-        end
-        Rcv.resolveHold(target, key, decision)
-        local done = Rcv.heldRecord(target, key)
-        if done then done.decision = decision end
-        X.emit("recovery.adminResolved", { admin = admin, username = target, key = key,
-            decision = decision, mailId = row.mailId, item = row.item, qty = row.qty })
-        X.audit({ action = "recovery", admin = admin, target = target, field = key, before = before,
-            after = decision .. " letter " .. row.mailId, reason = note, item = row.item, qty = row.qty })
-        return recoveryReply(player, target, requestId, page,
-            { ok = true, key = key, decision = decision, mailId = row.mailId })
     end
     local pend = pdata and pdata.pendingOuts[row.opId] or nil
     if type(pend) ~= "table" then return recoveryRefusal(player, requestId, target, "recovery_not_actionable") end

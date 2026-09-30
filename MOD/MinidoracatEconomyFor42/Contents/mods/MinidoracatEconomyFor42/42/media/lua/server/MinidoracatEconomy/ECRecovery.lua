@@ -772,7 +772,7 @@ end
 --   * a life is a character of one login name: only a death of the main seat the server saw
 --     (ECMailbox.onDeath) starts the next one (lives[login].life). A character made without a
 --     death (a lifeBreak mark) is never taken as one: a reconnect is a new object of the same
---     character, so what the mark covers is held for an administrator instead.
+--     character, so a letter the mark covers is refused its redelivery instead (ECMailbox).
 --   * the ledger (ECRecoveryJournal, one file per epoch) keeps what a world rollback forgets:
 --     claims, session starts and lives, written at the moment they happen. Global ModData only
 --     reaches the disk with the world save (ServerMap.java:409); the file does not roll back.
@@ -987,12 +987,13 @@ end
 -- "contained" | "excluded" | "tie" | "unanchored" (a line written before anchors existed) |
 -- "life_unproven" (only the ledger says that life ended: the save may be the old character) |
 -- "ledger_incomplete" (a ledger file up to the commit could not be read).
--- A transfer of a life this world save did not watch end (seen <= life < lifeNow) is always
--- life_unproven: the save may be that character or a later one, and hours of two characters are
--- not one clock, so neither "past the commit" nor "below it" proves anything.
--- Otherwise the save's hours must be past the commit by more than a tick, unless this world save
--- itself watched the transfer's life end (seen). No start of the transfer's life after its commit
--- may have loaded a save at or below it (a fork); a trimmed start is a fork nobody can rule out.
+-- A transfer of a life this world save did not watch begin or end (life >= seen while seen <
+-- lifeNow: its own life, or a later one only the ledger knows, including the current one) is
+-- always life_unproven: the save may be that character or another, and hours of two characters
+-- are not one clock, so neither "past the commit" nor "below it" proves anything.
+-- Otherwise (life == seen == lifeNow) the save's hours must be past the commit by more than a
+-- tick. No start of the transfer's life after its commit may have loaded a save at or below it
+-- (a fork); a trimmed start is a fork nobody can rule out.
 function R.outOrder(login, first, player)
     local h = type(first) == "table" and tonumber(first.h) or nil
     if h == nil then return "unanchored" end
@@ -1002,7 +1003,7 @@ function R.outOrder(login, first, player)
     local seen = rec and math.min(tonumber(rec.seen) or lifeNow, lifeNow) or 0
     local life, eps = tonumber(first.life) or 0, R.tickEps()
     if life > lifeNow then return "excluded" end
-    if life < lifeNow and life >= seen then return "life_unproven" end
+    if seen < lifeNow and life >= seen then return "life_unproven" end
     local order = "contained"
     if life >= seen then
         local p = player or S.onlineLogin(login)

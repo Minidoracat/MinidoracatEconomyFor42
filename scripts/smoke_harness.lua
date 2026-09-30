@@ -979,7 +979,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MIS
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 24   -- +24: the player's own modData decides nothing (scenario MD, moddata trust boundary P0)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: what a world rollback forgot is judged from the ledger (scenario LG, moddata trust boundary P1)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: review of the moddata fix (RV in scenario LG): every lost claim kept and the per-letter bound, harvested life (3), trimmed starts, ledger completeness (5), split-screen lifeBreak, lossless hours, oversized pendings (2)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: second review (RV-10..12 in scenario LG): a lifeBreak never starts a life (reconnect, admin restore, admin discard, closed by a later save, closed by a death), an unreadable ledger holds the automatic redelivery (and the administrator may still hand it over), an unproven life range is never judged by hours
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7    -- +7: second review (RV-10..12 in scenario LG): a lifeBreak never starts a life (reconnect, one refusal event, mark spent by a later save, cleared by a death), an unreadable ledger refuses the automatic redelivery and the claimed TTL takes the letter, an unproven life (the current one included) is never judged by hours
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16626,12 +16626,10 @@ local i2 = fakePlayer("md-i"); i2.x, i2.y = 101, 200
 for n, p in ipairs(onlinePlayers) do if p == i1 then onlinePlayers[n] = i2 end end
 hello(i2)
 -- A lifeBreak mark alone never starts a life (only a death the server saw does): the letter stays
--- claimed, nothing is handed over, and an administrator decides (restore = claimable again,
--- discard = settled)
-local held18 = Rc.heldRecord("md-i", "mail:" .. L18.id)
+-- claimed, nothing is handed over, and no record waits on an administrator
 check(L18.state == "claimed" and i2.inventory.count("Base.Bandage") == 0 and Rc.life("md-i") == 0
-    and held18 ~= nil and held18.reason == "lifebreak_unproven",
-    "MD-18: a new character made without a death leaves the old letter claimed and held for an administrator")
+    and #Rc.heldRecords("md-i") == 0,
+    "MD-18: a new character made without a death leaves the old letter claimed, handed over to nobody")
 local j = player("md-j", 10)
 local L19 = letter("md-j", 1)
 assert(M.claim(j, L19.id).ok)
@@ -17079,10 +17077,9 @@ do
     local older = login("rv-f", 5)       -- the world keeps the claim, this save lacks it (V3)
     fire("OnNewGame", fakePlayer("rv-f"), nil)
     hello(older)
-    local heldF = Rc.heldRecord("rv-f", "mail:" .. lf.id)
     check(older.inventory.count("Base.Bandage") == 0 and M.entryOf("rv-f", lf.id).state == "claimed"
-        and heldF ~= nil and heldF.reason == "lifebreak_unproven" and Rc.life("rv-f") == 0,
-        "RV-5: an older save with a new-character mark is neither a new life nor redelivered: it is held")
+        and #Rc.heldRecords("rv-f") == 0 and Rc.life("rv-f") == 0,
+        "RV-5: an older save with a new-character mark is neither a new life nor redelivered")
 end
 -- RV-6: hours beyond six decimals survive the ledger: a save at exactly the claim's hours holds it
 do
@@ -17122,27 +17119,23 @@ do
         "RV-8: a list-out with an oversized pending table is refused before any of its origins is read")
 end
 -- RV-10: V3, a split-screen character, a reconnect of the same main character: a different
--- session is not a different character, so no life starts and nothing is settled
-local function heldRow(name, key)
-    for _, r in ipairs(cmd(admin, "admin.recovery", { action = "list", username = name }).records or {}) do
-        if r.key == key then return r end
+-- session is not a different character, so no life starts, nothing is settled and nothing is
+-- handed over: the refusal is one event per letter, and no record waits on an administrator
+local function refusals(id, why)
+    local n, last = 0, nil
+    for _, e in ipairs(events) do
+        if e.resolution == "redelivery-refused" and e.mailId == id and e.reason == why then n, last = n + 1, e end
     end
-    return nil
-end
-local function resolve(name, key, decision)
-    local r = heldRow(name, key)
-    return cmd(admin, "admin.recovery", { action = "resolve", username = name, key = key, decision = decision,
-        note = "checked the player's save by hand", revision = r and r.revision })
+    return n, last
 end
 do
     world()
     local ph = login("rv-h", 10)
     local lh = M.add("rv-h", { item = "Base.Bandage", qty = 2, kind = "shop" })
-    local lh2 = M.add("rv-h", { item = "Base.Bandage", qty = 1, kind = "shop" })
     local lh3 = M.add("rv-h", { item = "Base.Bandage", qty = 1, kind = "shop" })
     local lh4 = M.add("rv-h", { item = "Base.Bandage", qty = 1, kind = "shop" })
     local lh5 = M.add("rv-h", { item = "Base.Bandage", qty = 1, kind = "shop" })
-    assert(M.claim(ph, lh.id).ok and M.claim(ph, lh2.id).ok and M.claim(ph, lh4.id).ok)
+    assert(M.claim(ph, lh.id).ok and M.claim(ph, lh4.id).ok)
     ph.hours = 20
     assert(M.claim(ph, lh5.id).ok)
     ph.hours = 3
@@ -17151,33 +17144,24 @@ do
     fire("OnNewGame", fakePlayer("rv-h"), nil)
     local again = login("rv-h", 5)            -- reconnect: the same character, a new object
     hello(again)
-    local heldH = Rc.heldRecord("rv-h", "mail:" .. lh.id)
     check(M.entryOf("rv-h", lh.id).state == "claimed" and again.inventory.count("Base.Bandage") == 0
-        and Rc.life("rv-h") == 0 and heldH ~= nil and heldH.reason == "lifebreak_unproven"
-        and M.entryOf("rv-h", lh3.id).state == "claimed",
-        "RV-10: a reconnect after a split-screen character starts no life and settles nothing: the letter is held")
-    onlinePlayers[#onlinePlayers + 1] = admin
-    local r1 = resolve("rv-h", "mail:" .. lh.id, "restore")
-    hello(again)
-    check(r1.ok == true and M.entryOf("rv-h", lh.id).state == "claimed" and again.inventory.count("Base.Bandage") == 2
-        and Rc.heldRecord("rv-h", "mail:" .. lh.id).resolvedAt ~= nil,
-        "RV-10b: the administrator's restore hands the held letter over once, to the save in hand")
-    local r2 = resolve("rv-h", "mail:" .. lh2.id, "discard")
-    check(r2.ok == true and M.entryOf("rv-h", lh2.id).state == "settled"
-        and Rc.heldRecord("rv-h", "mail:" .. lh2.id).resolvedAt ~= nil,
-        "RV-10c: the administrator's discard settles the held letter and closes the record")
-    -- a later save that holds the claims spends the mark and closes their records by itself; one
-    -- that still predates a claim leaves it held until the server sees a death
+        and Rc.life("rv-h") == 0 and M.entryOf("rv-h", lh3.id).state == "claimed" and #Rc.heldRecords("rv-h") == 0,
+        "RV-10: a reconnect after a split-screen character starts no life, settles nothing and opens no record")
+    local third = login("rv-h", 5)            -- and once more: still refused, still one event
+    hello(third)
+    local n, ev = refusals(lh.id, "lifebreak_unproven")
+    check(n == 1 and ev.kind == "mailbox" and ev.item == "Base.Bandage" and ev.qty == 2
+        and third.inventory.count("Base.Bandage") == 0,
+        "RV-10b: the refused redelivery is one event per letter, naming the item and the quantity")
     local later = login("rv-h", 12)
     hello(later)
-    local held4, held5 = Rc.heldRecord("rv-h", "mail:" .. lh4.id), Rc.heldRecord("rv-h", "mail:" .. lh5.id)
-    check(held4 ~= nil and held4.resolvedAt ~= nil and M.entryOf("rv-h", lh4.id).lifeBreak == nil
-        and held5 ~= nil and held5.resolvedAt == nil and later.inventory.count("Base.Bandage") == 0,
-        "RV-10d: a later save holding the claim closes its record by itself; a save still before it stays held")
+    check(M.entryOf("rv-h", lh4.id).lifeBreak == nil and M.entryOf("rv-h", lh5.id).lifeBreak ~= nil
+        and M.entryOf("rv-h", lh5.id).state == "claimed" and later.inventory.count("Base.Bandage") == 0,
+        "RV-10c: a later save holding the claim spends the mark; a save still before a claim gets nothing")
     fire("OnCharacterDeath", later)
-    check(M.entryOf("rv-h", lh5.id).state == "settled" and held5 ~= nil and held5.resolvedAt ~= nil
+    check(M.entryOf("rv-h", lh5.id).state == "settled" and M.entryOf("rv-h", lh5.id).lifeBreak == nil
         and Rc.life("rv-h") == 1,
-        "RV-10e: a death the server saw settles the held letter and closes its record")
+        "RV-10d: a death the server saw settles the marked letter and clears its mark")
 end
 -- RV-11: the world keeps a claim, the ledger that held the death is unreadable, and the save is the
 -- next character: the gap stops the automatic redelivery too, not only a claim
@@ -17195,25 +17179,29 @@ do
     getFileReader = realReader
     local ni = login("rv-i", 1)
     hello(ni)
-    local heldI = Rc.heldRecord("rv-i", "mail:" .. li.id)
+    local n, ev = refusals(li.id, "ledger_unreadable")
     check(ni.inventory.count("Base.Bandage") == 0 and M.entryOf("rv-i", li.id).state == "claimed"
-        and heldI ~= nil and heldI.reason == "ledger_unreadable",
-        "RV-11: an unreadable ledger stops the redelivery of a claimed letter: it stays claimed and is held")
-    onlinePlayers[#onlinePlayers + 1] = admin
-    local rI = resolve("rv-i", "mail:" .. li.id, "restore")
+        and n == 1 and ev.item == "Base.Bandage" and ev.qty == 1 and #Rc.heldRecords("rv-i") == 0,
+        "RV-11: an unreadable ledger stops the redelivery of a claimed letter: it stays claimed, one event, no record")
+    -- nothing waits on anyone: the claimed TTL takes it like any other claimed letter
+    nowMs = nowMs + M.CLAIMED_TTL_MS + M.PRUNE_EVERY_MS + 1000
+    fire("OnTickEvenPaused")
     hello(ni)
-    check(rI.ok == true and ni.inventory.count("Base.Bandage") == 1 and M.entryOf("rv-i", li.id).state == "claimed",
-        "RV-11b: the administrator's restore hands it over once, even while that ledger stays unreadable")
+    check(M.entryOf("rv-i", li.id) == nil and ni.inventory.count("Base.Bandage") == 0,
+        "RV-11b: the refused letter goes with the claimed TTL and is never handed over")
 end
--- RV-12: inside a life range only the ledger knows, hours prove nothing either way: held
+-- RV-12: inside a life only the ledger knows (the transfer's, or the current one), hours prove
+-- nothing either way; a life this world save watched begin is still judged by hours
 do
     local meta = S.modData().meta
     S.modData().recovery.lives["rv-y"] = { life = 1, seen = 0, starts = {} }
     local py = fakePlayer("rv-y"); py.hours = 50
     local old = Rc.outOrder("rv-y", { h = 10, life = 0, epoch = meta.epoch, seq = meta.seq }, py)
-    local same = Rc.outOrder("rv-y", { h = 10, life = 1, epoch = meta.epoch, seq = meta.seq }, py)
-    check(old == "life_unproven" and same == "contained",
-        "RV-12: a save's hours past the commit do not prove it holds a transfer of an unproven life range")
+    local cur = Rc.outOrder("rv-y", { h = 10, life = 1, epoch = meta.epoch, seq = meta.seq }, py)
+    S.modData().recovery.lives["rv-y"] = { life = 1, seen = 1, starts = {} }
+    local watched = Rc.outOrder("rv-y", { h = 10, life = 1, epoch = meta.epoch, seq = meta.seq }, py)
+    check(old == "life_unproven" and cur == "life_unproven" and watched == "contained",
+        "RV-12: a save's hours past the commit do not prove it holds a transfer of an unproven life")
 end
 X.emit = realEmit
 onlinePlayers = {}
