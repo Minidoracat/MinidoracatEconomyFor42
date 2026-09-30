@@ -985,6 +985,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7    -- +7: second review (RV-10..12
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: merged logins (RV-13 in scenario LG): a lost claim of another login of the account blocks the letter until that login's save judged it (refused, then claimed; judged and put back; excluded then claimable; the parent of a lost split child)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: deaths and new characters (scenario DU: unverified death, impostor, unseen death at first sight and at the prune, a late event, an alive logout; MD-19b: the refusal a split-screen mark costs; RV-4e: the unreadable ledger on the System page)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: review of the death fixes: a save within a tick of the commit is held, not voided (LG-tie); an unflagged impostor's death only marks (DU-2b); a never-verified object dead without its event marks, at the next first sighting and at the prune (DU-6, DU-6b)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: final pass: a later login does not turn a tie start into proof (LG-tie2); a lifeBreak mark survives a world rollback through the ledger (DU-7 unverified death, spent, stays spent; DU-8 CreatePlayer; DU-9 a lost claim older than a lost mark)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -17226,6 +17227,12 @@ do
         and rowT ~= nil
         and rowT.actions.discard == true and rowT.actions.restore == false,
         "LG-tie: a save within a tick of the commit is held for the administrator, never voided by the server")
+    -- the same character plays on and comes back well past the commit: the tie start of its first
+    -- login lies within the tick band, which may refuse the rebuild but proves nothing
+    local gt2 = login("rl-t", 20, fakeInventory(1000), gt.modData)
+    hello(gt2); proofPump("rl-t")
+    check(reason("rl-t", idT) == "pending_not_in_save" and Rc.receipt(idT) == nil and not Mk.listingExists(idT),
+        "LG-tie2: a later login past the commit does not turn the earlier tie start into proof: still held, not voided")
 end
 -- LG-8: the ordinary crash - the player save is newer than the world save - still rebuilds
 id, before, replay = listed("rl-i", 10)
@@ -18109,6 +18116,89 @@ hello(oa2)
 check(markedO and M.entryOf("du-o", lo.id).state == "claimed" and oa2.inventory.count("Base.Bandage") == 0
     and Rc.life("du-o") == 0,
     "DU-6b: a never-verified dead object dropped by the prune marks the name's claims first: no redelivery")
+
+-- DU-7..9: a mark lives in the rollback ledger too. A crash back to a world where the claim is
+-- saved but the mark is not must not hand the letter to the new character's early row.
+local function crashTo(snap)
+    proofSettle()
+    onlinePlayers = {}
+    modDataStore[EC.MODDATA_KEY] = snap
+    nowMs = nowMs + 1000
+    fire("OnServerStarted")
+end
+-- DU-7: the unverified death's mark
+local A8, B8 = mgT(211), mgT(212)
+local qa = seat("du-q", A8, 17, 10)
+onlinePlayers = { qa }
+tick()
+local lq = M.add("du-q", { item = "Base.Bandage", qty = 2, kind = "shop" })
+assert(M.claim(qa, lq.id).ok)
+qa.inventory.items = {}                      -- handed to another player, who saved
+local snapQ = proofSnapshot()
+local qb = seat("du-q", B8, 17, 12)
+onlinePlayers = { qb }
+tick()
+qb.dead = true
+fire("OnCharacterDeath", qb)
+crashTo(snapQ)
+local qa2 = seat("du-q", A8, 17, 0.5)
+onlinePlayers = { qa2 }
+tick()
+hello(qa2)
+check(M.entryOf("du-q", lq.id).state == "claimed" and M.entryOf("du-q", lq.id).lifeBreak ~= nil
+    and qa2.inventory.count("Base.Bandage") == 0 and Rc.life("du-q") == 0 and refusedCount(lq.id) == 1,
+    "DU-7: a rollback that forgot an unverified death's mark gets it back from the ledger: no redelivery, one refusal")
+local qa3 = seat("du-q", A8, 17, 12)
+onlinePlayers = { qa3 }
+tick()
+hello(qa3)
+local spentQ = M.entryOf("du-q", lq.id).lifeBreak == nil and qa3.inventory.count("Base.Bandage") == 0
+check(spentQ, "DU-7b: a save that holds the claim spends the mark the ledger put back")
+crashTo(proofSnapshot())                     -- an ordinary restart: the mark stays spent
+check(M.entryOf("du-q", lq.id).lifeBreak == nil and M.entryOf("du-q", lq.id).state == "claimed",
+    "DU-7c: a mark already spent is not put back again by the next start")
+-- DU-8: the same with a CreatePlayer beside the living seat
+local rA = mgT(213)
+local ra = seat("du-r", rA, 18, 10)
+onlinePlayers = { ra }
+tick()
+local lr = M.add("du-r", { item = "Base.Bandage", qty = 1, kind = "shop" })
+assert(M.claim(ra, lr.id).ok)
+ra.inventory.items = {}
+local snapR = proofSnapshot()
+fire("OnNewGame", seat("du-r", rA, nil, 0), nil)
+crashTo(snapR)
+local ra2 = seat("du-r", rA, 18, 0)
+onlinePlayers = { ra2 }
+tick()
+hello(ra2)
+check(M.entryOf("du-r", lr.id).state == "claimed" and ra2.inventory.count("Base.Bandage") == 0
+    and refusedCount(lr.id) == 1,
+    "DU-8: a rollback that forgot a CreatePlayer's mark gets it back: the zero-hour row is refused the letter")
+-- DU-9: the claim itself was rolled back too (a lost claim) and the mark after it: the new
+-- character's save below the claim is no proof it never had it
+local tA, tB = mgT(214), mgT(215)
+local ta = seat("du-t", tA, 19, 10)
+onlinePlayers = { ta }
+tick()
+local lt = M.add("du-t", { item = "Base.Bandage", qty = 1, kind = "shop" })
+local snapT = proofSnapshot()
+assert(M.claim(ta, lt.id).ok)
+ta.inventory.items = {}
+local tb = seat("du-t", tB, 19, 12)
+onlinePlayers = { tb }
+tick()
+tb.dead = true
+fire("OnCharacterDeath", tb)
+crashTo(snapT)
+local ta2 = seat("du-t", tA, 19, 0.5)
+onlinePlayers = { ta2 }
+tick()
+hello(ta2)
+local againT = M.claim(ta2, lt.id)
+check(M.entryOf("du-t", lt.id).state == "claimed" and M.entryOf("du-t", lt.id).lifeBreak ~= nil
+    and againT.ok ~= true and ta2.inventory.count("Base.Bandage") == 0,
+    "DU-9: a lost claim older than a lost mark is claimed and marked, never left ready for the new character")
 
 -- DU-3..5 without Steam mode: the seat is the login, the question is only whether the death came
 steamModeActive = false

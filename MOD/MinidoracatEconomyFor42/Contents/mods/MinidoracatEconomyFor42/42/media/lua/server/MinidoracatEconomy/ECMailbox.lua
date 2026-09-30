@@ -334,6 +334,7 @@ local function reopen(o, entry)
     entry.qty = #availableUnits(entry)
     entry.claimedAt = nil
     entry.claimHours, entry.claimSess, entry.claimLife, entry.lifeBreak = nil, nil, nil, nil
+    entry.claimEpoch, entry.brkE, entry.brkS = nil, nil, nil
 end
 
 -- Evidence the save carries that the world lost it (a stamp on an object in that backpack).
@@ -1215,17 +1216,34 @@ local function judgeLost(login, rec, lifeNow)
     return nil
 end
 
+-- The latest rolled-back lifeBreak mark of each login, from this start's harvest (R.noteMark):
+-- a character was made, or died unverified, after the claims before it.
+local harvestedMarks = {}
+
 -- At this login's first sighting, right after its own start line: the claims the world lost for
 -- it are settled against the save that just loaded (judgeLost). The records stay, judged again
 -- by a later start, until their epoch leaves the history (harvestLedger).
+-- A lost claim older than a harvested mark of this login is never judged "the save never had
+-- it": the save that loaded may be the character made after it, whose hours say nothing about
+-- the claim. Such a letter is claimed and marked, so it is refused to a save that predates the
+-- claim and a save that holds it spends the mark.
 local function settleLostClaims(login, ms)
     local lost = R.lostClaims(login, false)
     if lost == nil then return end
-    local lifeNow = R.life(login)
+    local lifeNow, mark = R.life(login), harvestedMarks[login]
     for mailId, rec in pairs(lost) do
         local entry, parent = lostTarget(rec, mailId)
         if entry ~= nil or parent ~= nil then
             local state, c, why = judgeLost(login, rec, lifeNow)
+            local marked = nil
+            if mark ~= nil and state ~= "settled" then
+                for _, cc in pairs(rec.claims) do
+                    if R.later(mark.e, mark.s, cc.e, cc.s) and (marked == nil or R.later(cc.e, cc.s, marked.e, marked.s)) then
+                        marked = cc
+                    end
+                end
+                if marked ~= nil and state == nil then state, c, why = "claimed", marked, "lost-claim-marked" end
+            end
             if state ~= nil then
                 entry = entry or carveChild(parent, mailId, rec, login, ms)
                 local box = entry and md.mailbox.byOwner[entry.owner] or nil
@@ -1234,8 +1252,11 @@ local function settleLostClaims(login, ms)
                     -- this login's own save has decided the letter: other logins of the account
                     -- no longer wait on it (lostClaimPending)
                     rec.judged = true
-                    entry.claimLogin, entry.claimSess, entry.lifeBreak = login, nil, nil
-                    if c then entry.claimSeq, entry.claimHours, entry.claimLife = c.s, c.h, tonumber(c.life) or 0 end
+                    entry.claimLogin, entry.claimSess, entry.lifeBreak = login, nil, marked ~= nil or nil
+                    if marked ~= nil then entry.brkE, entry.brkS = mark.e, mark.s end
+                    if c then
+                        entry.claimSeq, entry.claimEpoch, entry.claimHours, entry.claimLife = c.s, c.e, c.h, tonumber(c.life) or 0
+                    end
                     anomaly(login, mailId, state == "claimed" and "mark-claimed-ledger" or "settled-old-life",
                         why and { reason = why } or nil)
                 end
@@ -1260,10 +1281,13 @@ end
 
 -- The claimed letters of `login` are marked (lifeBreak, M.onNewGame): a later save that predates
 -- a marked claim is refused its redelivery, and any later save that contains it spends the mark.
+-- The mark goes to the rollback ledger as well (R.noteMark): a world rollback to before it but
+-- after the claims would otherwise forget it (harvestLedger puts it back).
 local function markLetters(login, mark, why)
     local marked = claimedLetters(login)
     for _, entry in ipairs(marked) do entry.lifeBreak = mark end
     if #marked > 0 then
+        R.noteMark(login)
         X.emit("mailbox.lifeBreak", { username = login, count = #marked, unverified = why == "unverified" or nil })
     end
     return #marked
@@ -2103,6 +2127,7 @@ local function harvestLedger()
     local J = S.RecoveryJournal
     if J == nil or type(J.eachLedgerRow) ~= "function" then return end
     local judged, gaps = {}, {}
+    harvestedMarks = {}
     for _, h in ipairs(md.meta.history) do
         judged[h.epoch] = true
         local complete, why = J.eachLedgerRow(h.epoch, function(row)
@@ -2112,7 +2137,11 @@ local function harvestLedger()
             elseif row.k == "start" then
                 R.harvestStart(row.l, { e = h.epoch, s = s, h = tonumber(row.h), life = tonumber(row.life) or 0,
                     seen = tonumber(row.sn) })
-            elseif row.k == "life" then R.raiseLife(row.l, tonumber(row.life)) end
+            elseif row.k == "life" then R.raiseLife(row.l, tonumber(row.life))
+            elseif row.k == "brk" then
+                local prev = harvestedMarks[row.l]
+                if prev == nil or R.later(h.epoch, s, prev.e, prev.s) then harvestedMarks[row.l] = { e = h.epoch, s = s } end
+            end
         end, h.loadedSeq)
         if not complete then
             gaps[h.epoch] = why or "incomplete"
@@ -2122,6 +2151,23 @@ local function harvestLedger()
         end
     end
     R.setLedgerGaps(gaps)
+    -- a mark the rollback forgot goes back on the claims that were already there when it was set
+    -- (the claim's own commit point before the mark's), once per mark: a later save that spent it
+    -- keeps it spent (brkE/brkS), unless that too was rolled back
+    for login, mark in pairs(harvestedMarks) do
+        local n = 0
+        for _, entry in ipairs(claimedLetters(login)) do
+            local ce = entry.claimEpoch or (type(entry.claimSess) == "string" and EC.parseId(entry.claimSess)) or nil
+            local done = entry.brkE ~= nil and not R.later(mark.e, mark.s, entry.brkE, entry.brkS)
+            if not done and R.later(mark.e, mark.s, ce, entry.claimSeq) then
+                entry.lifeBreak, entry.brkE, entry.brkS = entry.lifeBreak or true, mark.e, mark.s
+                n = n + 1
+            end
+        end
+        if n > 0 then
+            X.emit("ledger.anomaly", { kind = "mailbox", username = login, resolution = "lifebreak-restored", count = n })
+        end
+    end
     R.trimStarts()
     local emptied = {}
     for login, lost in pairs(md.recovery.lost) do
