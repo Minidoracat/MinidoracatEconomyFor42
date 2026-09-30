@@ -18,25 +18,25 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 
 [h3]Wallet[/h3]
 [list]
-[*] [b]Two currencies[/b]: Survivor Coin and Cat Coin show available and reserved amounts; the server can rename them and change their icons.
+[*] [b]Two currencies[/b]: Survivor Coin and Cat Coin show available and reserved amounts; the server can rename them and change icons.
 [*] [b]Statement[/b]: search loaded records by type, date and keyword; the Fee column shows transfer fees and sales tax.
-[*] [b]Player ID[/b]: your login account (not your character name) is shown at the top of every page; click it to copy it for an admin.
+[*] [b]Player ID[/b]: your login account (not your character name) is shown at the top of every page; click it to copy it for an admin. Merged logins of one Steam account show "main account (login ...)" and share one wallet.
 [/list]
 
 [h3]Player transfers (server option)[/h3]
 [list]
 [*] When allowed, the wallet page has a Transfer button. By default you must be at a terminal or ATM.
 [*] Before you confirm, the screen shows the fee (paid on top by the sender), the total, your balance afterwards and today's remaining limit.
-[*] The recipient box lists online players and recent recipients; for an offline player type the full account name with matching case.
-[*] The recipient is notified. A resend never charges twice, and [b]a sent transfer cannot be undone[/b]. Limits and the waiting period for new accounts are set by the server.
+[*] The recipient box lists online players and recent recipients; for offline players type the full account name, matching case.
+[*] The recipient is notified. A resend never charges twice and [b]a sent transfer cannot be undone[/b]; limits and the new-account wait are set by the server.
 [/list]
 
 [h3]Economy terminals[/h3]
 [list]
 [*] [b]Map ATMs[/b]: vanilla floor and wall ATMs work within 2 tiles on the same floor, no registration needed (the server can turn this off).
-[*] [b]Custom terminals[/b]: the machine and catgirl designs, and supported terminal cabinets, are registered by an admin as an ATM or a trade station; only trade stations provide the market radio.
+[*] [b]Custom terminals[/b] (machine, catgirl or supported cabinets) are registered by an admin as an ATM or a trade station; only trade stations have the market radio.
 [*] [b]One shared market[/b]: list at station A, someone buys at station B, you collect at station C.
-[*] [b]Map ATM protection[/b]: ordinary players cannot remove supported vanilla ATMs with a sledgehammer or disassembly; admins still can. Fire, explosions and other mods are not covered.
+[*] [b]Map ATM protection[/b]: ordinary players cannot sledgehammer or disassemble supported vanilla ATMs; admins can. Fire, explosions and other mods are not covered.
 [/list]
 
 [h3]System shop[/h3]
@@ -70,15 +70,15 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]Rewards, seasons and leaderboards[/h3]
 [list]
 [*] [b]Daily online rewards[/b]: unlock with connected time that day; collecting late never delays the next one.
-[*] [b]Survival milestones[/b]: paid from one character's survival this season, once per milestone per account per season.
+[*] [b]Survival milestones[/b]: paid once per milestone per account per season, from one character's survival.
 [*] [b]Holdings board[/b]: ranked per currency; by default only your own amount is shown exactly.
 [*] [b]Survival board[/b]: the longest single life this season; finished seasons can be browsed.
 [/list]
 
 [h3]Market radio (server option)[/h3]
 [list]
-[*] Trade stations can broadcast text market summaries.
-[*] Turn on a radio, walkie-talkie, world radio or car radio, pick "Market Radio" from the presets and press tune. It does not use one of your preset slots.
+[*] Trade stations can broadcast text market summaries, shown in your own game language.
+[*] Turn on a radio, walkie-talkie, world radio or car radio, pick "Market Radio" from the presets and press tune; it uses none of your preset slots.
 [*] Voice pickup is [b]off by default[/b].
 [/list]
 
@@ -89,20 +89,21 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [/list]
 
 [h3]Paid slots for other mods[/h3]
-Supporting mods can sell permanent or rented extra slots for economy currency (Vehicle Manager first). Auto-renewal is opt-in and can be cancelled anytime.
+Supporting mods (Vehicle Manager first) can sell permanent or rented extra slots for economy currency; auto-renewal is opt-in and cancellable.
 
 [h2]❓ FAQ[/h2]
 [list]
-[*] [b]Why are the buttons greyed out?[/b] You are not at a terminal. Walk within 2 tiles, on the same floor, of a map ATM or a registered terminal.
-[*] [b]Why can't I list my item?[/b] Listing needs the server whitelist plus supported item types and state checks, so [b]not every modded item can be traded[/b]. Containers, keys, furniture, maps, animals, rotten food, equipped or broken items, written or locked notes, poisoned food, dishes with added ingredients, fertilized eggs, containers mixing fluids and devices with a disc inside cannot be listed. The listing picker explains why and what to do.
-[*] [b]Can I list clothing?[/b] Yes, once the server opens the clothing categories. Holes, patches, blood, dirt and colour are kept. Take it off first. A patch sewn over a hole cannot be kept: remove it, or at Tailoring 8+ remove it and fully repair the hole with the same fabric.
+[*] [b]Why are the buttons greyed out?[/b] You are not at a terminal; walk within 2 tiles of a map ATM or registered terminal on the same floor.
+[*] [b]Why can't I list my item?[/b] Listing needs the server whitelist plus supported item types and state checks, so [b]not every modded item can be traded[/b]. Containers, keys, furniture, maps, animals, rotten food, equipped or broken items, written or locked notes, poisoned food, dishes with added ingredients, fertilized eggs, mixed fluids and devices holding a disc cannot be listed; the picker explains why.
+[*] [b]Can I list clothing?[/b] Yes, once the server opens the clothing categories; holes, patches, blood, dirt and colour are kept. Take it off first. A patch sewn over a hole cannot be kept: remove it, or at Tailoring 8+ remove it and repair the hole with the same fabric.
 [*] [b]Does food spoil while listed?[/b] Yes.
-[*] [b]The system took an item out of my bag?[/b] After a server crash an older save can bring back items that were already listed, auctioned or sold, even if they were passed to someone else. Once that trade is in a world save, the copy is taken back at login, with a notice and a line in My market history. Worn items, hotbar items and non-empty bags are left alone. If it looks wrong, give an admin your Player ID; admins can restore it.
+[*] [b]It says "Identity not verified".[/b] The server checks your SteamID; another Steam account on this name, or split-screen players 2-4, cannot use the economy. If it is yours, give an admin your Player ID.
+[*] [b]The system took an item out of my bag?[/b] After a crash an older save can bring back items already listed, auctioned or sold. Once the trade is in a world save, the copy is taken back at login with a notice and a line in My market history; worn, hotbar and non-empty bag items are left alone. If it looks wrong, give an admin your Player ID.
 [*] [b]I can't hear the market radio.[/b] Check the device is on, volume is not 0, the band fits and you are in range; after picking "Market Radio" press tune.
-[*] [b]Can I use radio voice as private chat?[/b] No. Voice follows native radio rules, and nearby or lower-floor devices may hear it.
-[*] [b]Why can't I find older records?[/b] Search covers loaded records only (latest 20 statement entries, up to 200 per month or market lookup), and the interface says so.
-[*] [b]My trade was refused: source could not be confirmed.[/b] The message lists the items and the next step: something you can do, waiting for a world save, or an admin case (include your Player ID).
-[*] [b]I paid for a slot but it is not active yet.[/b] A rental starts after the payment is confirmed as saved. A timeout only re-checks the order and never charges again.
+[*] [b]Can I use radio voice as private chat?[/b] No; nearby or lower-floor devices may hear it.
+[*] [b]Why can't I find older records?[/b] Search covers loaded records only (latest 20 statement entries, up to 200 per month or market lookup).
+[*] [b]My trade was refused: source could not be confirmed.[/b] The message lists the items and the next step (something you can do, a world save to wait for, or an admin case with your Player ID).
+[*] [b]I paid for a slot but it is not active yet.[/b] A rental starts once the payment is confirmed as saved; a timeout only re-checks the order, never charges again.
 [/list]
 
 [h2]💬 How to report[/h2]
