@@ -1,25 +1,26 @@
 -- MinidoracatEconomyFor42 - market radio (server; spec 17.3, stage E).
 --
 -- Every trade terminal (kind "trade") is a transmitter on one fixed frequency: every
--- RadioIntervalMinutes real minutes the server composes one market summary (listing count,
--- sellers, the newest listings) and sends it from each trade terminal's square. Radios in range
--- tuned to the frequency print it as device text (subtitle / chat line). ATMs do not broadcast:
--- this is the one functional difference between the two terminal kinds.
+-- RadioIntervalMinutes real minutes the server takes one market summary (listing count,
+-- sellers, the newest listings, auctions about to end) and pushes it to every online player as
+-- data (radio.summary). Each client words it in its own language and plays it from each trade
+-- terminal's square through the native radio code (client ECRadioSummary.lua), so radios in
+-- range tuned to the frequency print it as device text (subtitle / chat line) in the listener's
+-- language. ATMs do not broadcast: this is the one functional difference between the two
+-- terminal kinds.
 --
--- Engine (snapshot 42.20.4-20260826, exercised in stage A14 on this dedicated server):
---   getZomboidRadio()                            LuaManager.java:2909-2911 (nil without an instance)
---   ZomboidRadio.SendTransmission(x, y, channel, msg, guid, codes, r, g, b, strength, isTV)
---                                                ZomboidRadio.java:894-923 (Server: weather
---                                                interference, then GameServer.sendIsoWaveSignal)
---   range: player distance > 3 and < strength, strength < 0 = everyone   ZomboidRadio.java:690-701
---   addChannelName(name, freq, category)         ZomboidRadio.java:135-139 (client keeps its own
---                                                registry: ECClient registers it too, translated)
---   getModFileReader(modId, path, create)        LuaManager.java:5971-6000 (the mod's own
---                                                Translate/<lang>/IG_UI.json for RadioLanguage)
+-- Why the server sends no text: SendTransmission carries one finished string to every client
+-- (GameServer.sendIsoWaveSignal), so a server with players in several languages could reach
+-- only one of them; and a dedicated server's Translator holds no mod keys at all unless some
+-- other mod reloads it (Translator.loadFiles runs before loadMods, GameServer.java:601-603,1416).
 --
--- Text is composed on the server, so its language is the server's (Translator) unless the
--- sandbox RadioLanguage names one of the mod's languages: then the templates come from the mod's
--- own translation file. Item names still come from the server's Translator.
+-- Engine (snapshot 42.21.0-20260928):
+--   getZomboidRadio()                            LuaManager.java:2915-2917 (nil without an instance)
+--   addChannelName(name, freq, category)         ZomboidRadio.java:135-149 (also marks the
+--                                                frequency known, so getRandomFrequency :175-182
+--                                                never hands it to another channel; clients keep
+--                                                their own registry: ECClient registers it too)
+--   range: player distance > 3 and < strength, strength < 0 = everyone   ZomboidRadio.java:690-716
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Market then
     require "MinidoracatEconomy/ECMarket"
@@ -38,17 +39,8 @@ local Rd = EC.Radio
 
 Rd.CATEGORY = "Economy"
 Rd.LATEST_MAX = 3               -- listings named per broadcast
-Rd.MESSAGE_MAX = 200            -- spec 17.3: one short line, never a wall of text
-Rd.LANGUAGES = { CH = true, CN = true, EN = true, JP = true }
-Rd.TEMPLATE_KEYS = { "Radio_Empty", "Radio_Summary", "Radio_Latest", "Radio_Item", "Radio_ItemQty",
-    "Radio_ItemCur", "Radio_ItemQtyCur", "Radio_Sep", "Radio_Auctions", "Radio_Channel" }
--- a price on the air is only a number until the currency is named with it
-for _, id in ipairs(EC.CURRENCY_ORDER) do
-    Rd.TEMPLATE_KEYS[#Rd.TEMPLATE_KEYS + 1] = "Currency_" .. id
-end
 
 local md = nil
-local templates = {}            -- lang -> { key = text } (loaded once per language)
 local channelRegistered = nil   -- frequency the server registered its channel name for
 local lastBroadcast = 0         -- ms of the last summary round (process memory, not ModData)
 
@@ -83,84 +75,11 @@ function Rd.nativeRange()
     return r
 end
 
-function Rd.language()
-    local v = EC.sandbox("RadioLanguage", "auto")
-    if Rd.LANGUAGES[v] then return v end
-    return nil
-end
+-- ---------- summary ----------
 
--- ---------- templates ----------
-
-local function readModJson(lang)
-    local reader = nil
-    local ok = pcall(function() reader = getModFileReader(EC.MOD_ID, "media/lua/shared/Translate/" .. lang .. "/IG_UI.json", false) end)
-    if not ok or not reader then return nil end
-    local lines = {}
-    pcall(function()
-        for _ = 1, 5000 do
-            local line = reader:readLine()
-            if line == nil then break end
-            lines[#lines + 1] = line
-        end
-    end)
-    pcall(function() reader:close() end)
-    return table.concat(lines, "\n")
-end
-
-local function loadTemplates(lang)
-    if templates[lang] then return templates[lang] end
-    local out = {}
-    local text = readModJson(lang)
-    local doc = text and EC.jsonDecode(text) or nil
-    if type(doc) == "table" then
-        for _, key in ipairs(Rd.TEMPLATE_KEYS) do
-            local v = doc["IGUI_MinidoracatEconomy_" .. key]
-            if type(v) == "string" then out[key] = v end
-        end
-    end
-    templates[lang] = out
-    return out
-end
-
--- %1..%9 substitution on a template; the engine's getText does the same for the server language.
-local function fill(tpl, ...)
-    local args = { ... }
-    return (string.gsub(tpl, "%%([1-9])", function(i)
-        local v = args[tonumber(i)]
-        return v ~= nil and tostring(v) or ""
-    end))
-end
-
-function Rd.text(key, ...)
-    local lang = Rd.language()
-    if lang then
-        local tpl = loadTemplates(lang)[key]
-        if tpl then return fill(tpl, ...) end
-    end
-    return getText("IGUI_MinidoracatEconomy_" .. key, ...)
-end
-
-local function itemLabel(fullType)
-    local ok, name = pcall(getItemNameFromFullType, fullType)
-    if ok and type(name) == "string" and name ~= "" then return name end
-    return tostring(fullType)
-end
-
--- The currency's display name: the admin override first (that is the name players see
--- everywhere else), then the registry's own key through the same template path as the rest of
--- the line, so a broadcast in the sandbox's RadioLanguage is not half in another language.
-function Rd.currencyName(id)
-    if type(id) ~= "string" or id == "" then return nil end
-    local def = Cfg.currency(id)
-    if def and type(def.nameOverride) == "string" and def.nameOverride ~= "" then return def.nameOverride end
-    if EC.CURRENCIES[id] == nil then return nil end
-    return Rd.text("Currency_" .. id)
-end
-
--- ---------- message ----------
-
--- One line: listing count + sellers, then the newest listings (name, qty, price).
-function Rd.compose()
+-- What one broadcast names, as data: listing count, distinct sellers and the newest listings
+-- (item fullType, qty, price). Every client puts it into words itself, with its own item names.
+function Rd.summary()
     local listings = md.market and md.market.listings or {}
     local rows, sellers, sellerCount = {}, {}, 0
     for _, l in pairs(listings) do
@@ -170,49 +89,30 @@ function Rd.compose()
             sellerCount = sellerCount + 1
         end
     end
-    if #rows == 0 then return Rd.text("Radio_Empty") .. Rd.auctionLine() end
     EC.sortSafe(rows, function(a, b)
         if a.at ~= b.at then return a.at > b.at end
         return a.id < b.id
     end)
-    local msg = Rd.text("Radio_Summary", tostring(#rows), tostring(sellerCount))
-    local parts = {}
+    local latest = {}
     for i = 1, math.min(Rd.LATEST_MAX, #rows) do
         local l = rows[i]
-        local name = itemLabel(l.item)
-        local price = EC.amountText and EC.amountText(l.price) or tostring(l.price)
         -- a listing whose currency this server could not prove is still on the board; its
-        -- price goes out without a currency name rather than with a borrowed one
-        local currency = Rd.currencyName(l.currency)
-        if (l.qty or 1) > 1 then
-            if currency then
-                parts[#parts + 1] = Rd.text("Radio_ItemQtyCur", name, tostring(l.qty), price, currency)
-            else
-                parts[#parts + 1] = Rd.text("Radio_ItemQty", name, tostring(l.qty), price)
-            end
-        elseif currency then
-            parts[#parts + 1] = Rd.text("Radio_ItemCur", name, price, currency)
-        else
-            parts[#parts + 1] = Rd.text("Radio_Item", name, price)
-        end
+        -- price goes out without a currency rather than with a borrowed one
+        latest[i] = { item = l.item, qty = l.qty or 1, price = l.price,
+            currency = EC.CURRENCIES[l.currency] ~= nil and l.currency or nil }
     end
-    local latest = Rd.text("Radio_Latest", table.concat(parts, Rd.text("Radio_Sep")))
-    if #msg + #latest <= Rd.MESSAGE_MAX then msg = msg .. latest end
-    msg = msg .. Rd.auctionLine()
-    if #msg > Rd.MESSAGE_MAX then msg = string.sub(msg, 1, Rd.MESSAGE_MAX) end
-    return msg
+    return { listings = #rows, sellers = sellerCount, latest = latest, auctions = Rd.auctionsEndingSoon() }
 end
 
 -- Auctions that end before the next broadcast (stage F): "N auctions end within the hour".
-function Rd.auctionLine()
+function Rd.auctionsEndingSoon()
     local items = md.auctions and md.auctions.items or nil
-    if not items then return "" end
+    if not items then return 0 end
     local now, horizon, n = EC.now(), Rd.intervalMs(), 0
     for _, a in pairs(items) do
         if (a.expiresAt or 0) > now and (a.expiresAt or 0) - now <= horizon then n = n + 1 end
     end
-    if n == 0 then return "" end
-    return Rd.text("Radio_Auctions", tostring(n))
+    return n
 end
 
 -- ---------- transmit ----------
@@ -226,33 +126,30 @@ end
 function Rd.registerChannel(radio)
     local freq = Rd.frequency()
     if channelRegistered == freq then return end
-    pcall(function() radio:addChannelName(Rd.text("Radio_Channel"), freq, Rd.CATEGORY) end)
+    pcall(function() radio:addChannelName(getText("IGUI_MinidoracatEconomy_Radio_Channel"), freq, Rd.CATEGORY) end)
     channelRegistered = freq
 end
 
--- Sends `msg` from every trade terminal; returns how many transmissions went out.
-function Rd.broadcast(msg)
-    local radio = Rd.radio()
-    if not radio then return 0 end
-    Rd.registerChannel(radio)
-    local freq, strength = Rd.frequency(), Rd.strength()
-    local n = 0
+-- Pushes one summary to every client, naming every trade terminal as a source with the
+-- frequency and strength of this moment; returns how many sources it named (0: no trade
+-- terminal, nothing sent).
+function Rd.broadcast(summary)
+    local sources = {}
     for _, t in ipairs(T.list()) do
-        if t.kind == "trade" then
-            local ok = pcall(function()
-                radio:SendTransmission(t.x, t.y, freq, msg, "", "", 1.0, 0.85, 0.4, strength, false)
-            end)
-            if ok then n = n + 1 end
-        end
+        if t.kind == "trade" then sources[#sources + 1] = { x = t.x, y = t.y } end
     end
-    if n > 0 then
-        X.emit("radio.broadcast", { terminals = n, frequency = freq, strength = strength, chars = #msg })
-    end
-    return n
+    if #sources == 0 then return 0 end
+    local radio = Rd.radio()
+    if radio then Rd.registerChannel(radio) end
+    summary.frequency, summary.strength, summary.sources = Rd.frequency(), Rd.strength(), sources
+    S.broadcast("radio.summary", summary)
+    X.emit("radio.broadcast", { terminals = #sources, frequency = summary.frequency,
+        strength = summary.strength, listings = summary.listings })
+    return #sources
 end
 
--- The clock: real minutes on OnTickEvenPaused (an empty server keeps broadcasting to nobody,
--- which costs one composed string per interval; fine).
+-- The clock: real minutes on OnTickEvenPaused (an empty server keeps taking a summary for
+-- nobody, one small table per interval; fine).
 function Rd.onTick()
     if not md then return end
     if not Rd.enabled() then return end
@@ -260,7 +157,7 @@ function Rd.onTick()
     if lastBroadcast == 0 then lastBroadcast = ms return end   -- first interval starts at boot
     if ms - lastBroadcast < Rd.intervalMs() then return end
     lastBroadcast = ms
-    Rd.broadcast(Rd.compose())
+    Rd.broadcast(Rd.summary())
 end
 
 -- What the client needs to name the channel and to explain the station to a player (hello.ack
@@ -281,7 +178,6 @@ end
 function Rd.init(root)
     md = root
     lastBroadcast = 0
-    templates = {}
     channelRegistered = nil
     local radio = Rd.radio()
     if radio then Rd.registerChannel(radio) end

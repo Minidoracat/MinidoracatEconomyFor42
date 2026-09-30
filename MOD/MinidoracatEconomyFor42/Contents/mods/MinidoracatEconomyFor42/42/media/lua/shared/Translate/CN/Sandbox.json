@@ -70,8 +70,6 @@
   "Sandbox_MinidoracatEconomy_RadioFrequency_tooltip": "收音机要调到这个频率才听得到，例如 101100 = 101.1 MHz。行情摘要与语音收音共用这个频率。",
   "Sandbox_MinidoracatEconomy_RadioRange": "市场电台收讯范围（格）",
   "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "行情摘要与交易站收音共用此范围。0＝全地图；行情使用原生全服强度，收音以 100000 格涵盖本体的电台座标范围。仍受本体语音及收讯规则限制。",
-  "Sandbox_MinidoracatEconomy_RadioLanguage": "市场电台语言",
-  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto＝跟服务器语言；或指定 CH／CN／EN／JP。物品名称仍依服务器语言。",
   "Sandbox_MinidoracatEconomy_AuctionMinHours": "拍卖最短时长（小时）",
   "Sandbox_MinidoracatEconomy_AuctionMinHours_tooltip": "创建拍卖时可选的最短持续时间（真实小时）。",
   "Sandbox_MinidoracatEconomy_AuctionMaxHours": "拍卖最长时长（小时）",

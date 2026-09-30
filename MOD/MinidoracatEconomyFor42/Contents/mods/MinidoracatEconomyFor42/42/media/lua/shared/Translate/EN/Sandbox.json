@@ -70,8 +70,6 @@
   "Sandbox_MinidoracatEconomy_RadioFrequency_tooltip": "The frequency a radio has to be tuned to, e.g. 101100 = 101.1 MHz. The market summary and the voice relay share it.",
   "Sandbox_MinidoracatEconomy_RadioRange": "Market radio range (tiles)",
   "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "Shared by market summaries and station relays. 0 means the whole map: summaries use native global strength, while relays use 100000 tiles to cover native radio coordinates. Native voice and reception rules still apply.",
-  "Sandbox_MinidoracatEconomy_RadioLanguage": "Market radio language",
-  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = the server language; or one of CH / CN / EN / JP. Item names still follow the server language.",
   "Sandbox_MinidoracatEconomy_AuctionMinHours": "Auction minimum duration (hours)",
   "Sandbox_MinidoracatEconomy_AuctionMinHours_tooltip": "The shortest duration (real hours) a seller may pick when creating an auction.",
   "Sandbox_MinidoracatEconomy_AuctionMaxHours": "Auction maximum duration (hours)",

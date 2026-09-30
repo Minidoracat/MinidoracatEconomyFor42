@@ -954,7 +954,7 @@ local W = EC.Wallet
 local A = EC.Admin
 -- ===== 測試工具 =====
 local failures, assertions = 0, 0
-local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3 + 6 + 25   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller). +6: a split-screen seat is not an economy identity (scenario SP; scenario 89's three split-slot checks now say the seat is never observed). +25: the identity bound to the SteamID (scenario ID: principal matrix, OnNewGame, import, confirmation, refusals, replay).
+local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 2 + 1 + 15 + 3 + 6 + 25 + 7   -- +78: generic entitlements (scripts/test_entitlements.lua); +2: no chunk-load hook, orphan found by class; +25: version from mod.info (1), start counter (3), item state across the market (21); +5: radio orphan sweep (class skip, per-tick budget, cursor after removal, no radio instance x2); +23: mailbox claim by count (scenario MC); +60: player-to-player transfer; +21: clothing state, battery, device media and the buyer preview (28d); +3: packet size (wireBytes, reply guard, auction.mine cap); +2: an empty container is rebuilt empty, a fluid mixture is refused; +8: market/auction refusals that move nothing (scenario EC: item_not_found x2, market_full x2, too_many_auctions, unknown_auction bid/cancel, auction_ended).; +2: heartbeat.json is not rewritten during a start, auction downtime measured across a real restart (scenario DT).; +1: the client admin check reads the player's role, not the connection (scenario RL). +14: stale copies an older player save brought back are reclaimed from any holder with records, held when unsafe, and can be restored once by an administrator (scenario 42: 18 new, 3 hold-only checks of the old policy replaced). +3: the fee rides on the payer's receipt only (transfer sender, market and auction seller). +6: a split-screen seat is not an economy identity (scenario SP; scenario 89's three split-slot checks now say the seat is never observed). +25: the identity bound to the SteamID (scenario ID: principal matrix, OnNewGame, import, confirmation, refusals, replay). +7: the market radio goes out as data and every client words it in its own language (scenario 31).
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing one account (scenario MA, identity v2 step 2a)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
@@ -3907,7 +3907,7 @@ check(ann.modData[KEY] ~= nil and ann.modData[KEY].pendingOuts[ls.listingId] ~= 
 onlinePlayers = {}
 end)()
 
--- ===== 情境三十一：市場電台（交易站定時廣播） =====
+-- ===== 情境三十一：市場電台（伺服器定時推行情資料，各客戶端用自己的語言播）=====
 io.write("scenario 31: market radio\n")
 ;(function()
 local Mk, Rd = S.Market, S.Radio
@@ -3919,7 +3919,6 @@ nowMs = nowMs + 61000
 SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = 10
 SandboxVars.MinidoracatEconomy.RadioFrequency = 101100
 SandboxVars.MinidoracatEconomy.RadioRange = 500
-SandboxVars.MinidoracatEconomy.RadioLanguage = "auto"
 fire("OnServerStarted")
 check(#radioChannels == 1 and radioChannels[1].freq == 101100 and radioChannels[1].category == "Economy", "boot registers the channel name on the server radio")
 local boss = fakePlayer("boss"); boss.role = "admin"
@@ -3934,6 +3933,11 @@ local function cmd(who, name, args)
     local s = lastSent(name)
     return s and s.args or {}
 end
+local function pushes()
+    local out = {}
+    for _, s in ipairs(sentCommands) do if s.command == "radio.summary" then out[#out + 1] = s end end
+    return out
+end
 worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0", ["300,400,0"] = "MinidoracatEconomy_catgirl_1", ["500,600,1"] = "appliances_com_01_52" }
 check(cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" }).ok == true, "setup: ATM registered")
 check(cmd(boss, "terminal.register", { x = 300, y = 400, z = 0, kind = "trade" }).ok == true and cmd(boss, "terminal.register", { x = 500, y = 600, z = 1, kind = "trade" }).ok == true, "setup: two trade terminals (a catgirl tile and a vanilla console)")
@@ -3944,46 +3948,102 @@ check(ack.radio and ack.radio.frequency == 101100 and ack.radio.enabled == true,
 fire("OnTickEvenPaused")
 nowMs = nowMs + 5 * 60000
 fire("OnTickEvenPaused")
-check(#radioSent == 0, "nothing is broadcast before the first interval elapsed")
+check(#pushes() == 0, "nothing is broadcast before the first interval elapsed")
 nowMs = nowMs + 5 * 60000 + 1
+sentCommands = {}
 fire("OnTickEvenPaused")
-check(#radioSent == 2, "one transmission per trade terminal, none from the ATM: " .. tostring(#radioSent))
-check(radioSent[1].x == 300 and radioSent[1].y == 400 and radioSent[2].x == 500 and radioSent[2].channel == 101100 and radioSent[1].strength == 500 and radioSent[1].isTV == false,
-    "the trade terminal squares are the sources, on the sandbox frequency and range")
-check(radioSent[1].msg == "IGUI_MinidoracatEconomy_Radio_Empty", "an empty market says so (server-language template via getText)")
--- listings appear in the summary: count, sellers, newest first with qty and price
+local sent = pushes()
+check(#sent == 2 and sent[1].player == boss and sent[2].player == ann, "one push per online player: " .. tostring(#sent))
+local s = sent[1] and sent[1].args or {}
+check(s.sources and #s.sources == 2 and s.sources[1].x == 300 and s.sources[1].y == 400 and s.sources[2].x == 500 and s.sources[2].y == 600,
+    "the trade terminal squares are the sources, none from the ATM")
+check(s.frequency == 101100 and s.strength == 500, "the push carries the sandbox frequency and range")
+check(s.listings == 0 and #s.latest == 0 and s.auctions == 0 and #radioSent == 0, "an empty market goes out as data; the server transmits no text of its own")
+-- listings appear in the summary: count, sellers, newest first with qty, price and currency
 L.credit("ann", "survivor", 100, "SYSTEM_MINT", { requestId = "s-ann-r", reasonCode = "t" })
 local axe = instanceItem("Base.Axe"); ann.inventory:AddItem(axe)
 cmd(ann, "market.list", { itemId = axe.id, price = 120 })
 local p1, p2 = instanceItem("Base.Plank"), instanceItem("Base.Plank")
 ann.inventory:AddItem(p1); ann.inventory:AddItem(p2)
 cmd(ann, "market.list", { itemIds = { p1.id, p2.id }, price = 30 })
-SandboxVars.MinidoracatEconomy.RadioLanguage = "CH"
-radioSent = {}
+sentCommands = {}
 nowMs = nowMs + 10 * 60000 + 1
 fire("OnTickEvenPaused")
-check(#radioSent == 2 and string.find(radioSent[1].msg, "目前 2 筆刊登、1 位賣家", 1, true) ~= nil, "RadioLanguage=CH uses the mod's own CH templates: " .. tostring(radioSent[1] and radioSent[1].msg))
-check(string.find(radioSent[1].msg, "最新上架：Base.Plank ×2 30 倖存幣、Base.Axe 120 倖存幣", 1, true) ~= nil, "newest listings first, with quantity, price and the currency each one is priced in: " .. tostring(radioSent[1].msg))
-check(#radioSent[1].msg <= Rd.MESSAGE_MAX, "a broadcast never exceeds the message budget")
+s = lastSent("radio.summary").args
+check(s.listings == 2 and s.sellers == 1, "listing count and distinct sellers")
+check(#s.latest == 2 and s.latest[1].item == "Base.Plank" and s.latest[1].qty == 2 and s.latest[1].price == 30 and s.latest[1].currency == "survivor"
+    and s.latest[2].item == "Base.Axe" and s.latest[2].qty == 1 and s.latest[2].price == 120 and s.latest[2].currency == "survivor",
+    "newest listings first, with quantity, price and the currency each one is priced in")
 local journaled = 0
 fire("OnTickEvenPaused")
 for _, f in pairs(files) do for _, l in ipairs(f.lines) do if string.find(l, '"type":"radio.broadcast"', 1, true) then journaled = journaled + 1 end end end
 check(journaled == 2, "every broadcast round is journaled once")
+-- the client half (client ECRadioSummary.lua): every client words the same push with its own
+-- translation and plays it through the native radio code once per trade terminal
+local heard, interference, label = {}, 0, function(ft) return ft end
+local saved = { getText = getText, getZomboidRadio = getZomboidRadio, getClimateManager = getClimateManager, client = EC.Client }
+getZomboidRadio = function() return {
+    DistributeTransmission = function(_, x, y, channel, msg, guid, codes, r, g, b, strength, isTV)
+        heard[#heard + 1] = { x = x, y = y, channel = channel, msg = msg, guid = guid, codes = codes, r = r, g = g, b = b, strength = strength, isTV = isTV }
+    end,
+    scrambleString = function(_, msg, intensity, ignoreBBcode) return "<fzzt " .. tostring(intensity) .. ">" end,
+} end
+getClimateManager = function() return { getWeatherInterference = function() return interference end } end
+EC.Client = { handlers = {}, session = { epoch = 1 }, UI = { amountText = tostring },
+    itemLabel = function(ft) return label(ft) end,
+    currencyName = function(id) return getText(EC.CURRENCIES[id].nameKey) end }
+local chunk = loadfile(MEDIA .. "/client/MinidoracatEconomy/ECRadioSummary.lua")
+if chunk then chunk() end
+local function speak(lang, payload)
+    local f = io.open(MEDIA .. "/shared/Translate/" .. lang .. "/IG_UI.json", "rb")
+    local dict = EC.jsonDecode(f:read("*a"))
+    f:close()
+    getText = function(key, ...)
+        local args = { ... }
+        return (string.gsub(dict[key] or key, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end))
+    end
+    heard = {}
+    EC.Client.handlers["radio.summary"](payload)
+    return heard
+end
+local ch = chunk and speak("CH", s) or {}
+check(#ch == 2 and ch[1].x == 300 and ch[1].y == 400 and ch[2].x == 500 and ch[2].y == 600 and ch[1].channel == 101100
+    and ch[1].strength == 500 and ch[1].isTV == false and ch[1].codes == "" and ch[1].r == 1.0 and ch[1].g == 0.85 and ch[1].b == 0.4,
+    "the client plays the push once per trade terminal, on the pushed frequency and strength, in the broadcast colour")
+check(ch[1] and ch[1].msg == "市場電台：目前 2 筆刊登、1 位賣家。最新上架：Base.Plank ×2 30 倖存幣、Base.Axe 120 倖存幣",
+    "a Traditional Chinese client hears it in Traditional Chinese: " .. tostring(ch[1] and ch[1].msg))
+local en = chunk and speak("EN", s) or {}
+check(en[1] and en[1].msg == "Market Radio: 2 listings from 1 sellers. Newest: Base.Plank x2 for 30 Survivor Coin, Base.Axe for 120 Survivor Coin",
+    "an English client hears the same push in English: " .. tostring(en[1] and en[1].msg))
+local quiet = chunk and speak("CH", { listings = 0, sellers = 0, latest = {}, auctions = 2, frequency = 101100, strength = -1, sources = { { x = 1, y = 2 } } }) or {}
+check(quiet[1] and quiet[1].msg == "市場電台：目前沒有刊登，歡迎到交易站上架。 拍賣：2 場即將結標。" and quiet[1].strength == -1,
+    "an empty market still announces the auctions about to end: " .. tostring(quiet[1] and quiet[1].msg))
+interference = 0.5
+local storm = chunk and speak("EN", s) or {}
+check(storm[1] and storm[1].msg == "<fzzt 50>" and storm[1].r == 0.5 and storm[1].g == 0.5 and storm[1].b == 0.5,
+    "weather interference scrambles and greys it the way the engine does on a server")
+interference = 0
+label = function() return string.rep("x", 90) end
+local long = chunk and speak("EN", s) or {}
+check(long[1] and long[1].msg == "Market Radio: 2 listings from 1 sellers.", "listings that would not fit the line are left out, the count stays")
+label = function(ft) return ft end
+EC.Client.session = nil
+check(chunk ~= nil and #speak("EN", s) == 0, "a client without a session plays nothing")
+getText, getZomboidRadio, getClimateManager, EC.Client = saved.getText, saved.getZomboidRadio, saved.getClimateManager, saved.client
 -- range 0 = everyone (engine: strength < 0 passes every player); interval 0 = off
 SandboxVars.MinidoracatEconomy.RadioRange = 0
-radioSent = {}
+sentCommands = {}
 nowMs = nowMs + 10 * 60000 + 1
 fire("OnTickEvenPaused")
-check(#radioSent == 2 and radioSent[1].strength == -1, "range 0 becomes strength -1 (everyone)")
+check(#pushes() == 2 and lastSent("radio.summary").args.strength == -1, "range 0 becomes strength -1 (everyone)")
 SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = 0
-radioSent = {}
+sentCommands = {}
 nowMs = nowMs + 30 * 60000
 fire("OnTickEvenPaused")
-check(#radioSent == 0 and Rd.enabled() == false, "interval 0 turns the radio off")
+check(#pushes() == 0 and Rd.enabled() == false, "interval 0 turns the radio off")
 SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = nil
 SandboxVars.MinidoracatEconomy.RadioFrequency = nil
 SandboxVars.MinidoracatEconomy.RadioRange = nil
-SandboxVars.MinidoracatEconomy.RadioLanguage = nil
 onlinePlayers = {}
 end)()
 
@@ -4063,7 +4123,7 @@ check(#cmd(bob, "auction.mine", {}).bidding == 1 and cmd(bob, "auction.mine", {}
 -- radio: an auction ending within the interval is announced
 SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = 10
 nowMs = nowMs + 24 * 3600000 - 5 * 60000     -- 5 minutes before expiry
-check(string.find(Rd.compose(), "IGUI_MinidoracatEconomy_Radio_Auctions", 1, true) ~= nil, "the radio summary mentions an auction ending within the next interval")
+check(Rd.summary().auctions == 1, "the radio summary counts an auction ending within the next interval")
 SandboxVars.MinidoracatEconomy.RadioIntervalMinutes = nil
 -- settlement: expiry sweep pays the seller minus tax from the winner's reserve, item to the winner
 sentCommands = {}

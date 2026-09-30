@@ -168,9 +168,6 @@ local function validateOption(spec, value)
         local parts = {}
         for i, n in ipairs(list) do parts[i] = tostring(n) end
         return table.concat(parts, ";")
-    elseif kind == "text" then
-        if type(value) ~= "string" or value == "" or #value > 200 or string.find(value, "%c") then return nil, "invalid_args" end
-        return value
     elseif kind == "roles" then
         -- A dense array of exact native role names, checked against this server's own role list.
         -- Everything doubtful is refused outright rather than repaired: a name silently dropped

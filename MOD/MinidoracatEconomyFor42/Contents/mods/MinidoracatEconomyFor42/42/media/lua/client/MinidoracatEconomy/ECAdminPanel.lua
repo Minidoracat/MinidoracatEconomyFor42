@@ -659,7 +659,7 @@ end
 -- Option controls are measured from the current font and value. The same hit geometry drives
 -- painting and clicks; the row's read-only record retains anything its columns must shorten.
 local OPTION_TOGGLE_W = 44
-local OPTION_TEXT_MAX = 200   -- ECConfig.validateOption's limit for kind = "text"
+local OPTION_TEXT_MAX = 200   -- length cap of the edit box that takes one option value
 
 -- ";" separated sandbox lists read as a sentence ("1, 3, 7"); the separator is per language.
 local function listText(value, coins)
@@ -726,7 +726,6 @@ local function optionValueText(spec, value)
     if spec.kind == "bool" then return tr(value == true and "Admin_On" or "Admin_Off") end
     if spec.kind == "list_int" then return listText(value, spec.unit == "coin") end
     if spec.kind == "roles" then return roleSummary(value) end
-    if spec.kind == "text" then return listText(value, false) end
     local n = tonumber(value)
     if n == nil then return tostring(value) end
     if spec.zeroUnlimited and n <= 0 then return tr("Admin_Set_Unlimited") end
@@ -744,7 +743,7 @@ end
 -- What the edit dialog's box is prefilled with (and what the range hint quotes): the raw value,
 -- never its decorated display form -- the box is parsed back with tonumber / EC.parseIntList.
 local function optionInputText(spec, value)
-    if spec.kind == "list_int" or spec.kind == "text" then return tostring(value or "") end
+    if spec.kind == "list_int" then return tostring(value or "") end
     local n = tonumber(value)
     if n == nil then return "" end
     if n == math.floor(n) then return tostring(math.floor(n)) end
@@ -4603,11 +4602,6 @@ function Admin:submitOption(dlg)
     if spec.kind == "list_int" then
         if EC.parseIntList(raw, spec) == nil then
             return self:dialogError(dlg, dlg.hintText or errorText("invalid_args"))
-        end
-        value = raw
-    elseif spec.kind == "text" then
-        if raw == "" or charCount(raw) > OPTION_TEXT_MAX or string.find(raw, "%c") then
-            return self:dialogError(dlg, errorText("invalid_args"))
         end
         value = raw
     else

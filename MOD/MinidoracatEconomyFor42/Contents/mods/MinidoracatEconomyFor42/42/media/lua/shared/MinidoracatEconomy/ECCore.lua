@@ -657,7 +657,6 @@ EC.OPTIONS = {
     { key = "RadioRelayEnabled", group = "radio", kind = "bool", default = false },
     { key = "RadioFrequency", group = "radio", kind = "int", min = 88000, max = 108000, step = 200, default = 101100, unit = "mhz" },
     { key = "RadioRange", group = "radio", kind = "int", min = 0, max = 5000, step = 50, default = 500, unit = "tiles", zeroUnlimited = true },
-    { key = "RadioLanguage", group = "radio", kind = "text", default = "auto", unit = "lang" },
 }
 EC.OPTION_GROUPS = { "rewards", "seasons", "admin", "currency", "shop", "market", "auction", "transfer", "radio", "general" }
 EC.OPTION_BY_KEY = {}

@@ -395,14 +395,6 @@ option MinidoracatEconomy.RadioRange
     translation = MinidoracatEconomy_RadioRange,
 }
 
-option MinidoracatEconomy.RadioLanguage
-{
-    type = string,
-    default = auto,
-    page = MinidoracatEconomy,
-    translation = MinidoracatEconomy_RadioLanguage,
-}
-
 option MinidoracatEconomy.AuctionMinHours
 {
     type = integer,

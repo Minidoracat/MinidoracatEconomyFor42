@@ -70,8 +70,6 @@
   "Sandbox_MinidoracatEconomy_RadioFrequency_tooltip": "ラジオを合わせる周波数。例：101100 = 101.1 MHz。マーケット要約と音声集音で共用します。",
   "Sandbox_MinidoracatEconomy_RadioRange": "マーケットラジオの受信範囲（マス）",
   "Sandbox_MinidoracatEconomy_RadioRange_tooltip": "相場の放送と取引所の中継で共用する範囲です。0 は全マップを示します。放送は本体の全域強度を使い、中継は本体のラジオ座標範囲を覆う 100000 マスを使います。本体の音声・受信ルールは引き続き適用されます。",
-  "Sandbox_MinidoracatEconomy_RadioLanguage": "マーケットラジオの言語",
-  "Sandbox_MinidoracatEconomy_RadioLanguage_tooltip": "auto = サーバーの言語。または CH／CN／EN／JP を指定。アイテム名はサーバーの言語のままです。",
   "Sandbox_MinidoracatEconomy_AuctionMinHours": "オークションの最短時間（時間）",
   "Sandbox_MinidoracatEconomy_AuctionMinHours_tooltip": "出品時に選べる最短の継続時間（実時間）。",
   "Sandbox_MinidoracatEconomy_AuctionMaxHours": "オークションの最長時間（時間）",
