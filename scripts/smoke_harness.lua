@@ -159,7 +159,14 @@ function getFileInput(path)
     }
 end
 
+-- A restart comes back to player saves written after whatever the online players did before it
+-- (the server adds hoursSurvived every tick, GameTime.java:540-546; players save every 180 s):
+-- the hours those saves carry are past the claims and transfers made before the restart.
+-- Scenarios that need an OLDER save build one explicitly (newSave with lower hours).
 local function fire(name, ...)
+    if name == "OnServerStarted" then
+        for _, p in ipairs(onlinePlayers) do p.hours = p.hours + 1 end
+    end
     for _, fn in ipairs(events[name] or {}) do fn(...) end
 end
 
@@ -897,6 +904,17 @@ local function fakePlayer(username)
     end } end
     return p
 end
+-- Another save of the same login is a new server-side player object (a new session) whose
+-- hoursSurvived says where that save stands against a claim or a transfer (ECRecovery "player
+-- sessions"): the same backpack and modData tables, `hours` of that save, and it takes p's place
+-- in onlinePlayers. Global: the main chunk is close to Lua's local limit.
+function newSave(p, hours)
+    local q = fakePlayer(p:getUsername())
+    q.x, q.y, q.z, q.role, q.steamId, q.onlineId = p.x, p.y, p.z, p.role, p.steamId, p.onlineId
+    q.inventory, q.modData, q.hours = p.inventory, p.modData, hours
+    for i, online in ipairs(onlinePlayers) do if online == p then onlinePlayers[i] = q end end
+    return q
+end
 
 -- ===== 載入受測程式碼（shared → server；client 檔不在 server 端載入）=====
 -- Native contracts above are already loaded; do not pretend their failed MOD lookup succeeded.
@@ -958,6 +976,8 @@ local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing one account (scenario MA, identity v2 step 2a)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 24   -- +24: the player's own modData decides nothing (scenario MD, moddata trust boundary P0)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: what a world rollback forgot is judged from the ledger (scenario LG, moddata trust boundary P1)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2929,9 +2949,11 @@ local buy = cmd(zed, "shop.buy", { id = "bandage", count = 2, revision = rev, re
 check(buy.ok == true and buy.total == 24 and buy.delivered == true and buy.balance == 76 and buy.remaining == 3
     and zed.inventory.count("Base.Bandage") == 2 and M.unclaimed("zed") == 0, "a purchase burns 24, delivers 2 bandages straight into the backpack and counts against the cap")
 local stamp = zed.inventory.items[1]:getModData()[EC.PLAYER_MODDATA_KEY]
-local witness = zed.modData[EC.PLAYER_MODDATA_KEY].claims[buy.mailId]
+local bought = M.entryOf("zed", buy.mailId)
 check(stamp ~= nil and stamp.mailId == buy.mailId and stamp.txId == buy.txId and stamp.epoch == S.modData().meta.epoch
-    and witness ~= nil and witness.seq == stamp.seq and zed.transmitted == 1, "delivered items are stamped and the player modData holds the claim witness")
+    and bought.claimSess ~= nil and bought.claimHours == zed.hours and bought.claimSeq == stamp.seq
+    and (zed.modData[EC.PLAYER_MODDATA_KEY] == nil or zed.modData[EC.PLAYER_MODDATA_KEY].claims == nil),
+    "delivered items are stamped and the letter is anchored to the save that took it; nothing goes into the player's own modData")
 local pk = sentItemPackets[#sentItemPackets]
 check(pk ~= nil and pk.container == zed.inventory and #pk.add == 2, "one sendAddItemsToContainer packet carries both items")
 local dup = cmd(zed, "shop.buy", { id = "bandage", count = 2, revision = rev, requestId = "b1" })
@@ -3151,18 +3173,21 @@ end
 cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
 L.credit("zed", "survivor", 1000, "SYSTEM_MINT", { requestId = "seed", reasonCode = "t" })
 local rev = cmd(zed, "shop.list").revision
+zed.hours = 10
 local b1 = cmd(zed, "shop.buy", { id = "bandage", revision = rev })
 check(b1.delivered == true and zed.inventory.count("Base.Bandage") == 1, "setup: one bandage delivered")
--- rule three (1): player save older than the claim = no witness and no item -> redeliver
-zed.inventory.items = {}
-zed.modData[KEY].claims = {}
+-- rule three (1): player save older than the claim = a new session whose save hours are below the
+-- claim's, and no item -> redeliver. (Wiping the item on the same session is not an older save:
+-- scenario MD.)
+zed = fakePlayer("zed"); zed.x, zed.y, zed.hours = 101, 200, 5
+onlinePlayers = { boss, zed }
 cmd(zed, "hello")
-check(zed.inventory.count("Base.Bandage") == 1 and zed.modData[KEY].claims[b1.mailId] ~= nil and anomalies("redelivered") == 1,
-    "claimed entry without witness or item is redelivered and re-witnessed")
--- normal consumption: witness present, item gone -> nothing
+check(zed.inventory.count("Base.Bandage") == 1 and anomalies("redelivered") == 1,
+    "a claimed entry the loaded save predates, with no item, is redelivered")
+-- normal consumption: the claim is in this save, item gone -> nothing
 zed.inventory.items = {}
 cmd(zed, "hello")
-check(zed.inventory.count("Base.Bandage") == 0 and anomalies("redelivered") == 1, "a witnessed claim whose item was used is not redelivered")
+check(zed.inventory.count("Base.Bandage") == 0 and anomalies("redelivered") == 1, "a claim this save holds whose item was used is not redelivered")
 -- rule three (2): world save older than the player save = entry ready but the item is there
 local b2 = cmd(zed, "shop.buy", { id = "twine", revision = rev })
 local o = S.modData().mailbox.byOwner.zed
@@ -3184,8 +3209,8 @@ cmd(zed, "hello")
 local removed = 0
 for _, pk in ipairs(sentItemPackets) do if pk.remove ~= nil then removed = removed + 1 end end
 check(zed.inventory.count("Base.Lighter") == 0 and L.getBalance("zed", "survivor").available == balanceBefore and removed == 2
-    and zed.modData[KEY].claims[b3.mailId] == nil and anomalies("removed-rolled-back") == 1,
-    "every item of a claim that rolled back with the world is removed (the money came back) and its witness dropped")
+    and anomalies("removed-rolled-back") == 1,
+    "every item of a claim that rolled back with the world is removed (the money came back)")
 -- a durable claim whose entry was pruned after the TTL is left alone
 rev = cmd(zed, "shop.list").revision
 local b4 = cmd(zed, "shop.buy", { id = "twine", revision = rev })
@@ -5269,9 +5294,9 @@ end
 local function stampOf(item)
     return item:getModData()[EC.PLAYER_MODDATA_KEY]
 end
-local function witnessOf(id)
-    local p = zed.modData[EC.PLAYER_MODDATA_KEY]
-    return p and p.claims and p.claims[id] or nil
+local function anchorOf(id)
+    local e = M.entryOf("zed", id)
+    return e and e.claimSess and e or nil
 end
 local function bandages()
     return zed.inventory.count("Base.Bandage")
@@ -5295,7 +5320,7 @@ check(failed.ok == false and failed.error == "delivery_failed" and failed.delive
     and failed.remainingQty == 3 and bandages() == base and M.unclaimed("zed") == 1
     and rowOf(M.list("zed"), one).qty == 3 and rowOf(M.list("zed"), one).claimable == true,
     "a throw after AddItem mutated an item takes every object of the attempt back: nothing delivered, the whole letter still ready")
-check(witnessOf(one) == nil, "a letter that delivered nothing writes no claim witness")
+check(anchorOf(one) == nil, "a letter that delivered nothing is not anchored to any save")
 
 -- ---- 2. AddItem that hands back another object is a failure, not a delivery ----
 zed.inventory.AddItem = function(self, it) realAdd(self, it) return realInstance("Base.Bandage") end
@@ -5313,8 +5338,8 @@ zed.inventory.Remove, sendAddItemsToContainer = realRemove, realPacket
 check(allKept.ok == true and allKept.deliveredQty == 3 and allKept.remainingQty == 0
     and bandages() == base + 3 and M.unclaimed("zed") == 0 and rowOf(M.list("zed"), one) == nil,
     "when the identity re-read finds every object of the attempt in the backpack the letter is a plain claimed one, whatever the calls answered")
-check(witnessOf(one) ~= nil and stampOf(zed.inventory.items[#zed.inventory.items]).mailId == one,
-    "the kept letter is witnessed and stamped exactly like a clean hand-over")
+check(anchorOf(one) ~= nil and stampOf(zed.inventory.items[#zed.inventory.items]).mailId == one,
+    "the kept letter is anchored and stamped exactly like a clean hand-over")
 check(cmd(zed, "mail.claim", { mailId = one }).error == "already_claimed" and bandages() == base + 3,
     "a letter settled that way is never handed over a second time")
 
@@ -5340,8 +5365,8 @@ check(rowOf(M.list("zed"), two).qty == 2 and rowOf(M.list("zed"), two).claimable
     "the parent keeps the remainder and stays claimable; the claimed child holds no slot of its own")
 local keptItem = zed.inventory.items[#zed.inventory.items]
 check(stampOf(keptItem).mailId == child and stampOf(keptItem).txId == "tx-split"
-    and witnessOf(child) ~= nil and witnessOf(child).seq == stampOf(keptItem).seq and witnessOf(two) == nil,
-    "the delivered subset is re-stamped onto the child, witnessed under the same claim seq, and the parent gets no witness of its own")
+    and anchorOf(child) ~= nil and anchorOf(child).claimSeq == stampOf(keptItem).seq and anchorOf(two) == nil,
+    "the delivered subset is re-stamped onto the child, anchored under the same claim seq, and the parent stays unanchored")
 
 -- ---- 5. the delivered subset moved into a carried bag, then a login: nothing changes ----
 local bagInv = fakeInventory(500)
@@ -5357,7 +5382,7 @@ realAdd(zed.inventory, bag)
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "hello", zed, {})
 check(rowOf(M.list("zed"), two).qty == 2 and M.unclaimed("zed") == 1 and bagInv.count("Base.Bandage") == 1
-    and witnessOf(child) ~= nil and bandages() == base2,
+    and anchorOf(child) ~= nil and bandages() == base2,
     "a login after a split leaves both halves exactly where they are, wherever the delivered items are carried")
 
 -- ---- 6. death after a split: the child settles, the remainder of the letter survives ----
@@ -5377,7 +5402,7 @@ check(heir.ok == true and heir.deliveredQty == 2 and heir.remainingQty == 0
 local three = M.add("zed", { kind = "shop", item = "Base.Bandage", qty = 2, txId = "tx-roll" }).id
 local seqBeforeRoll = S.modData().meta.seq
 check(cmd(zed, "mail.claim", { mailId = three }).ok == true and bandages() == 4,
-    "a clean claim first: two more bandages and one more witness")
+    "a clean claim first: two more bandages")
 local held = S.modData().mailbox.byOwner["zed"]
 held.entries[three].state = "ready"                     -- the older world save has it unclaimed
 held.entries[three].claimedAt = nil
@@ -5390,15 +5415,18 @@ fire("OnServerStarted")
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "hello", zed, {})
 check(rowOf(M.list("zed"), three) == nil and M.unclaimed("zed") == 0 and bandages() == 4,
-    "a player save newer than the world save is marked claimed from its witness, never handed over again")
+    "a player save newer than the world save is marked claimed from the stamps it carries, never handed over again")
 
 -- ---- 8. a player save older than the claim, then a rollback below the purchase itself ----
+zed.hours = 10
 local four = M.add("zed", { kind = "shop", item = "Base.Bandage", qty = 2, txId = "tx-older" }).id
 check(cmd(zed, "mail.claim", { mailId = four }).ok == true and bandages() == 6,
     "the fourth letter is claimed cleanly")
--- the older player save saw neither this claim's witness nor its items (every other claimed
--- letter of this account keeps its own witness, so only this one looks older than the world)
-zed.modData[EC.PLAYER_MODDATA_KEY].claims[four] = nil
+-- the older player save (a new session, its hours below the claim's) never saw this claim's items
+local older = fakePlayer("zed"); older.x, older.hours = 101, 5
+older.inventory, older.modData = zed.inventory, zed.modData
+zed = older
+onlinePlayers = { boss, zed }
 for i = #zed.inventory.items, 1, -1 do
     local st = stampOf(zed.inventory.items[i])
     if st and st.mailId == four then realRemove(zed.inventory, zed.inventory.items[i]) end
@@ -5406,9 +5434,9 @@ end
 check(bandages() == 4, "the two items of that claim are gone from the older save")
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "hello", zed, {})
-check(bandages() == 6 and witnessOf(four) ~= nil and rowOf(M.list("zed"), four) == nil,
-    "a player save older than the claim gets that letter handed over again, once, and is witnessed for it")
-local orphanSeq = witnessOf(four).seq
+check(bandages() == 6 and anchorOf(four) ~= nil and rowOf(M.list("zed"), four) == nil,
+    "a player save older than the claim gets that letter handed over again, once, and is anchored to it")
+local orphanSeq = anchorOf(four).claimSeq
 local orphanEpoch = S.modData().meta.epoch
 S.modData().mailbox.byOwner["zed"].entries[four] = nil  -- the world rolled back below the purchase
 S.modData().meta.seq = orphanSeq - 1
@@ -5416,8 +5444,8 @@ nowMs = nowMs + 1000
 fire("OnServerStarted")
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "hello", zed, {})
-check(S.isRolledBack(orphanEpoch, orphanSeq) == true and bandages() == 4 and witnessOf(four) == nil,
-    "items stamped by a claim the world rolled back below are taken back and their witness is dropped")
+check(S.isRolledBack(orphanEpoch, orphanSeq) == true and bandages() == 4,
+    "items stamped by a claim the world rolled back below are taken back")
 
 -- ---- 9. nothing is paid for on a weight, or a room answer, this server cannot read ----
 local rev = Shop.revision()
@@ -5502,7 +5530,7 @@ local function cmd(who, name, args)
 end
 local function near(a, b) return type(a) == "number" and math.abs(a - b) < 1e-6 end
 local function planks() return mc.inventory.count("Base.Plank") end
-local function claims() return mc.modData[EC.PLAYER_MODDATA_KEY].claims end
+local function anchored(id) local e = M.entryOf("mc", id); return e ~= nil and e.claimSess ~= nil end
 cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
 local anomalies = {}
 local realEmit = X.emit
@@ -5530,10 +5558,10 @@ check(childEntry.state == "claimed" and #childEntry.units == 16 and childEntry.u
 local stamped = true
 for _, it in ipairs(mc.inventory.items) do
     local st = it.modData[EC.PLAYER_MODDATA_KEY]
-    if not st or st.mailId ~= child or st.parentMailId ~= heavyId or st.seq ~= claims()[child].seq then stamped = false end
+    if not st or st.mailId ~= child or st.parentMailId ~= heavyId or st.seq ~= childEntry.claimSeq then stamped = false end
 end
-check(stamped and claims()[heavyId] == nil and childEntry.claimSeq == claims()[child].seq,
-    "every delivered unit is stamped onto the child under the child's own witness; the parent gets none")
+check(stamped and not anchored(heavyId) and anchored(child),
+    "every delivered unit is stamped onto the child under the child's own anchor; the parent gets none")
 local last = sentItemPackets[#sentItemPackets]
 check(#sentItemPackets == packets + 1 and #last.add == 16 and last.add[1].modData[EC.PLAYER_MODDATA_KEY].mailId == child,
     "the client hears the handed-over units once, already carrying the child's stamp")
@@ -5543,7 +5571,7 @@ check(#anomalies == 0, "a claim the room cut short is not reported as a delivery
 local full = cmd(mc, "mail.claim", { mailId = heavyId })
 check(full.ok == false and full.error == "backpack_full" and full.unitWeight == 3 and near(full.freeCapacity, 2)
     and near(full.needWeight, 1) and full.capacity == 50 and full.remainingQty == 4 and full.deliveredQty == 0
-    and planks() == 16 and heavy.qty == 4 and heavy.state == "ready" and claims()[heavyId] == nil,
+    and planks() == 16 and heavy.qty == 4 and heavy.state == "ready" and not anchored(heavyId),
     "a zero-fit claim hands over nothing and names the unit weight, the free room and the weight to free")
 
 -- ---- 3. room freed: the rest comes through once, and the two halves add up to the letter ----
@@ -5561,7 +5589,7 @@ check(mute.error == "backpack_full" and roomCalls == 3 and planks() == 6 and hea
     "a per-unit room test that gives no answer is never read as room: nothing is handed over")
 local rest = cmd(mc, "mail.claim", { mailId = heavyId })
 check(rest.ok == true and rest.deliveredQty == 4 and rest.remainingQty == 0 and planks() == 10
-    and heavy.state == "claimed" and claims()[heavyId] ~= nil and M.unclaimed("mc") == 0,
+    and heavy.state == "claimed" and anchored(heavyId) and M.unclaimed("mc") == 0,
     "after the player frees room the remainder is claimed as an ordinary whole letter")
 check(cmd(mc, "mail.claim", { mailId = heavyId }).error == "already_claimed" and planks() == 10,
     "the finished letter cannot be claimed a second time")
@@ -5626,12 +5654,16 @@ for _, rollback in ipairs({ "world-before-claim", "player-before-claim", "world-
     local parent = M.add(p:getUsername(), { item = "Base.Plank", qty = 5, kind = "shop" })
     local beforeClaim = copy(S.modData())
     local beforePlayer = copy(p.modData)
+    p.hours = 10
     local result = M.claim(p, parent.id)
     check(result.error == "delivery_partial" and result.deliveredQty == 3 and parent.qty == 2 and p.inventory.count("Base.Plank") == 3,
         "room-limited setup: three whole units settled before " .. rollback)
     if rollback == "player-before-claim" then
-        -- the older player save has neither the units nor the witness, and room for only two
-        p.inventory, p.modData = fakeInventory(6), beforePlayer
+        -- the older player save (a new session below the claim's hours) has none of the units,
+        -- and room for only two
+        p = fakePlayer("mc-roll")
+        p.inventory, p.modData, p.hours = fakeInventory(6), beforePlayer, 5
+        onlinePlayers = { p }
     else
         modDataStore[EC.MODDATA_KEY] = rollback == "world-before-claim" and beforeClaim or beforeMail
         nowMs = nowMs + 1000
@@ -5694,12 +5726,16 @@ io.write("scenario 41: partial claims across independent saves\n")
             if removes == 1 then error("first item could not be removed") end
             realRemove(inv, item)
         end
+        p.hours = 10
         local result = M.claim(p, parent.id)
         p.inventory.AddItem, p.inventory.Remove = realAdd, realRemove
         check(result.error == "delivery_partial" and result.deliveredQty == 1 and parent.qty == 2 and p.inventory.count("Base.Bandage") == 1,
             "partial setup: only the confirmed item is settled before " .. rollback)
         if rollback == "player-before-claim" then
-            p.inventory, p.modData = fakeInventory(100), beforePlayer
+            -- an older save is a new session whose hours are below the claim's
+            p = fakePlayer("partial-save")
+            p.inventory, p.modData, p.hours = fakeInventory(100), beforePlayer, 5
+            onlinePlayers = { p }
         else
             modDataStore[EC.MODDATA_KEY] = rollback == "world-before-claim" and beforeClaim or beforeMail
             nowMs = nowMs + 1000
@@ -5974,7 +6010,9 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         local id = list(seller, seller.inventory.items[1])
         restart(saved)
         reconcileNow(seller)
-        check(tally(seller, "Base.Bandage") == 3 and not Mk.listingExists(id),
+        -- the save that loaded holds the child's claim (the ledger's lost claim), so the unit is
+        -- carved out of the parent before its listing is rebuilt: 2 in the letter + 1 listed
+        check(tally(seller, "Base.Bandage") == 3 and Mk.listingExists(id) and M.entryOf(seller:getUsername(), parent.id).qty == 2,
             "a child-mail relisting is not rebuilt on top of the restored parent quantity")
     end
 
@@ -6050,18 +6088,24 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
     end
     do
         local _, seller = fresh()
+        -- another save of the same login is a new session whose hours say where it stands
+        -- against the claim (moddata trust boundary, R.claimOrder)
+        local reload = newSave
         local beforeClaim = copy(seller.modData)
         local parcel = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 5, kind = "shop" })
+        seller.hours = 10
         assert(M.claim(seller, parcel.id).ok)
         local originalPlayer, originalItems, originalData = copy(seller.modData), {}, {}
         for i, item in ipairs(seller.inventory.items) do originalItems[i], originalData[i] = item, copy(item:getModData()) end
         assert(cmd(seller, "market.list", { itemIds = { originalItems[1].id, originalItems[2].id }, price = 20 }).ok)
         local confirmed = copy(S.modData())
         confirmWorld()
+        seller = reload(seller, 5)
         seller.modData, seller.inventory.items = copy(beforeClaim), {}
         reconcileNow(seller)
         assert(seller.inventory.count("Base.Bandage") == 3)
         assert(cmd(seller, "market.list", { itemIds = { seller.inventory.items[1].id, seller.inventory.items[2].id }, price = 20 }).ok)
+        seller = reload(seller, 11)
         seller.modData, seller.inventory.items = copy(originalPlayer), {}
         for i, item in ipairs(originalItems) do item.modData = copy(originalData[i]); seller.inventory:AddItem(item) end
         reconcileNow(seller)
@@ -6081,6 +6125,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         buyer.inventory:AddItem(item)
         list(buyer, item)
         confirmWorld()
+        M.reconcile(seller)            -- this session is past its first-command reconcile
         seller.modData = oldPlayer
         seller.inventory:AddItem(item)
         local refused = cmd(seller, "market.list", { itemId = item.id, price = 10 })
@@ -6169,6 +6214,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         local _, seller = fresh()
         local beforeClaim = copy(seller.modData)
         local parcel = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 5, kind = "shop" })
+        seller.hours = 10
         assert(M.claim(seller, parcel.id).ok)
         assert(cmd(seller, "market.list", { itemIds = { seller.inventory.items[1].id, seller.inventory.items[2].id }, price = 20 }).ok)
         confirmWorld()
@@ -6178,6 +6224,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             end
             return nil
         end
+        seller = newSave(seller, 5)               -- the older save: a new session below the claim
         seller.modData, seller.inventory.items = copy(beforeClaim), {}
         seller.inventory.maxWeight = 0            -- the older save logs in with no room at all
         reconcileNow(seller)
@@ -6206,7 +6253,12 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         assert(M.claim(buyer, buyerMail.id).ok)
         local stamp = buyer.inventory.items[1]:getModData()[KEY]
         local claimEpoch, claimSeq = stamp.epoch, stamp.seq
-        restart(copy(S.modData()))
+        -- the buyer lists in the claim's own epoch - its first-command reconcile sees that claim
+        -- as current and cannot certify it - and that list-out never reaches a world save
+        local beforeBuyerOut = copy(S.modData())
+        local buyerOut = cmd(buyer, "market.list", { itemId = buyer.inventory.items[1].id, price = 10 })
+        assert(buyerOut.ok, tostring(buyerOut.error))
+        restart(beforeBuyerOut)
         reconcileNow(seller)                       -- only the seller logs in while the claim epoch is readable
         nowMs = nowMs + M.CLAIMED_TTL_MS + 60000
         fire("OnTickEvenPaused")
@@ -6215,10 +6267,6 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             and M.entryOf(buyer:getUsername(), buyerMail.id) == nil
             and proven.ok and Mk.listingExists(proven.listingId),
             "a source letter pruned after its day does not retire a unit whose claim the history still proves")
-        local beforeBuyerOut = copy(S.modData())
-        local buyerOut = cmd(buyer, "market.list", { itemId = buyer.inventory.items[1].id, price = 10 })
-        assert(buyerOut.ok, tostring(buyerOut.error))
-        restart(beforeBuyerOut)                   -- that list-out never reached a world save
         local starts = 0
         while S.epochVerdict(claimEpoch, claimSeq) ~= "unknown" and starts < 40 do
             starts = starts + 1
@@ -6902,7 +6950,6 @@ check(nails.delivered == true and zed.inventory.count("Base.Nails") == 20, "setu
 local futureEpoch = tostring(tonumber(S.modData().meta.epoch) + 5000)
 local nailEntry = degrade(nails.mailId, "Base.Nails", futureEpoch)
 S.modData().mailbox.byOwner.zed.entries[nails.mailId] = nil      -- the rolled-back branch took the letter too
-zed.modData[KEY].claims[nails.mailId] = { epoch = futureEpoch, seq = nailEntry.claimSeq }
 S.modData().meta.history[#S.modData().meta.history + 1] = { epoch = futureEpoch, loadedSeq = nailEntry.claimSeq - 1 }
 local moneyBefore = L.getBalance("zed", "survivor").available
 local refused = cmd(zed, "market.list", { itemIds = { itemsOf("Base.Nails")[1].id }, price = 40 })
@@ -14906,7 +14953,10 @@ check(refused(send(ann, "xf-bob", 10, 1, { memo = string.rep("m", 65) }), "inval
     and refused(send(ann, "xf-bob", 0, 0), "invalid_args", s2) and refused(send(ann, "xf-bob", 10, -1), "invalid_args", s2),
     "a memo over 64 characters or with control characters, a zero amount and a negative fee are malformed")
 local longName = fakePlayer(string.rep("L", 60)); onlinePlayers[#onlinePlayers + 1] = longName
-check(send(longName, "xf-bob", 10, 1, { requestId = string.rep("r", 90) }).error == "request_too_long" and state() == s2,
+-- its session starts (and takes a seq for its anchor) before the refusal is measured
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", longName, {})
+local s3 = state()
+check(send(longName, "xf-bob", 10, 1, { requestId = string.rep("r", 90) }).error == "request_too_long" and state() == s3,
     "an idempotency key the ledger cannot store is refused before anything moves")
 
 -- 6. 手續費：無條件進位、開啟時最少 1；0% 時沒有銷毀分錄
@@ -16329,14 +16379,16 @@ fire("OnClientCommand", EC.COMMAND_MODULE, "hello", alias, {})
 local again = M.claim(alias, letter.id)
 check(not (again and again.ok) and alias.inventory.count("Base.Bandage") == 0 and canon.inventory.count("Base.Bandage") == 1,
     "the alias cannot claim that letter a second time")
--- the account's save goes back to one without the bandage or its witness: that login gets the
--- letter again wherever it stands; its death settles it there
+-- the account's save goes back to one without the bandage: the letter was closed from a stamp,
+-- which cannot say how old the claim is (claimHours 0, ECRecovery.anchorClaim), so no save of
+-- that login is handed it again - the conservative side of an unknown is no second copy. Its
+-- death still settles it where it stands in the group
 local canon2 = mgPlayer("mg-c50", P)
 onlinePlayers = { canon2 }
 nowMs = nowMs + 700
 fire("OnClientCommand", EC.COMMAND_MODULE, "hello", canon2, {})
-check(canon2.inventory.count("Base.Bandage") == 1 and back.state == "claimed" and back.claimLogin == "mg-c50",
-    "an older save of the account's login is delivered again the letter it closed under the alias")
+check(canon2.inventory.count("Base.Bandage") == 0 and back.state == "claimed" and back.claimLogin == "mg-c50",
+    "an older save of the account's login is not handed again a letter a stamp closed under the alias")
 fire("OnCharacterDeath", canon2)
 local canon3 = mgPlayer("mg-c50", P)
 onlinePlayers = { canon3 }
@@ -16365,6 +16417,519 @@ mgPoll()
 check(Id.status().damaged == nil and Id.status().imported == true and S.login(mgPlayer("mg-new", mgT(61))) == "mg-new",
     "the next accepted import writes a marker and binds the name")
 steamModeActive = false
+end)()
+
+-- ===== 情境 MD：玩家 modData 是客戶端的（P0，.omc/tmp/moddata-fix/design.md §8.1）=====
+-- ObjectModDataPacket 讓客戶端整份取代自己（與任何在線玩家）的 modData；這裡逐條證明：那張表
+-- 的內容（見證、pendingOuts）不能打斷交付、不能讓信件重送、不能替別人結案、不能灌爆伺服器。
+io.write("scenario MD: the player's own modData decides nothing\n")
+;(function()
+local M, Rc = S.Mailbox, S.Recovery
+local KEY = EC.PLAYER_MODDATA_KEY
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, sentItemPackets = {}, {}, {}
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+onlinePlayers = {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+nowMs = nowMs + 1000
+fire("OnServerStarted")                 -- a previous epoch in the history (MD-15/16)
+local prev = S.modData().meta.history[#S.modData().meta.history]
+local boss = fakePlayer("md-boss"); boss.role = "admin"
+local function player(name, hours, capacity)
+    local p = fakePlayer(name); p.x, p.y, p.hours = 101, 200, hours or 0
+    p.inventory = fakeInventory(capacity or 1000)
+    onlinePlayers[#onlinePlayers + 1] = p
+    return p
+end
+onlinePlayers = { boss }
+local serial = 0
+local function cmd(who, name, args)
+    serial, nowMs = serial + 1, nowMs + 600
+    args = args or {}
+    args.requestId = "md-" .. serial
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    for i = #sentCommands, 1, -1 do
+        local s = sentCommands[i]
+        if s.player == who and s.command == name and s.args.requestId == args.requestId then return s.args end
+    end
+    return nil
+end
+local function hello(who) nowMs = nowMs + 600; fire("OnClientCommand", EC.COMMAND_MODULE, "hello", who, {}) end
+local function drop(who, t)
+    for i = #who.inventory.items, 1, -1 do
+        if who.inventory.items[i].fullType == t then table.remove(who.inventory.items, i) end
+    end
+end
+local events = {}
+local realEmit = X.emit
+X.emit = function(kind, fields)
+    if kind == "ledger.anomaly" then events[#events + 1] = fields end
+    return realEmit(kind, fields)
+end
+local function count(resolution, mailId, reason)
+    local n = 0
+    for _, e in ipairs(events) do
+        if e.resolution == resolution and (mailId == nil or e.mailId == mailId) and (reason == nil or e.reason == reason) then n = n + 1 end
+    end
+    return n
+end
+local function letter(owner, qty, item) return M.add(owner, { item = item or "Base.Bandage", qty = qty or 1, kind = "shop" }) end
+assert(cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" }).ok)
+
+-- MD-1/2: a claims value that is not a table cannot stop a delivered claim halfway
+local a = player("md-a")
+local other = letter("md-a")
+a.modData[KEY] = { claims = { [other.id] = true }, pendingOuts = {} }
+local L1 = letter("md-a")
+local ok1, r1 = pcall(M.claim, a, L1.id)
+check(ok1 and r1.ok == true and L1.state == "claimed" and a.inventory.count("Base.Bandage") == 1,
+    "MD-1: a poisoned claims table cannot interrupt a claim: it is delivered and settled")
+local ok2, r2 = pcall(M.claim, a, L1.id)
+check(ok2 and r2.error == "already_claimed" and a.inventory.count("Base.Bandage") == 1,
+    "MD-2: the same letter is never handed over a second time")
+-- MD-3: the split path settles the child and the parent before anything a save holds is read
+local b = player("md-b", 0, 7)
+b.modData[KEY] = { claims = { [other.id] = true }, pendingOuts = {} }
+local L3 = letter("md-b", 3, "Base.Plank")
+local ok3, r3 = pcall(M.claim, b, L3.id)
+local child3 = ok3 and M.entryOf("md-b", r3.childMailId) or nil
+local overlap = false
+for _, t in ipairs(child3 and child3.units or {}) do
+    for _, u in ipairs(L3.units) do if t == u then overlap = true end end
+end
+check(child3 ~= nil and child3.state == "claimed" and L3.state == "ready" and #L3.units == 1 and not overlap
+    and b.inventory.count("Base.Plank") == 2,
+    "MD-3: a split claim settles its child and cuts the parent down to the rest, with no token in both")
+-- MD-4: a pendingOuts value that is not a table cannot break a list-out
+L.credit("md-a", "survivor", 1000, "SYSTEM_MINT", { requestId = "md-seed-a", reasonCode = "t" })
+local axe = instanceItem("Base.Axe"); a.inventory:AddItem(axe)
+a.modData[KEY].pendingOuts = { junk = 5 }
+local listed = cmd(a, "market.list", { itemId = axe.id, price = 10 })
+check(listed ~= nil and (listed.ok == true or type(listed.error) == "string"),
+    "MD-4: a junk pendingOuts value gets an ordinary answer to a list-out, not a crash")
+-- MD-5: a key this server never writes cannot stop the reconcile
+a.modData[KEY].pendingOuts = { [{}] = {} }
+local okR, done = pcall(M.reconcile, a)
+local tableKey = false
+for key in pairs(a.modData[KEY].pendingOuts) do if type(key) ~= "string" then tableKey = true end end
+check(okR and done == true and not tableKey and count("pending-key-dropped") == 1,
+    "MD-5: a table-keyed pending is dropped and the reconcile completes")
+
+-- MD-6: wiping the claims table and saying hello in the same session redelivers nothing
+local c = player("md-c", 5)
+fire("OnTickEvenPaused")                -- first sighting: this session's save loaded at 5 h
+c.hours = 6
+local L6 = letter("md-c", 2)
+assert(M.claim(c, L6.id).ok)
+local again6 = 0
+for _ = 1, 3 do
+    drop(c, "Base.Bandage")
+    c.modData[KEY] = { claims = {}, pendingOuts = {} }
+    hello(c)
+    again6 = again6 + c.inventory.count("Base.Bandage")
+end
+check(again6 == 0 and L6.state == "claimed", "MD-6: a wiped claims table and hello in the same session redeliver nothing")
+-- MD-13/7: a letter claimed before anchors existed is not redelivered, and says so once a session
+local d = player("md-d")
+local L7 = letter("md-d", 1)
+assert(M.claim(d, L7.id).ok)
+L7.claimHours, L7.claimSess, L7.claimLife = nil, nil, nil
+drop(d, "Base.Bandage")
+d = newSave(d, 3)
+hello(d)
+check(d.inventory.count("Base.Bandage") == 0
+    and count("redelivery-refused", L7.id, "unanchored") == 1,
+    "MD-13: a claimed letter with no anchor and no stamp is not redelivered, and the refusal names it unanchored")
+hello(d); hello(d)
+check(count("redelivery-refused", L7.id) == 1 and d.inventory.count("Base.Bandage") == 0,
+    "MD-7: one refusal event per letter per session, however often hello comes")
+-- MD-14: an unanchored letter whose stamped object is in the backpack is simply fine
+local L14 = letter("md-d", 1)
+assert(M.claim(d, L14.id).ok)
+L14.claimHours, L14.claimSess, L14.claimLife = nil, nil, nil
+hello(d)
+check(count("redelivery-refused", L14.id) == 0 and d.inventory.count("Base.Bandage") == 1,
+    "MD-14: an unanchored letter whose stamp is in the backpack raises nothing")
+
+-- MD-8/9/10: the save's hours against the claim's decide, once per session
+local e = player("md-e", 10)
+local L8 = letter("md-e", 2)
+assert(M.claim(e, L8.id).ok)
+drop(e, "Base.Bandage")
+e = newSave(e, 12)
+hello(e)
+check(e.inventory.count("Base.Bandage") == 0 and L8.state == "claimed",
+    "MD-8: a save written after the claim (more hours) gets nothing again")
+e = newSave(e, 8)
+hello(e)
+check(e.inventory.count("Base.Bandage") == 2, "MD-9: a save written before the claim (fewer hours) is handed the letter again")
+drop(e, "Base.Bandage")
+e.modData[KEY] = { claims = {}, pendingOuts = {} }
+hello(e)
+check(e.inventory.count("Base.Bandage") == 0, "MD-10: that redelivery is anchored to this session: wiping again gets nothing")
+-- MD-11: seventy claims used up, five logins: nothing comes back
+local f = player("md-f", 10)
+for _ = 1, 70 do
+    local l = letter("md-f", 1)
+    assert(M.claim(f, l.id).ok)
+end
+drop(f, "Base.Bandage")
+local again11 = 0
+for i = 1, 5 do
+    f = newSave(f, 10 + i)
+    hello(f)
+    again11 = again11 + f.inventory.count("Base.Bandage")
+end
+check(again11 == 0, "MD-11: seventy claimed and used letters stay used over five logins")
+-- MD-12: equal hours cannot tell which came first: nothing is redelivered, and it says tie
+local g = player("md-g", 10)
+local L12 = letter("md-g", 1)
+assert(M.claim(g, L12.id).ok)
+drop(g, "Base.Bandage")
+g = newSave(g, 10)
+hello(g)
+check(g.inventory.count("Base.Bandage") == 0 and count("redelivery-refused", L12.id, "tie") == 1,
+    "MD-12: a save at exactly the claim's hours is not handed it again, and the refusal says tie")
+
+-- MD-15: a pending of mine naming another account's letter cannot close it
+local v = player("md-v")
+local V1 = letter("md-v", 1)
+local h = player("md-h")
+local forged = tostring(prev.epoch) .. ":" .. tostring(prev.loadedSeq + 1)
+h.modData[KEY] = { pendingOuts = { [forged] = { protocol = 2, epoch = prev.epoch, seq = prev.loadedSeq + 1,
+    snapshot = { type = "Base.Bandage" }, origins = { { src = "mail", mailId = V1.id, owner = "md-v", unit = V1.units[1] } } } } }
+hello(h)
+check(V1.state == "ready" and M.claim(v, V1.id).ok == true and v.inventory.count("Base.Bandage") == 1,
+    "MD-15: another account's ready letter stays ready and its owner claims it")
+-- MD-16/17: a witness written into a save - rolled-back epoch or this one - closes nothing
+local V2 = letter("md-v", 1)
+v.modData[KEY] = { claims = { [V2.id] = { epoch = prev.epoch, seq = prev.loadedSeq + 1 } }, pendingOuts = {} }
+hello(v)
+check(V2.state == "ready" and M.claim(v, V2.id).ok == true and v.inventory.count("Base.Bandage") == 2,
+    "MD-16: a forged witness with a rolled-back epoch in a victim's save does not close the victim's letter")
+local V3 = letter("md-v", 1)
+v.modData[KEY] = { claims = { [V3.id] = { epoch = S.modData().meta.epoch, seq = 1 } }, pendingOuts = {} }
+hello(v)
+check(V3.state == "ready" and (v.modData[KEY].claims == nil), "MD-17: a current-epoch witness closes nothing and the table is dropped")
+
+-- MD-18/19: a new character without a death
+local i1 = player("md-i", 10)
+local L18 = letter("md-i", 1)
+assert(M.claim(i1, L18.id).ok)
+local i2 = fakePlayer("md-i"); i2.x, i2.y = 101, 200
+for n, p in ipairs(onlinePlayers) do if p == i1 then onlinePlayers[n] = i2 end end
+fire("OnNewGame", i2, nil)
+hello(i2)
+check(L18.state == "settled" and i2.inventory.count("Base.Bandage") == 0,
+    "MD-18: a new character (hours back below the claim) settles the old one's letter instead of receiving it")
+local j = player("md-j", 10)
+local L19 = letter("md-j", 1)
+assert(M.claim(j, L19.id).ok)
+drop(j, "Base.Bandage")
+local seat = fakePlayer("md-j")
+fire("OnNewGame", seat, nil)            -- a split-screen seat's character fires it under the main login
+hello(j)
+check(L19.state == "claimed" and L19.lifeBreak == nil and j.inventory.count("Base.Bandage") == 0,
+    "MD-19: the same character going on keeps its letter claimed and loses the mark")
+
+-- MD-20: a pending table no server path could fill is one record, not a flood
+local k = player("md-k")
+local big = {}
+for n = 1, Rc.PENDING_MAX + 1 do big["1600000000000:" .. n] = { protocol = 2, epoch = "1600000000000", seq = n } end
+k.modData[KEY] = { pendingOuts = big }
+hello(k)
+local pendHolds = 0
+for _, rec in ipairs(Rc.heldRecords("md-k")) do
+    if string.sub(rec.key, 1, 5) == "pend:" then pendHolds = pendHolds + 1 end
+end
+check(pendHolds == 1 and Rc.heldRecord("md-k", "pend:oversized") ~= nil,
+    "MD-20: an oversized pending table is one pend:oversized record and nothing in it is judged")
+-- MD-21/22: receipt-less pendings are held at a bounded rate, close when withdrawn, and block nothing
+local m = player("md-m")
+L.credit("md-m", "survivor", 1000, "SYSTEM_MINT", { requestId = "md-seed-m", reasonCode = "t" })
+local function pendHeldEvents()
+    local n = 0
+    for _, ev in ipairs(events) do
+        if ev.resolution == "held" and ev.username == "md-m" and string.sub(tostring(ev.key), 1, 5) == "pend:" then n = n + 1 end
+    end
+    return n
+end
+local out22 = nil
+for round = 1, 3 do
+    local batch = {}
+    for n = 1, Rc.PENDING_MAX do batch["md-junk:" .. round .. ":" .. n] = 5 end
+    m.modData[KEY] = { pendingOuts = batch }
+    hello(m)
+    if round == 1 then                  -- a full working set of the player's own claims is open now
+        local saw = instanceItem("Base.Saw"); m.inventory:AddItem(saw)
+        out22 = cmd(m, "market.list", { itemId = saw.id, price = 10 })
+    end
+end
+local open = 0
+for _, rec in ipairs(Rc.heldRecords("md-m")) do
+    if string.sub(rec.key, 1, 5) == "pend:" then open = open + 1 end
+end
+check(open <= Rc.PENDING_MAX and Rc.heldRecord("md-m", "pend:md-junk:1:1") == nil
+    and pendHeldEvents() <= Rc.CLAIMED_HOLDS_PER_HOUR + 1,
+    "MD-21: three batches of claimed pendings stay bounded, the withdrawn batch is closed, and the hold events are rate-limited")
+check(out22 ~= nil and out22.ok == true, "MD-22: the player's own claims never lock them out with held_limit_reached")
+
+-- MD-23/24: a world save older than the player save; the client claims before it says hello
+local function v2(name)
+    local p = player(name, 10)
+    local l = letter(name, 2)
+    local saved = {}
+    for key, val in pairs(l) do saved[key] = val end
+    saved.units = { l.units[1], l.units[2] }
+    assert(M.claim(p, l.id).ok)
+    local box = S.modData().mailbox.byOwner[name]
+    box.entries[l.id] = saved
+    box.unclaimed = box.unclaimed + 1
+    S.modData().mailbox.unclaimed = S.modData().mailbox.unclaimed + 1
+    return newSave(p, 12), l.id
+end
+local n2, id23 = v2("md-n")
+fire("OnTickEvenPaused")                -- first sighting, before any command
+check(M.entryOf("md-n", id23).state == "claimed" and cmd(n2, "mail.claim", { mailId = id23 }).error == "already_claimed"
+    and n2.inventory.count("Base.Bandage") == 2,
+    "MD-23: the first tick marks the letter claimed from the stamps the save loaded with")
+local o2, id24 = v2("md-o")
+local claimed24 = cmd(o2, "mail.claim", { mailId = id24 })
+check(claimed24 ~= nil and claimed24.error == "already_claimed" and o2.inventory.count("Base.Bandage") == 2,
+    "MD-24: a claim sent before hello is answered after a full reconcile: no second copy")
+X.emit = realEmit
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 LG：回滾帳本（P1，design.md §5 P1-1..P1-4）=====
+-- 世界回滾會忘掉的事（領取、session 開始、生命）寫在不回滾的帳本檔；啟動時收割。每一段都是
+-- 「真的操作 → 帳本落盤 → 世界回到快照（崩潰）→ 某一份玩家存檔上線」。
+io.write("scenario LG: what a world rollback forgot is judged from the ledger\n")
+;(function()
+local M, Mk, Rc = S.Mailbox, S.Market, S.Recovery
+local function deep(v)
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, x in pairs(v) do out[k] = deep(x) end
+    return out
+end
+local serial = 0
+local function cmd(who, name, args)
+    serial, nowMs = serial + 1, nowMs + 600
+    args = args or {}
+    args.requestId = "rl-" .. serial
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    for i = #sentCommands, 1, -1 do
+        local s = sentCommands[i]
+        if s.player == who and s.command == name and s.args.requestId == args.requestId then return s.args end
+    end
+    return {}
+end
+local function hello(who) nowMs = nowMs + 600; fire("OnClientCommand", EC.COMMAND_MODULE, "hello", who, {}) end
+local events = {}
+local realEmit = X.emit
+X.emit = function(kind, fields)
+    if kind == "ledger.anomaly" then events[#events + 1] = fields end
+    return realEmit(kind, fields)
+end
+local function count(resolution)
+    local n = 0
+    for _, e in ipairs(events) do if e.resolution == resolution then n = n + 1 end end
+    return n
+end
+local function world()
+    modDataStore[EC.MODDATA_KEY] = nil
+    files, sentCommands, sentItemPackets = {}, {}, {}
+    worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+    onlinePlayers = {}
+    nowMs = nowMs + 61000
+    fire("OnServerStarted")
+    local boss = fakePlayer("rl-boss"); boss.role = "admin"
+    onlinePlayers = { boss }
+    assert(cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" }).ok)
+    onlinePlayers = {}
+end
+-- one save of `name` comes online and is seen by one tick (its first sighting)
+local function login(name, hours, inv, data)
+    local p = fakePlayer(name); p.x, p.y, p.hours = 101, 200, hours
+    p.inventory, p.modData = inv or fakeInventory(1000), data or {}
+    for i = #onlinePlayers, 1, -1 do
+        if onlinePlayers[i]:getUsername() == name then table.remove(onlinePlayers, i) end
+    end
+    onlinePlayers[#onlinePlayers + 1] = p
+    fire("OnTickEvenPaused")
+    return p
+end
+-- a crash: what was flushed stays on disk, the world goes back to `snap`, nobody is online
+local function crash(snap)
+    proofSettle()
+    onlinePlayers = {}
+    modDataStore[EC.MODDATA_KEY] = deep(snap)
+    nowMs = nowMs + 1000
+    fire("OnServerStarted")
+end
+local function claimed(name, hours, qty, item)
+    world()
+    local p = login(name, hours)
+    local l = M.add(name, { item = item or "Base.Bandage", qty = qty or 2, kind = "shop" })
+    local snap = proofSnapshot()
+    return p, l, snap
+end
+
+-- LG-1: the world forgot a claim the loaded save has: marked claimed at the first tick
+local p, l, snap = claimed("rl-a", 10)
+assert(M.claim(p, l.id).ok)
+p.inventory.items = {}                  -- used up
+crash(snap)
+local p2 = login("rl-a", 12)
+check(M.entryOf("rl-a", l.id).state == "claimed" and cmd(p2, "mail.claim", { mailId = l.id }).error == "already_claimed"
+    and p2.inventory.count("Base.Bandage") == 0 and count("mark-claimed-ledger") == 1,
+    "LG-1: a claim the world lost but the save holds is closed from the ledger, and cannot be claimed again")
+-- LG-3: the save predates that claim: the letter is still owed, once
+p, l, snap = claimed("rl-b", 10)
+assert(M.claim(p, l.id).ok)
+crash(snap)
+p2 = login("rl-b", 5)
+check(M.entryOf("rl-b", l.id).state == "ready" and cmd(p2, "mail.claim", { mailId = l.id }).ok == true
+    and p2.inventory.count("Base.Bandage") == 2,
+    "LG-3: a save older than the lost claim never had the objects: the letter stays claimable")
+-- LG-4: that older save played on past the claim's hours - and the world lost the record of it
+p, l, snap = claimed("rl-c", 10)
+assert(M.claim(p, l.id).ok)
+crash(snap)
+login("rl-c", 5)                        -- the fork: a save below the claim was loaded
+crash(snap)
+p2 = login("rl-c", 20)
+check(M.entryOf("rl-c", l.id).state == "ready" and cmd(p2, "mail.claim", { mailId = l.id }).ok == true,
+    "LG-4: a save forked below the claim stays excluded however far it played, from the ledger's own start line")
+-- LG-child: a split child the world lost is carved out of its parent again
+world()
+p = login("rl-d", 10, fakeInventory(7))
+l = M.add("rl-d", { item = "Base.Plank", qty = 5, kind = "shop" })
+snap = proofSnapshot()
+local partial = M.claim(p, l.id)
+assert(partial.error == "delivery_partial" and partial.deliveredQty == 2)
+crash(snap)
+p2 = login("rl-d", 12)
+local child = M.entryOf("rl-d", partial.childMailId)
+local rest = cmd(p2, "mail.claim", { mailId = l.id })
+check(child ~= nil and child.state == "claimed" and #child.units == 2 and rest.ok == true
+    and p2.inventory.count("Base.Plank") == 3,
+    "LG-child: the lost child comes back claimed under its own id and the parent hands over only its three")
+-- LG-old-life: a claim and the death after it, both forgotten: the claim went with that character
+p, l, snap = claimed("rl-e", 10)
+assert(M.claim(p, l.id).ok)
+fire("OnCharacterDeath", p)
+crash(snap)
+p2 = login("rl-e", 1)
+check(M.entryOf("rl-e", l.id).state == "settled" and cmd(p2, "mail.claim", { mailId = l.id }).error == "already_claimed"
+    and p2.inventory.count("Base.Bandage") == 0,
+    "LG-old-life: a lost claim of a character that died since is settled, not handed to the next one")
+-- LG-11: the world went back to before a death only: that character's claim is settled too
+p, l, snap = claimed("rl-f", 10)
+assert(M.claim(p, l.id).ok)
+snap = proofSnapshot()
+fire("OnCharacterDeath", p)
+crash(snap)
+p2 = login("rl-f", 1)
+hello(p2)
+check(M.entryOf("rl-f", l.id).state == "settled" and p2.inventory.count("Base.Bandage") == 0,
+    "LG-11: a rollback to before the death settles the dead character's claim instead of redelivering it")
+
+-- list-outs: the save that comes back must really have had the objects taken out
+local function listed(name, hours)
+    world()
+    local seller = login(name, hours)
+    L.credit(name, "survivor", 1000, "SYSTEM_MINT", { requestId = name .. "-seed", reasonCode = "t" })
+    local axe = instanceItem("Base.Axe"); seller.inventory:AddItem(axe)
+    local before = proofSnapshot()
+    local out = cmd(seller, "market.list", { itemId = axe.id, price = 10 })
+    assert(out.ok, tostring(out.error))
+    return out.listingId, before, deep(seller.modData)
+end
+local function reason(name, id)
+    local rec = Rc.heldRecord(name, "pend:" .. id)
+    return rec and not rec.resolvedAt and rec.reason or nil
+end
+-- LG-6: both went back below the listing; the client replays the pending and drops the axe
+local id, before, replay = listed("rl-g", 10)
+crash(before)
+local g = login("rl-g", 5, fakeInventory(1000), deep(replay))
+hello(g); proofPump("rl-g")
+check(not Mk.listingExists(id) and reason("rl-g", id) == "pending_not_in_save",
+    "LG-6: a replayed pending on a save from before the listing is held, never rebuilt")
+local admin = fakePlayer("rl-boss"); admin.role = "admin"
+onlinePlayers[#onlinePlayers + 1] = admin
+local row = nil
+for _, r in ipairs(cmd(admin, "admin.recovery", { action = "list", username = "rl-g" }).records or {}) do
+    if r.key == "pend:" .. id then row = r end
+end
+check(row ~= nil and row.actions.discard == true and row.actions.restore == false,
+    "LG-admin: the administrator can close that record and cannot rebuild it")
+-- LG-7: the older save played on first, then replayed
+id, before, replay = listed("rl-h", 10)
+crash(before)
+local h1 = login("rl-h", 5)
+h1.inventory:AddItem(instanceItem("Base.Axe"))
+hello(h1)
+local h2 = login("rl-h", 20, fakeInventory(1000), deep(replay))
+hello(h2); proofPump("rl-h")
+check(not Mk.listingExists(id) and reason("rl-h", id) == "pending_not_in_save",
+    "LG-7: a save that loaded below the listing stays excluded after playing past it")
+-- LG-8: the ordinary crash - the player save is newer than the world save - still rebuilds
+id, before, replay = listed("rl-i", 10)
+crash(before)
+local i2 = login("rl-i", 12, fakeInventory(1000), deep(replay))
+hello(i2); proofPump("rl-i")
+check(Mk.listingExists(id) and i2.inventory.count("Base.Axe") == 0,
+    "LG-8: a save written after the listing gets its lost listing rebuilt")
+-- LG-9: within a tick of the commit the order cannot be told. A save is judged by its own hours
+-- even before its start line exists (an administrator acting on a player seen this very tick)
+local fresh = fakePlayer("rl-j"); fresh.hours = 10 + Rc.TICK_EPS_MIN / 2
+local first = { h = 10, life = 0, epoch = S.modData().meta.epoch, seq = S.modData().meta.seq }
+check(Rc.outOrder("rl-j", first, fresh) == "tie" and Rc.outOrder("rl-j", first, newSave(fresh, 5)) == "excluded",
+    "LG-9: a save within one tick of the commit is a tie, one below it is excluded, whether or not its start is on record")
+-- LG-10: listed, died, the pending rode to the new character, then the world lost all of it
+id, before = listed("rl-k", 10)
+local k1 = onlinePlayers[#onlinePlayers]
+fire("OnCharacterDeath", k1)
+local k2 = fakePlayer("rl-k"); k2.x, k2.y = 101, 200
+onlinePlayers[#onlinePlayers] = k2
+fire("OnNewGame", k2, nil)
+local carried = deep(k2.modData)
+crash(before)
+local k3 = login("rl-k", 1, fakeInventory(1000), carried)
+hello(k3); proofPump("rl-k")
+check(Mk.listingExists(id) and k3.inventory.count("Base.Axe") == 0,
+    "LG-10: a listing carried over a death is rebuilt for the new life, whose hours start again")
+-- LG-legacy: a journal line from before the anchors keeps the old judgement and says so
+id, before, replay = listed("rl-l", 10)
+proofSettle()
+local jf = files[proofJournalPathForOp("rl-l", id)]
+for n, line in ipairs(jf.lines) do
+    jf.lines[n] = string.gsub(string.gsub(string.gsub(line, ',"h":[^,}]*', ""), ',"life":[^,}]*', ""), ',"sess":"[^"]*"', "")
+end
+crash(before)
+local l2 = login("rl-l", 5, fakeInventory(1000), deep(replay))
+hello(l2); proofPump("rl-l")
+check(Mk.listingExists(id) and count("journal-unanchored") == 1,
+    "LG-legacy: an unanchored journal line is judged as before and reported once")
+
+-- LG-12/13: the session's hours come from its first tick; the tie band from the tick step
+world()
+local q = login("rl-m", 3)
+q.hours = 4
+hello(q)
+check(Rc.session(q).h0 == 3, "LG-12: a session's save hours are taken at its first tick, not at its first command")
+fire("OnTickEvenPaused")               -- one step of 1 h (3 -> 4) seen by the probe
+q.hours = 4.5
+fire("OnTickEvenPaused")               -- then a smaller one
+check(Rc.tickEps() == 1, "LG-13: the tie band follows the largest per-tick hours step seen")
+X.emit = realEmit
+onlinePlayers = {}
 end)()
 
 io.write("\n")
