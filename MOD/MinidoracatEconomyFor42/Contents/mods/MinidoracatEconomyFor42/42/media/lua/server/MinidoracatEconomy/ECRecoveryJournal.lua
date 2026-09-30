@@ -325,7 +325,9 @@ end
 -- (same budget, same fence, same month layout as the receipts). No forced save, no flush: the
 -- caller keeps its receipt either way, and a false return is an admission that the evidence is
 -- NOT durable - never a silent success.
-function J.record(username, id, receipt, replay)
+-- `anchor` = { h, life, sess } of the save the objects left (R.beginOut), for R.outOrder; a
+-- recovery re-commit has none. None of the three is a MATCH_FIELD: contentKey is unchanged.
+function J.record(username, id, receipt, replay, anchor)
     if type(username) ~= "string" or username == "" then return false, "invalid_args" end
     if type(id) ~= "string" or id == "" then return false, "invalid_args" end
     if type(receipt) ~= "table" or type(replay) ~= "table" then return false, "invalid_args" end
@@ -353,6 +355,10 @@ function J.record(username, id, receipt, replay)
         outAt = receipt.at, epoch = receipt.epoch, seq = receipt.seq,
         replay = wire,
     }
+    if type(anchor) == "table" and finiteNumber(anchor.h) then
+        line.h, line.life = anchor.h, finiteNumber(anchor.life) and anchor.life or 0
+        line.sess = type(anchor.sess) == "string" and anchor.sess or nil
+    end
     local encoded
     local ok = pcall(function() encoded = EC.jsonEncode(line) end)
     if not ok or type(encoded) ~= "string" or encoded == "" then
@@ -459,7 +465,8 @@ local function readLine(entry, username)
     end
     return { epoch = entry.epoch, seq = entry.seq, outAt = entry.outAt,
         kind = type(entry.kind) == "string" and entry.kind or entry.replay.kind,
-        replay = entry.replay, key = contentKey(entry.replay) }
+        replay = entry.replay, key = contentKey(entry.replay),
+        h = finiteNumber(entry.h) and entry.h or nil, life = finiteNumber(entry.life) and entry.life or nil }
 end
 
 -- ---------- the chain ----------
@@ -471,7 +478,9 @@ local function addLine(state, line)
     if state.bad or state.owner then return end
     local last = state.last
     if last == nil then
-        state.last, state.count = line, 1
+        -- the first line of the chain is the original transfer: its anchor is the one that says
+        -- which saves had the objects taken out (R.outOrder)
+        state.last, state.first, state.count = line, line, 1
     elseif line.epoch == last.epoch and line.seq == last.seq then
         -- Same commit point: an identical rewrite is idempotent and says nothing new. Different
         -- content under one commit point is a contradiction, and picking one would be a guess.
@@ -502,6 +511,7 @@ local function detailOf(res, id)
         serverEpoch = res.epoch, serverSeq = res.seq }
     if res.record then out.record = copyValue(res.record, 0) end
     if res.previous then out.previous = copyValue(res.previous, 0) end
+    if res.first then out.first = copyValue(res.first, 0) end
     return out
 end
 
@@ -755,7 +765,8 @@ local function finishRead(job, reply)
                 putResult(acct, id, { askedKey = want.key, matched = state.matched == true,
                     record = state.last.replay, previous = state.last.kind == "discard" and state.previous or nil,
                     epoch = state.last.epoch, seq = state.last.seq, outAt = state.last.outAt,
-                    chain = state.count }, now)
+                    chain = state.count, first = { h = state.first.h, life = state.first.life,
+                        epoch = state.first.epoch, seq = state.first.seq } }, now)
             end
         end
     end
@@ -878,6 +889,50 @@ end
 
 function J.init()
     accounts, queue, queued, notifyQueue, readers, lastSweep = {}, {}, {}, {}, 0, 0
+end
+
+-- ---------- rollback ledger (moddata trust boundary, ECRecovery "player sessions") ----------
+--
+--   MinidoracatEconomy/recovery/ledger/<epoch>.json    NDJSON, one file per server process
+--   {"t":"recovery.ledger","v":1,"k":"claim","l":login,"m":mailId,"o":owner,"s":claimSeq,
+--    "h":hours,"life":n,"p":parentMailId?,"u":[token...]?}
+--   {"t":"recovery.ledger","v":1,"k":"start","l":login,"s":seq,"h":h0,"life":n}
+--   {"t":"recovery.ledger","v":1,"k":"life","l":login,"s":seq,"life":n}
+-- Written through the export queue (same order and budget as every other line; a line still
+-- queued at a crash is lost, which only ever costs the conservative answer). Read back
+-- synchronously once per start, before any player connects (ECMailbox harvest): the lines of an
+-- epoch above the seq the next start loaded are exactly what the world rollback forgot.
+J.LEDGER_TYPE = "recovery.ledger"
+J.LEDGER_LINES_MAX = 200000
+
+function J.ledgerPath(epoch)
+    return X.ROOT .. "/recovery/ledger/" .. tostring(epoch) .. ".json"
+end
+
+function J.ledger(fields)
+    local md = S.modData()
+    if md == nil or type(fields) ~= "table" then return end
+    fields.t, fields.v = J.LEDGER_TYPE, 1
+    local ok, line = pcall(EC.jsonEncode, fields)
+    if ok and type(line) == "string" then X.enqueue(J.ledgerPath(md.meta.epoch), line)
+    else EC.log("recovery ledger line not encoded: " .. tostring(fields.k)) end
+end
+
+-- fn(row) for every decodable ledger row of one epoch; a missing file is simply no rows.
+function J.eachLedgerRow(epoch, fn)
+    local reader = nil
+    pcall(function() reader = getFileReader(J.ledgerPath(epoch), false) end)
+    if not reader then return end
+    local ok, err = pcall(function()
+        for _ = 1, J.LEDGER_LINES_MAX do
+            local line = reader:readLine()
+            if line == nil then return end
+            local row = EC.jsonDecode(line)
+            if type(row) == "table" and row.t == J.LEDGER_TYPE then fn(row) end
+        end
+    end)
+    pcall(function() reader:close() end)
+    if not ok then EC.log("recovery ledger " .. tostring(epoch) .. " read stopped: " .. tostring(err)) end
 end
 
 S.RecoveryJournal = J

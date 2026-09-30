@@ -198,6 +198,13 @@ function S.onlineNames()
     return out
 end
 
+-- Every online seat as the engine lists it, verified or not: ECRecovery's per-tick first
+-- sighting keys a session by the player object before any name is trusted (it asks S.login
+-- itself before anything is written for a name).
+function S.seats()
+    return getOnlinePlayers()
+end
+
 -- Push pattern (spec 19.2): a module that changes player-visible state pushes the fresh snapshot
 -- itself - S.reply to one player, S.broadcast for a shared table, S.forEachOnline when every
 -- player needs a per-player shaped copy (rewards.state, shop.list). Clients register
@@ -566,6 +573,9 @@ function S.dispatch(module, command, player, args)
     if throttled(username, command, EC.now()) then
         return
     end
+    -- No command may act before this session's save has been matched against the world once
+    -- (ECMailbox: a claim sent before hello would otherwise take a letter the save already has).
+    if command ~= "hello" and S.ensureReconciled then S.ensureReconciled(player) end
     local ok, err = pcall(handler, player, args or {})
     if not ok then
         EC.log("command " .. tostring(command) .. " from " .. tostring(username) .. " failed: " .. tostring(err))

@@ -1561,7 +1561,10 @@ A.RECOVERY_JOURNAL_REASONS = { journal_pending = true, journal_missing = true,
     admin_discard_rolledback = true,
     -- the objects moved between the scan the evidence was matched against and now: a
     -- conservative hold, and counter-evidence rather than an absence of it
-    source_state_changed = true }
+    source_state_changed = true,
+    -- the save this player loaded is older than the transfer (R.outOrder): it still had the
+    -- objects, so a rebuild would be a second copy; closable, never rebuildable
+    pending_not_in_save = true }
 
 -- restorable as this file must read it: an explicit false is a no, and a journal state that
 -- does not say yes is a no as well. Only a pre-journal judgement, which carries no flag at
@@ -1731,6 +1734,7 @@ local function recoveryRow(username, rec, scan, pdata)
     elseif type(rec.opId) == "string" and (A.RECOVERY_MANUAL_REASONS[rec.reason]
         or A.RECOVERY_JOURNAL_REASONS[rec.reason] or rec.reason == "receipt_forgotten") then
         local pend = pdata and pdata.pendingOuts[rec.opId] or nil
+        if type(pend) ~= "table" then pend = nil end
         local judged = pend and scan and Rcv.judgePending(username, rec.opId, pend, scan) or nil
         -- A line found under this operation id that belongs to *another account* is evidence,
         -- and it is evidence against this claim: the id is known and it is not this account's.

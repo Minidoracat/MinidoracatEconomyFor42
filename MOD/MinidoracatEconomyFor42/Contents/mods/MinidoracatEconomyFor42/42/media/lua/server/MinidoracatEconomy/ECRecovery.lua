@@ -86,9 +86,16 @@ R.HELD_TTL_MS = 7 * 24 * 3600000   -- resolved held records are kept this long f
 R.HELD_LIMIT = 64
 R.SCAN_DEPTH = 3              -- backpack plus three levels of carried bags
 R.RECLAIMS_MAX = 200          -- reclaimed copies an administrator can still restore; oldest dropped
+R.TICK_EPS_MIN = 0.01         -- game hours: the narrowest tie band a save/commit comparison uses
+R.EPS_WINDOW_MS = 60000       -- the per-tick hours step is the largest seen over about this long
+R.STARTS_MAX = 128            -- session starts kept per login name
+R.CLAIMED_HOLDS_PER_HOUR = 64 -- new receipt-less pend: holds one login may open per hour
 
 local md = nil
 local reserved, reservedCount, consumedIndex = {}, 0, {}
+-- Process memory of the player sessions (see "player sessions" below).
+local sessions, outAnchors, claimedHourly, unanchoredNoted = {}, {}, {}, {}
+local epsProbe, epsProbeH, epsNow, epsPrev, epsAt = nil, nil, 0, 0, 0
 
 -- ---------- resume tickets for cold proof reads ----------
 --
@@ -304,8 +311,14 @@ function R.init(root)
     if type(rec.floorAt) ~= "number" then rec.floorAt = 0 end
     if type(rec.floorCount) ~= "number" then rec.floorCount = 0 end
     if type(rec.reclaims) ~= "table" then rec.reclaims = {} end
+    -- lives[login] = { life, starts[] }; lost[login][mailId] = a claim the world lost (ECMailbox)
+    if type(rec.lives) ~= "table" then rec.lives = {} end
+    if type(rec.lost) ~= "table" then rec.lost = {} end
     root.recovery = rec
     reserved, reservedCount, consumedIndex = {}, 0, {}
+    -- a new process has no player objects yet: every session starts over
+    sessions, outAnchors, claimedHourly, unanchoredNoted = {}, {}, {}, {}
+    epsProbe, epsProbeH, epsNow, epsPrev, epsAt = nil, nil, 0, 0, 0
     for _, receipt in pairs(rec.ops) do indexReceipt(receipt) end
 end
 
@@ -355,6 +368,9 @@ end
 
 -- ---------- player save ----------
 
+-- The retired claim-witness table (`claims`) is dropped on sight: the client can replace this
+-- whole table (ObjectModDataPacket.java:61, KahluaTableImpl.java:292-294), so nothing it holds
+-- decides a delivery any more. Only pendingOuts stays - as a pointer that makes the server look.
 function R.playerData(player)
     local t = player:getModData()
     local p = t[EC.PLAYER_MODDATA_KEY]
@@ -362,7 +378,7 @@ function R.playerData(player)
         p = {}
         t[EC.PLAYER_MODDATA_KEY] = p
     end
-    if type(p.claims) ~= "table" then p.claims = {} end
+    p.claims = nil
     if type(p.pendingOuts) ~= "table" then p.pendingOuts = {} end
     return p
 end
@@ -586,9 +602,28 @@ function R.regroupUnitHolds(username, mailId, groupKey)
     return n
 end
 
+-- A pend: record with no receipt behind it is the player's own claim about an operation (its
+-- pendingOuts): nothing of the world backs it, so it never blocks new work (R.heldCount) and it
+-- is closed - and dropped, the event line keeps it - the moment the claim is withdrawn.
+local function claimedHold(key, rec)
+    return string.sub(key, 1, 5) == "pend:" and (rec.opId == nil or R.receipt(rec.opId) == nil)
+end
+R.claimedHold = claimedHold
+
 function R.resolveObserved(username, playerData, scan)
     if scan.failed then return end
     local owner = ownerRec(username, false)
+    local gone = {}
+    for key, held in pairs(owner and owner.held or {}) do
+        if not held.resolvedAt and held.opId ~= nil and claimedHold(key, held)
+            and playerData.pendingOuts[held.opId] == nil then
+            gone[#gone + 1] = key
+        end
+    end
+    for _, key in ipairs(gone) do
+        R.resolveHold(username, key, "pending_gone")
+        owner.held[key] = nil
+    end
     for key, held in pairs(owner and owner.held or {}) do
         if not held.resolvedAt then
             local unit = held.unit
@@ -673,9 +708,36 @@ function R.removeUnit(username, key, row, fields)
     return true
 end
 
-function R.heldCount(username)
+-- `traceable` counts only what the server itself can stand behind: the player's own claims
+-- (claimedHold) are left out, so a flood of them cannot lock a player - or a victim whose save
+-- someone else wrote - out of new work (held_limit_reached).
+function R.heldCount(username, traceable)
     local o = ownerRec(username, false)
-    return o and o.heldOpen or 0
+    if not o then return 0 end
+    if not traceable then return o.heldOpen end
+    local n = 0
+    for key, rec in pairs(o.held) do
+        if not rec.resolvedAt and not claimedHold(key, rec) then n = n + 1 end
+    end
+    return n
+end
+
+-- How many new claimed holds this login may still open in this pass: at most PENDING_MAX open
+-- at once and CLAIMED_HOLDS_PER_HOUR new ones an hour (ECMailbox folds the rest into one
+-- pend:overflow record). Returns the room and the hourly counter the caller spends from.
+function R.claimedHoldRoom(username)
+    local hour = math.floor(EC.now() / 3600000)
+    local counter = claimedHourly[username]
+    if counter == nil or counter.hour ~= hour then
+        counter = { hour = hour, n = 0 }
+        claimedHourly[username] = counter
+    end
+    local open = 0
+    local o = ownerRec(username, false)
+    for key, rec in pairs(o and o.held or {}) do
+        if not rec.resolvedAt and claimedHold(key, rec) then open = open + 1 end
+    end
+    return math.min(R.PENDING_MAX - open, R.CLAIMED_HOLDS_PER_HOUR - counter.n), counter
 end
 
 function R.status(username)
@@ -685,6 +747,262 @@ function R.status(username)
     local durable = S.durableStatus()
     return { held = R.heldCount(username), open = type(pending) == "table" and EC.countKeys(pending) or 0,
         max = R.PENDING_MAX, durableSource = durable.source, durableStatus = durable.status, durableSeq = durable.seq }
+end
+
+-- ---------- player sessions and the rollback ledger (moddata trust boundary) ----------
+--
+-- The player's own modData is written by its client, wholesale: ObjectModDataPacket is handled
+-- on the server (ObjectModDataPacket.java:25-26), its load wipes and replaces the table
+-- (KahluaTableImpl.java:292-294) and objectType 2 resolves ANY online player
+-- (MovingObject.java:111-113). So no decision below reads it. What decides is server data:
+--   * a session is one server-side player object. Its h0 is the hoursSurvived the save was
+--     loaded with (IsoPlayer.java:1230), taken on the first tick the object is seen; the server
+--     only ever adds to it (GameTime.java:519, 540-546), so "save hours < claim hours" proves
+--     the save was written before the claim.
+--   * a claim is anchored on its letter (claimSess, claimHours, claimLife) in Global ModData.
+--   * a life is a character of one login name: the main seat's death, or a lifeBreak judged to
+--     be a new character, starts the next one (lives[login].life).
+--   * the ledger (ECRecoveryJournal, one file per epoch) keeps what a world rollback forgets:
+--     claims, session starts and lives, written at the moment they happen. Global ModData only
+--     reaches the disk with the world save (ServerMap.java:409); the file does not roll back.
+
+local function hoursOf(player)
+    local ok, h = pcall(function() return player:getHoursSurvived() end)
+    if ok and type(h) == "number" and h == h and h >= 0 and h < math.huge then return h end
+    return nil
+end
+
+local function ledger(fields)
+    local J = S.RecoveryJournal
+    if J ~= nil and type(J.ledger) == "function" then J.ledger(fields) end
+end
+
+-- Created by the per-tick first sighting (R.observeSessions); a lookup before that tick creates
+-- it on the spot. A late creation only makes h0 larger, which only ever withholds a delivery.
+function R.session(player)
+    local s = sessions[player]
+    if s == nil then
+        local seq = S.nextSeq()
+        s = { sid = EC.makeId(md.meta.epoch, seq), seq = seq, h0 = hoursOf(player), noted = {} }
+        sessions[player] = s
+    end
+    return s
+end
+
+-- The largest per-tick hours step seen over the last minute or two (fast-forward widens it), and
+-- never narrower than TICK_EPS_MIN. Hours advance by the same step for every player
+-- (GameTime.java:540-546), so one probe player is enough.
+function R.tickEps()
+    local eps = epsNow > epsPrev and epsNow or epsPrev
+    return eps > R.TICK_EPS_MIN and eps or R.TICK_EPS_MIN
+end
+
+local function lifeRec(login, create)
+    local rec = md.recovery.lives[login]
+    if type(rec) ~= "table" and create then
+        rec = { life = 0, starts = {} }
+        md.recovery.lives[login] = rec
+    end
+    return type(rec) == "table" and rec or nil
+end
+
+function R.life(login)
+    local rec = type(login) == "string" and md ~= nil and lifeRec(login, false) or nil
+    return rec and tonumber(rec.life) or 0
+end
+
+-- The next character of this login: the main seat died, or a lifeBreak was judged a new life.
+function R.newLife(login)
+    local rec = lifeRec(login, true)
+    rec.life = (tonumber(rec.life) or 0) + 1
+    ledger({ k = "life", l = login, s = S.nextSeq(), life = rec.life })
+    return rec.life
+end
+
+-- Harvest: a life change the world rolled back is still a life change.
+function R.raiseLife(login, life)
+    if type(login) ~= "string" or type(life) ~= "number" then return end
+    local rec = lifeRec(login, true)
+    if life > (tonumber(rec.life) or 0) then rec.life = life end
+end
+
+-- (e, s) after (epoch, seq)? Epochs are the start wall clock; unreadable order counts as after.
+local function later(e, s, epoch, seq)
+    local a, b = tonumber(e), tonumber(epoch)
+    if a == nil or b == nil then return true end
+    if a ~= b then return a > b end
+    return (tonumber(s) or 0) > (tonumber(seq) or 0)
+end
+R.later = later
+
+local function addStart(rec, start)
+    if type(rec.starts) ~= "table" then rec.starts = {} end
+    for _, st in ipairs(rec.starts) do
+        if st.e == start.e and st.s == start.s then return end
+    end
+    rec.starts[#rec.starts + 1] = start
+    if #rec.starts > R.STARTS_MAX then
+        EC.sortSafe(rec.starts, function(a, b) return later(b.e, b.s, a.e, a.s) end)
+        table.remove(rec.starts, 1)
+    end
+end
+
+-- A session of this login began: in the world (bounded, trimmed at start) and in the ledger.
+function R.noteStart(login, s)
+    s.life = R.life(login)
+    addStart(lifeRec(login, true), { e = md.meta.epoch, s = s.seq, h = s.h0, life = s.life })
+    ledger({ k = "start", l = login, s = s.seq, h = s.h0, life = s.life })
+end
+
+function R.harvestStart(login, start)
+    if type(login) == "string" then addStart(lifeRec(login, true), start) end
+end
+
+-- Starts only matter inside the bounded epoch history (R.verdict answers "unknown" beyond it).
+function R.trimStarts()
+    local keep, empty = { [md.meta.epoch] = true }, {}
+    for _, h in ipairs(md.meta.history) do keep[h.epoch] = true end
+    for login, rec in pairs(md.recovery.lives) do
+        local starts = {}
+        for _, st in ipairs(type(rec) == "table" and type(rec.starts) == "table" and rec.starts or {}) do
+            if keep[st.e] then starts[#starts + 1] = st end
+        end
+        if type(rec) ~= "table" or (#starts == 0 and (tonumber(rec.life) or 0) == 0) then
+            empty[#empty + 1] = login
+        else
+            rec.starts = starts
+        end
+    end
+    for _, login in ipairs(empty) do md.recovery.lives[login] = nil end
+end
+
+-- Did this life load a save at or below `bound` hours after (epoch, seq)? That session started
+-- from a save older than the claim or transfer at (epoch, seq), so every later save of that life
+-- may lack it, whatever hours it reached since. `inclusive` false leaves an equal start out.
+function R.forkedAfter(login, life, epoch, seq, bound, inclusive)
+    local rec = lifeRec(login, false)
+    for _, st in ipairs(rec and type(rec.starts) == "table" and rec.starts or {}) do
+        local h = tonumber(st.h) or -1
+        if (tonumber(st.life) or 0) == life and later(st.e, st.s, epoch, seq)
+            and (h < bound or (inclusive and h == bound)) then
+            return true
+        end
+    end
+    return false
+end
+
+-- The claims the world lost for one login (ECMailbox owns their meaning).
+function R.lostClaims(login, create)
+    local lost = md.recovery.lost
+    local mine = lost[login]
+    if type(mine) ~= "table" then
+        mine = nil
+        if create then mine = {}; lost[login] = mine end
+    end
+    return mine
+end
+
+-- The anchor of a claim. From evidence (a stamp, a reattached unit) the true claim moment is
+-- unknown, only that it is not after this save: 0 = "every save of this life has it". A live
+-- claim is also written to the ledger, so a world rollback cannot forget that it happened.
+function R.anchorClaim(entry, player, login, fromProof)
+    entry.claimSess = R.session(player).sid
+    entry.claimHours = (not fromProof) and hoursOf(player) or 0
+    entry.claimLife = R.life(login)
+    entry.lifeBreak = nil
+    if not fromProof then
+        local child = type(entry.parentMailId) == "string"
+        ledger({ k = "claim", l = login, m = entry.id, o = entry.owner, s = entry.claimSeq,
+            h = entry.claimHours, life = entry.claimLife, p = child and entry.parentMailId or nil,
+            u = child and entry.units or nil })
+    end
+end
+
+-- "contained" | "predates" | "tie" | "unanchored": may this save lack that claim?
+function R.claimOrder(entry, player)
+    local s = R.session(player)
+    if entry.claimSess ~= nil and entry.claimSess == s.sid then return "contained" end
+    local h = tonumber(entry.claimHours)
+    if h == nil or s.h0 == nil then return "unanchored" end
+    if s.h0 > h then return "contained" end
+    if s.h0 < h then return "predates" end
+    return "tie"
+end
+
+-- Is the transfer whose first journal line is `first` inside the save this login loaded?
+-- "contained" | "excluded" | "tie" | "unanchored" (a line written before anchors existed).
+-- Same life: the save's hours must be past the commit by more than a tick. Every life: no start
+-- of the transfer's life after its commit may have loaded a save at or below it (a fork).
+function R.outOrder(login, first, player)
+    local h = type(first) == "table" and tonumber(first.h) or nil
+    if h == nil then return "unanchored" end
+    local life, lifeNow, eps = tonumber(first.life) or 0, R.life(login), R.tickEps()
+    if life > lifeNow then return "excluded" end
+    if life == lifeNow then
+        local p = player or S.onlineLogin(login)
+        local h0 = p and R.session(p).h0 or nil
+        if h0 == nil then return "tie" end
+        if h0 < h - eps then return "excluded" end
+        if h0 <= h + eps then return "tie" end
+    end
+    if R.forkedAfter(login, life, first.epoch, first.seq, h + eps, true) then return "excluded" end
+    return "contained"
+end
+
+-- Once per tick (ECMailbox.onTick): every online object gets its session on the first tick it
+-- is seen, and `onFirst(player, login, session)` runs once its login name is verified (retried
+-- once a second until then). Cheap for the common case: one table lookup per player, plus one
+-- hours read of a single probe player for the tick step.
+function R.observeSessions(onFirst)
+    local players = S.seats()
+    if not players or not md then return end
+    local now = EC.now()
+    if now - epsAt >= R.EPS_WINDOW_MS then epsPrev, epsNow, epsAt = epsNow, 0, now end
+    local probeSeen = false
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        if p ~= nil then
+            local s = sessions[p] or R.session(p)
+            if p == epsProbe then
+                probeSeen = true
+                local h = hoursOf(p)
+                if h ~= nil and epsProbeH ~= nil and h - epsProbeH > epsNow then epsNow = h - epsProbeH end
+                epsProbeH = h
+            end
+            if not s.proved and (s.tryAt == nil or now - s.tryAt >= 1000) then
+                s.tryAt = now
+                local ok, login = pcall(S.login, p)
+                if ok and type(login) == "string" then
+                    local done, err = pcall(onFirst, p, login, s)
+                    if not done then EC.log("first sighting failed for " .. login .. ": " .. tostring(err)) end
+                end
+            end
+        end
+    end
+    if not probeSeen then
+        epsProbe = players:size() > 0 and players:get(0) or nil
+        epsProbeH = epsProbe and hoursOf(epsProbe) or nil
+    end
+end
+
+-- On the minute clock: forget the objects that left.
+function R.pruneSessions()
+    local players, online, gone = S.seats(), {}, {}
+    for i = 0, (players and players:size() or 0) - 1 do
+        local p = players:get(i)
+        if p ~= nil then online[p] = true end
+    end
+    for p in pairs(sessions) do
+        if not online[p] then gone[#gone + 1] = p end
+    end
+    for _, p in ipairs(gone) do sessions[p] = nil end
+end
+
+-- One event per operation per process for a journal line older than the anchors.
+function R.noteUnanchored(username, id)
+    if unanchoredNoted[id] then return end
+    unanchoredNoted[id] = true
+    X.emit("ledger.anomaly", { kind = "recovery", username = username, opId = id, resolution = "journal-unanchored" })
 end
 
 -- ---------- transfer receipts ----------
@@ -735,6 +1053,7 @@ end
 
 function R.releaseOut(id)
     if reserved[id] then reserved[id], reservedCount = nil, math.max(0, reservedCount - 1) end
+    outAnchors[id] = nil
 end
 
 -- `currency` and `tradeSchema` travel with a replayed operation: a listing, an auction or a
@@ -873,6 +1192,7 @@ function R.finishOut(username, id, rec, kind, ref)
         replay = R.copyReplay(rec),
     }
     ops[id] = receipt
+    local anchor = outAnchors[id]
     R.releaseOut(id)
     receipt.replay.epoch, receipt.replay.seq = receipt.epoch, receipt.seq
     rec.epoch, rec.seq = receipt.epoch, receipt.seq
@@ -887,7 +1207,7 @@ function R.finishOut(username, id, rec, kind, ref)
         X.emit("ledger.anomaly", { kind = "recovery", username = username, opId = id,
             resolution = "journal-unavailable" })
     else
-        local wrote, journalError = J.record(username, id, receipt, R.copyReplay(rec))
+        local wrote, journalError = J.record(username, id, receipt, R.copyReplay(rec), anchor)
         if wrote then
             receipt.journal = "queued"
         else
@@ -1607,7 +1927,10 @@ local function judgeRecord(username, id, pend, scan, opts)
         end
     else
         if #pend.origins > R.ORIGINS_MAX then out.action, out.reason = "hold", "pending_malformed"; return out end
-        for _, origin in ipairs(pend.origins) do origins[#origins + 1] = origin end
+        for _, origin in ipairs(pend.origins) do
+            if type(origin) ~= "table" then out.action, out.reason = "hold", "pending_malformed"; return out end
+            origins[#origins + 1] = origin
+        end
     end
     out.total = #origins
     if out.total == 0 then out.action, out.reason = "hold", "pending_malformed"; return out end
@@ -1830,7 +2153,7 @@ end
 --                  the rebuild, and when there is provably no record of ours at all - then
 --                  nothing contradicts the player's account, and an administrator may accept it
 --                  explicitly (`unproven`), which is never automatic.
-local function judgeSuccessor(username, id, replay, detail, scan, out)
+local function judgeSuccessor(username, id, replay, detail, scan, out, opts)
     out.source, out.replay, out.detail = "journal", replay, detail
     out.present, out.keys, out.validOrigins = {}, {}, {}
     out.valid, out.upstream, out.unknown, out.total = 0, 0, 0, 0
@@ -1921,6 +2244,19 @@ local function judgeSuccessor(username, id, replay, detail, scan, out)
         end
     end
     if discarded then out.action, out.reason = "hold", "admin_discard_rolledback" end
+    -- A rebuild is only right when the save this player loaded really had the objects taken
+    -- out: a save from before the transfer still had them, and a replayed pending plus a dropped
+    -- original would then be two (moddata trust boundary, R.outOrder).
+    if out.action == "restore" or out.action == "partial" then
+        local order = R.outOrder(username, detail.first, type(opts) == "table" and opts.player or nil)
+        out.saveOrder = order
+        if order == "excluded" or order == "tie" then
+            out.action, out.reason, out.discardable = "hold", "pending_not_in_save", true
+            out.restorable, out.preview = false, nil
+        elseif order == "unanchored" then
+            R.noteUnanchored(username, id)
+        end
+    end
     return out
 end
 
@@ -1934,10 +2270,10 @@ function R.judgeFromJournal(username, id, pend, scan, out, opts)
     local replay, reason, detail = J.lookup(username, id, pend)
     local found = type(detail) == "table" and detail.record or nil
     if reason == nil and type(replay) == "table" then
-        return judgeSuccessor(username, id, replay, detail, scan, out)
+        return judgeSuccessor(username, id, replay, detail, scan, out, opts)
     end
     if reason == "journal_mismatch" and type(found) == "table" then
-        out = judgeSuccessor(username, id, found, detail, scan, out)
+        out = judgeSuccessor(username, id, found, detail, scan, out, opts)
         -- A mismatched claim needs a human decision, not weaker source checks.
         if out.action ~= "hold" then out.action, out.reason = "hold", reason end
         return out
@@ -2029,7 +2365,7 @@ function R.beginOut(player, id, items, rec)
     if n < 1 or n > R.ORIGINS_MAX then
         return false, "recovery_capacity", detail("request_unit_count", { qty = n })
     end
-    local heldOpen = R.heldCount(username)
+    local heldOpen = R.heldCount(username, true)
     if heldOpen >= R.HELD_LIMIT then
         return false, "recovery_capacity", detail("held_limit_reached", { qty = heldOpen })
     end
@@ -2153,11 +2489,14 @@ function R.beginOut(player, id, items, rec)
     end
     local open = 0
     for pid, pend in pairs(p.pendingOuts) do
-        open = open + 1
-        for _, origin in ipairs(type(pend.origins) == "table" and pend.origins or {}) do
-            local key = originKey(origin)
+        -- a value this server never wrote (the player's table is the client's) is not an operation
+        if type(pend) == "table" then open = open + 1 end
+        for _, origin in ipairs(type(pend) == "table" and type(pend.origins) == "table" and pend.origins or {}) do
+            local key = type(origin) == "table" and originKey(origin) or nil
             local index = key and byKey[key] or nil
-            if index == nil and origin.nativeId ~= nil then index = byKey["n:" .. tostring(origin.nativeId)] end
+            if index == nil and type(origin) == "table" and origin.nativeId ~= nil then
+                index = byKey["n:" .. tostring(origin.nativeId)]
+            end
             if index then
                 local hit = origins[index]
                 return false, "recovery_conflict", detail("unit_in_pending_operation",
@@ -2179,7 +2518,7 @@ function R.beginOut(player, id, items, rec)
     end
     if open >= R.PENDING_MAX then
         for pid, pend in pairs(p.pendingOuts) do
-            if not pend.abortIncomplete and R.hasOut(pid) and R.verdict(pend.epoch, tonumber(pend.seq)) == "survived" then
+            if type(pend) == "table" and not pend.abortIncomplete and R.hasOut(pid) and R.verdict(pend.epoch, tonumber(pend.seq)) == "survived" then
                 p.pendingOuts[pid], open = nil, open - 1
             end
         end
@@ -2194,6 +2533,8 @@ function R.beginOut(player, id, items, rec)
         return false, err, detail(err == "recovery_capacity" and "receipt_capacity_reached"
             or "recovery_state_unavailable", { opId = id })
     end
+    -- The save hours the objects leave at, for the journal line finishOut writes (R.outOrder).
+    outAnchors[id] = { h = hoursOf(player), life = R.life(username), sess = R.session(player).sid }
     -- Name a native unit before the first handover; keep its engine id unchanged.
     for i, origin in ipairs(origins) do
         if origin.src == "native" and origin.unit == nil then
