@@ -436,12 +436,20 @@ end
 -- only an alive player with a valid name (not a system account) and SteamID, whose seat occupancy
 -- carries no rename evidence, and whom the one-account policy lets in; otherwise the name is nil.
 --
--- Rename evidence (Id.observe, this uptime): slots[onlineID] = { name, sid, seen, suspect, other }.
--- An occupancy is one name and one SteamID seen on a seat with gaps under Id.SLOT_GAP_MS; a new
--- one is suspect when the previous occupant had the same SteamID, another name and was seen
--- within Id.SLOT_GAP_MS (slot rule), or when OnNewGame made a character for another login of the
--- same SteamID within Id.NEWGAME_WINDOW_MS (newgame rule). The flag lasts as long as the occupancy:
--- waiting out the window does not clear it.
+-- Rename evidence (Id.observe, this uptime): slots[onlineID] = { name, sid, seen, dead, suspect,
+-- other }. An occupancy is one name and one SteamID seen on a seat with gaps under
+-- Id.SLOT_GAP_MS; a new one is suspect when the previous occupant had the same SteamID, another
+-- name, was seen within Id.SLOT_GAP_MS and had DIED (slot rule), or when OnNewGame made a character
+-- for another login of the same SteamID within Id.NEWGAME_WINDOW_MS (newgame rule). The slot rule
+-- needs the death: ConnectCoop refuses to replace a seat whose player exists alive
+-- (ConnectCoopPacket.java:69) and replaces only a dead one, keeping its onlineID (:91-100), so every
+-- rename on a seat follows a death there - while a player who logs out alive and comes back within
+-- the window as another login of the same Steam account (a new connection may reuse the onlineID)
+-- is an ordinary account switch. The dead player stays listed until replaced (GameServer.getPlayers
+-- :3572-3587 lists connection.players[] with an onlineId; disconnectPlayer at :94 removes it). `dead`
+-- is what the last observation saw, and OnCharacterDeath marks it at once (Id.onDeath), so a client
+-- that respawns renamed within the same second as its death does not beat the once-a-second scan.
+-- The flag lasts as long as the occupancy: waiting out the window does not clear it.
 -- ponytail: a seat that stays out of getOnlinePlayers longer than Id.SLOT_GAP_MS and comes back
 -- renamed more than Id.NEWGAME_WINDOW_MS after its CreatePlayer passes both rules; only "alive"
 -- and the one-account policy stand then. The import (strict mode) closes it for good.
@@ -502,6 +510,11 @@ local function alert(kind, name, sid, other)
     end
 end
 
+local function deadNow(player)
+    local ok, dead = pcall(function() return player:isDead() end)
+    return ok and dead == true
+end
+
 -- The seat's occupancy after seeing this player now (nil without an onlineID).
 function Id.observe(player, ms)
     local id = seatId(player)
@@ -510,19 +523,19 @@ function Id.observe(player, ms)
     local name, sid = S.claimedName(player), Id.sidOf(player)
     local r = slots[id]
     if r ~= nil and r.name == name and r.sid == sid and ms - r.seen <= Id.SLOT_GAP_MS then
-        r.seen = ms
+        r.seen, r.dead = ms, deadNow(player)
         return r
     end
     local other = nil
     if validSid(sid) then
         local ng = newGames[sid]
-        if r ~= nil and r.sid == sid and r.name ~= name and ms - r.seen <= Id.SLOT_GAP_MS then
+        if r ~= nil and r.dead and r.sid == sid and r.name ~= name and ms - r.seen <= Id.SLOT_GAP_MS then
             other = r.name
         elseif ng ~= nil and ng.name ~= name and ms - ng.at <= Id.NEWGAME_WINDOW_MS then
             other = ng.name
         end
     end
-    r = { name = name, sid = sid, seen = ms, suspect = other ~= nil, other = other }
+    r = { name = name, sid = sid, seen = ms, dead = deadNow(player), suspect = other ~= nil, other = other }
     slots[id] = r
     if other ~= nil and Id.steamMode() then
         -- a seat renamed back to the login bound to this very SteamID is its owner coming back:
@@ -531,6 +544,18 @@ function Id.observe(player, ms)
         if not (b and not b.reserved and b.sid == sid) then alert("rename", name, sid, other) end
     end
     return r
+end
+
+-- OnCharacterDeath (IsoGameCharacter.java:4874, and IsoAnimal.java:1141 for animals; zombies too):
+-- the main seat's occupancy is marked dead at once, observed first when the scan has not seen this
+-- name and SteamID on the seat yet. DoDeath fires the event before anything else
+-- (IsoGameCharacter.java:2024-2025), so the mark does not wait for isDead() to read true.
+function Id.onDeath(character)
+    if not instanceof(character, "IsoPlayer") or not Id.steamMode() then return end
+    local ok, seat = pcall(function() return character:getPlayerNum() end)
+    if not ok or seat ~= 0 then return end
+    local r = Id.observe(character)
+    if r ~= nil then r.dead = true end
 end
 
 -- The smallest (md.firstSeen or +inf, whitelist id or +inf, name bytes): the oldest economy
@@ -1381,5 +1406,6 @@ for _, fn in ipairs(later) do Events.OnNewGame.Remove(fn) end
 Events.OnNewGame.Add(Id.onNewGame)
 for _, fn in ipairs(later) do Events.OnNewGame.Add(fn) end
 Events.OnTickEvenPaused.Add(Id.onTick)
+Events.OnCharacterDeath.Add(Id.onDeath)
 
 return Id

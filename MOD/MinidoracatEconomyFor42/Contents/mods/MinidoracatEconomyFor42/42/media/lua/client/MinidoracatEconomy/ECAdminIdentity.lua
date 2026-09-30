@@ -383,29 +383,38 @@ end
 
 -- The one-account policy (IdentityMultiAccount) and status.multi: every Steam account with two or
 -- more bound logins, with its primary and what the policy makes of each other login. The server
--- caps both lists and says so; the counts are complete.
+-- caps both lists and says so; the counts are complete. The hint (enable IdentityMultiAccount, or
+-- merge) also follows a one_account alert: before an import a refused second login is never
+-- bound, so it is in no group and the alert is the only trace of it.
 function Page:multiLines(lines, s)
     local option = optionLabel("IdentityMultiAccount")
     lines[#lines + 1] = getText(T .. (s.multiAccount == true and "Admin_Id_PolicyMulti" or "Admin_Id_PolicyOne"), option)
-    local m = s.multi
-    if type(m) ~= "table" or (tonumber(m.steamIds) or 0) <= 0 then return end
-    lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Multi", numText(m.steamIds), numText(m.logins), numText(m.blocked))
-    local list = type(m.list) == "table" and m.list or {}
-    for _, g in ipairs(list) do
-        local members = type(g.members) == "table" and g.members or {}
-        local parts = {}
-        for _, mem in ipairs(members) do
-            parts[#parts + 1] = getText(T .. "Admin_Id_Member", tostring(mem.name), codeText("Admin_Id_State_", mem.state))
+    local refused = false
+    for _, a in ipairs(type(s.alerts) == "table" and s.alerts or {}) do
+        if a.kind == "one_account" then refused = true; break end
+    end
+    local m = type(s.multi) == "table" and s.multi or {}
+    local groups = tonumber(m.steamIds) or 0
+    if groups > 0 then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Multi", numText(m.steamIds), numText(m.logins), numText(m.blocked))
+        local list = type(m.list) == "table" and m.list or {}
+        for _, g in ipairs(list) do
+            local members = type(g.members) == "table" and g.members or {}
+            local parts = {}
+            for _, mem in ipairs(members) do
+                parts[#parts + 1] = getText(T .. "Admin_Id_Member", tostring(mem.name), codeText("Admin_Id_State_", mem.state))
+            end
+            local count = tonumber(g.count) or #members
+            if count > #members then parts[#parts + 1] = getText(T .. "Admin_Id_Truncated", tostring(#members), tostring(count)) end
+            lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeGroup", tostring(g.primary), table.concat(parts, ", "))
         end
-        local count = tonumber(g.count) or #members
-        if count > #members then parts[#parts + 1] = getText(T .. "Admin_Id_Truncated", tostring(#members), tostring(count)) end
-        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeGroup", tostring(g.primary), table.concat(parts, ", "))
+        if m.truncated or #list < groups then
+            lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#list), tostring(groups))
+        end
     end
-    local total = tonumber(m.steamIds) or #list
-    if m.truncated or #list < total then
-        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#list), tostring(total))
+    if groups > 0 or refused then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MultiHint", option, optionLabel("IdentityAutoMerge"))
     end
-    lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MultiHint", option, optionLabel("IdentityAutoMerge"))
 end
 
 -- status.alerts: the server's last identity alerts, newest first (this uptime only).

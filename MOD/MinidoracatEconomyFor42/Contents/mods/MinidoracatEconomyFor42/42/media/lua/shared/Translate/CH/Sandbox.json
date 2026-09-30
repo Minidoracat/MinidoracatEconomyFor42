@@ -31,7 +31,7 @@
   "Sandbox_MinidoracatEconomy_IdentityAutoMerge": "合併同一 Steam 帳號的登入名",
   "Sandbox_MinidoracatEconomy_IdentityAutoMerge_tooltip": "預設關閉：每次白名單匯入後仍會算出合併計畫，顯示在身分頁（與 identity/merge-plan.json），但不會合併。開啟後，綁定到同一個精確 SteamID 的登入名，在沒有擋點時會合併成一個經濟帳號（錢、每日上限、簽到、里程碑與未動過的信件）；第一輪在伺服器啟動時執行。合併無法在遊戲內還原。",
   "Sandbox_MinidoracatEconomy_IdentityMultiAccount": "允許同一 Steam 帳號使用多個經濟帳號",
-  "Sandbox_MinidoracatEconomy_IdentityMultiAccount_tooltip": "預設關閉：每個 Steam 帳號只能使用一個經濟帳號。同一個 Steam 帳號的其他登入帳號不會被經濟系統承認（已合併進主帳號的除外）；主帳號是最早使用經濟系統的那一個，身分頁會列出。開啟後，同一個 Steam 帳號的每個登入帳號各自是獨立的經濟帳號。想把它們變成同一個帳號，另一種做法是開啟「合併同一 Steam 帳號的登入名」（IdentityAutoMerge）。",
+  "Sandbox_MinidoracatEconomy_IdentityMultiAccount_tooltip": "預設關閉：每個 Steam 帳號只能使用一個經濟帳號（已合併進主帳號的登入帳號除外）。還沒匯入白名單時，第一個被看到的登入帳號就是主帳號，同一個 Steam 帳號的其他登入帳號不會被綁定；同一個 Steam 帳號綁定了多個登入帳號後（匯入白名單，或用另一個登入帳號建立新角色），改以最早使用經濟系統的登入帳號為準，決定後記錄下來不再變動（除非它改綁到別的 Steam 帳號），身分頁會列出。開啟後，同一個 Steam 帳號的每個登入帳號各自是獨立的經濟帳號；想把它們變成同一個帳號，另一種做法是開啟「合併同一 Steam 帳號的登入名」（IdentityAutoMerge）。",
   "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin": "貓幣存入比率（幾點積分換 1 貓幣）",
   "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin_tooltip": "Discord 積分存入遊戲時，幾點積分換成 1 枚貓幣（預設 1，即 1:1）。只是啟動時的預設值：管理員可在管理面板隨時調整，調整後版本號加一並同步給 Discord 端，新訂單才採用新比率。",
   "Sandbox_MinidoracatEconomy_CatPerOrderMin": "貓幣單筆存入下限",

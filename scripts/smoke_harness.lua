@@ -958,7 +958,7 @@ local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing one account (scenario MA, identity v2 step 2a)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 26   -- +26: first-sight binding, rename evidence, one account per Steam account, identity alerts (scenario FS)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 28   -- +28: first-sight binding, rename evidence, one account per Steam account, identity alerts (scenario FS)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16483,22 +16483,54 @@ check(fresh == "fs-vic" and bindsOf("fs-vic") == 1,
 local shared = alertOf("shared_steam", "fs-vic")
 check(shared ~= nil and shared.other == "fs-atk" and ringAudit("IDENTITY_ALERT", "fs-vic", "shared_steam") == 1,
     "with IdentityMultiAccount on, a second login of a bound Steam account is bound and recorded as a shared_steam alert")
+local W_ = mgT(125)
+local wa = fsPlayer("fs-wa", W_, 22)
+onlinePlayers = { boss, wa }
+tick()
+local waOk = S.login(wa) == "fs-wa"
+onlinePlayers = { boss }                                    -- wa logs out alive ...
+tick(30000)
+local wb = fsPlayer("fs-wb", W_, 22)                        -- ... and a new connection of the same Steam account gets the onlineID
+onlinePlayers = { boss, wb }
+local wbLogin = S.login(wb)
+check(waOk and wbLogin == "fs-wb" and bindsOf("fs-wb") == 1 and alertOf("rename", "fs-wb") == nil,
+    "an alive previous occupant with the same SteamID and another name is an account switch, not a rename: no alert, and first sight binds")
 local Y_ = mgT(120)
 local sam = fsPlayer("fs-sam", Y_, 20)
 onlinePlayers = { boss, sam }
 tick()
 local samOk = S.login(sam) == "fs-sam"
+sam.dead = true                                            -- the seat's player dies; the scan sees it
+tick()
 local sly = fsPlayer("fs-sly", Y_, 20)                      -- the same seat, respawned without CreatePlayer
 onlinePlayers = { boss, sly }
 tick(3000)
 local slyAlert = alertOf("rename", "fs-sly")
 check(samOk and S.login(sly) == nil and bindsOf("fs-sly") == 0 and slyAlert ~= nil and slyAlert.other == "fs-sam",
-    "slot rule: a seat whose previous occupant had the same SteamID and another name moments ago is refused, with a rename alert")
+    "slot rule: a seat whose previous occupant had the same SteamID, another name and died moments ago is refused, with a rename alert")
+sly.dead = true
+tick()
 local samBack = fsPlayer("fs-sam", Y_, 20)                  -- and respawned back to the seat's own login
 onlinePlayers = { boss, samBack }
 tick(3000)
 check(S.login(samBack) == "fs-sam" and alertOf("rename", "fs-sam") == nil,
     "a seat renamed back to the login bound to its own SteamID verifies by that binding and raises no rename alert")
+local V_ = mgT(127)
+local dan = fsPlayer("fs-dan", V_, 23)
+onlinePlayers = { boss, dan }
+tick()
+local danOk = S.login(dan) == "fs-dan"
+nowMs = nowMs + 200                                          -- within the same second: no scan in between
+-- DoDeath fires the event first (IsoGameCharacter.java:2024-2025): the handler marks the seat itself,
+-- whatever isDead() reads at that moment
+fire("OnCharacterDeath", dan)
+dan.dead = true
+local dx = fsPlayer("fs-dx", V_, 23)
+onlinePlayers = { boss, dx }
+local dxLogin = S.login(dx)
+local dxAlert = alertOf("rename", "fs-dx")
+check(danOk and dxLogin == nil and bindsOf("fs-dx") == 0 and dxAlert ~= nil and dxAlert.other == "fs-dan",
+    "OnCharacterDeath marks the seat dead at once: a renamed occupant judged before the next scan is still caught by the slot rule")
 local late = fsPlayer("fs-late", Y_, 21)                   -- another login of that Steam account, not judged yet
 onlinePlayers = { boss, samBack, late }
 sentCommands = {}
@@ -16597,7 +16629,8 @@ local st = lastSent("admin.identity") and lastSent("admin.identity").args.status
 local multi = st.multi or {}
 local g1 = multi.list and multi.list[1] or {}
 local m1 = g1.members or {}
-check(st.multiAccount == false and multi.steamIds == 2 and multi.logins == 4 and multi.blocked == 2
+-- (three Steam accounts: X_ fs-atk/fs-ax3, P_ fs-p1/fs-p2, and W_ fs-wa/fs-wb from the account switch)
+check(st.multiAccount == false and multi.steamIds == 3 and multi.logins == 6 and multi.blocked == 3
     and g1.primary == "fs-atk" and g1.count == 2 and m1[1].name == "fs-atk" and m1[1].state == "primary"
     and m1[2].name == "fs-ax3" and m1[2].state == "blocked" and multi.list[2].primary == "fs-p2"
     and type(st.alerts) == "table" and #st.alerts == st.alertCount and st.alerts[1].at >= st.alerts[#st.alerts].at,

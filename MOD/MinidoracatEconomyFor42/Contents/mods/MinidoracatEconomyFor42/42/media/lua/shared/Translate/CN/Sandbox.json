@@ -31,7 +31,7 @@
   "Sandbox_MinidoracatEconomy_IdentityAutoMerge": "合并同一 Steam 帐号的登录名",
   "Sandbox_MinidoracatEconomy_IdentityAutoMerge_tooltip": "预设关闭：每次白名单导入后仍会算出合并计划，显示在身分页（与 identity/merge-plan.json），但不会合并。打开后，绑定到同一个精确 SteamID 的登录名，在没有挡点时会合并成一个经济帐号（钱、每日上限、签到、里程碑与未动过的信件）；第一轮在服务器启动时运行。合并无法在游戏内还原。",
   "Sandbox_MinidoracatEconomy_IdentityMultiAccount": "允许同一 Steam 帐号使用多个经济帐号",
-  "Sandbox_MinidoracatEconomy_IdentityMultiAccount_tooltip": "预设关闭：每个 Steam 帐号只能使用一个经济帐号。同一个 Steam 帐号的其他登录帐号不会被经济系统承认（已合并进主帐号的除外）；主帐号是最早使用经济系统的那一个，身分页会列出。打开后，同一个 Steam 帐号的每个登录帐号各自是独立的经济帐号。想把它们变成同一个帐号，另一种做法是打开「合并同一 Steam 帐号的登录名」（IdentityAutoMerge）。",
+  "Sandbox_MinidoracatEconomy_IdentityMultiAccount_tooltip": "预设关闭：每个 Steam 帐号只能使用一个经济帐号（已合并进主帐号的登录帐号除外）。还没导入白名单时，第一个被看到的登录帐号就是主帐号，同一个 Steam 帐号的其他登录帐号不会被绑定；同一个 Steam 帐号绑定了多个登录帐号后（导入白名单，或用另一个登录帐号创建新角色），改以最早使用经济系统的登录帐号为准，决定后记录下来不再变动（除非它改绑到别的 Steam 帐号），身分页会列出。打开后，同一个 Steam 帐号的每个登录帐号各自是独立的经济帐号；想把它们变成同一个帐号，另一种做法是打开「合并同一 Steam 帐号的登录名」（IdentityAutoMerge）。",
   "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin": "猫币存入比率（几点积分换 1 猫币）",
   "Sandbox_MinidoracatEconomy_CatRatePointsPerCoin_tooltip": "Discord 积分存入游戏时，几点积分换成 1 枚猫币（缺省 1，即 1:1）。只是启动时的默认值：管理员可在管理面板随时调整，调整后版本号加一并同步给 Discord 端，新订单才采用新比率。",
   "Sandbox_MinidoracatEconomy_CatPerOrderMin": "猫币单笔存入下限",
