@@ -684,6 +684,27 @@ local function splitDelivered(player, o, entry, claimSeq, kept, ms, inPlace)
     return child
 end
 
+-- A claim of this letter - or of a split child cut from it (rec.p) - that the world lost, made by
+-- any login of this account whose save has not judged it yet. Merged logins share one mailbox,
+-- but a lost claim is judged only by the save of the login that made it (settleLostClaims marks
+-- the record judged; a claim a later harvest adds clears the mark). Until then that save may hold
+-- the items, so no login of the group takes the letter. A record whose claims are all excluded
+-- proves the letter is owed; records age out with their epoch (harvestLedger). Cheap: one small
+-- table per login of the group. Returns the login that has to be seen first, or nil.
+local function lostClaimPending(login, mailId)
+    for _, name in ipairs(S.groupOf(login)) do
+        for key, rec in pairs(R.lostClaims(name, false) or {}) do
+            if type(rec) == "table" and not rec.judged and (key == mailId or rec.p == mailId) then
+                if rec.over then return name end
+                for _, c in pairs(type(rec.claims) == "table" and rec.claims or {}) do
+                    if type(c) == "table" and not c.excluded then return name end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- Returns { ok = true, mailId, item, qty, deliveredQty, remainingQty } or
 -- { ok = false, error, deliveredQty, remainingQty, childMailId? } plus, when the room decided it
 -- (backpack_full, or a delivery_partial that took what fit), the numbers the player can act on:
@@ -700,6 +721,18 @@ function M.claim(player, mailId, prepared)
     local entry = o and type(mailId) == "string" and o.entries[mailId] or nil
     if not entry then return { ok = false, error = "unknown_mail" } end
     if entry.state ~= "ready" and entry.state ~= "claiming" then return { ok = false, error = "already_claimed" } end
+    -- a ledger file up to this letter's epoch could not be read: a claim of it the world lost may
+    -- be in the part nobody read, so it is not handed over until that epoch leaves the history
+    local gap = R.ledgerGap((EC.parseId(mailId)))
+    if gap then
+        anomaly(username, mailId, "claim-refused-ledger", { epoch = gap })
+        return { ok = false, error = "ledger_unreadable", mailId = mailId }
+    end
+    local waiting = lostClaimPending(login, mailId)
+    if waiting then
+        anomaly(username, mailId, "claim-refused-lost", { login = waiting })
+        return { ok = false, error = "lost_claim_pending", mailId = mailId }
+    end
     local ms = EC.now()
     local total = #availableUnits(entry)
     if total < 1 then return { ok = false, error = "already_claimed" } end
@@ -1020,9 +1053,32 @@ local function noteRefused(session, login, mailId, order)
     anomaly(login, mailId, "redelivery-refused", { reason = order })
 end
 
+-- A claimed letter the server will not hand over again by itself: it stays claimed, nothing is
+-- delivered and no life is raised, and one event per letter per process says why, with the item
+-- and the quantity, so an administrator reading the events can make it good by hand if the player
+-- reports it. No hold and no button: the letter goes with the claimed TTL like any other.
+local refusedOnce = {}
+local function refuseRedelivery(login, entry, reason, extra)
+    local key = login .. "|" .. entry.id
+    if refusedOnce[key] then return end
+    refusedOnce[key] = true
+    local fields = { reason = reason, item = entry.item, qty = #availableUnits(entry) }
+    for k, v in pairs(extra or {}) do fields[k] = v end
+    anomaly(login, entry.id, "redelivery-refused", fields)
+end
+
+-- The one entry of every automatic delivery of an already-claimed letter. A ledger file up to the
+-- letter's epoch that could not be read in full may hide the life that took it (the death line of
+-- R.newLife): hours cannot tell that character from this one, so the letter stays claimed - the
+-- same gap M.claim refuses on.
 local function redeliverOne(player, login, box, entry, ms)
     local avail = availableUnits(entry)
     if #avail == 0 then return false end
+    local gap = R.ledgerGap((EC.parseId(entry.id)))
+    if gap then
+        refuseRedelivery(login, entry, "ledger_unreadable", { epoch = gap })
+        return false
+    end
     local claimSeq = S.nextSeq()
     local proxy = { id = entry.id, owner = entry.owner, kind = entry.kind, item = entry.item,
         qty = #avail, units = avail, txId = entry.txId, snapshot = entry.snapshot,
@@ -1045,10 +1101,15 @@ end
 
 -- A claimed letter this login took, with no stamped object of it in this backpack, is handed over
 -- again only when its anchor proves this save was written before the claim (R.claimOrder
--- "predates"). A letter claimed by an older life of this login - or a lifeBreak that turns out
--- to be a new character (hours back below the claim) - went with that character and is settled.
+-- "predates"). A letter claimed by an older life of this login is settled: a life only ever ends
+-- with a death the server saw (M.onDeath, or its ledger line harvested after a rollback).
+-- A lifeBreak (M.onNewGame) proves nothing by itself: a character was created while this letter
+-- was claimed, but a split-screen seat fires the same event under this login, and a reconnect
+-- makes a new object and session for the same character (ServerPlayerDB.java:255-259,
+-- GameServer.java:2814). So a save that predates a marked claim is neither a new life nor owed
+-- the letter: it stays claimed and the refusal is written once (refuseRedelivery).
 local function redeliverMissing(player, login, account, scan, blockedLetters, ms)
-    local session, lifeNow, changed, newLife = R.session(player), R.life(login), false, false
+    local session, lifeNow, changed = R.session(player), R.life(login), false
     local todo = {}
     for _, box in ipairs(groupBoxes(account)) do
         for mailId, entry in pairs(box.entries) do
@@ -1061,19 +1122,21 @@ local function redeliverMissing(player, login, account, scan, blockedLetters, ms
     for _, item in ipairs(todo) do
         local entry = item.entry
         local order = R.claimOrder(entry, player)
-        if order == "predates" and entry.lifeBreak then
-            if not newLife then newLife, lifeNow = true, R.newLife(login) end
-            entry.state, entry.lifeBreak = "settled", nil
-            anomaly(login, entry.id, "settled-new-life")
-            changed = true
-        elseif tonumber(entry.claimLife) ~= nil and tonumber(entry.claimLife) < lifeNow then
+        local brk = entry.lifeBreak
+        if tonumber(entry.claimLife) ~= nil and tonumber(entry.claimLife) < lifeNow then
             entry.state, entry.lifeBreak = "settled", nil
             anomaly(login, entry.id, "settled-old-life")
             changed = true
+        elseif order == "predates" and brk ~= nil then
+            refuseRedelivery(login, entry, "lifebreak_unproven")
         elseif order == "predates" then
             changed = redeliverOne(player, login, item.box, entry, ms) or changed
         else
-            if order == "contained" then entry.lifeBreak = nil end
+            -- a later object of this login holding the claim is the same character: the mark is
+            -- spent. The object online when it was made proves nothing.
+            if order == "contained" and (brk == true or (type(brk) == "string" and brk ~= session.sid)) then
+                entry.lifeBreak = nil
+            end
             noteRefused(session, login, entry.id, order)
         end
     end
@@ -1082,18 +1145,19 @@ end
 
 -- ---------- claims the world lost (rollback ledger, harvested at start) ----------
 
--- The letter a lost claim is about, if the world still owes it: the whole letter still counted,
--- or - for a split child the rollback took - its parent, still holding every token of it.
-local function lostTarget(c, mailId)
-    local holder = c.o or S.accountOf(c.l)
+-- The letter the lost claims of `rec` are about, if the world still owes it: the whole letter
+-- still counted, or - for a split child the rollback took - its parent, still holding every
+-- token of it.
+local function lostTarget(rec, mailId)
+    local holder = rec.o or S.accountOf(rec.l)
     local entry = M.entryOf(holder, mailId)
     if entry then return counted(entry.state) and entry or nil, nil end
-    if type(c.p) ~= "string" or type(c.u) ~= "table" or #c.u == 0 then return nil, nil end
-    local parent = M.entryOf(holder, c.p)
+    if type(rec.p) ~= "string" or type(rec.u) ~= "table" or #rec.u == 0 then return nil, nil end
+    local parent = M.entryOf(holder, rec.p)
     if not parent or not counted(parent.state) then return nil, nil end
     local avail = {}
     for _, t in ipairs(availableUnits(parent)) do avail[t] = true end
-    for _, t in ipairs(c.u) do
+    for _, t in ipairs(rec.u) do
         if not avail[t] then return nil, nil end
     end
     return nil, parent
@@ -1101,13 +1165,13 @@ end
 
 -- The child the rollback took, back under its own id with its exact tokens (the stamps in the
 -- save name it), cut out of the parent exactly as splitDelivered did.
-local function carveChild(parent, mailId, c, login, ms)
-    local child = M.add(parent.owner, { kind = parent.kind, item = parent.item, qty = #c.u,
+local function carveChild(parent, mailId, rec, login, ms)
+    local child = M.add(parent.owner, { kind = parent.kind, item = parent.item, qty = #rec.u,
         txId = parent.txId, price = parent.price, currency = parent.currency, seller = parent.seller,
-        snapshot = parent.snapshot, listingId = parent.listingId, parentMailId = parent.id, units = c.u }, mailId)
+        snapshot = parent.snapshot, listingId = parent.listingId, parentMailId = parent.id, units = rec.u }, mailId)
     if not child then return nil end
     local take, left = {}, {}
-    for _, t in ipairs(c.u) do take[t] = true end
+    for _, t in ipairs(rec.u) do take[t] = true end
     for _, t in ipairs(letterUnits(parent)) do
         if not take[t] then left[#left + 1] = t end
     end
@@ -1120,41 +1184,61 @@ local function carveChild(parent, mailId, c, login, ms)
     return child
 end
 
--- At this login's first sighting, right after its own start line: every claim the world lost for
--- it is settled against the save that just loaded. The same life with no start at or after the
--- claim that loaded a save below the claim's hours - this session's own start included - means
--- the save has the objects, so the letter is claimed (a tie counts as having them: the other
--- answer is a second copy). A claim of an older life went with that character: settled.
--- Otherwise the save never had them: the letter stays ready, and the record remembers it.
--- A record is marked done, never deleted, until its epoch leaves the history (harvestLedger).
+-- Every lost claim of one letter, judged against the save that just loaded. One the save holds -
+-- the same life, no start at or after it that loaded a save below its hours (this session's own
+-- start included), or a fork nobody can rule out any more (trimmed starts) - makes the letter
+-- claimed under that claim; a claim of an older life went with that character (settled); only
+-- when every claim is one the save never had does the letter stay ready. A letter with more lost
+-- claims than LOST_PER_LETTER is claimed outright: nothing past the bound was kept to judge.
+-- Returns state ("claimed" | "settled" | nil), the claim to anchor on, and why.
+M.LOST_PER_LETTER = 8
+local function judgeLost(login, rec, lifeNow)
+    if rec.over then return "claimed", nil, "lost-claims-overflow" end
+    local best, old, why = nil, nil, nil
+    for _, c in pairs(rec.claims) do
+        local life = tonumber(c.life) or 0
+        if not c.excluded then
+            if life < lifeNow then old = c
+            elseif life > lifeNow then c.excluded = true
+            else
+                local fork = R.forkedAfter(login, life, c.e, c.s, c.h, false)
+                if fork == true then c.excluded = true
+                else
+                    if best == nil or R.later(c.e, c.s, best.e, best.s) then best = c end
+                    if fork == "unknown" then why = "lost-claim-fork-unknown" end
+                end
+            end
+        end
+    end
+    if best then return "claimed", best, why end
+    if old then return "settled", old, nil end
+    return nil
+end
+
+-- At this login's first sighting, right after its own start line: the claims the world lost for
+-- it are settled against the save that just loaded (judgeLost). The records stay, judged again
+-- by a later start, until their epoch leaves the history (harvestLedger).
 local function settleLostClaims(login, ms)
     local lost = R.lostClaims(login, false)
     if lost == nil then return end
     local lifeNow = R.life(login)
-    for mailId, c in pairs(lost) do
-        local entry, parent = nil, nil
-        if not c.done then entry, parent = lostTarget(c, mailId) end
-        local life = tonumber(c.life) or 0
-        if entry == nil and parent == nil then
-            c.done = true
-        elseif not c.excluded then
-            local state = "claimed"
-            if life < lifeNow then state = "settled"
-            elseif life > lifeNow or R.forkedAfter(login, life, c.e, c.s, c.h, false) then
-                state = nil
-            end
-            if state == nil then
-                c.excluded = true
-            else
-                entry = entry or carveChild(parent, mailId, c, login, ms)
+    for mailId, rec in pairs(lost) do
+        local entry, parent = lostTarget(rec, mailId)
+        if entry ~= nil or parent ~= nil then
+            local state, c, why = judgeLost(login, rec, lifeNow)
+            if state ~= nil then
+                entry = entry or carveChild(parent, mailId, rec, login, ms)
                 local box = entry and md.mailbox.byOwner[entry.owner] or nil
                 if box then
                     settle(box, entry, state, ms)
-                    entry.claimLogin, entry.claimSeq, entry.claimHours, entry.claimLife = login, c.s, c.h, life
-                    entry.claimSess, entry.lifeBreak = nil, nil
-                    anomaly(login, mailId, state == "claimed" and "mark-claimed-ledger" or "settled-old-life")
+                    -- this login's own save has decided the letter: other logins of the account
+                    -- no longer wait on it (lostClaimPending)
+                    rec.judged = true
+                    entry.claimLogin, entry.claimSess, entry.lifeBreak = login, nil, nil
+                    if c then entry.claimSeq, entry.claimHours, entry.claimLife = c.s, c.h, tonumber(c.life) or 0 end
+                    anomaly(login, mailId, state == "claimed" and "mark-claimed-ledger" or "settled-old-life",
+                        why and { reason = why } or nil)
                 end
-                c.done = true
             end
         end
     end
@@ -1467,8 +1551,15 @@ reconcileOuts = function(player, p, scan, username)
     local Mk, changed, handled = S.Market, false, {}
     local pending, junk, count = {}, {}, 0
     local room, hourly, overflow = nil, nil, 0
+    for _ in pairs(p.pendingOuts) do count = count + 1 end
+    if count > R.PENDING_MAX then
+        -- beginOut refuses past the cap, the insurance loop stops at it and carryOver only fills
+        -- a fresh character: no server path writes a table this size, and none of it is parsed
+        R.holdUpdate(username, "pend:oversized", "pending_table_oversized", { qty = count })
+        return false, handled
+    end
+    R.resolveHold(username, "pend:oversized", "bounded")
     for id, record in pairs(p.pendingOuts) do
-        count = count + 1
         if type(id) ~= "string" then
             junk[#junk + 1] = id
         else
@@ -1476,13 +1567,6 @@ reconcileOuts = function(player, p, scan, username)
             pending[#pending + 1] = { id = id, record = record, epoch = tonumber(epoch) or math.huge, seq = seq or math.huge }
         end
     end
-    if count > R.PENDING_MAX then
-        -- beginOut refuses past the cap, the insurance loop stops at it and carryOver only fills
-        -- a fresh character: no server path writes a table this size
-        R.holdUpdate(username, "pend:oversized", "pending_table_oversized", { qty = count })
-        return false, handled
-    end
-    R.resolveHold(username, "pend:oversized", "bounded")
     if #junk > 0 then
         for _, id in ipairs(junk) do p.pendingOuts[id] = nil end
         X.emit("ledger.anomaly", { kind = "mailbox", username = username, resolution = "pending-key-dropped", count = #junk })
@@ -1653,7 +1737,7 @@ function M.onDeath(character)
         end
     end
     local settled = claimedLetters(username)
-    for _, entry in ipairs(settled) do entry.state = "settled" end
+    for _, entry in ipairs(settled) do entry.state, entry.lifeBreak = "settled", nil end
     if #settled > 0 then
         X.emit("mailbox.settled", { username = username, count = #settled })
     end
@@ -1665,15 +1749,19 @@ end
 -- Keyed by login on both sides (the death above): the new character is named with the
 -- connection's login and built with seat index 0 (CreatePlayerPacket.java:288-301).
 -- A new character can also be made without a death (CreatePlayerPacket.java:179-305 does not ask
--- whether the old one died), and the event carries no seat: a split-screen seat's character
--- fires it under the main login too. So nothing is settled here - the claimed letters are
--- marked, and the next reconcile decides: a save below the claim is the new life (settled), a
--- save that has it is the same character going on (the mark goes).
+-- whether the old one died), and the event carries no seat: the event object is a temporary one,
+-- never given a player index (:288-303), so a split-screen seat's character fires it under the
+-- main login too. So nothing is settled here and no life starts - the claimed letters are marked
+-- with the session of the main-seat object online right now (`true` with nobody online). A save
+-- that predates a marked claim is refused its redelivery (redeliverMissing); a later object of
+-- this login whose save holds the claim spends the mark.
 function M.onNewGame(player)
     local ok, username = pcall(S.login, player)
     if not ok or type(username) ~= "string" or not md then return end
+    local current = S.onlineLogin(username)
+    local mark = current and current ~= player and R.session(current).sid or true
     local marked = claimedLetters(username)
-    for _, entry in ipairs(marked) do entry.lifeBreak = true end
+    for _, entry in ipairs(marked) do entry.lifeBreak = mark end
     if #marked > 0 then X.emit("mailbox.lifeBreak", { username = username, count = #marked }) end
     local pending = carryOver[username]
     if not pending then return end
@@ -1872,48 +1960,77 @@ end
 
 -- The claims a world rollback forgot, read back from the ledger of every epoch the history still
 -- judges (R.verdict "rolledback" = above the seq the next start loaded), once per start and
--- before any player is online. Idempotent: a record keeps what it learnt (excluded, done) for as
--- long as its epoch is judged, so a later start never settles the same lost claim twice. The
--- earliest lost claim of a letter wins - the save that first took the objects is the one that
--- may still hold them.
+-- before any player is online. Every lost claim of a letter is kept (keyed by its commit point,
+-- at most M.LOST_PER_LETTER, then the letter is marked over and judged claimed): a first claim
+-- a crash excluded and a later legitimate claim of the same letter are both evidence, and only
+-- all of them excluded leaves the letter ready. Idempotent: a record keeps what it learnt
+-- (excluded) for as long as its epoch is judged.
 local function noteLost(row, epoch, s)
     local h = tonumber(row.h)
     if type(row.m) ~= "string" or h == nil then return end
-    local c = { l = row.l, m = row.m, o = type(row.o) == "string" and row.o or nil, s = s, e = epoch,
-        h = h, life = tonumber(row.life) or 0, p = type(row.p) == "string" and row.p or nil }
-    if type(row.u) == "table" then
-        c.u = {}
-        for _, t in ipairs(row.u) do if type(t) == "string" then c.u[#c.u + 1] = t end end
-    end
     local lost = R.lostClaims(row.l, false)
-    local known = lost and lost[row.m] or nil
-    if known ~= nil and (known.done or not R.later(known.e, known.s, epoch, s)) then return end
-    local entry, parent = lostTarget(c, row.m)
-    if entry == nil and parent == nil then return end
-    R.lostClaims(row.l, true)[row.m] = c
+    local rec = lost and lost[row.m] or nil
+    local fresh = rec == nil
+    if fresh then
+        rec = { l = row.l, o = type(row.o) == "string" and row.o or nil, claims = {}, n = 0,
+            p = type(row.p) == "string" and row.p or nil }
+        if type(row.u) == "table" then
+            rec.u = {}
+            for _, t in ipairs(row.u) do if type(t) == "string" then rec.u[#rec.u + 1] = t end end
+        end
+        local entry, parent = lostTarget(rec, row.m)
+        if entry == nil and parent == nil then return end
+    end
+    local key = tostring(epoch) .. ":" .. tostring(s)
+    if rec.claims[key] ~= nil then return end
+    if rec.n >= M.LOST_PER_LETTER then
+        if not rec.over then rec.over, rec.judged = true, nil end
+        return
+    end
+    rec.claims[key] = { s = s, e = epoch, h = h, life = tonumber(row.life) or 0 }
+    rec.n, rec.judged = rec.n + 1, nil
+    if fresh then R.lostClaims(row.l, true)[row.m] = rec end
 end
 
+-- A ledger file that could not be read to its end leaves its epoch as a gap (R.ledgerGap): what
+-- was lost up to it is unknown, so letters minted up to it are not handed over and transfers
+-- committed up to it are not rebuilt by themselves (both say why) until it leaves the history.
 local function harvestLedger()
     local J = S.RecoveryJournal
     if J == nil or type(J.eachLedgerRow) ~= "function" then return end
-    local judged = {}
+    local judged, gaps = {}, {}
     for _, h in ipairs(md.meta.history) do
         judged[h.epoch] = true
-        J.eachLedgerRow(h.epoch, function(row)
+        local complete, why = J.eachLedgerRow(h.epoch, function(row)
             local s = tonumber(row.s)
             if s == nil or type(row.l) ~= "string" or row.l == "" or R.verdict(h.epoch, s) ~= "rolledback" then return end
             if row.k == "claim" then noteLost(row, h.epoch, s)
             elseif row.k == "start" then
-                R.harvestStart(row.l, { e = h.epoch, s = s, h = tonumber(row.h), life = tonumber(row.life) or 0 })
+                R.harvestStart(row.l, { e = h.epoch, s = s, h = tonumber(row.h), life = tonumber(row.life) or 0,
+                    seen = tonumber(row.sn) })
             elseif row.k == "life" then R.raiseLife(row.l, tonumber(row.life)) end
-        end)
+        end, h.loadedSeq)
+        if not complete then
+            gaps[h.epoch] = why or "incomplete"
+            EC.log("recovery ledger " .. tostring(h.epoch) .. " incomplete (" .. tostring(why)
+                .. "): letters and transfers up to it wait for an administrator")
+            X.emit("ledger.anomaly", { kind = "recovery", resolution = "ledger-incomplete", epoch = h.epoch, reason = why })
+        end
     end
+    R.setLedgerGaps(gaps)
     R.trimStarts()
     local emptied = {}
     for login, lost in pairs(md.recovery.lost) do
         local aged = {}
-        for mailId, c in pairs(lost) do
-            if type(c) ~= "table" or not judged[c.e] then aged[#aged + 1] = mailId end
+        for mailId, rec in pairs(lost) do
+            local keys = {}
+            for key, c in pairs(type(rec) == "table" and type(rec.claims) == "table" and rec.claims or {}) do
+                if type(c) ~= "table" or not judged[c.e] then keys[#keys + 1] = key end
+            end
+            for _, key in ipairs(keys) do rec.claims[key], rec.n = nil, math.max(0, (rec.n or 1) - 1) end
+            if type(rec) ~= "table" or type(rec.claims) ~= "table" or (rec.n == 0 and not rec.over) then
+                aged[#aged + 1] = mailId
+            end
         end
         for _, mailId in ipairs(aged) do lost[mailId] = nil end
         if EC.countKeys(lost) == 0 then emptied[#emptied + 1] = login end

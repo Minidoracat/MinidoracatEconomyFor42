@@ -1567,7 +1567,11 @@ A.RECOVERY_JOURNAL_REASONS = { journal_pending = true, journal_missing = true,
     source_state_changed = true,
     -- the save this player loaded is older than the transfer (R.outOrder): it still had the
     -- objects, so a rebuild would be a second copy; closable, never rebuildable
-    pending_not_in_save = true }
+    pending_not_in_save = true,
+    -- the server cannot tell whether the save is the old or the next character, or a ledger file
+    -- up to the commit could not be read: never rebuilt by itself, closable, and restorable by an
+    -- administrator from the journal record
+    pending_life_unproven = true, ledger_incomplete = true }
 
 -- restorable as this file must read it: an explicit false is a no, and a journal state that
 -- does not say yes is a no as well. Only a pre-journal judgement, which carries no flag at
