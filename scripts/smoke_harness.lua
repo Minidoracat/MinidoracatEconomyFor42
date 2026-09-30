@@ -958,8 +958,8 @@ local EXPECTED_ASSERTIONS = 1448 + 78 + 2 + 25 + 5 + 23 + 60 + 21 + 3 + 2 + 8 + 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: two login names sharing one account (scenario MA, identity v2 step 2a)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 77   -- +77: companion export, SteamID groups and the account merge (scenario MG, identity v2 steps 2b/2c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: review fixes: EXACT_MISMATCH fails closed, a merge stopped in a store keeps the money with the alias and resumes (2), a rollback with merging off closes, redelivers and settles the alias's letter by the account's login (5), a torn import marker stays strict (2), per-generation export marker (2); one old duplicate-key check replaced
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 28   -- +28: first-sight binding, rename evidence, one account per Steam account, identity alerts (scenario FS)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: identity review fixes (scenario FS2)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 27   -- +27: first-sight binding, rename evidence, one account per Steam account, identity alerts (scenario FS)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 19   -- +19: identity review fixes, two rounds (scenario FS2)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -15484,9 +15484,11 @@ onlinePlayers = { lost }
 local st = admin(lost, { action = "status", requestId = "s1" })
 sentCommands = {}
 nowMs = nowMs + 700
-fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", lost, {})
-check(st.ok == true and st.perms.write == true and lastSent("admin.system") == nil and sentTo(lost, "identity.unverified") == 1,
-    "an administrator without a verified name still reaches the identity page by role, and nothing else")
+-- (admin.system is exempt as well since the one-account policy: server-wide figures, read role;
+-- admin.lookup reads one account and stays behind the identity gate)
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.lookup", lost, { username = "id-bob" })
+check(st.ok == true and st.perms.write == true and lastSent("admin.lookup") == nil and sentTo(lost, "identity.unverified") == 1,
+    "an administrator without a verified name still reaches the identity pages by role, and nothing else")
 local fix = admin(lost, { action = "import", requestId = "i5", rows = { { u = "id-lost", s = "76561198000000128" } } })
 check(fix.ok == true and Id.principal(lost) == "id-lost" and ringHas("IDENTITY_IMPORT", "whitelist").admin == "?id-lost"
     and sentTo(lost, "identity.verified") == 1,
@@ -16429,6 +16431,16 @@ local function ringAudit(action, target, field)
     end
     return n, last
 end
+-- IDENTITY_ALERT lines carry the kind only in the private part (the audit file), never in the ring
+local function alertLines(name, kind)
+    proofSettle()
+    local n = 0
+    for _, line in ipairs(files[X.auditPath(nowMs)] and files[X.auditPath(nowMs)].lines or {}) do
+        local rec = EC.jsonDecode(line)
+        if type(rec) == "table" and rec.action == "IDENTITY_ALERT" and rec.target == name and rec.kind == kind then n = n + 1 end
+    end
+    return n
+end
 local function tick(ms)
     nowMs = nowMs + (ms or Id.SCAN_MS)
     fire("OnTickEvenPaused")
@@ -16466,7 +16478,7 @@ sentCommands = {}
 local renamed = S.login(vic)
 local ren = alertOf("rename", "fs-vic")
 check(renamed == nil and bindsOf("fs-vic") == 0 and ren ~= nil and ren.other == "fs-atk"
-    and ringAudit("IDENTITY_ALERT", "fs-vic", "rename") == 1,
+    and alertLines("fs-vic", "rename") == 1,
     "newgame rule: a seat named after another login right after this Steam account made a character is refused, with a rename alert")
 local toast = pushes(boss, "identity.alert")
 check(#toast == 1 and toast[1].kind == "rename" and toast[1].name == "fs-vic" and toast[1].other == "fs-atk"
@@ -16482,7 +16494,7 @@ local fresh = S.login(vic)
 check(fresh == "fs-vic" and bindsOf("fs-vic") == 1,
     "a seat unseen for longer than the gap starts a new occupancy: the flag is gone and the name binds")
 local shared = alertOf("shared_steam", "fs-vic")
-check(shared ~= nil and shared.other == "fs-atk" and ringAudit("IDENTITY_ALERT", "fs-vic", "shared_steam") == 1,
+check(shared ~= nil and shared.other == "fs-atk" and alertLines("fs-vic", "shared_steam") == 1,
     "with IdentityMultiAccount on, a second login of a bound Steam account is bound and recorded as a shared_steam alert")
 local W_ = mgT(125)
 local wa = fsPlayer("fs-wa", W_, 22)
@@ -16516,23 +16528,6 @@ onlinePlayers = { boss, samBack }
 tick(3000)
 check(S.login(samBack) == "fs-sam" and alertOf("rename", "fs-sam") == nil,
     "a seat renamed back to the login bound to its own SteamID verifies by that binding and raises no rename alert")
-local V_ = mgT(127)
-local dan = fsPlayer("fs-dan", V_, 23)
-onlinePlayers = { boss, dan }
-tick()
-local danOk = S.login(dan) == "fs-dan"
-nowMs = nowMs + 15000                                        -- no scan saw the seat since (beyond Id.SLOT_SWITCH_MS)
--- DoDeath fires the event first (IsoGameCharacter.java:2024-2025): the handler marks the seat itself,
--- whatever isDead() reads at that moment and whether a scan ever saw the body
-fire("OnCharacterDeath", dan)
-dan.dead = true
-nowMs = nowMs + 15000                                        -- the death screen: the respawn comes later still
-local dx = fsPlayer("fs-dx", V_, 23)
-onlinePlayers = { boss, dx }
-local dxLogin = S.login(dx)
-local dxAlert = alertOf("rename", "fs-dx")
-check(danOk and dxLogin == nil and bindsOf("fs-dx") == 0 and dxAlert ~= nil and dxAlert.other == "fs-dan",
-    "OnCharacterDeath marks the seat dead at once: a renamed occupant is caught by the slot rule even when no scan saw the death")
 local late = fsPlayer("fs-late", Y_, 21)                   -- another login of that Steam account, not judged yet
 onlinePlayers = { boss, samBack, late }
 sentCommands = {}
@@ -16552,13 +16547,13 @@ local toasts = pushes(boss, "identity.alert")
 check(#toasts == 1 and toasts[1].kind == "sid_mismatch" and toasts[1].name == "fs-ann"
     and alertOf("sid_mismatch", "fs-ann") ~= nil and alertOf("sid_mismatch", "fs-sam") ~= nil,
     "sid_mismatch alerts are all recorded, but the administrators get at most one toast per ALERT_TOAST_MS")
-local ringBefore, countBefore = ringAudit("IDENTITY_ALERT", "fs-ann", "sid_mismatch"), Id.status().alertCount
+local ringBefore, countBefore = alertLines("fs-ann", "sid_mismatch"), Id.status().alertCount
 nowMs = nowMs + Id.ALERT_TOAST_MS
 sentCommands = {}
 S.login(wrongAnn); S.login(fsPlayer("fs-ann", mgT(141), 33))
-local _, mismatchRing = ringAudit("IDENTITY_ALERT", "fs-ann", "sid_mismatch")
+local _, mismatchRing = ringAudit("IDENTITY_ALERT", "fs-ann", "identity")
 local mismatchFile = fileAudit("IDENTITY_ALERT", "fs-ann")
-check(ringBefore == 1 and ringAudit("IDENTITY_ALERT", "fs-ann", "sid_mismatch") == 1 and Id.status().alertCount == countBefore
+check(ringBefore == 1 and alertLines("fs-ann", "sid_mismatch") == 1 and Id.status().alertCount == countBefore
     and #pushes(boss, "identity.alert") == 0 and mismatchRing.steamId == nil and mismatchFile ~= nil
     and mismatchFile.steamId == mgT(141),
     "the same alert again is neither audited, listed nor toasted twice, and its SteamID reaches the audit file only")
@@ -16668,7 +16663,7 @@ end)()
 -- ===== 情境 FS2：身分審查修正（S.login 與政策分開、動物、匯入後才通知、短缺席、設定豁免、警示隱私）=====
 io.write("scenario FS2: identity review fixes\n")
 ;(function()
-local Id = EC.Identity
+local Id, Mg = EC.Identity, S.Merge
 local SV = SandboxVars.MinidoracatEconomy
 local function fsPlayer(name, text, seat)
     local p = mgPlayer(name, text)
@@ -16770,9 +16765,10 @@ local a2Login = S.login(a2)
 check(a1ok and a2Login == nil and alertOf("rename", "fs2-a2") ~= nil,
     "an animal's death on the same onlineID does not replace the dead player's occupancy: the renamed seat is still caught")
 check(cowNoSteam == nil, "an animal is nobody, even on a server without Steam")
-local ringRename, fileRename = ringAudit("IDENTITY_ALERT", "fs2-a2", "rename"), fileAudit("IDENTITY_ALERT", "fs2-a2", "rename")
-check(ringRename ~= nil and ringRename.other == nil and fileRename ~= nil and fileRename.other == "fs2-a1",
-    "an alert's other login stays out of the audit ring every client can read; the audit file keeps it")
+local ringRename, fileRename = ringAudit("IDENTITY_ALERT", "fs2-a2", "identity"), fileAudit("IDENTITY_ALERT", "fs2-a2", "identity")
+check(ringRename ~= nil and ringRename.kind == nil and ringRename.other == nil
+    and fileRename ~= nil and fileRename.kind == "rename" and fileRename.other == "fs2-a1",
+    "an alert's kind and other login stay out of the audit ring every client can read; the audit file keeps them")
 local C_ = mgT(235)
 local c1 = fsPlayer("fs2-c1", C_, 24)
 onlinePlayers = { c1 }
@@ -16787,7 +16783,7 @@ local badLogin = S.login(bad)
 check(badLogin == nil and alertOf("rename", badName) == nil and ringAudit("IDENTITY_ALERT", badName) == nil,
     "a seat renamed to a name that is not a valid login raises no alert")
 
--- ----- the rename windows: two minutes after a new character, ten seconds of absence -----
+-- ----- the rename windows: two minutes after a new character; the previous occupant's own death -----
 local N_ = mgT(240)
 fire("OnNewGame", fsPlayer("fs2-n0", N_, 64), nil)
 nowMs = nowMs + 300000
@@ -16800,49 +16796,133 @@ local b1 = fsPlayer("fs2-b1", B_, 26)
 onlinePlayers = { b1 }
 tick()
 local b1ok = S.login(b1) == "fs2-b1"
-nowMs = nowMs + 3000                                         -- replaced before any death was observed
+b1.dead = true                                               -- health 0, OnCharacterDeath not fired yet, no scan
+nowMs = nowMs + 30000                                        -- a client may hold its ConnectCoop back this long
 local b2 = fsPlayer("fs2-b2", B_, 26)
 onlinePlayers = { b2 }
 check(b1ok and S.login(b2) == nil and alertOf("rename", "fs2-b2") ~= nil,
-    "a seat taken over by another name of the Steam account seconds after its occupant was last seen is a rename, dead or not")
+    "a seat taken over by another name while its previous occupant's object reads dead is a rename, however long the client waited")
+local H_ = mgT(255)
+local h1 = fsPlayer("fs2-h1", H_, 27)
+onlinePlayers = { h1 }
+tick()
+local h1ok = S.login(h1) == "fs2-h1"
+onlinePlayers = {}                                           -- logs out alive ...
+nowMs = nowMs + 3000
+local h2 = fsPlayer("fs2-h2", H_, 27)                        -- ... and the next login of the Steam account gets the seat
+onlinePlayers = { h2 }
+check(h1ok and S.login(h2) == "fs2-h2" and alertOf("rename", "fs2-h2") == nil,
+    "an account switch seconds after an alive logout is no rename: only the previous occupant's death counts, not the time")
+local J_ = mgT(256)
+local j1 = fsPlayer("fs2-j1", J_, 29)
+onlinePlayers = { j1 }
+tick()
+local j1ok = S.login(j1) == "fs2-j1"
+j1.dead = true
+tick()                                                       -- the seat's character died ...
+local j1b = fsPlayer("fs2-j1", J_, 29)                       -- ... the same login reconnected with its saved, living character
+onlinePlayers = { j1b }
+tick()
+onlinePlayers = {}                                           -- and logged out alive
+nowMs = nowMs + 3000
+local j2 = fsPlayer("fs2-j2", J_, 29)
+onlinePlayers = { j2 }
+check(j1ok and S.principal(j1b) ~= nil and S.login(j2) == "fs2-j2" and alertOf("rename", "fs2-j2") == nil,
+    "the occupant object follows the login on its seat: a death before a reconnect does not make the next account switch a rename")
 
--- ----- an import tells the players its final state -----
+-- ----- a rename refused where the one-account policy would refuse too says so -----
+md = fresh()
+local K_ = mgT(258)
+local k0 = fsPlayer("fs2-k0", K_, 28)
+onlinePlayers = { k0 }
+tick()
+local k0ok = S.principal(k0) == "fs2-k0"
+k0.dead = true
+fire("OnCharacterDeath", k0)
+local k1 = fsPlayer("fs2-k1", K_, 28)
+onlinePlayers = { k1 }
+sentCommands = {}
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.state", k1, { requestId = "fs2-k" })
+local toldK = pushes(k1, "identity.unverified")
+check(k0ok and #toldK == 1 and toldK[1].reason == "one_account" and alertOf("rename", "fs2-k1") ~= nil,
+    "a respawn refused for rename evidence where the one-account policy would refuse too is told the one-account reason, and still alerted")
+
+-- ----- the canonical keeps the one-account primary; imports tell the final state -----
 md = fresh()
 local Q_ = mgT(210)
-md.firstSeen["fs2-q1"], md.firstSeen["fs2-q2"] = 0, 0
 fire("OnNewGame", fsPlayer("fs2-q1", Q_, 66), nil)
 fire("OnNewGame", fsPlayer("fs2-q2", Q_, 67), nil)
 local q1, q2 = fsPlayer("fs2-q1", Q_, 10), fsPlayer("fs2-q2", Q_, 11)
 onlinePlayers = { q1, q2 }
 tick()
 local beforeQ = { S.principal(q1), S.principal(q2) }       -- the name decides now: fs2-q1, recorded
-mgExport({ { 1, "fs2-q2", Q_ }, { 2, "fs2-q1", Q_ } })      -- the whitelist says fs2-q2 is older
+mgExport({ { 1, "fs2-q2", Q_ }, { 2, "fs2-q1", Q_ } })      -- the whitelist alone would pick fs2-q2
 sentCommands = {}
 mgPoll()
-local toldQ1, toldQ2 = pushes(q1, "identity.unverified"), pushes(q2, "identity.verified")
-check(beforeQ[1] == "fs2-q1" and beforeQ[2] == nil and S.principal(q2) == "fs2-q2" and S.principal(q1) == nil
-    and #toldQ2 == 1 and #toldQ1 == 1 and toldQ1[1].reason == "one_account",
-    "an import whose canonical moves the Steam account's primary tells both players online, after the canonical is recorded")
+local canonQ = Id.view().canon[Q_]
+check(beforeQ[1] == "fs2-q1" and beforeQ[2] == nil and canonQ ~= nil and canonQ.name == "fs2-q1" and canonQ.rule == "primary"
+    and S.principal(q1) == "fs2-q1" and S.principal(q2) == nil
+    and #pushes(q1, "identity.unverified") == 0 and #pushes(q2, "identity.verified") == 0,
+    "a group's first canonical is the one-account primary already recorded for it: an import moves nobody's standing")
+md = fresh()
+local G_ = mgT(212)
+fire("OnNewGame", fsPlayer("fs2-g0", G_, 60), nil)          -- the primary, bound by a new character, not on the whitelist
+fire("OnNewGame", fsPlayer("fs2-g1", G_, 61), nil)
+fire("OnNewGame", fsPlayer("fs2-g2", G_, 62), nil)
+local g1, g2 = fsPlayer("fs2-g1", G_, 16), fsPlayer("fs2-g2", G_, 17)
+onlinePlayers = { g1, g2 }
+tick()
+local beforeG = { S.principal(g1), S.principal(g2) }       -- fs2-g0 is recorded (the name)
+mgExport({ { 5, "fs2-g1", G_ }, { 3, "fs2-g2", G_ } })      -- the exact group's canonical is fs2-g2 (whitelist id)
+sentCommands = {}
+mgPoll()
+check(beforeG[1] == nil and beforeG[2] == nil and S.principal(g2) == "fs2-g2" and S.principal(g1) == nil
+    and #pushes(g2, "identity.verified") == 1 and #pushes(g1, "identity.unverified") == 0,
+    "a companion import whose canonical replaces a primary the whitelist does not list tells the player it now lets in")
 md = fresh()
 local M_ = mgT(215)
-fire("OnNewGame", fsPlayer("fs2-m1", M_, 70), nil)
-fire("OnNewGame", fsPlayer("fs2-m2", M_, 71), nil)
+md.firstSeen["fs2-m0"], md.firstSeen["fs2-m2"] = 0, 0
+fire("OnNewGame", fsPlayer("fs2-m0", M_, 70), nil)
+fire("OnNewGame", fsPlayer("fs2-m1", M_, 71), nil)
+fire("OnNewGame", fsPlayer("fs2-m2", M_, 72), nil)
 local m1, m2 = fsPlayer("fs2-m1", M_, 13), fsPlayer("fs2-m2", M_, 14)
 local mboss = fsPlayer("fs2-boss", mgT(216), 15); mboss.role = "admin"
 onlinePlayers = { mboss, m1, m2 }
 tick()
-local beforeM = { S.principal(m1), S.principal(m2) }       -- no firstSeen yet: the name decides, recorded
-md.firstSeen["fs2-m2"] = 0                                  -- the economy learns fs2-m2 is the older account
+local beforeM = { S.principal(m1), S.principal(m2) }       -- fs2-m0 is recorded (firstSeen, then the name)
 sentCommands = {}
 nowMs = nowMs + 700
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", mboss, { action = "import", requestId = "fs2-i1",
     rows = { { u = "fs2-boss", s = mgT(216) }, { u = "fs2-m1", s = M_ }, { u = "fs2-m2", s = M_ } } })
-local toldM1, toldM2 = pushes(m1, "identity.unverified"), pushes(m2, "identity.verified")
-check(beforeM[1] == "fs2-m1" and beforeM[2] == nil and lastSent("admin.identity").args.ok == true
-    and S.principal(m2) == "fs2-m2" and #toldM2 == 1 and #toldM1 == 1 and toldM1[1].reason == "one_account",
+check(beforeM[1] == nil and beforeM[2] == nil and lastSent("admin.identity").args.ok == true
+    and S.principal(m2) == "fs2-m2" and #pushes(m2, "identity.verified") == 1 and #pushes(m1, "identity.unverified") == 0,
     "an administrator's import tells the players online what the Steam account's primary is after the canonical is recorded")
 
--- ----- an administrator refused by the policy can still change the settings -----
+-- ----- a merge pass that records a canonical tells the players it changed -----
+md = fresh()
+local T_ = mgT(262)
+md.firstSeen["fs2-t0"], md.firstSeen["fs2-t1"], md.firstSeen["fs2-t2"] = 0, 1, 2
+fire("OnNewGame", fsPlayer("fs2-t0", T_, 73), nil)          -- rounded, never on the whitelist
+fire("OnNewGame", fsPlayer("fs2-t1", mgT(263), 74), nil)    -- the whitelist moves this one to T_ (a conflict)
+local tboss = fsPlayer("fs2-tb", mgT(264), 18); tboss.role = "admin"
+local t1 = fsPlayer("fs2-t1", T_, 19)
+onlinePlayers = { tboss, t1 }
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", tboss, { action = "import", requestId = "fs2-i2",
+    rows = { { u = "fs2-tb", s = mgT(264) }, { u = "fs2-t1", s = T_ }, { u = "fs2-t2", s = T_ } } })
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", tboss, { action = "rebind", requestId = "fs2-r1",
+    names = { "fs2-t1" }, reason = "moved to the whitelisted Steam account" })
+local t1AfterRebind = S.principal(t1)                        -- fs2-t0 is the recorded primary
+sentCommands = {}
+SV.IdentityAutoMerge = true                                  -- the running pass only runs with merging on
+tick(Mg.TICK_MS + 1)                                         -- the pass records the exact group's canonical
+SV.IdentityAutoMerge = nil
+check(t1AfterRebind == nil and S.principal(t1) == "fs2-t1" and #pushes(t1, "identity.verified") == 1,
+    "a merge pass whose new canonical lets an online login in tells that player at once")
+
+-- ----- an administrator refused by the policy keeps the settings and is audited as its login -----
 md = fresh()
 local D_ = mgT(220)
 md.firstSeen["fs2-d0"], md.firstSeen["fs2-ad"] = 0, nowMs
@@ -16854,15 +16934,47 @@ tick()
 local adBefore = S.principal(ad)
 sentCommands = {}
 nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", ad, {})
+local sys = lastSent("admin.system")
+check(adBefore == nil and sys ~= nil and sys.args.ok == true and type(sys.args.sandbox) == "table",
+    "admin.system (the settings page's options) is answered for an administrator the policy refuses")
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", ad, { action = "import", requestId = "fs2-i3",
+    rows = { { u = "fs2-ad", s = D_ }, { u = "fs2-d0", s = D_ } } })
+local imp = ringAudit("IDENTITY_IMPORT", "whitelist")
+nowMs = nowMs + 700
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.option", ad,
     { key = "IdentityMultiAccount", value = true, requestId = "fs2-o1", reason = "several accounts are fine here" })
 local opt = lastSent("admin.option")
-local cfg = ringAudit("config", "", nil)
+local cfg = nil
 for _, e in ipairs(X.auditEntries()) do if e.action == "config" and e.field == "IdentityMultiAccount" then cfg = e end end
 tick()
-check(adBefore == nil and opt ~= nil and opt.args.ok == true and EC.sandbox("IdentityMultiAccount", false) == true
-    and cfg ~= nil and cfg.admin == "?fs2-ad" and #pushes(ad, "identity.verified") == 1,
-    "admin.option is answered for an administrator the policy refuses, audited under the claimed name, and the change verifies them")
+check(opt ~= nil and opt.args.ok == true and EC.sandbox("IdentityMultiAccount", false) == true
+    and #pushes(ad, "identity.verified") == 1,
+    "admin.option is answered for an administrator the policy refuses, and the change verifies them")
+check(cfg ~= nil and cfg.admin == "fs2-ad" and imp ~= nil and imp.admin == "fs2-ad",
+    "a policy-refused administrator is audited as the login it verifiably is, not as a bare claim")
+
+-- ----- a failed identity-file write backs off instead of reopening the file every second -----
+md = fresh()
+local opens, realWriter = 0, getFileWriter
+getFileWriter = function(path, create, append)
+    if path == Id.FILE then opens = opens + 1 end
+    return realWriter(path, create, append)
+end
+writerDeny[Id.FILE] = true
+local w1, w2 = fsPlayer("fs2-w1", mgT(270), 90), fsPlayer("fs2-w2", mgT(271), 91)
+onlinePlayers = { w1, w2 }
+local wFirst = { S.login(w1), S.login(w2) }
+nowMs = nowMs + 1000
+S.login(w1)
+local within = opens
+nowMs = nowMs + (Id.WRITE_RETRY_MS or 60000)
+writerDeny[Id.FILE] = nil
+local wAfter = S.login(w2)
+getFileWriter = realWriter
+check(wFirst[1] == nil and wFirst[2] == nil and within == 1 and opens == 2 and wAfter == "fs2-w2",
+    "after a failed write first sight leaves the identity file alone for a minute, then binds again")
 SV.IdentityMultiAccount = nil
 steamModeActive = false
 onlinePlayers = {}

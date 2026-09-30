@@ -128,7 +128,10 @@ end
 
 -- The group's account and every member's state. A completed merge names the account (its
 -- `into` wins over everything); otherwise the recorded decision; otherwise, with two eligible
--- names, a decision is made now and recorded for good. A later member is an alias of it.
+-- names, a decision is made now and recorded for good: the one-account primary ECIdentity
+-- already recorded for this Steam account when it is eligible (rule "primary": the canonical then
+-- never takes the policy's primary away from a player who was told it is theirs), else
+-- Id.pickCanonical. A later member is an alias of it.
 local function decide(g, md, online, ms)
     local merged, v = md.identity.merged, Id.view()
     local eligible, account, rule = {}, nil, nil
@@ -143,7 +146,11 @@ local function decide(g, md, online, ms)
     local c = v.canon[g.sid]
     if account == nil and c ~= nil then account, rule = c.name, c.rule end
     if account == nil and #eligible >= 2 then
-        account, rule = Id.pickCanonical(md, eligible)
+        local primary = Id.recordedPrimary(g.sid)
+        for _, name in ipairs(eligible) do
+            if name == primary then account, rule = name, "primary" end
+        end
+        if account == nil then account, rule = Id.pickCanonical(md, eligible) end
         local b = v.bindings[account]
         Id.recordCanon(g.sid, account, rule, b and b.src or "?", ms)
     end
@@ -293,8 +300,9 @@ end
 -- One pass: recompute the plan, then (IdentityAutoMerge, and only in Steam mode: without Steam no
 -- SteamID proves who a name is) merge its ready aliases, at most `limit` of them (nil = all).
 -- One ACCOUNT_MERGE_PASS audit line for a pass that merged anything (the ModData ring holds 500
--- lines; the first pass may merge hundreds).
-function Mg.pass(ms, limit)
+-- lines; the first pass may merge hundreds). A canonical the plan records decides the Steam
+-- account's one-account primary, so every online seat whose standing the pass changed is told.
+local function mergePass(ms, limit)
     local p = Mg.plan(ms)
     if not Mg.enabled() or not Id.steamMode() then return 0 end
     local n = 0
@@ -316,6 +324,13 @@ function Mg.pass(ms, limit)
         Mg.plan(ms)
         Mg.writePlan()
     end
+    return n
+end
+
+function Mg.pass(ms, limit)
+    local before = Id.onlineVerdicts()
+    local n = mergePass(ms, limit)
+    Id.announce(before)
     return n
 end
 

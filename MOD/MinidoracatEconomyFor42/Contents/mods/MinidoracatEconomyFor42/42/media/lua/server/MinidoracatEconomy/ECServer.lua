@@ -141,11 +141,13 @@ function S.claimedName(player)
 end
 
 -- Commands a player without a verified identity may still send, each gated on its own terms:
--- the identity page and the settings page only on the role, which comes from the connection and
--- not from the name (GameServer.java:2841), so an administrator whose own binding is wrong can
--- repair it and one the one-account policy refuses can still change IdentityMultiAccount. Both
--- audit such a caller as "?<claimed name>" and are throttled under that key (below).
-S.IDENTITY_EXEMPT = { ["admin.identity"] = true, ["admin.option"] = true }
+-- the identity page, the settings page and the system overview (where the settings page reads the
+-- options) only on the role, which comes from the connection and not from the name
+-- (GameServer.java:2841), so an administrator whose own binding is wrong can repair it and one the
+-- one-account policy refuses can still change IdentityMultiAccount. admin.system answers
+-- server-wide figures only, nothing of the caller's account. Such a caller is throttled under
+-- "?<claimed name>" (below); the writers audit it as its login, or that claim.
+S.IDENTITY_EXEMPT = { ["admin.identity"] = true, ["admin.option"] = true, ["admin.system"] = true }
 
 -- Server-side player list (LuaManager.java:4453-4463); the client-side getConnectedPlayers is
 -- unavailable on a dedicated server (AGENTS.md API table).

@@ -1058,9 +1058,9 @@ S.handlers["admin.option"] = function(player, args)
             res = { ok = false, error = "invalid_args" }
         else
             local reason = type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
-            -- exempt from the identity gate (S.IDENTITY_EXEMPT): an unverified caller is audited
-            -- under the name it claims, marked as a claim
-            local actor = S.principal(player) or ("?" .. S.claimedName(player))
+            -- exempt from the identity gate (S.IDENTITY_EXEMPT): audited as the account, else as the
+            -- login a policy-refused administrator still is, else as the claimed name marked as a claim
+            local actor = S.principal(player) or S.login(player) or ("?" .. S.claimedName(player))
             local ok, err, warning = Cfg.setOption(args.key, args.value, actor, reason)
             res = ok and { ok = true, warning = warning } or { ok = false, error = err }
             res.key = args.key

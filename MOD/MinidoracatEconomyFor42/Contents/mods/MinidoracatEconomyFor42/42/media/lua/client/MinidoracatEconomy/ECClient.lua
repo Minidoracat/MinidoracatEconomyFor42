@@ -1024,10 +1024,13 @@ end
 -- name that does not match the SteamID it is bound to - with identity.unverified (at most once a
 -- minute) instead of any reply, and with identity.verified once an administrator's import or
 -- confirmation fixed it. The flag is what the panel paints; listeners (the panel) repaint on it.
--- Every other command from the server means the server is answering this player as its account
--- again (a respawn under the right name), so it clears the flag as well. C.identityReason is
--- "one_account" when the server refused this login because its Steam account already uses the
--- economy under another login (IdentityMultiAccount off); every other refusal carries no reason.
+-- Only identity.verified and hello.ack clear it: a login the one-account policy keeps out still
+-- receives what belongs to its save (recovery, entitlements) and an administrator's exempt pages,
+-- so no other command says the server answers this player as its account. A respawn says hello
+-- again while the flag is set (below), which is how a respawn under the right name clears it.
+-- C.identityReason is "one_account" when the server refused this login because its Steam account
+-- already uses the economy under another login (IdentityMultiAccount off); every other refusal
+-- carries no reason.
 C.identityUnverified = false
 C.identityReason = nil
 C.identityListeners = {}
@@ -1060,13 +1063,9 @@ handlers["identity.verified"] = function()
     send("hello")
 end
 
--- admin.identity is answered even while the name is unverified (S.IDENTITY_EXEMPT), and
--- identity.alert goes to administrators whoever they are, so neither says anything about this
--- player's own identity.
-local IDENTITY_NEUTRAL = { ["identity.unverified"] = true, ["admin.identity"] = true, ["identity.alert"] = true }
 local function onServerCommand(module, command, args)
     if module ~= EC.COMMAND_MODULE then return end
-    if not IDENTITY_NEUTRAL[command] then setIdentity(false) end
+    if command == "hello.ack" then setIdentity(false) end
     local handler = handlers[command]
     if not handler then return end
     local ok, err = pcall(handler, args or {})
@@ -1117,6 +1116,12 @@ end
 
 Events.OnGameStart.Add(onGameStart)
 Events.OnServerCommand.Add(onServerCommand)
+-- A respawn keeps the client past OnGameStart (the new character comes through AddCoopPlayer,
+-- which fires OnCreatePlayer, util/AddCoopPlayer.java:162): a refused player asks again, since the
+-- new character may carry the name the server does verify.
+Events.OnCreatePlayer.Add(function(playerNum)
+    if playerNum == 0 and C.identityUnverified and isClient() then send("hello") end
+end)
 
 -- Client half of the integration facade (spec 21.1). Other mods that want to move money go
 -- through their own server handler and MinidoracatEconomy.v1 on the server; the client exposes

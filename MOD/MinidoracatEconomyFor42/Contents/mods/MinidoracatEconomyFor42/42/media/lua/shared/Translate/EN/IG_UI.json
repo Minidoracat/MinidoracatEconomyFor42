@@ -2230,8 +2230,5 @@
   "IGUI_MinidoracatEconomy_Player_IdentityOneAccountDetail": "This Steam account already uses the economy with another login. This server allows one economy account per Steam account, so the economy does not answer the login name \"%1\" for now. Please contact an administrator; your account and balances are unchanged.",
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_IDENTITY_ALERT": "Identity alert",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_LOGIN": "First sight",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_rename": "Suspected respawn rename",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_sid_mismatch": "SteamID mismatch",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_one_account": "One account per Steam account",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_shared_steam": "Another login of the same Steam account"
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "Details on the identity page (this uptime) and in the server audit file"
 }

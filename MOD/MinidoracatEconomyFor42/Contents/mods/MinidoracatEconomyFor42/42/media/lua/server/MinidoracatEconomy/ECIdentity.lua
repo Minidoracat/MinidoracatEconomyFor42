@@ -111,8 +111,8 @@ Id.SLOT_GAP_MS = 120000            -- a seat unseen this long was a disconnect: 
                                    -- new occupancy (a respawn replaces the seat within seconds)
 Id.NEWGAME_WINDOW_MS = 120000      -- a CreatePlayer is followed by its ConnectCoop within seconds
                                    -- (util/AddCoopPlayer.java:46-151); longer only flags account switches
-Id.SLOT_SWITCH_MS = 10000          -- a seat taken over by another name this soon after its occupant was
-                                   -- last seen is a respawn, dead or not; a logout and a new login take longer
+Id.WRITE_RETRY_MS = 60000          -- after a failed identity-file write, the automatic writers (first
+                                   -- sight, the policy primary) wait this long before opening it again
 Id.ALERT_RING = 50                 -- identity alerts kept in memory for the admin page
 Id.ALERT_TOAST_MS = 10000          -- at most one admin toast every ten seconds, server-wide
 Id.MULTI_LIST_MAX = 50             -- Steam accounts with several logins listed in one reply (counts complete)
@@ -151,13 +151,14 @@ local stream = nil           -- an export being read across ticks
 local lastPoll = 0
 local collisionAudited = {}  -- name .. text -> audited during this uptime
 -- first sight and the alerts (memory only: this uptime)
-local slots = {}             -- onlineID -> { name, sid, seen, suspect, other }: the seat's occupancy
+local slots = {}             -- onlineID -> { name, sid, seen, obj, suspect, other }: the seat's occupancy
 local newGames = {}          -- SteamID double -> { name, at }: the last OnNewGame of that Steam account
 local alerts, alertTotal = {}, 0     -- the last Id.ALERT_RING alerts, and how many this uptime
 local alerted = {}           -- kind, name and SteamID -> alerted already
 local lastToast, lastScan = 0, 0
 local multiWas = nil         -- IdentityMultiAccount at the last scan (a change is announced)
 local peekMulti = nil        -- the policy value a verdict is computed under while set
+local writeFailedAt = nil    -- when an identity-file write last failed (the automatic writers back off)
 
 -- ---------- numbers ----------
 
@@ -388,11 +389,16 @@ function Id.load()
 end
 
 -- One open, every line, one close (the writer flushes only on close). Records are applied to
--- memory only after this returned true, so memory never holds what the file does not.
-local function writeLines(recs)
+-- memory only after this returned true, so memory never holds what the file does not. `auto`
+-- marks a writer that runs on its own (first sight, a policy primary): after a failure it does not
+-- open the file again for Id.WRITE_RETRY_MS - first sight is asked every second per session.
+local function writeLines(recs, auto)
+    local ms = EC.now()
+    if auto and writeFailedAt ~= nil and ms - writeFailedAt < Id.WRITE_RETRY_MS then return false end
     local writer = nil
     local opened = pcall(function() writer = getFileWriter(Id.FILE, true, true) end)
     if not opened or writer == nil then
+        writeFailedAt = ms
         EC.log("identity file " .. Id.FILE .. " could not be opened for writing")
         return false
     end
@@ -400,8 +406,13 @@ local function writeLines(recs)
         for _, rec in ipairs(recs) do writer:writeln(EC.jsonEncode(rec)) end
     end)
     local closed = pcall(function() writer:close() end)
-    if not (written and closed) then EC.log("identity file write failed") end
-    return written and closed
+    if not (written and closed) then
+        writeFailedAt = ms
+        EC.log("identity file write failed")
+        return false
+    end
+    writeFailedAt = nil
+    return true
 end
 
 -- The account of one exact SteamID group, decided once (ECMerge). A SteamID that already has a
@@ -425,10 +436,12 @@ local function audit(action, target, field, actor, fields, private)
     if not ok then EC.log("identity audit " .. action .. " failed: " .. tostring(err)) end
 end
 
--- The name an administrator acts under here: verified, or marked as the claim it is.
+-- The name an administrator acts under here: the account, else the login this save is (a login
+-- the one-account policy keeps out is still verified as itself), else the claim, marked as one.
 local function actorOf(player)
-    return Id.principal(player) or ("?" .. S.claimedName(player))
+    return Id.principal(player) or Id.login(player) or ("?" .. S.claimedName(player))
 end
+Id.actorOf = actorOf
 
 -- ---------- the principal ----------
 
@@ -447,24 +460,27 @@ end
 -- whose seat occupancy carries no rename evidence, and whom the one-account policy lets in;
 -- otherwise the name is nil.
 --
--- Rename evidence (Id.observe, this uptime): slots[onlineID] = { name, sid, seen, dead, suspect,
+-- Rename evidence (Id.observe, this uptime): slots[onlineID] = { name, sid, seen, obj, suspect,
 -- other }. An occupancy is one name and one SteamID seen on a seat with gaps under
 -- Id.SLOT_GAP_MS; a new one is suspect when the previous occupant had the same SteamID, another
--- name, was seen within Id.SLOT_GAP_MS and had DIED - or was seen within Id.SLOT_SWITCH_MS, dead or
--- not (slot rule) - or when OnNewGame made a character for another login of the same SteamID within
--- Id.NEWGAME_WINDOW_MS (newgame rule). The slot rule needs the death: ConnectCoop refuses to
--- replace a seat whose player exists alive (ConnectCoopPacket.java:69) and replaces only a dead
--- one, keeping its onlineID (:91-100), so every rename on a seat follows a death there - while a
--- player who logs out alive and comes back within the window as another login of the same Steam
--- account (a new connection may reuse the onlineID) is an ordinary account switch. The dead player
--- stays listed until replaced (GameServer.getPlayers :3572-3587 lists connection.players[] with an
--- onlineId; disconnectPlayer at :94 removes it). `dead` is what the last observation saw, and
--- OnCharacterDeath marks it at once (Id.onDeath), so a client that respawns renamed within the
--- same second as its death does not beat the once-a-second scan. The server can read isDead()
--- before that event, though: BodyDamage.Update (IsoGameCharacter.java:9054) takes the health to 0
--- in one update and die() -> Kill -> onKilled -> DoDeath -> OnCharacterDeath runs only in the next
--- one (:9177-9179, :14605-14626, IsoPlayer.java:8350-8368, IsoGameCharacter.java:2024-2025,
--- :4874), and ConnectCoop is handled between the two; Id.SLOT_SWITCH_MS covers that window.
+-- name, was seen within Id.SLOT_GAP_MS and is DEAD (slot rule), or when OnNewGame made a character
+-- for another login of the same SteamID within Id.NEWGAME_WINDOW_MS (newgame rule). The slot rule
+-- needs the death: ConnectCoop refuses to replace a seat whose player exists alive
+-- (ConnectCoopPacket.java:69) and replaces only a dead one, keeping its onlineID (:91-100), so every
+-- rename on a seat follows a death there - while a player who logs out alive and comes back within
+-- the window as another login of the same Steam account (a new connection may reuse the onlineID)
+-- is an ordinary account switch. The dead player stays listed until replaced (GameServer.getPlayers
+-- :3572-3587 lists connection.players[] with an onlineId; disconnectPlayer at :94 removes it).
+-- "Dead" is the previous occupant's own state, never a clock the client could stretch: the
+-- occupant object (`obj`, the IsoPlayer last seen on the seat) reading isDead() when the next name
+-- is seen. A seat ConnectCoop replaced keeps its health at 0 (a dead player is never revived: the
+-- replacement is a new object); a player who logged out alive leaves an object that is still alive.
+-- This also covers the window where the server already reads health 0 but has not fired
+-- OnCharacterDeath yet: BodyDamage.Update (IsoGameCharacter.java:9054) takes the health to 0 in one
+-- update and die() -> Kill -> onKilled -> DoDeath -> OnCharacterDeath runs only in the next one
+-- (:9177-9179, :14605-14626, IsoPlayer.java:8350-8368, IsoGameCharacter.java:2024-2025, :4874), with
+-- ConnectCoop (:69 reads isDead()) handled in between - so no death event is needed at all, and
+-- none is listened to (it also fires for animals, IsoAnimal.java:1141, whose onlineIDs overlap seats).
 -- The flag lasts as long as the occupancy: waiting out the window does not clear it.
 -- ponytail: a seat that stays out of getOnlinePlayers longer than Id.SLOT_GAP_MS and comes back
 -- renamed more than Id.NEWGAME_WINDOW_MS after its CreatePlayer passes both rules; only the
@@ -521,7 +537,9 @@ local function alert(kind, name, sid, other)
     alertTotal = alertTotal + 1
     alerts[#alerts + 1] = { kind = kind, name = name, other = other, at = ms }
     if #alerts > Id.ALERT_RING then table.remove(alerts, 1) end
-    audit("IDENTITY_ALERT", name, kind, nil, nil, { steamId = text, other = other })
+    -- the public audit line says only that there was an identity alert about this name: its kind
+    -- (a rename, one Steam account) and the other login go to the server's files only
+    audit("IDENTITY_ALERT", name, "identity", nil, nil, { steamId = text, kind = kind, other = other })
     if (kind == "rename" or kind == "sid_mismatch") and ms - lastToast >= Id.ALERT_TOAST_MS then
         lastToast = ms
         local ok, err = pcall(tellAdmins, { kind = kind, name = name, other = other, at = ms })
@@ -542,21 +560,20 @@ function Id.observe(player, ms)
     local name, sid = S.claimedName(player), Id.sidOf(player)
     local r = slots[id]
     if r ~= nil and r.name == name and r.sid == sid and ms - r.seen <= Id.SLOT_GAP_MS then
-        r.seen, r.dead = ms, deadNow(player)
+        r.seen, r.obj = ms, player
         return r
     end
     local other = nil
     if validSid(sid) then
         local ng = newGames[sid]
-        local age = r ~= nil and ms - r.seen or nil
-        if r ~= nil and r.sid == sid and r.name ~= name
-            and (age <= Id.SLOT_SWITCH_MS or (r.dead and age <= Id.SLOT_GAP_MS)) then
+        local prevDead = r ~= nil and r.obj ~= nil and deadNow(r.obj)
+        if prevDead and r.sid == sid and r.name ~= name and ms - r.seen <= Id.SLOT_GAP_MS then
             other = r.name
         elseif ng ~= nil and ng.name ~= name and ms - ng.at <= Id.NEWGAME_WINDOW_MS then
             other = ng.name
         end
     end
-    r = { name = name, sid = sid, seen = ms, dead = deadNow(player), suspect = other ~= nil, other = other }
+    r = { name = name, sid = sid, seen = ms, obj = player, suspect = other ~= nil, other = other }
     slots[id] = r
     -- a name that is no valid login is refused anyway and is not worth an alert line or a toast
     if other ~= nil and Id.steamMode() and validName(name) then
@@ -566,20 +583,6 @@ function Id.observe(player, ms)
         if not (b and not b.reserved and b.sid == sid) then alert("rename", name, sid, other) end
     end
     return r
-end
-
--- OnCharacterDeath (IsoGameCharacter.java:4874; zombies too, and animals through IsoAnimal.java:1141:
--- IsoAnimal extends IsoPlayer, :123, and instanceof is Class.isInstance, LuaManager.java:2958): the
--- main seat's occupancy is marked dead at once, observed first when the scan has not seen this
--- name and SteamID on the seat yet. DoDeath fires the event before anything else
--- (IsoGameCharacter.java:2024-2025), so the mark does not wait for isDead() to read true. An
--- animal's onlineID is a sequential short that overlaps seat IDs: it must not replace a seat.
-function Id.onDeath(character)
-    if not instanceof(character, "IsoPlayer") or instanceof(character, "IsoAnimal") or not Id.steamMode() then return end
-    local ok, seat = pcall(function() return character:getPlayerNum() end)
-    if not ok or seat ~= 0 or not validName(S.claimedName(character)) then return end
-    local r = Id.observe(character)
-    if r ~= nil then r.dead = true end
 end
 
 -- The smallest (md.firstSeen or +inf, whitelist id or +inf, name bytes): the oldest economy
@@ -615,7 +618,7 @@ local function primaryOf(key, names, peek)
     if #list == 1 then return list[1] end
     local name, rule = Id.pickCanonical(S.modData(), list)
     local at = EC.now()
-    if not peek and writeLines({ { v = Id.VERSION, k = "primary", sid = key, name = name, rule = rule, src = "POLICY", at = at } }) then
+    if not peek and writeLines({ { v = Id.VERSION, k = "primary", sid = key, name = name, rule = rule, src = "POLICY", at = at } }, true) then
         primaries[key] = { name = name, rule = rule, at = at }
     end
     return name
@@ -649,7 +652,13 @@ local function firstSight(player, name, peek)
     else
         r = Id.observe(player)
     end
-    if r == nil or r.suspect then return nil end
+    if r == nil then return nil end
+    if r.suspect then
+        -- the rename alert is out already; when the one-account policy would refuse this name
+        -- anyway, that is the more useful thing to tell an account switch after a death
+        if oneAccountBlock(name, { sid = sid }, true) ~= nil then return nil, "one_account" end
+        return nil
+    end
     local primary = oneAccountBlock(name, { sid = sid }, peek)
     if primary ~= nil then
         if not peek then alert("one_account", name, sid, primary) end
@@ -658,7 +667,7 @@ local function firstSight(player, name, peek)
     if peek then return name end
     local others = bySid[sid] and firstName(bySid[sid].names) or nil
     local at, text = EC.now(), Id.sidText(sid)
-    if not writeLines({ { v = Id.VERSION, k = "bind", name = name, sid = text, src = "LOGIN", at = at } }) then return nil end
+    if not writeLines({ { v = Id.VERSION, k = "bind", name = name, sid = text, src = "LOGIN", at = at } }, true) then return nil end
     setBinding(name, { sid = sid, text = text, src = "LOGIN", at = at })
     audit("BIND", name, "LOGIN", nil, nil, { steamId = text, exact = false })
     if others ~= nil and multiAllowed() then alert("shared_steam", name, sid, others) end
@@ -767,6 +776,18 @@ local function announce(before)
             S.reply(entry.player, "identity.unverified", { reason = why })
         end
     end
+end
+
+-- For ECMerge: a pass that records a canonical can change who the one-account policy lets in.
+Id.onlineVerdicts, Id.announce = onlineVerdicts, announce
+
+-- The one-account primary recorded for an exact SteamID text's group, or nil (ECMerge prefers it
+-- when it records a new canonical, so the canonical never moves a primary players were told of).
+function Id.recordedPrimary(text)
+    local d = sidFromText(text, Id.SID_EXACT)
+    if d == nil then return nil end
+    local p = primaries[(doubles[d] or 0) > 1 and text or Id.sidText(d)]
+    return p and p.name or nil
 end
 
 -- ---------- import ----------
@@ -1426,7 +1447,7 @@ function Id.init(md)
     export, acceptedGen, rejectedGen, rejectAudited, stream = { status = "none" }, nil, nil, {}, nil
     wlIds, lastNames, lastNamesCount, lastPoll, collisionAudited = {}, nil, 0, 0, {}
     slots, newGames, alerts, alertTotal, alerted = {}, {}, {}, 0, {}
-    lastToast, lastScan, multiWas, peekMulti = 0, 0, nil, nil
+    lastToast, lastScan, multiWas, peekMulti, writeFailedAt = 0, 0, nil, nil, nil
     md = md or S.modData()
     if type(md.identity) ~= "table" then md.identity = {} end
     if type(md.identity.merged) ~= "table" then md.identity.merged = {} end
@@ -1447,6 +1468,5 @@ for _, fn in ipairs(later) do Events.OnNewGame.Remove(fn) end
 Events.OnNewGame.Add(Id.onNewGame)
 for _, fn in ipairs(later) do Events.OnNewGame.Add(fn) end
 Events.OnTickEvenPaused.Add(Id.onTick)
-Events.OnCharacterDeath.Add(Id.onDeath)
 
 return Id

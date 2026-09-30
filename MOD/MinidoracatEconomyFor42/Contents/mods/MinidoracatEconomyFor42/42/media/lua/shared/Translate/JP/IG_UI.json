@@ -2230,8 +2230,5 @@
   "IGUI_MinidoracatEconomy_Player_IdentityOneAccountDetail": "この Steam アカウントは別のログイン名で経済システムを使用中です。このサーバーでは Steam アカウント 1 つにつき経済アカウントは 1 つのため、経済システムは現在ログイン名「%1」に応答しません。管理者に連絡してください。口座と残高は変わりません。",
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_IDENTITY_ALERT": "本人確認の警告",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_LOGIN": "初回確認",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_rename": "名前すり替えの疑い",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_sid_mismatch": "SteamID 不一致",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_one_account": "Steam アカウント 1 つにつき 1 アカウント",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_shared_steam": "同じ Steam アカウントの別のログイン名"
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "詳細は本人確認ページ（今回の起動中）とサーバーの監査ファイル"
 }
