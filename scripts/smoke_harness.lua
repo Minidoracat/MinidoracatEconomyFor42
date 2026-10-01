@@ -1017,6 +1017,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: final pass: a later logi
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a repeated CreatePlayer does not grow the rollback ledger (DU-10)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 23   -- +23: a character that died does not come back on its old save (scenario RS: login rule, seat rule, pacing, fresh, same-uptime reconnect, dead sighting, impostor, rename, SteamID, alive occupant, no Steam mode, animal, a death that did not stick (prune and judgment), a death not processed yet, a refused reload hides nothing, a crash back, a late-settled death, verified after the first sighting, a judgment after its own death)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: the mod's own terminal object cannot be destroyed (scenario TG: load hook on the eight tiles, in-place swap to a plain object at load and at build, idempotent, other thumpables untouched, refused engine removal, one log each, sledgehammer and scrap refused, ATM removal option does not open it, manager sledgehammer, build refused for non-managers, manager build, other builds)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: a registered vanilla console is locked (scenario TG: sledgehammer, scrap, pickup gate and execution, the map ATM option does not open it, a terminal manager still can, an unregistered console and an unregistered-again console stay ordinary); the build entry follows AdminRoles (scenario RL)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -14321,7 +14322,8 @@ end)()
     local player = fakePlayer("atm-protection")
     local function object(name)
         local obj = { removed = false }
-        local sq = { transmitRemoveItemFromSquare = function(_, target) target.removed = true end }
+        local sq = { getX = function() return 0 end, getY = function() return 0 end, getZ = function() return 0 end,
+            transmitRemoveItemFromSquare = function(_, target) target.removed = true end }
         obj.getSprite = function() return { getName = function() return name end } end
         obj.getSquare = function() return sq end
         return obj
@@ -14487,6 +14489,55 @@ end)()
     item = buildItem(player, { "carpentry_02_68" })
     check(ISBuildIsoEntity.create(item, 1, 2, 0, false, "carpentry_02_68") == true and item.created == 1,
         "other entities build as before")
+
+    -- a vanilla console is locked while its square is a registered terminal, and only then
+    local T = S.Terminal
+    worldSprites["910,900,0"] = "appliances_com_01_52"
+    local reg = T.register(boss, { x = 910, y = 900, z = 0, kind = "atm" })
+    local function console(x)
+        local obj = { removed = false }
+        local sq = { getX = function() return x end, getY = function() return 900 end, getZ = function() return 0 end,
+            transmitRemoveItemFromSquare = function(_, target) target.removed = true end }
+        obj.getSprite = function() return { getName = function() return "appliances_com_01_52" end } end
+        obj.getSquare = function() return sq end
+        return obj
+    end
+    local function pickUp(who, obj)
+        return ISMoveableSpriteProps.pickUpMoveableInternal({}, who, obj:getSquare(), obj, nil, "appliances_com_01_52", true, false)
+    end
+    local held = console(910)
+    local hit = { character = player, item = held }
+    check(reg.ok == true and not ISDestroyStuffAction.isValid(hit) and not ISDestroyStuffAction.complete(hit) and not held.removed,
+        "a player's sledgehammer is refused on a registered vanilla console at admission and at completion")
+    local scrapResult, scrapChance = ISMoveableSpriteProps.canScrapObject({ object = held }, player)
+    check(not scrapResult.canScrap and scrapChance == 0
+        and ISMoveableSpriteProps.scrapObjectInternal({}, player, {}, held:getSquare(), held, {}, 100, nil) == 0
+        and not held.removed, "a player cannot scrap a registered vanilla console")
+    local radios = player.inventory.count("Base.RadioRed")
+    check(ISMoveableSpriteProps.canPickUpMoveable({}, player, held:getSquare(), held) == false
+        and pickUp(player, held) == nil and not held.removed and player.inventory.count("Base.RadioRed") == radios,
+        "a player cannot pick a registered vanilla console up: refused at the gate and where the item is made")
+    local previousOverride = EC.optionOverride
+    EC.optionOverride = function(key)
+        if key == "MapATMAllowDestruction" then return true end
+        return previousOverride and previousOverride(key)
+    end
+    check(not ISDestroyStuffAction.complete(hit) and not held.removed,
+        "opening map ATM removal does not open a registered console")
+    EC.optionOverride = previousOverride
+    local other = console(910)
+    check(ISDestroyStuffAction.complete({ character = boss, item = held }) and held.removed
+        and pickUp(boss, other) ~= nil and other.removed,
+        "a terminal manager still sledgehammers and picks up a registered console")
+    local loose = console(911)
+    check(ISMoveableSpriteProps.canPickUpMoveable({}, player, loose:getSquare(), loose) == true
+        and pickUp(player, loose) ~= nil and loose.removed,
+        "a vanilla console nobody registered stays an ordinary moveable")
+    local freed = console(910)
+    check(T.unregister(boss, { id = reg.id }).ok == true
+        and ISDestroyStuffAction.complete({ character = player, item = freed }) and freed.removed,
+        "unregistering hands the console back to the ordinary rules")
+    worldSprites["910,900,0"] = nil
     for _, key in ipairs({ "900,900,0", "901,900,0", "902,900,0", "903,900,0" }) do
         worldObjects[key], worldLoaded[key] = nil, nil
     end
@@ -15414,9 +15465,22 @@ io.write("scenario RL: the admin check without a connection\n")
 local savedGetPlayer, savedGetAccessLevel, savedIsServer = getPlayer, getAccessLevel, isServer
 local role = "admin"
 getAccessLevel = function() error("GameClient.connection is null") end
-getPlayer = function() return { getRole = function() return role and { getName = function() return role end } or nil end } end
+getPlayer = function() return { getRole = function()
+    return role and { getName = function() return role end, hasCapability = function() return true end } or nil
+end } end
 isServer = function() return false end
 local okAdmin, admin = pcall(MinidoracatEconomy_AdminBuildOnly)
+-- the build entry follows AdminRoles like the server does, not the role's name
+local previousOverride = EC.optionOverride
+EC.optionOverride = function(key)
+    if key == "AdminRoles" then return { "Terminal Keeper" } end
+    return previousOverride and previousOverride(key)
+end
+role = "Terminal Keeper"
+local keeper = MinidoracatEconomy_AdminBuildOnly({ player = getPlayer() })
+role = "admin"
+local unlisted = MinidoracatEconomy_AdminBuildOnly({ player = getPlayer() })
+EC.optionOverride = previousOverride
 role = nil
 local okNone, none = pcall(EC.localRoleName)
 getPlayer = function() return nil end
@@ -15424,6 +15488,8 @@ local okNoPlayer, noPlayer = pcall(EC.localRoleName)
 getPlayer, getAccessLevel, isServer = savedGetPlayer, savedGetAccessLevel, savedIsServer
 check(okAdmin and admin == true and okNone and none == "" and okNoPlayer and noPlayer == "",
     "the admin check reads the local player's role and never the connection, even after a disconnect")
+check(keeper == true and unlisted == false,
+    "the build entry follows AdminRoles: a listed custom role sees it, the admin role does not once it is not listed")
 end)()
 
 ;(function()

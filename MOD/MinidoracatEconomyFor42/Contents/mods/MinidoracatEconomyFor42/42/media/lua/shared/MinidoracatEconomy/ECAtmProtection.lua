@@ -1,11 +1,14 @@
--- Native map ATMs and the mod's own terminal tiles: reject ordinary sledgehammer and furniture-scrap
--- operations on both sides. The own tiles are always held back for anyone but a terminal manager;
--- map ATMs follow MapATMAllowDestruction. NetTimedAction.perform calls complete, not isValid
--- (NetTimedAction.java:118-138). Pickup/rotation already require IsMoveAble, absent on all of
--- these sprites. They also have no attached flags or SpriteGrid: removing a wall does not remove
--- them. The own tiles take no damage at all (ECTerminal keeps them plain IsoObjects, which
--- zombies, melee and animals cannot hit) and fire skips them (tiledef firerequirement); for map
--- ATMs, fire, explosions and other mods' world edits are outside this guard.
+-- Terminal objects nobody but a terminal manager may take down, checked on both sides: the mod's
+-- own terminal tiles always, a vanilla console (EC.TERMINAL_SPRITES) while its square is a
+-- registered terminal, and native map ATMs unless MapATMAllowDestruction opens them. Refused: the
+-- sledgehammer, furniture scrap and moveable pickup. NetTimedAction.perform calls complete, not
+-- isValid (NetTimedAction.java:118-138). Only the vanilla consoles are IsMoveAble, and none of
+-- these sprites has the facing offsets a rotation needs; a forced rotation picks up through
+-- pickUpMoveableInternal, which refuses here. They have no attached flags or SpriteGrid either:
+-- removing a wall does not remove them. The own tiles take no damage at all (ECTerminal keeps
+-- them plain IsoObjects, which zombies, melee and animals cannot hit) and fire skips them
+-- (tiledef firerequirement); for consoles and map ATMs, fire, explosions and other mods' world
+-- edits are outside this guard.
 require "MinidoracatEconomy/ECCore"
 require "TimedActions/ISDestroyStuffAction"
 require "Moveables/ISMoveableSpriteProps"
@@ -14,9 +17,25 @@ local EC = MinidoracatEconomy
 if EC.AtmProtection then return end
 local P = {}
 
+-- Is this vanilla console's square a registered terminal? The server asks its own registry
+-- (ECTerminal); a client asks the list the server pushed to it (ECClient).
+local function registered(object)
+    local sq = object:getSquare()
+    if not sq then return false end
+    local x, y, z = sq:getX(), sq:getY(), sq:getZ()
+    local S = EC.Server
+    if S and S.AUTHORITY then return S.Terminal ~= nil and S.Terminal.at(x, y, z) ~= nil end
+    local C = EC.Client
+    return C ~= nil and C.terminalAt ~= nil and C.terminalAt(x, y, z) ~= nil
+end
+
 function P.blocked(player, object)
     local sprite = object and object:getSprite()
-    if sprite and EC.isOwnTerminalSprite(sprite:getName()) then return not EC.canManageTerminals(player) end
+    local name = sprite and sprite:getName()
+    if name and EC.TERMINAL_SPRITES[name] then
+        if EC.isOwnTerminalSprite(name) or registered(object) then return not EC.canManageTerminals(player) end
+        return false
+    end
     if not EC.isAtmObject(object) then return false end
     local option = isClient() and EC.Client and EC.Client.options and EC.Client.options.MapATMAllowDestruction
     local allowed
@@ -54,6 +73,22 @@ local scrap = props.scrapObjectInternal
 props.scrapObjectInternal = function(self, character, definition, square, object, ...)
     if P.blocked(character, object) then return 0 end
     return scrap(self, character, definition, square, object, ...)
+end
+
+-- Pickup: the menu and cursor gate, then the only place the item is made and the object leaves
+-- the square. pickUpMoveable skips the gate with _forceAllow (a rotation does), so the execution
+-- point refuses as well; nil is what vanilla returns when nothing was picked up. The shared timed
+-- action and the server transaction both land here (ISMoveablesAction.lua:236-246,
+-- TransactionProcessor.lua:6-14 -> ISMoveableSpriteProps.lua:1265-1304).
+local canPickUp = props.canPickUpMoveable
+props.canPickUpMoveable = function(self, character, square, object, ...)
+    if P.blocked(character, object) then return false end
+    return canPickUp(self, character, square, object, ...)
+end
+local pickUp = props.pickUpMoveableInternal
+props.pickUpMoveableInternal = function(self, character, square, object, ...)
+    if P.blocked(character, object) then return nil end
+    return pickUp(self, character, square, object, ...)
 end
 
 EC.AtmProtection = P

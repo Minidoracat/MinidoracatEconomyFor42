@@ -3,12 +3,13 @@
 -- On a registered terminal square everyone gets "use terminal" (opens the economy center on the
 -- shop tab), and on a trade terminal everyone also gets the radio note: what the station is
 -- tuned to, whether it picks voices up at all, and every native limit that decides whether a
--- word actually leaves the tile. Admins additionally get "register as ATM" / "register as trade
--- station" on a square that carries an allowed terminal tile (EC.TERMINAL_SPRITES) and
--- "unregister" on a registered one; the server re-validates all of them (ECTerminal.register /
--- unregister). Changing the kind of a square is unregister then register, exactly as before --
--- there is no "set kind" call. Admin means the local player's own role (EC.localRoleName, never
--- the connection); OnFillWorldObjectContextMenu: LuaEventManager.java:619-620.
+-- word actually leaves the tile. Terminal managers additionally get "register as ATM" / "register
+-- as trade station" on a square that carries an allowed terminal tile (EC.TERMINAL_SPRITES),
+-- "unregister" on a registered one and "demolish" on any terminal tile; the server re-validates
+-- all of them (ECTerminal.register / unregister / demolish). Changing the kind of a square is
+-- unregister then register, exactly as before -- there is no "set kind" call. A terminal manager
+-- is EC.canManageTerminals: a role listed in AdminRoles with the native AddItem capability, the
+-- server's own rule. OnFillWorldObjectContextMenu: LuaEventManager.java:619-620.
 --
 -- What this file may and may not claim about the radio: the note is a reading of what the server
 -- last told the client (C.radio, the terminal's own radioState) plus the engine's own rules. It
@@ -33,10 +34,6 @@ local T = "IGUI_MinidoracatEconomy_"
 -- The server maps RadioRange=0 to 100000, covering native signed-short radio coordinates.
 -- This is the mod's mapping, not a DeviceData maximum.
 local RELAY_RANGE_UNLIMITED = 100000
-
-local function isAdmin()
-    return EC.localRoleName() == "admin"
-end
 
 local function spriteName(o)
     local ok, name = pcall(function() return o:getSprite():getName() end)
@@ -150,7 +147,7 @@ local function onFillMenu(playerNum, context, worldobjects, test)
         -- exactly what a player standing next to it needs to know before speaking
         if terminal and terminal.kind == "trade" then addRadioOption(context, terminal) end
     end
-    if isAdmin() then
+    if EC.canManageTerminals(getSpecificPlayer(playerNum)) then
         local tile = hasTerminalTile(square, worldobjects)
         if terminal then
             context:addOption(getText(T .. "Terminal_Unregister"), nil, function()
@@ -172,26 +169,17 @@ local function onFillMenu(playerNum, context, worldobjects, test)
     end
 end
 
--- Only admins take a terminal down. The mod's own terminal tiles and map ATMs are refused on both
--- sides by EC.AtmProtection (the server re-checks at completion); what is left for this client
--- cursor is a vanilla console somebody registered as a terminal: it stays map furniture, so only
--- the sledgehammer cursor (ISDestroyCursor.canDestroy, server/BuildingObjects, shared code) holds
--- it back. Vanilla consoles that nobody registered stay destroyable as usual.
-local function registeredConsole(object)
-    local name = spriteName(object)
-    if not name or not EC.TERMINAL_SPRITES[name] or EC.isOwnTerminalSprite(name) then return false end
-    local ok, sq = pcall(function() return object:getSquare() end)
-    if not ok or not sq then return false end
-    return C.terminalAt(sq:getX(), sq:getY(), sq:getZ()) ~= nil
-end
-
+-- Only terminal managers take a terminal down. EC.AtmProtection.blocked is the shared rule the
+-- server applies again at completion (the mod's own tiles, registered vanilla consoles, map
+-- ATMs); the sledgehammer cursor (ISDestroyCursor.canDestroy, server/BuildingObjects, shared
+-- code) asks it first so the refused object never lights up. Vanilla consoles that nobody
+-- registered stay destroyable as usual.
 local function guardDestroyCursor()
     if not ISDestroyCursor or ISDestroyCursor.MinidoracatEconomyGuarded then return end
     ISDestroyCursor.MinidoracatEconomyGuarded = true
     local base = ISDestroyCursor.canDestroy
     ISDestroyCursor.canDestroy = function(self, object)
         if EC.AtmProtection.blocked(self.character, object) then return false end
-        if not isAdmin() and registeredConsole(object) then return false end
         return base(self, object)
     end
 end

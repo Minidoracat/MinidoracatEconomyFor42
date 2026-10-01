@@ -164,11 +164,12 @@ function EC.localRoleName()
 end
 
 -- CraftRecipe OnAddToMenu callback of the terminal entity (CraftRecipe.java:379-380, called by
--- ISRecipeScrollingListBox.lua:344-347 on the client): only admins see the build entry. Server
--- side never lists build menus.
+-- ISRecipeScrollingListBox.lua:344-347 and ISTiledIconPanel.lua:193-197 with
+-- { player = IsoPlayer, recipe }): only terminal managers see the build entry, the same rule the
+-- server applies to the build itself (ECTerminal). Server side never lists build menus.
 function MinidoracatEconomy_AdminBuildOnly(param)
     if isServer() then return false end
-    return EC.localRoleName() == "admin"
+    return EC.canManageTerminals(type(param) == "table" and param.player or getPlayer())
 end
 
 function EC.log(msg)
