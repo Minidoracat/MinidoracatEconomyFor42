@@ -34,7 +34,7 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [h2]🏧 Terminals and market radio[/h2]
 [list]
 [*] [b]Map ATMs[/b]: Settings - General has "Use map ATMs as terminals" (on) and "Allow players to remove map ATMs" (off).
-[*] [b]Custom terminals[/b] (machine or catgirl, build menu - Furniture, admins only): right-click to register as an ATM terminal (no radio) or a trade station (market radio); to switch, unregister and register again.
+[*] [b]Custom terminals[/b] (machine or catgirl, build menu - Furniture, admins only): right-click to register as an economy terminal: ATM (no radio) or trade station (market radio). To switch, unregister first.
 [*] [b]Market summaries[/b]: trade stations broadcast text summaries on a timer, shown in each player's own game language; an interval of 0 stops only the summary. ATMs never broadcast.
 [*] [b]Voice pickup[/b] (Settings - Market radio) is [b]off by default[/b]; it follows server voice settings, and nearby or lower-floor devices may hear it.
 [*] [b]Before removing this mod[/b], unregister each trade station while its area is loaded and save normally; disabling the mod runs no cleanup.

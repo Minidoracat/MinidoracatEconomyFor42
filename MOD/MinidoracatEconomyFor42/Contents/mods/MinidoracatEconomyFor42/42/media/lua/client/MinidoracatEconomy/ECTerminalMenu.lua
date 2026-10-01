@@ -113,17 +113,23 @@ local function showRadioInfo(terminal)
         table.concat(radioLines(C.terminalAt(terminal.x, terminal.y, terminal.z) or terminal), "\n"))
 end
 
-local function addRadioOption(context, terminal)
-    local option = context:addOption(tr("Terminal_Radio"), terminal, showRadioInfo)
+-- A native context-menu tooltip (shown while the option is highlighted, mouse or controller).
+local function withTip(option, description, name)
     local tip = ISWorldObjectContextMenu.addToolTip()
     tip:setVisible(false)
-    tip:setName(tr("Terminal_Radio_Name"))
-    local info = C.radio
-    tip.description = (type(info) == "table"
-        and tr(info.relayEnabled == true and "Terminal_Radio_Relay_On" or "Terminal_Radio_Relay_Off")
-        or tr("Terminal_Radio_Unknown")) .. "\n" .. tr("Terminal_Radio_Open")
+    if name then tip:setName(name) end
+    tip.description = description
     tip.maxLineWidth = 512
     option.toolTip = tip
+end
+
+local function addRadioOption(context, terminal)
+    local info = C.radio
+    withTip(context:addOption(tr("Terminal_Radio"), terminal, showRadioInfo),
+        (type(info) == "table"
+            and tr(info.relayEnabled == true and "Terminal_Radio_Relay_On" or "Terminal_Radio_Relay_Off")
+            or tr("Terminal_Radio_Unknown")) .. "\n" .. tr("Terminal_Radio_Open"),
+        tr("Terminal_Radio_Name"))
 end
 
 local function onFillMenu(playerNum, context, worldobjects, test)
@@ -147,24 +153,27 @@ local function onFillMenu(playerNum, context, worldobjects, test)
         -- exactly what a player standing next to it needs to know before speaking
         if terminal and terminal.kind == "trade" then addRadioOption(context, terminal) end
     end
+    -- Both kinds are the same economy terminal; the trade station adds the market radio. Every
+    -- manager option says what it does on hover: an admin once picked "ATM" for a station that was
+    -- meant to carry the radio, and "remove registration" and "demolish" read alike.
     if EC.canManageTerminals(getSpecificPlayer(playerNum)) then
         local tile = hasTerminalTile(square, worldobjects)
         if terminal then
-            context:addOption(getText(T .. "Terminal_Unregister"), nil, function()
+            withTip(context:addOption(tr("Terminal_Unregister"), nil, function()
                 C.unregisterTerminal(terminal.id, C.newRequestId())
-            end)
+            end), tr("Terminal_Unregister_Tip", tr("Terminal_Kind_" .. tostring(terminal.kind))))
         elseif tile then
-            context:addOption(getText(T .. "Terminal_Register"), nil, function()
+            withTip(context:addOption(tr("Terminal_Register"), nil, function()
                 C.registerTerminal(x, y, z, "atm", C.newRequestId())
-            end)
-            context:addOption(getText(T .. "Terminal_RegisterTrade"), nil, function()
+            end), tr("Terminal_Register_Tip"))
+            withTip(context:addOption(tr("Terminal_RegisterTrade"), nil, function()
                 C.registerTerminal(x, y, z, "trade", C.newRequestId())
-            end)
+            end), tr("Terminal_RegisterTrade_Tip"))
         end
         if tile then
-            context:addOption(getText(T .. "Terminal_Demolish"), nil, function()
+            withTip(context:addOption(tr("Terminal_Demolish"), nil, function()
                 C.demolishTerminal(x, y, z, C.newRequestId())
-            end)
+            end), tr("Terminal_Demolish_Tip"))
         end
     end
 end
