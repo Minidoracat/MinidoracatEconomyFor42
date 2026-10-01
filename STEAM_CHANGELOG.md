@@ -1,5 +1,5 @@
 [h1]Minidoracat Economy for B42 42.21.0-0.4.0[/h1]
-[i]2026-09-30[/i]
+[i]2026-10-01[/i]
 
 [h3]✨ 新增[/h3]
 [list]
