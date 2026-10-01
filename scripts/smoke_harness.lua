@@ -1018,6 +1018,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a repeated CreatePlayer 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 23   -- +23: a character that died does not come back on its old save (scenario RS: login rule, seat rule, pacing, fresh, same-uptime reconnect, dead sighting, impostor, rename, SteamID, alive occupant, no Steam mode, animal, a death that did not stick (prune and judgment), a death not processed yet, a refused reload hides nothing, a crash back, a late-settled death, verified after the first sighting, a judgment after its own death)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: the mod's own terminal object cannot be destroyed (scenario TG: load hook on the eight tiles, in-place swap to a plain object at load and at build, idempotent, other thumpables untouched, refused engine removal, one log each, sledgehammer and scrap refused, ATM removal option does not open it, manager sledgehammer, build refused for non-managers, manager build, other builds)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: a registered vanilla console is locked (scenario TG: sledgehammer, scrap, pickup gate and execution, the map ATM option does not open it, a terminal manager still can, an unregistered console and an unregistered-again console stay ordinary); the build entry follows AdminRoles (scenario RL)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: removing shop items and the item limit (scenario SD: write gate and all-or-nothing, refusals, the server's own reason check, file/revision/push, the audit keeps the row, a resent purchase, pasting the row back with its counts, the limit option and its push, its range, lowering it, the hard ceiling at load and on the wire, removing every row)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3161,11 +3162,11 @@ do
     Shop.load()
 end
 local bulk = {}
-for i = 1, Shop.MAX_SKUS do bulk[#bulk + 1] = '{"id":"bulk' .. i .. '","item":"Base.Twine","qty":1,"price":7}' end
+for i = 1, Shop.maxItems() do bulk[#bulk + 1] = '{"id":"bulk' .. i .. '","item":"Base.Twine","qty":1,"price":7}' end
 files["MinidoracatEconomy/catalog.json"] = { lines = { '{"items":[' .. table.concat(bulk, ",") .. ']}' }, opens = 0 }
-check(cmd(boss, "admin.catalog", { action = "reload" }).count == Shop.MAX_SKUS
+check(cmd(boss, "admin.catalog", { action = "reload" }).count == Shop.maxItems()
     and cmd(boss, "admin.catalog", { action = "add", id = "one_too_many", item = "Base.Twine", prices = { survivor = { price = 7 } } }).error == "catalog_full"
-    and Shop.sku("one_too_many") == nil, "a catalog already at the 200-SKU ceiling refuses one more")
+    and Shop.sku("one_too_many") == nil, "a catalog already at the host's item limit (200 by default) refuses one more")
 onlinePlayers = {}
 end)()
 
@@ -18905,6 +18906,175 @@ online(x2)
 tick()
 check(killed(x2), "RS-15: a judgment after the object's own death keeps that death noted")
 steamModeActive = false
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 SD：刪除商店商品、服主的商品上限、硬上限 =====
+io.write("scenario SD: removing shop items, the host's item limit and the hard ceiling\n")
+;(function()
+local Shop = S.Shop
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, writerDeny = {}, {}, {}
+nowMs = nowMs + 61000
+local function catalog(rows)
+    files[Shop.FILE] = { lines = { EC.jsonEncode({ items = rows }) }, opens = 0 }
+end
+local function fileText() return table.concat(files[Shop.FILE].lines, "\n") end
+catalog({
+    { id = "pack", item = "Base.Twine", qty = 1, dailyCap = 2, dailyCapScope = "lifetime", category = "material",
+        prices = { survivor = { price = 20, bidPrice = 8, buyback = true } } },
+    { id = "nail", item = "Base.Nails", qty = 1, category = "material", prices = { survivor = { price = 5 } } },
+    { id = "plank", item = "Base.Plank", qty = 1, category = "material", prices = { survivor = { price = 9 } } },
+})
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("sd-admin"); boss.role = "admin"
+local mod = fakePlayer("sd-mod"); mod.role = "moderator"
+local zed = fakePlayer("sd-zed"); zed.x, zed.y = 101, 200; zed.inventory = fakeInventory(80)
+onlinePlayers = { boss, mod, zed }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function pushedTo(who)
+    for i = #sentCommands, 1, -1 do
+        local s = sentCommands[i]
+        if s.command == "shop.list" and s.player == who then return s.args end
+    end
+    return nil
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("sd-zed", "survivor", 1000, "SYSTEM_MINT", { requestId = "sd-seed", reasonCode = "t" })
+
+-- 寫入閘門與整批不寫：一個不存在的 id 讓整份清單都不動
+local before, rev0 = fileText(), Shop.revision()
+local modTry = cmd(mod, "admin.catalog", { action = "remove", ids = { "nail" } })
+local ghost = cmd(boss, "admin.catalog", { action = "remove", ids = { "nail", "ghost" }, reason = "sd" })
+check(modTry.error == "forbidden" and ghost.ok == false and ghost.error == "unknown_sku" and ghost.extra ~= nil
+    and ghost.extra.id == "ghost" and Shop.sku("nail") ~= nil and fileText() == before and Shop.revision() == rev0,
+    "SD-1: removing needs the write gate, and one unknown id refuses the whole list without touching the file")
+check(cmd(boss, "admin.catalog", { action = "remove", ids = { "nail", "nail" }, reason = "sd" }).error == "duplicate_id"
+    and cmd(boss, "admin.catalog", { action = "remove", ids = {}, reason = "sd" }).error == "invalid_args"
+    and cmd(boss, "admin.catalog", { action = "remove", ids = "nail", reason = "sd" }).error == "invalid_args"
+    and cmd(boss, "admin.catalog", { action = "remove", ids = { "nail" }, revision = "0:stale", reason = "sd" }).error == "catalog_stale"
+    and Shop.sku("nail") ~= nil and fileText() == before,
+    "SD-2: a repeated id, an empty or malformed list and a stale revision are refused and remove nothing")
+-- 刪除無法在面板上復原：原因跟其他管理寫入同一條規則，由伺服器自己檢查，不只靠對話框
+local lastAudit = X.auditEntries(1)[1]
+local noReason = cmd(boss, "admin.catalog", { action = "remove", ids = { "nail" } })
+local blank = cmd(boss, "admin.catalog", { action = "remove", ids = { "nail" }, reason = "   " })
+local ctrl = cmd(boss, "admin.catalog", { action = "remove", ids = { "nail" }, reason = "a\001b" })
+local long = cmd(boss, "admin.catalog", { action = "remove", ids = { "nail" }, reason = string.rep("x", 1001) })
+local notText = cmd(boss, "admin.catalog", { action = "remove", ids = { "nail" }, reason = { "x" } })
+local newAudit = X.auditEntries(1)[1]
+check(noReason.error == "reason_too_short" and blank.error == "reason_blank" and ctrl.error == "reason_invalid"
+    and long.error == "reason_too_long" and notText.error == "reason_too_short"
+    and Shop.sku("nail") ~= nil and fileText() == before and Shop.revision() == rev0
+    and (newAudit == nil or newAudit == lastAudit or not (newAudit.field == "remove" and newAudit.target == "nail")),
+    "SD-14: a removal without a real reason is refused by the server itself, with nothing written or audited")
+
+-- 買過再刪：檔案、版本、推送、稽核
+local rev1 = Shop.revision()
+local bought = cmd(zed, "shop.buy", { id = "pack", currency = "survivor", revision = rev1, requestId = "sd-buy" })
+local balAfter = L.getBalance("sd-zed", "survivor").available
+sentCommands = {}
+local removed = cmd(boss, "admin.catalog", { action = "remove", ids = { "pack" }, revision = Shop.revision(), reason = "retire" })
+local push = pushedTo(zed)
+local stillListed = false
+for _, it in ipairs(push and push.items or {}) do if it.id == "pack" then stillListed = true end end
+check(bought.ok == true and removed.ok == true and removed.extra ~= nil and removed.extra.count == 1
+    and Shop.sku("pack") == nil and Shop.sku("nail") ~= nil and Shop.sku("plank") ~= nil
+    and string.find(fileText(), '"pack"', 1, true) == nil and Shop.revision() ~= rev1
+    and push ~= nil and not stillListed and #push.items == 2,
+    "SD-3: a removal takes the row out of catalog.json itself, bumps the revision and pushes the shorter catalog to everyone online")
+local audit = X.auditEntries(5)[1]
+local doc = audit ~= nil and type(audit.before) == "string" and EC.jsonDecode(audit.before) or nil
+check(audit ~= nil and audit.action == "catalog" and audit.field == "remove" and audit.target == "pack"
+    and audit.reason == "retire" and type(doc) == "table" and doc.item == "Base.Twine" and doc.dailyCapScope == "lifetime"
+    and doc.prices.survivor.price == 20 and doc.prices.survivor.bidPrice == 8 and doc.prices.survivor.buyback == true,
+    "SD-4: the audit keeps the removed row's own catalog line, with the reason")
+local again = cmd(zed, "shop.buy", { id = "pack", currency = "survivor", revision = rev1, requestId = "sd-buy" })
+local fresh = cmd(zed, "shop.buy", { id = "pack", currency = "survivor", revision = Shop.revision(), requestId = "sd-buy-2" })
+check(again.duplicate == true and again.txId == bought.txId and L.getBalance("sd-zed", "survivor").available == balAfter
+    and fresh.error == "unknown_sku",
+    "SD-5: a purchase resent after its row was removed answers with the original transaction; a new one finds no row")
+-- 稽核那一行貼回檔案就是原本那一列；已購份數沒被動過
+local cur = EC.jsonDecode(fileText())
+cur.items[#cur.items + 1] = doc
+catalog(cur.items)
+local back = cmd(boss, "admin.catalog", { action = "reload" })
+local p = Shop.sku("pack")
+check(back.ok == true and p ~= nil and p.item == "Base.Twine" and p.dailyCap == 2 and p.dailyCapScope == "lifetime"
+    and p.prices.survivor.price == 20 and p.prices.survivor.bidPrice == 8 and p.prices.survivor.buyback == true
+    and Shop.used("sd-zed", "pack", nowMs) == 1,
+    "SD-6: the audit line pasted back into catalog.json restores the row as it was, and the lifetime count it left behind still counts")
+
+-- 服主的上限
+check(Shop.maxItems() == 200 and cmd(zed, "shop.list").maxItems == 200 and Shop.MAX_SKUS == 1000
+    and EC.OPTION_BY_KEY.ShopMaxItems.max == Shop.MAX_SKUS,
+    "SD-7: the item limit is the ShopMaxItems option (200 by default), every snapshot carries it, and its top is the hard ceiling")
+local bulk = {}
+for i = 1, 200 do bulk[i] = { id = "b" .. i, item = "Base.Twine", qty = 1, prices = { survivor = { price = 7 } } } end
+catalog(bulk)
+local full = cmd(boss, "admin.catalog", { action = "reload" })
+local refused = cmd(boss, "admin.catalog", { action = "add", id = "one_more", item = "Base.Nails", prices = { survivor = { price = 5 } } })
+sentCommands = {}
+local raised = cmd(boss, "admin.option", { key = "ShopMaxItems", value = 201 })
+local push2 = pushedTo(zed)
+local added = cmd(boss, "admin.catalog", { action = "add", id = "one_more", item = "Base.Nails", prices = { survivor = { price = 5 } } })
+local over = cmd(boss, "admin.catalog", { action = "add", id = "two_more", item = "Base.Nails", prices = { survivor = { price = 5 } } })
+check(full.ok == true and full.count == 200 and refused.error == "catalog_full" and raised.ok == true
+    and push2 ~= nil and push2.maxItems == 201 and added.ok == true and Shop.fileStatus().count == 201
+    and over.error == "catalog_full",
+    "SD-8: at the limit an add is refused; raising ShopMaxItems pushes the new limit to everyone and lets exactly that many in")
+check(cmd(boss, "admin.option", { key = "ShopMaxItems", value = 0 }).error == "invalid_args"
+    and cmd(boss, "admin.option", { key = "ShopMaxItems", value = 1001 }).error == "invalid_args"
+    and Shop.maxItems() == 201,
+    "SD-9: the limit stays between 1 and the hard ceiling")
+local lowered = cmd(boss, "admin.option", { key = "ShopMaxItems", value = 100 })
+local reread = cmd(boss, "admin.catalog", { action = "reload" })
+local stillFull = cmd(boss, "admin.catalog", { action = "add", id = "three_more", item = "Base.Nails", prices = { survivor = { price = 5 } } })
+local one = cmd(boss, "admin.catalog", { action = "remove", ids = { "b1" }, reason = "sd" })
+check(lowered.ok == true and reread.ok == true and reread.count == 201 and stillFull.error == "catalog_full"
+    and one.ok == true and Shop.fileStatus().count == 200 and Shop.maxItems() == 100,
+    "SD-10: lowering the limit removes nothing and a file over it still loads; adding stays refused, removing still works")
+
+-- 硬上限：超過的檔案載入時被拒，前一份留著；最長的一列乘上硬上限仍放得進一個回覆
+local huge = {}
+for i = 1, Shop.MAX_SKUS + 1 do huge[i] = { id = "h" .. i, item = "Base.Twine", qty = 1, prices = { survivor = { price = 7 } } } end
+catalog(huge)
+local tooBig = cmd(boss, "admin.catalog", { action = "reload" })
+check(tooBig.ok == false and tooBig.error == "catalog_invalid" and Shop.fileStatus().count == 200,
+    "SD-11: a catalog.json over the hard ceiling is refused at load and the previous catalog stays")
+catalog({
+    { id = "w", item = "Base.Twine", qty = 50, dailyCap = 1000000, dailyCapScope = "lifetime", buybackCap = 1000000,
+        category = "x", prices = { survivor = { price = 1000000000, bidPrice = 999999999, buyback = true },
+            cat = { price = 1000000000, bidPrice = 999999999, buyback = true } } },
+    { id = "v", item = "Base.Nails", qty = 1, category = "x", prices = { survivor = { price = 5 } } },
+})
+cmd(boss, "admin.catalog", { action = "reload" })
+local snap = Shop.snapshot("sd-zed", nowMs)
+local row = nil
+for _, it in ipairs(snap.items) do if it.id == "w" then row = it end end
+row.id, row.item, row.category = string.rep("i", Shop.ID_MAX), string.rep("t", 128), string.rep("\228\184\173", Shop.CATEGORY_MAX)
+snap.items = {}
+local per, rest = S.wireBytes(row), S.wireBytes(snap)
+check(row.remaining ~= nil and row.buybackRemaining ~= nil and row.prices.cat ~= nil
+    and per * Shop.MAX_SKUS + rest < S.REPLY_MAX_BYTES * 0.8,
+    "SD-12: a catalog at the hard ceiling with every row at its longest fits one reply with room to spare (" .. per .. " bytes a row)")
+-- 全部刪光：空目錄，重啟也不會寫回預設商品
+local emptied = cmd(boss, "admin.catalog", { action = "remove", ids = { "w", "v" }, reason = "sd" })
+fire("OnServerStarted")
+check(emptied.ok == true and emptied.extra ~= nil and emptied.extra.count == 2 and Shop.fileStatus().count == 0
+    and Shop.fileStatus().error == nil and string.find(fileText(), "bandage", 1, true) == nil
+    and #cmd(zed, "shop.list").items == 0,
+    "SD-13: removing every row leaves an empty catalog, and a restart does not write the default items back")
+Cfg.setOption("ShopMaxItems", nil, "sd-admin")
 onlinePlayers = {}
 end)()
 

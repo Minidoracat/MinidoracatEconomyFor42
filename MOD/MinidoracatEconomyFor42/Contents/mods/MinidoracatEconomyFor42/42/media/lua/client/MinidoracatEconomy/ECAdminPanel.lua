@@ -1454,7 +1454,15 @@ function Dialog:layoutInside(maxW, maxH)
     labelW = math.min(labelW, math.max(60, math.floor(width * 0.45)))
     local half = math.floor((width - PAD * 4 - labelW * 2) / 2)
     local pairable = half >= 90
-    local warnLines = self.warnText and U.wrapText(self.warnText, math.max(60, width - PAD * 2 - 22), math.huge) or {}
+    -- the reader breaks at every "\n" before it wraps (U.setWrappedText), and its height is
+    -- planned the same way: a confirmation that lists rows one per line gets a line for each
+    local warnLines = {}
+    if self.warnText ~= nil then
+        for line in (self.warnText .. "\n"):gmatch("(.-)\n") do
+            local parts = U.wrapText(line, math.max(60, width - PAD * 2 - 22), math.huge)
+            for i = 1, math.max(1, #parts) do warnLines[#warnLines + 1] = parts[i] or "" end
+        end
+    end
     -- the set spelled out, one role per line: the reader is what keeps a long list readable
     -- (and scrollable) where the dropdown can only ever paint the one option it highlights
     local roleLines = self.roleSpec and U.wrapText(self.roleText or "", math.max(60, width - PAD * 2 - 22), math.huge) or {}
@@ -4308,6 +4316,9 @@ function Admin:openDialog(mode, ctx)
     dlg.listingId = ctx.listingId
     dlg.auctionId = ctx.auctionId
     dlg.reclaimId = ctx.reclaimId
+    -- a catalog removal: the ids the shop page named and the revision of the catalog it showed
+    dlg.catalogIds = ctx.catalogIds
+    dlg.catalogRevision = ctx.catalogRevision
     dlg.hintText = ctx.hint
     -- the season a rotation expects to replace: the command carries this exact id, so the
     -- confirmation stays bound to the season that was on screen when it was opened
@@ -4534,6 +4545,12 @@ function Admin:submitDialog(dlg)
             return self:dialogError(dlg, errorText("invalid_args"))
         end
         if not self:sendListings({ action = "delist", listingId = dlg.listingId, reason = reason }, dlg) then return end
+    elseif dlg.mode == "catalogRemove" then
+        if type(dlg.catalogIds) ~= "table" or #dlg.catalogIds == 0 then
+            return self:dialogError(dlg, errorText("invalid_args"))
+        end
+        if not self:sendCatalog({ action = "remove", ids = dlg.catalogIds, revision = dlg.catalogRevision,
+            reason = reason }, dlg) then return end
     elseif dlg.mode == "auctionCancel" then
         if dlg.auctionId == nil then
             return self:dialogError(dlg, errorText("invalid_args"))
@@ -4942,16 +4959,27 @@ function Admin:onReply(kind, args)
                 -- tell the host which line to go and fix
                 local body = errorText(args.error)
                 if type(args.detail) == "string" and args.detail ~= "" then body = body .. ": " .. args.detail end
+                -- a refused removal names the one id that stopped the whole list
+                local extra = type(args.extra) == "table" and args.extra or nil
+                if req and req.action == "remove" and extra and type(extra.id) == "string" then
+                    body = body .. " (" .. extra.id .. ")"
+                end
                 self:dialogError(self.dialog, body)
             elseif req and req.action == "reload" then
                 local file = args.file
                 self.message = { text = getText(T .. "Admin_Shop_Reloaded", tostring((file and file.count) or args.count or 0)) }
+            elseif req and req.action == "remove" then
+                local extra = type(args.extra) == "table" and args.extra or {}
+                self.message = { text = getText(T .. "Admin_Shop_Deleted", tostring(tonumber(extra.count) or 0)) }
+                self:closeDialog()
             elseif req then
                 self.message = { text = tr("Admin_Shop_Saved") }
                 self:closeDialog()
             end
         end
-        self.shopPage:onReply(kind, args)
+        -- the request goes along: a removal leaves from this controller's dialog, and the page
+        -- must know its own rows went (not another admin's)
+        self.shopPage:onReply(kind, args, mine and req or nil)
     elseif kind == "listings" then
         -- Every reply carries the page and the exact seller it answered for, a refusal
         -- included. The seller is compared before a single row is adopted: an answer for an

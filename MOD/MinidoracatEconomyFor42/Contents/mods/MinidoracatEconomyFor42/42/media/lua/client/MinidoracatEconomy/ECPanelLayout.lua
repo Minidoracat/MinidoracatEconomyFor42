@@ -658,7 +658,11 @@ function L.layout(self)
     sc.priceR = math.max(sc.name + PAD, sc.remainR - PAD
         - math.max(textWidth(getText(T .. "Shop_Col_Remaining")), textWidth(getText(T .. "Shop_SoldOut")),
             textWidth(getText(T .. "Shop_SoldOutLifetime"))))
-    sc.nameW = math.max(0, sc.priceR - COIN_SMALL - 4 - textWidth("999,999") - PAD - sc.name)
+    -- the price column holds a price with its coin, or the words a row says instead: no quote in
+    -- this currency, or not for sale at all (a delisted row that only buys back)
+    local priceW = math.max(COIN_SMALL + 4 + textWidth("999,999"), textWidth(getText(T .. "Shop_NoQuote")),
+        textWidth(getText(T .. "Shop_Disabled")))
+    sc.nameW = math.max(0, sc.priceR - priceW - PAD - sc.name)
     if self.shopList.width ~= listW or self.shopList.height ~= shopListH then
         self.shopList:resize(listW, shopListH)
     end

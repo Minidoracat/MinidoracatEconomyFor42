@@ -94,6 +94,8 @@
   "Sandbox_MinidoracatEconomy_TransferDailyPerAccount_tooltip": "報酬日ごとに 1 アカウントが送れる金額の合計（手数料を除く）。日付の区切りは報酬日の設定に従います。0 = 無制限。",
   "Sandbox_MinidoracatEconomy_TransferMinAccountDays": "新規アカウントの待機期間（日）",
   "Sandbox_MinidoracatEconomy_TransferMinAccountDays_tooltip": "アカウントがこのサーバーの経済システムに初めて現れてから、送金できるようになるまでの現実の日数。送金機能を追加したバージョンより前からあるアカウントは対象外です。0 = なし。",
+  "Sandbox_MinidoracatEconomy_ShopMaxItems": "システムショップの商品上限",
+  "Sandbox_MinidoracatEconomy_ShopMaxItems_tooltip": "ショップカタログ（catalog.json）に置ける商品数の上限（最大 1000）。カタログを変更するたびにカタログ全体がオンラインの全プレイヤーへ送られるため、商品が多いほど毎回の送信量が増えます。下げても既存の商品は削除されず、数が上限を下回るまで追加できなくなるだけです。販売停止中の商品も枠を使います。不要な商品は経済管理コンソールの「ショップ」で削除できます。既定 200",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "システム買い取りを有効化",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "有効にすると、プレイヤーは端末でカタログの「買い取り」対象アイテムをサーバーに売って新規発行のコインを得られます。無効にすると即座に停止し、残高は影響を受けません。既定は無効。ダッシュボードで発行／消却量を確認してから開放してください",
   "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "1 人あたりの 1 日買い取り上限（サバイバーコイン）",

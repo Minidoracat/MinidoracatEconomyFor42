@@ -94,6 +94,8 @@
   "Sandbox_MinidoracatEconomy_TransferDailyPerAccount_tooltip": "Total amount one account may send per reward day (fee not included); the day boundary follows the reward day settings. 0 = unlimited.",
   "Sandbox_MinidoracatEconomy_TransferMinAccountDays": "New account waiting period (days)",
   "Sandbox_MinidoracatEconomy_TransferMinAccountDays_tooltip": "Real days after an account first appears in this server's economy before it may send transfers. Accounts that existed before the version that added transfers are not affected. 0 = none.",
+  "Sandbox_MinidoracatEconomy_ShopMaxItems": "System shop item limit",
+  "Sandbox_MinidoracatEconomy_ShopMaxItems_tooltip": "How many items the shop catalog (catalog.json) may hold, at most 1000. Every catalog change is sent whole to every online player, so a bigger catalog makes every update bigger. Lowering it removes nothing: new items are refused until the count is below the limit. Items that are not for sale still count; delete unused ones under Economy Administration - Shop. Default 200",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "System buyback enabled",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "When on, players can sell items the catalog marks for buyback to the server at a terminal for newly minted coins. Turning it off stops buyback at once; balances are untouched. Off by default; watch mint and burn on the dashboard before opening it",
   "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "Buyback per account per day (Survivor Coin)",

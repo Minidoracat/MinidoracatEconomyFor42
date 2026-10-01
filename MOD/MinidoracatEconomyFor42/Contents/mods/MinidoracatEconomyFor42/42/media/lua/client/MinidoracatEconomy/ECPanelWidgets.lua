@@ -536,6 +536,17 @@ local function candidateRow(it)
     }
 end
 
+-- Whether the shop is buying back in this currency at all right now: the server-wide switch and
+-- this currency's own cap block are both open. A sku's own direction is its quote's `buyback`,
+-- read beside this; the row and the page's row filter ask the same question this one way.
+local function buybackOpen(buyback, currency)
+    if type(buyback) ~= "table" or buyback.enabled ~= true or type(buyback.byCurrency) ~= "table" then
+        return false
+    end
+    local by = buyback.byCurrency[currency]
+    return type(by) == "table" and by.enabled == true
+end
+
 -- One catalog row, in the currency the page is trading in: every string the cell paints is built
 -- here (they change with the snapshot, never per frame), `remaining` keeps the raw number the buy
 -- dialog clamps its count with and `used` the count already spent against the cap (nil when the
@@ -546,6 +557,10 @@ end
 -- A sku that is not quoted in this currency is not free and not zero: it has no price at all, its
 -- buy button is closed and the row says so. The quotes it does carry are named on the second line,
 -- so both prices are readable without switching the page first.
+--
+-- A sku the admin took off the shelf (enabled = false) sells in no currency, whatever its quotes
+-- still hold, and says "not for sale" where the price would be; its buyback is untouched (ECShop:
+-- the sale switch closes the way in only), so on the page it is a sell-only row.
 local function shopRow(it, currency, buyback)
     local cap = tonumber(it.dailyCap) or 0
     local remaining = tonumber(it.remaining)
@@ -566,17 +581,18 @@ local function shopRow(it, currency, buyback)
         remainToken = soldOut and "warn" or "text"
     end
     local qty = tonumber(it.qty) or 1
+    local delisted = it.enabled == false
     local q = quoteOf(it, currency)
     local price = q and tonumber(q.price) or nil
+    if delisted then price = nil end
     local hasQuote = price ~= nil and q.enabled ~= false
     local bid = q and tonumber(q.bidPrice) or nil
     -- the buyback of this currency: the sku's own direction switch, the server-wide switch and
     -- this currency's own cap block all have to be open
-    local byCurrency = (type(buyback) == "table" and type(buyback.byCurrency) == "table")
-        and buyback.byCurrency[currency] or nil
     local canBuyback = q ~= nil and q.buyback == true and bid ~= nil
-    local buybackOpen = canBuyback and type(buyback) == "table" and buyback.enabled == true
-        and byCurrency ~= nil and byCurrency.enabled == true
+    local open = canBuyback and buybackOpen(buyback, currency)
+    -- a sale that can never happen has no purchase allowance worth a column
+    if delisted then remainText, remainToken = "-", "textFaint" end
     -- every other currency this sku quotes, named on the second line
     local alt, quotes = {}, {}
     for _, id in ipairs(currencyIds()) do
@@ -584,9 +600,9 @@ local function shopRow(it, currency, buyback)
         local otherPrice = other and tonumber(other.price) or nil
         if otherPrice ~= nil then
             quotes[#quotes + 1] = { currency = id, price = otherPrice,
-                bidPrice = tonumber(other.bidPrice), enabled = other.enabled ~= false,
+                bidPrice = tonumber(other.bidPrice), enabled = other.enabled ~= false and not delisted,
                 buyback = other.buyback == true }
-            if id ~= currency and other.enabled ~= false then
+            if id ~= currency and other.enabled ~= false and not delisted then
                 alt[#alt + 1] = currencyLabel(id) .. " " .. amountText(otherPrice)
             end
         end
@@ -599,7 +615,9 @@ local function shopRow(it, currency, buyback)
     end
     if #alt > 0 then qtyText = qtyText .. "   " .. getText(T .. "Shop_AltQuote", table.concat(alt, "  ")) end
     return {
-        id = it.id, item = it.item, qty = qty, price = price, hasQuote = hasQuote,
+        id = it.id, item = it.item, qty = qty, price = price, hasQuote = hasQuote, delisted = delisted,
+        -- the detail window's status line: why a row with a sell button has no buy button
+        statusText = delisted and getText(T .. "Shop_DelistedNote") or nil,
         dailyCap = cap, dailyCapScope = scope,
         -- whose count this cap is, and how much of it this account has spent: the detail window
         -- and the buy dialog both read these, so the sentence is built once
@@ -613,11 +631,12 @@ local function shopRow(it, currency, buyback)
         -- one item's own weight as the catalog quoted it: what the buy dialog estimates the
         -- backpack room with. An older snapshot carries none, and none is not zero.
         weight = tonumber(it.weight),
-        priceText = price ~= nil and amountText(price) or getText(T .. "Shop_NoQuote"),
+        priceText = delisted and getText(T .. "Shop_Disabled")
+            or (price ~= nil and amountText(price) or getText(T .. "Shop_NoQuote")),
         remainText = remainText, remainToken = remainToken,
         buyLabel = getText(T .. "Shop_Buy"),
         -- Keep the configured price visible while the server-wide switch pauses buyback.
-        bidPrice = bid, buyback = canBuyback, buybackOpen = buybackOpen,
+        bidPrice = bid, buyback = canBuyback, buybackOpen = open,
         buybackCap = tonumber(it.buybackCap) or 0, buybackRemaining = tonumber(it.buybackRemaining),
         sellLabel = getText(T .. "Shop_Sell", bid ~= nil and amountText(bid) or getText(T .. "Shop_NoQuote")),
     }
@@ -1178,6 +1197,7 @@ W.currencyLabel = currencyLabel
 W.moneyText = moneyText
 W.currencySample = currencySample
 W.quoteOf = quoteOf
+W.buybackOpen = buybackOpen
 W.isPriceSort = isPriceSort
 W.sortKeysFor = sortKeysFor
 W.itemRowHeight = itemRowHeight

@@ -10,12 +10,14 @@
 -- is not on offer at all - it is never a free one and never silently swapped for another. Rows
 -- written before the shop had more than one currency carry a flat price and are normalised into
 -- prices.survivor once, on the way in; the writer only ever writes the current shape.
--- The admin page edits the per-SKU numbers and flags and those edits are written straight back
--- into the file (the file is the single source of truth, it never rolls back with the world
--- save; a hand edit made since the last load is detected by hash and refused until the admin
--- reloads). Every change is pushed to everyone online. Players see the catalog under a revision
--- string (the file hash); shop.buy and shop.sell carry that revision and are refused when the
--- catalog changed underneath (no silent repricing).
+-- The admin page edits the per-SKU numbers and flags, appends rows and removes them; every edit
+-- is written straight back into the file (the file is the single source of truth, it never
+-- rolls back with the world save; a hand edit made since the last load is detected by hash and
+-- refused until the admin reloads). Every change is pushed to everyone online. Players see the
+-- catalog under a revision string (the file hash); shop.buy and shop.sell carry that revision
+-- and are refused when the catalog changed underneath (no silent repricing). A row taken off
+-- the shelf (enabled = false) only stops selling: its buyback quotes stay in force until they
+-- are switched off or the row is removed.
 --
 -- A purchase names its currency, burns it (player -> SYSTEM_BURN), counts against the SKU's
 -- cap: dailyCapScope "player"/"global" use the reward day (ECRewards.dayKey), while
@@ -57,7 +59,14 @@ local Shop = EC.Shop
 Shop.FILE = X.ROOT .. "/catalog.json"
 Shop.BURN_ACCOUNT = "SYSTEM_BURN"
 Shop.MINT_ACCOUNT = "SYSTEM_MINT"
-Shop.MAX_SKUS = 200
+-- The hard ceiling on the catalog's size, and the top of the ShopMaxItems option (ECCore: one
+-- number). Every reply that carries the catalog (shop.list, admin.catalog) holds every row, and
+-- one reply must stay under S.REPLY_MAX_BYTES: a row is at most ~640 bytes on the wire (an id and
+-- a category at their maximum, a 128-character item, both quotes, every count; S.wireBytes), so
+-- 1000 rows stay near 640 KB. The host's own limit is ShopMaxItems (Shop.maxItems): a catalog
+-- change is pushed whole to every online player, so a bigger shop costs that much more on every
+-- edit. A file over the hard ceiling is refused at load; the option only ever refuses an add.
+Shop.MAX_SKUS = EC.OPTION_BY_KEY.ShopMaxItems.max
 Shop.ID_MAX = 32
 Shop.CATEGORY_MAX = 32
 Shop.QTY_MAX = 50
@@ -128,6 +137,12 @@ local function optionInt(key)
     if not spec then return 0 end
     local v = EC.sandbox(key, type(spec.default) == "number" and spec.default or 0)
     return type(v) == "number" and math.floor(v) or 0
+end
+
+-- How many rows `add` may grow the catalog to: the host's ShopMaxItems, never past the hard
+-- ceiling. Lowering it removes nothing; adding is refused until the count is below it.
+function Shop.maxItems()
+    return math.max(1, math.min(Shop.MAX_SKUS, optionInt("ShopMaxItems")))
 end
 
 -- The gross mint caps of one currency for a reward day. ECConfig owns the effective values
@@ -716,7 +731,8 @@ local function noteBuyback(ms, username, currency, sku, total, count)
     if sku ~= nil and count > 0 then day.skus[sku] = (day.skus[sku] or 0) + count end
 end
 
--- The client list: every SKU (disabled ones too, for admins) with this player's remaining caps.
+-- The client list: every SKU with this player's remaining caps. A disabled one is in it too: the
+-- admin page edits it, and the player's page still offers what its buyback quotes buy back.
 function Shop.snapshot(username, ms)
     ms = ms or EC.now()
     local items = {}
@@ -739,6 +755,7 @@ function Shop.snapshot(username, ms)
     return {
         revision = Shop.revision(), items = items, count = #items,
         file = Shop.fileStatus(), dayEndsMs = R.nextResetMs(ms), countMax = Shop.COUNT_MAX,
+        maxItems = Shop.maxItems(),
         buyback = { enabled = Shop.buybackEnabled(), byCurrency = Shop.buybackByCurrency(username, ms) },
     }
 end
@@ -1031,13 +1048,14 @@ end
 -- a Base one, the client's list is never trusted); a currency is on offer only if the row quotes
 -- it. Nothing is audited or pushed unless the file on disk carries the new row. The whole shape
 -- is checked before anything else: a field the schema does not know - the retired flat price
--- among them - refuses the row instead of being dropped and committing the rest. Returns ok, err
--- (duplicate_sku, catalog_full, unknown_item, unknown_field, unknown_currency, invalid_args,
--- arbitrage_rejected, catalog_stale, file_write_failed), extra.
+-- among them - refuses the row instead of being dropped and committing the rest. The catalog may
+-- grow to Shop.maxItems(). Returns ok, err (duplicate_sku, catalog_full, unknown_item,
+-- unknown_field, unknown_currency, invalid_args, arbitrage_rejected, catalog_stale,
+-- file_write_failed), extra.
 function Shop.add(raw, actor, reason, expectedRevision)
     if type(raw) ~= "table" or not validId(raw.id) then return false, "invalid_args" end
     if file.byId[raw.id] then return false, "duplicate_sku" end
-    if #file.items >= Shop.MAX_SKUS then return false, "catalog_full" end
+    if #file.items >= Shop.maxItems() then return false, "catalog_full" end
     local badField, badExtra = unknownAddField(raw)
     if badField then return false, badField, badExtra end
     local sku = validateSku(raw, raw.id)
@@ -1058,6 +1076,46 @@ function Shop.add(raw, actor, reason, expectedRevision)
         after = sku.item .. " x" .. sku.qty .. " @" .. priceText(sku), admin = actor, reason = reason })
     Shop.pushAll()
     return true
+end
+
+-- ids = a bounded list of unique existing SKU ids, taken out of the file in one write. Every id is
+-- checked first: one unknown or repeated id refuses the whole list and the file is not touched;
+-- the disk-hash and expectedRevision guard is the one every edit passes (catalog_stale).
+-- Nothing else the shop keeps is touched. The day and lifetime counters stay keyed by the id, so
+-- a row added back under the same id goes on counting from them (removing is never a way to hand
+-- out a fresh limit); a letter already sent carries the item, not the row; a resend of a settled
+-- purchase or sale is answered from the ledger before the catalog is read; a buyback repaid
+-- after a rollback carries its own price (restoreFromPending). Taking quotes away can only raise
+-- an item's cheapest ask and lower its best bid, so a removal never opens an arbitrage loop; the
+-- read-back parses the whole file again regardless. Each removed row is audited with its own
+-- catalog line as `before`: pasted back into catalog.json and reloaded, it is that row again.
+-- Returns ok, err (invalid_args, duplicate_id, unknown_sku, catalog_stale, file_write_failed),
+-- extra ({ id } naming a refused id, or { count } on success).
+function Shop.remove(ids, actor, reason, expectedRevision)
+    if type(ids) ~= "table" then return false, "invalid_args" end
+    local n = #ids
+    if n < 1 or n > Shop.MAX_SKUS or EC.countKeys(ids) ~= n then return false, "invalid_args" end
+    local drop = {}
+    for i = 1, n do
+        local id = ids[i]
+        if not validId(id) then return false, "invalid_args", { id = tostring(id) } end
+        if drop[id] then return false, "duplicate_id", { id = id } end
+        if not file.byId[id] then return false, "unknown_sku", { id = id } end
+        drop[id] = true
+    end
+    local items, gone = {}, {}
+    for _, row in ipairs(file.items) do
+        if drop[row.id] then gone[#gone + 1] = row else items[#items + 1] = row end
+    end
+    local ok, err = commitCatalog(items, expectedRevision)
+    if not ok then return false, err end
+    for _, row in ipairs(gone) do
+        local line = EC.jsonEncode(rowDocument(row))
+        X.emit("admin.catalog", { sku = row.id, field = "remove", before = line, actor = actor, reason = reason })
+        X.audit({ action = "catalog", target = row.id, field = "remove", before = line, admin = actor, reason = reason })
+    end
+    Shop.pushAll()
+    return true, nil, { count = #gone }
 end
 
 -- Returns ok, error text, error code, extra. A hand-edited file that would open an arbitrage

@@ -83,6 +83,12 @@
 -- "off" is written like any other value, while a column the rows disagree on is never guessed.
 -- One admin.catalog{action="batch"} write carries the ids, those columns and one revision, so the
 -- server validates every row before any of them is written.
+--
+-- Delete removes what the editor holds -- the open SKU, or the batch set -- and only ever asks
+-- first: the controller's confirmation names every row and what it is still doing, takes a
+-- reason, and sends one admin.catalog{action="remove"} with the ids and the revision on screen.
+-- Taking a row off the shelf is not removing it: a delisted row keeps its buyback quotes and
+-- the player's shop still offers what they buy back (appendRuleText says so in full).
 
 -- Geometry is page relative (y = 0 .. self.height) and font aware: a narrow or short window shows
 -- the list and the editor one at a time, the editor's field area scrolls, and the Apply / Cancel
@@ -116,11 +122,12 @@ local newEntry, entryText, setEntryText, setEntryEditable = U.newEntry, U.entryT
 local errorText, itemName, currencyName = U.adminErrorText, U.itemName, U.currencyName
 local itemTexture, categoryText = U.itemTexture, U.categoryText
 
--- The server's own ceilings (ECShop.PRICE_MAX / CAP_MAX / QTY_MAX / ID_MAX / CATEGORY_MAX /
--- MAX_SKUS): the page refuses out of range before the round trip and quotes the range it wanted.
--- The server re-validates every one of them regardless.
+-- The server's own ceilings (ECShop.PRICE_MAX / CAP_MAX / QTY_MAX / ID_MAX / CATEGORY_MAX): the
+-- page refuses out of range before the round trip and quotes the range it wanted. The server
+-- re-validates every one of them regardless. How many rows the catalog may hold is not one of
+-- them: the host sets it (ShopMaxItems) and every snapshot carries it (Page:maxItems).
 local PRICE_MAX, CAP_MAX, QTY_MAX = 1000000000, 1000000, 50
-local ID_MAX, CATEGORY_MAX, SKU_MAX = 32, 32, 200
+local ID_MAX, CATEGORY_MAX = 32, 32
 
 -- The five categories the shop itself pages by. Every other category the dropdown offers is one
 -- the catalog on screen already uses: this page edits a SKU's category, it does not manage a
@@ -299,6 +306,16 @@ local function skuDirections(sku)
         end
     end
     return sell, buy
+end
+
+-- What one row is still doing, in the words the list uses: off the shelf, selling or with no
+-- currency that sells it, and buying back. The delete confirmation names it per row, so a row
+-- that is live in either direction is never removed unnoticed.
+local function skuStateText(sku)
+    local sell, buy = skuDirections(sku)
+    local state = sku.enabled == false and "Shop_Disabled" or (sell and "Admin_Shop_QuoteSellOn" or "Admin_Shop_NoSale")
+    if buy then return tr(state) .. " / " .. tr("Admin_Shop_QuoteBuyOn") end
+    return tr(state)
 end
 
 -- The row's price column: one entry per currency, "-" where there is no quote. Never a 0.
@@ -769,7 +786,11 @@ function Page:createChildren()
     self.cancelButton = chip(tr("Admin_Cancel"), Page.onCancelEdit)
     self.detailButton = chip(tr("Admin_Shop_Detail"), Page.onShowDetail)
     self.backButton = chip(tr("Admin_Shop_Back"), Page.onBack)
-    self.editorButtons = { self.applyButton, self.cancelButton, self.detailButton, self.backButton }
+    -- the one irreversible action on this page: placed on the editor's title row (layout), never
+    -- beside Apply, and it only ever opens a confirmation
+    self.deleteButton = chip(tr("Admin_Shop_Delete"), Page.onDelete)
+    self.editorButtons = { self.applyButton, self.cancelButton, self.detailButton, self.backButton,
+        self.deleteButton }
 
     self.confirm = ISPanel:new(0, 0, self.width, self.height)
     setmetatable(self.confirm, Confirm)
@@ -818,6 +839,14 @@ function Page:masterState()
     local snap = C.shop or self.catalog
     if type(snap) == "table" and type(snap.buyback) == "table" then return snap.buyback.enabled == true end
     return nil
+end
+
+-- How many rows the server lets the catalog grow to (ECShop.maxItems: the host's ShopMaxItems),
+-- off the same snapshots as the switch: a settings change reaches C.shop in the push it causes.
+-- nil while neither snapshot carried it.
+function Page:maxItems()
+    local snap = C.shop or self.catalog
+    return type(snap) == "table" and tonumber(snap.maxItems) or nil
 end
 
 -- What the server said about one currency's buyback: its own switch, the caps in force and the
@@ -1304,15 +1333,71 @@ function Page:onAdd()
         self.owner.message = { text = errorText("forbidden"), error = true }
         return
     end
-    local rows = self:skus()
-    if rows ~= nil and #rows >= SKU_MAX then
-        self.owner.message = { text = getText(T .. "Admin_Shop_Full", tostring(SKU_MAX)), error = true }
+    -- the limit is the host's, and the server refuses past it anyway (catalog_full): this only
+    -- saves the picker round trip and says where the limit is set
+    local rows, max = self:skus(), self:maxItems()
+    if rows ~= nil and max ~= nil and #rows >= max then
+        self.owner.message = { text = getText(T .. "Admin_Shop_Full", tostring(max),
+            tostring(EC.OPTION_BY_KEY.ShopMaxItems.max)), error = true }
         return
     end
     self:requestLeave(function()
         self.picker:open()
         self:layout()
     end)
+end
+
+-- What Delete removes: the batch set, or the one existing SKU open in the editor. A new SKU's
+-- draft has no row to remove. nil when there is nothing to remove.
+function Page:deleteTargets()
+    if self.batch ~= nil then return self.batch.ids end
+    local d = self.draft
+    if d == nil or d.isNew == true or self:sku(d.id) == nil then return nil end
+    return { d.id }
+end
+
+-- Delete only ever asks. The confirmation names the rows it removes and what each is still doing
+-- (selling, buying back), says what removal does and does not touch, and takes a reason like every
+-- other destructive admin write. The write leaves from that dialog (ECAdminPanel, catalogRemove)
+-- against the revision of the catalog on screen: a catalog another admin changed meanwhile is
+-- refused (catalog_stale) instead of losing rows the admin never saw.
+function Page:onDelete()
+    local ids = self:deleteTargets()
+    if ids == nil or #ids == 0 or self.catalog == nil then return end
+    if not self.owner:writeAllowed() then
+        self.owner.message = { text = errorText("forbidden"), error = true }
+        return
+    end
+    if self.saveRequestId ~= nil then
+        self.owner.message = { text = tr("Admin_Shop_SavePending"), error = true }
+        return
+    end
+    -- the same refusal applyBatch gives: the set may point at rows another admin removed
+    local missing = 0
+    for _, id in ipairs(ids) do
+        if self:sku(id) == nil then missing = missing + 1 end
+    end
+    if missing > 0 then
+        self.owner.message = { text = getText(T .. "Admin_Shop_BatchMissing", tostring(missing)), error = true }
+        return
+    end
+    local lines = { getText(T .. "Admin_Shop_DeleteWarn", tostring(#ids)) }
+    local shown = math.min(#ids, BATCH_NAMES_MAX)
+    for i = 1, shown do
+        local sku = self:sku(ids[i])
+        lines[#lines + 1] = getText(T .. "Admin_Shop_DeleteRow", tostring(ids[i]), itemName(sku.item), skuStateText(sku))
+    end
+    if #ids > shown then lines[#lines + 1] = getText(T .. "Admin_Shop_BatchMore", tostring(#ids - shown)) end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = tr("Admin_Shop_DeleteNote")
+    if self:isDirty() then lines[#lines + 1] = tr("Admin_Shop_DeleteDraft") end
+    self.owner:openDialog("catalogRemove", {
+        title = getText(T .. "Admin_Shop_DeleteTitle", tostring(#ids)),
+        confirm = tr("Admin_Shop_DeleteConfirm"),
+        warn = table.concat(lines, "\n"),
+        catalogIds = ids,
+        catalogRevision = self.catalog.revision,
+    })
 end
 
 function Page:onPicked(record)
@@ -1930,7 +2015,10 @@ function Page:errorFieldLabel(field)
     return tostring(field)
 end
 
-function Page:onReply(kind, args)
+-- `req` is the controller's own record of the catalog write this reply answers (nil when it
+-- answers none): a removal leaves from the controller's dialog, not from this page, so this is
+-- how the page knows the rows that just went are the ones its own Delete asked for.
+function Page:onReply(kind, args, req)
     if kind == "option" then
         -- the master switch is read off the snapshot, never off this reply: all that changes here
         -- is that the command slot is free again
@@ -1975,6 +2063,9 @@ function Page:onReply(kind, args)
     if type(args.items) == "table" then
         self.catalog = args
         self.updatedAt = EC.now()
+        -- our own removal took exactly the rows the editor and the set named: they leave quietly,
+        -- they are not reported as another admin's doing
+        local removed = req ~= nil and req.action == "remove" and args.ok == true
         -- a SKU another admin removed is not a target any more: the set never points at a row
         -- that is not in the catalog on screen
         local dropped = 0
@@ -1985,8 +2076,21 @@ function Page:onReply(kind, args)
                 dropped = dropped + 1
             end
         end
-        if dropped > 0 then
+        if dropped > 0 and not removed then
             self.owner.message = { text = getText(T .. "Admin_Shop_BatchMissing", tostring(dropped)), error = true }
+        end
+        if removed then
+            -- the editor was on what is gone (the open SKU, or any row of the batch form): back to
+            -- the list, where dropDraft lays the page out
+            local gone = self.draft ~= nil and self.draft.isNew ~= true and self:sku(self.draft.id) == nil
+            for _, id in ipairs(self.batch ~= nil and self.batch.ids or {}) do
+                if self:sku(id) == nil then gone = true end
+            end
+            if gone then
+                self.pickAnchor, self.selectedId, self.cursorId = nil, nil, nil
+                self:dropDraft()
+                return
+            end
         end
         if mine and args.ok and self.batch ~= nil then
             -- the batch landed: the form has nothing left to apply, the set stays lit so the rows
@@ -2314,6 +2418,9 @@ function Page:updateEnabled()
     self.cancelButton:setEnable(edit)
     self.detailButton:setEnable(target and self.detailText ~= nil)
     self.backButton:setEnable(target)
+    -- a write like any other (the right, no open overlay, no catalog write in flight, no save of
+    -- this form waiting), and only over rows that exist: a new SKU's draft has nothing to remove
+    self.deleteButton:setEnable(catWrite and not saving and self:deleteTargets() ~= nil)
 end
 
 -- ----- geometry -----
@@ -2709,6 +2816,7 @@ function Page:appendRuleText(lines)
         lines[#lines + 1] = tr("Admin_Shop_QtyNote")
         lines[#lines + 1] = tr("Admin_Shop_QuoteHint")
         lines[#lines + 1] = tr("Admin_Shop_BcapNote")
+        lines[#lines + 1] = tr("Admin_Shop_EnabledNote")
         return
     end
     local d = self.draft
@@ -2721,6 +2829,8 @@ function Page:appendRuleText(lines)
     lines[#lines + 1] = getText(T .. "Admin_Shop_CapScopeHint", scopeText(d.dailyCapScope))
     lines[#lines + 1] = tr("Admin_Shop_BcapNote")
     lines[#lines + 1] = tr("Admin_Shop_QuoteHint")
+    -- taking a row off the shelf stops the sale only (ECShop): said once, here, in full
+    lines[#lines + 1] = tr("Admin_Shop_EnabledNote")
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
         if not self:quoteOffered(cur) then
             lines[#lines + 1] = tr("Admin_Shop_QuoteNoneHint")
@@ -3063,10 +3173,24 @@ function Page:layout()
         local eBottom = h - PAD
         g.editorX, g.editorY, g.editorW = ex, ey, ew
         g.titleY = ey
+        -- Delete owns the right end of the title row: away from Apply on purpose, and it names how
+        -- much it removes (the batch form's count). A new SKU's draft has nothing to remove.
+        local del, delW = self.deleteButton, 0
+        if self.batch ~= nil or not self.draft.isNew then
+            U.setButtonTitle(del, self.batch ~= nil
+                and getText(T .. "Admin_Shop_DeleteN", tostring(#self.batch.ids)) or tr("Admin_Shop_Delete"))
+            delW = math.min(textWidth(del.fullTitle) + 24, math.floor(ew * 0.4))
+            del:setVisible(true); del:setWidth(delW); del:setHeight(ch)
+            del:setX(ex + ew - delW)
+            del:setY(ey + math.max(0, math.floor((fontH.medium + 4 - ch) / 2)))
+            U.setButtonTitle(del, del.fullTitle)
+        else
+            del:setVisible(false)
+        end
         g.titleText = fitText(self.batch ~= nil
             and getText(T .. "Admin_Shop_BatchTitle", tostring(#self.batch.ids))
             or (self.draft.isNew and tr("Admin_Shop_NewTitle") or itemName(self.draft.item)),
-            ew, UIFont.Medium)
+            math.max(0, ew - (delW > 0 and delW + 6 or 0)), UIFont.Medium)
         -- the identity block: pinned, never scrolled, never traded away for a field. The SKU line
         -- (the batch form's target count) is the load-bearing one; the names above it are the
         -- secondary text.
@@ -3202,8 +3326,9 @@ function Page:prerender()
         if fileError then
             status, token = getText(T .. "Admin_Shop_FileError", fileError), "errorText"
         elseif file then
+            -- the count beside the limit it may grow to, so a full catalog is read before Add says so
             status, token = getText(T .. "Admin_Shop_File", tostring(file.count or 0),
-                stampText(file.loadedAt, self.owner.offsetMin)), "textFaint"
+                stampText(file.loadedAt, self.owner.offsetMin), tostring(self:maxItems() or "-")), "textFaint"
         else
             status, token = self.isPending("admin.catalog") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), "textFaint"
         end

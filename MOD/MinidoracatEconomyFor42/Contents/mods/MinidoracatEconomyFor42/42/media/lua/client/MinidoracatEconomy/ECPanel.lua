@@ -1227,14 +1227,33 @@ function Panel:updateMailTab(unclaimed)
     C.unclaimed = self.unclaimedCount
 end
 
--- The category box offers the categories the snapshot actually uses (plus "all"), so a server that
+-- Whether a sku is on this page in `currency` (nil: in any currency the player can pick). A listed
+-- one always is. One the admin took off the shelf has stopped selling, not buying back (ECShop:
+-- the sale switch closes the way in only), so it stays a row exactly where the player can still
+-- sell it -- that currency's quote buys it back and the shop is buying in it -- and is not on the
+-- page anywhere else. The row itself says it is not for sale (W.shopRow).
+function Panel:shopOffered(it, currency)
+    if it.enabled ~= false then return true end
+    local buyback = C.shop and C.shop.buyback
+    if currency ~= nil then
+        local q = W.quoteOf(it, currency)
+        return q ~= nil and q.buyback == true and W.buybackOpen(buyback, currency)
+    end
+    for _, id in ipairs(W.currencyIds()) do
+        local q = W.quoteOf(it, id)
+        if q ~= nil and q.buyback == true and W.buybackOpen(buyback, id) then return true end
+    end
+    return false
+end
+
+-- The category box offers the categories the page can actually show (plus "all"), so a server that
 -- ships two categories does not offer five empty filters. Refilled only when that set changes (a
 -- snapshot lands every 30 s at most, a catalog edit is rarer still).
 function Panel:rebuildCategories()
     local seen, cats, sig = {}, { "" }, ""
     for _, it in ipairs(C.shop and C.shop.items or {}) do
         local cat = it.category
-        if it.enabled ~= false and type(cat) == "string" and cat ~= "" and not seen[cat] then
+        if type(cat) == "string" and cat ~= "" and not seen[cat] and self:shopOffered(it, nil) then
             seen[cat] = true
             cats[#cats + 1] = cat
             sig = sig .. cat .. ","
@@ -1249,10 +1268,10 @@ function Panel:rebuildCategories()
     end, self.shopCat or "")
 end
 
--- Rows for the selected category, currency and search text. A disabled sku is not a row at all:
--- a player must not see what an admin took off the shelf. A sku the selected currency does not
--- quote is still a row -- it says it has no price in this currency, which is what the player
--- needs to know before switching -- but nothing can be bought or sold on it.
+-- Rows for the selected category, currency and search text: what shopOffered lets on the page. A
+-- sku the selected currency does not quote is still a row -- it says it has no price in this
+-- currency, which is what the player needs to know before switching -- but nothing can be bought
+-- or sold on it.
 function Panel:rebuildShop()
     local shop = C.shop
     local query = self.shopQuery
@@ -1260,15 +1279,17 @@ function Panel:rebuildShop()
     local rows = {}
     self.shopHasBuyback = false
     for _, it in ipairs(shop and shop.items or {}) do
-        local q = it.enabled ~= false and W.quoteOf(it, currency) or nil
-        if q ~= nil and q.buyback == true then self.shopHasBuyback = true end
-        if it.enabled ~= false and (self.shopCat == nil or it.category == self.shopCat) then
-            local row = shopRow(it, currency, shop.buyback)
-            if query == nil or string.find(string.lower(row.name), query, 1, true)
-                or (row.altName and string.find(string.lower(row.altName), query, 1, true))
-                or string.find(string.lower(tostring(row.id)), query, 1, true)
-                or string.find(string.lower(tostring(row.item)), query, 1, true) then
-                rows[#rows + 1] = row
+        if self:shopOffered(it, currency) then
+            local q = W.quoteOf(it, currency)
+            if q ~= nil and q.buyback == true then self.shopHasBuyback = true end
+            if self.shopCat == nil or it.category == self.shopCat then
+                local row = shopRow(it, currency, shop.buyback)
+                if query == nil or string.find(string.lower(row.name), query, 1, true)
+                    or (row.altName and string.find(string.lower(row.altName), query, 1, true))
+                    or string.find(string.lower(tostring(row.id)), query, 1, true)
+                    or string.find(string.lower(tostring(row.item)), query, 1, true) then
+                    rows[#rows + 1] = row
+                end
             end
         end
     end
@@ -1771,7 +1792,9 @@ function Panel:refreshBuyRow(dlg, items, buyback, revision)
     end
     local fresh = nil
     for _, it in ipairs(items or {}) do
-        if it.id == dlg.row.id and it.enabled ~= false then fresh = shopRow(it, dlg.currency, buyback) end
+        -- a purchase needs a row that is still on the shelf; a sale only one that still buys
+        -- back (the caller closes a sale whose buyback went), so a delisted row keeps its sale
+        if it.id == dlg.row.id and (it.enabled ~= false or dlg.sell) then fresh = shopRow(it, dlg.currency, buyback) end
     end
     if fresh == nil then return nil end
     local was = dlg.row
@@ -2403,7 +2426,7 @@ function Panel:detailText(kind, e)
         -- whose share the cap counts (this account per day, the whole server per day, or this
         -- account for good) and how much of it is already spent. The row cannot say either in
         -- its column, and "per player per day" is not a fact for every sku.
-        if e.dailyCap > 0 then
+        if e.dailyCap > 0 and not e.delisted then
             out[#out + 1] = detailLine("Shop_CapScope", e.capScopeText)
             out[#out + 1] = detailLine("Shop_Used", e.usedText)
         end
@@ -3665,7 +3688,9 @@ function Panel:prerender()
     self.mailClaimAllButton:setEnable(not mailBusy and mailReady)
     local writeOpen = not gateClosed and self.buyPending == nil and self.buyDialog == nil
     local shopPick = self.shopList:getSelectedItem()
-    self.shopBuyButton:setEnable(writeOpen and shopPick ~= nil and not shopPick.soldOut)
+    -- the row's own buy chip asks the same: a row with no sale in this currency (or none at all,
+    -- off the shelf) has nothing to buy
+    self.shopBuyButton:setEnable(writeOpen and shopPick ~= nil and not shopPick.soldOut and shopPick.hasQuote == true)
     self.shopSellButton:setEnable(writeOpen and shopPick ~= nil and shopPick.buyback == true
         and shopPick.buybackOpen == true and shopPick.buybackRemaining ~= 0)
     local info = self.marketInfo

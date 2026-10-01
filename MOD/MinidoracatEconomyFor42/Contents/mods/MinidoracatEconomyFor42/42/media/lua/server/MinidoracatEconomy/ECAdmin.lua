@@ -1134,14 +1134,15 @@ S.handlers["admin.seasons"] = function(player, args)
     S.reply(player, "admin.seasons", res)
 end
 
--- admin.catalog {action=list|set|add|batch|reload, id?, ids?, fields?, item?, qty?, category?,
--- dailyCap?, dailyCapScope?, enabled?, buybackCap?, prices?, revision?, reason?, requestId}:
--- list = the catalog with this admin's own remaining caps (read gate); set = edit one SKU in
--- catalog.json, add = append a new SKU to it, batch = apply the same explicitly chosen fields to
--- a selection of SKUs (write gate, audited, pushed to everyone online); reload = re-read the file
--- (write gate). Every edit carries the revision the panel's snapshot was built from, so an edit
--- racing another admin is refused instead of overwriting them; the item of a new SKU is checked
--- against the server's own ScriptManager, never trusted from the client.
+-- admin.catalog {action=list|set|add|batch|remove|reload, id?, ids?, fields?, item?, qty?,
+-- category?, dailyCap?, dailyCapScope?, enabled?, buybackCap?, prices?, revision?, reason?,
+-- requestId}: list = the catalog with this admin's own remaining caps (read gate); set = edit one
+-- SKU in catalog.json, add = append a new SKU to it, batch = apply the same explicitly chosen
+-- fields to a selection of SKUs, remove = take the listed SKUs out of it (all four: write gate,
+-- audited, pushed to everyone online); reload = re-read the file (write gate). Every edit carries
+-- the revision the panel's snapshot was built from, so an edit racing another admin is refused
+-- instead of overwriting them; the item of a new SKU is checked against the server's own
+-- ScriptManager, never trusted from the client.
 --
 -- A SKU is priced per currency, so the money fields travel as one nested patch:
 --   prices = { [currencyId] = { price?, bidPrice?, enabled?, buyback? } }
@@ -1196,7 +1197,7 @@ end
 
 S.handlers["admin.catalog"] = function(player, args)
     local action = type(args) == "table" and args.action or "list"
-    local write = action == "set" or action == "add" or action == "batch" or action == "reload"
+    local write = action == "set" or action == "add" or action == "batch" or action == "remove" or action == "reload"
     if not gate(player, "admin.catalog", write, type(args) == "table" and args.requestId or nil) then return end
     local res = { ok = true }
     local reason = type(args) == "table" and type(args.reason) == "string" and args.reason ~= "" and args.reason or nil
@@ -1234,6 +1235,21 @@ S.handlers["admin.catalog"] = function(player, args)
             res = { ok = false, error = "invalid_args" }
         else
             local ok, err, extra = Shop.updateMany(args.ids, args.fields, S.principal(player), reason, args.revision)
+            if not ok then res = { ok = false, error = err or "invalid_args" } end
+            catalogExtra(res, extra)
+        end
+    elseif action == "remove" then
+        -- one write for the whole list: an id that is not there refuses all of them, so a
+        -- selection is never half removed. A removal cannot be undone from the panel, so it
+        -- carries a reason by the same rule as every other admin write, checked here and not
+        -- only in the dialog.
+        local rerr, why = A.reasonError(args.reason)
+        if type(args.ids) ~= "table" then
+            res = { ok = false, error = "invalid_args" }
+        elseif rerr then
+            res = { ok = false, error = rerr }
+        else
+            local ok, err, extra = Shop.remove(args.ids, S.principal(player), why, args.revision)
             if not ok then res = { ok = false, error = err or "invalid_args" } end
             catalogExtra(res, extra)
         end
