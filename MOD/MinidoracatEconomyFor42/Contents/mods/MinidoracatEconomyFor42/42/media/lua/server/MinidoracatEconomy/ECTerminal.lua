@@ -15,6 +15,7 @@
 if not MinidoracatEconomy or not MinidoracatEconomy.Integration then
     require "MinidoracatEconomy/ECIntegration"
 end
+require "BuildingObjects/ISBuildIsoEntity"
 local EC = MinidoracatEconomy
 local S = EC and EC.Server
 local X = EC and EC.Export
@@ -182,8 +183,8 @@ end
 
 -- Admin removal of the world object itself (right-click "demolish"): the square's terminal-tile
 -- object is transmitted away (IsoGridSquare.transmitRemoveItemFromSquare, the ClientCommands.lua
--- server pattern) and a registration on that square is dropped with it. Players never get this
--- path: the entity is not thumpable, not moveable, and the client refuses the sledgehammer.
+-- server pattern) and a registration on that square is dropped with it. Nobody else takes a
+-- terminal down: see "the terminal object" below.
 function T.demolish(player, args)
     if not EC.canManageTerminals(player) then return { ok = false, error = "forbidden" } end
     if type(args) ~= "table" or not isInt(args.x) or not isInt(args.y) or not isInt(args.z) then
@@ -224,6 +225,73 @@ function T.demolish(player, args)
     if id then T.pushList() end
     X.audit({ action = "terminal", target = id or (args.x .. "," .. args.y .. "," .. args.z), field = "demolish", admin = S.principal(player) })
     return { ok = true, id = id }
+end
+
+-- ---------- the terminal object: only a terminal manager takes it down ----------
+--
+-- The build places the entity as a moveable prop (SpriteConfig isProp, ISBuildIsoEntity.lua:
+-- 597-601), and placeMoveableInternal turns every solid sprite into an IsoThumpable with
+-- isThumpable = true, thumpDmg 1 and 10 health (rawWeight 10 x material 1;
+-- ISMoveableSpriteProps.lua:322-325, 2378-2388): the entity's own isThumpable never applied, so
+-- ten zombie thumps or one axe swing (DoorDamage 35) took a terminal down. A plain IsoObject is
+-- what a map ATM is: zombies only thump an IsoObject a player moved there (IsoObject.java:
+-- 5830-5850), melee only reaches doors, windows, compost bins and IsoThumpables
+-- (CombatManager.java:251-317), the zombie and animal hit packets only reach IsoThumpable and
+-- IsoDoor (network/fields/hit/Thumpable.java:50-84) and animals only pick those two as targets
+-- (IsoAnimal.java:2784-2816). So every terminal object of this mod is swapped in place for a
+-- plain IsoObject on the same sprite: when the build adds it (OnObjectAdded,
+-- ISMoveableSpriteProps.lua:2541) and when a chunk holding an older one loads. The load hook is
+-- MapObjects.OnLoadWithSprite, a sprite-keyed lookup the engine makes for every object it loads
+-- (IsoChunk.java:3829, MapObjects.java:184-218): no Lua runs for any other square. Vanilla
+-- replaces a campfire's object on load the same way (MOCampfire.lua:49-62). Fire skips the
+-- tiles through their tiledef (firerequirement 900000, the value vanilla gives boulders;
+-- IsoGridSquare.java:6296); a non-manager's sledgehammer is refused in ECAtmProtection.
+local function plainTerminal(obj)
+    if not instanceof(obj, "IsoThumpable") then return end
+    local sprite = obj:getSprite()
+    local name = sprite and sprite:getName()
+    if not EC.isOwnTerminalSprite(name) then return end
+    local sq = obj:getSquare()
+    if not sq then return end
+    -- (cell, square, name) shares the tiledef sprite and its properties; (square, name) would
+    -- build a private copy without them (IsoObject.java:331-336, 378-383)
+    local replacement = IsoObject.new(getCell(), sq, name)
+    local index = sq:transmitRemoveItemFromSquare(obj, false)
+    if index < 0 then return end
+    sq:transmitAddObjectToSquare(replacement, index)
+    EC.log("terminal tile at " .. sq:getX() .. "," .. sq:getY() .. "," .. sq:getZ() .. " is now indestructible")
+end
+
+local OWN_TILES = {}
+for name in pairs(EC.TERMINAL_SPRITES) do
+    if EC.isOwnTerminalSprite(name) then OWN_TILES[#OWN_TILES + 1] = name end
+end
+MapObjects.OnLoadWithSprite(OWN_TILES, plainTerminal, 5)
+Events.OnObjectAdded.Add(plainTerminal)
+
+-- Only a terminal manager builds one. The recipe's OnAddToMenu only hides the entry in a client's
+-- build window (CraftRecipe.java:379-380, ISRecipeScrollingListBox.lua:344-347); the server
+-- rebuilds the build item from what the client sent and calls create (BuildAction.java:121-162,
+-- 109-118 -> ActionManager.lua:26-32). An object nobody else can take down must not be placeable
+-- by anybody else either, so the server refuses here, before create uses any material.
+local function ownTerminalBuild(item)
+    local ok, own = pcall(function()
+        local names = item.objectInfo:getScript():getAllTileNames()
+        for i = 0, names:size() - 1 do
+            if EC.isOwnTerminalSprite(names:get(i)) then return true end
+        end
+        return false
+    end)
+    return ok and own == true
+end
+
+local create = ISBuildIsoEntity.create
+function ISBuildIsoEntity:create(x, y, z, north, sprite)
+    if ownTerminalBuild(self) and not EC.canManageTerminals(self.character) then
+        EC.log("terminal: build refused for a non-manager at " .. tostring(x) .. "," .. tostring(y) .. "," .. tostring(z))
+        return false
+    end
+    return create(self, x, y, z, north, sprite)
 end
 
 -- ---------- commands ----------

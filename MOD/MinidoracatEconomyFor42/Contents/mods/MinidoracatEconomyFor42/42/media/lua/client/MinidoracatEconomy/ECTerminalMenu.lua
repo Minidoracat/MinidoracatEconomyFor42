@@ -172,14 +172,14 @@ local function onFillMenu(playerNum, context, worldobjects, test)
     end
 end
 
--- Only admins take a terminal down: the entity is not thumpable and not moveable, and the
--- sledgehammer cursor (ISDestroyCursor.canDestroy, server/BuildingObjects, shared code) refuses
--- the mod's own terminal tiles and any registered terminal square for everyone else. Vanilla
--- consoles that nobody registered stay destroyable as usual.
-local function protectedObject(object)
+-- Only admins take a terminal down. The mod's own terminal tiles and map ATMs are refused on both
+-- sides by EC.AtmProtection (the server re-checks at completion); what is left for this client
+-- cursor is a vanilla console somebody registered as a terminal: it stays map furniture, so only
+-- the sledgehammer cursor (ISDestroyCursor.canDestroy, server/BuildingObjects, shared code) holds
+-- it back. Vanilla consoles that nobody registered stay destroyable as usual.
+local function registeredConsole(object)
     local name = spriteName(object)
-    if not name or not EC.TERMINAL_SPRITES[name] then return false end
-    if string.find(name, "^MinidoracatEconomy_") then return true end
+    if not name or not EC.TERMINAL_SPRITES[name] or EC.isOwnTerminalSprite(name) then return false end
     local ok, sq = pcall(function() return object:getSquare() end)
     if not ok or not sq then return false end
     return C.terminalAt(sq:getX(), sq:getY(), sq:getZ()) ~= nil
@@ -191,7 +191,7 @@ local function guardDestroyCursor()
     local base = ISDestroyCursor.canDestroy
     ISDestroyCursor.canDestroy = function(self, object)
         if EC.AtmProtection.blocked(self.character, object) then return false end
-        if not isAdmin() and protectedObject(object) then return false end
+        if not isAdmin() and registeredConsole(object) then return false end
         return base(self, object)
     end
 end

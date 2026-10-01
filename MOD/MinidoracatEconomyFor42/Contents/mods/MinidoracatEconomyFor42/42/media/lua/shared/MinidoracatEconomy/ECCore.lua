@@ -75,6 +75,13 @@ EC.TERMINAL_SPRITES = {
     appliances_com_01_52 = true, appliances_com_01_53 = true, appliances_com_01_54 = true, appliances_com_01_55 = true,
     security_01_0 = true, security_01_1 = true, security_01_2 = true, security_01_3 = true,
 }
+-- The mod's own tiles among them (MinidoracatEconomy_tiles.tiles): built only through the mod's
+-- entities and kept indestructible (ECTerminal, ECAtmProtection); the vanilla consoles stay map
+-- furniture.
+function EC.isOwnTerminalSprite(name)
+    return type(name) == "string" and EC.TERMINAL_SPRITES[name] == true
+        and string.find(name, "^MinidoracatEconomy_") ~= nil
+end
 EC.TERMINAL_RANGE = 2
 EC.TERMINAL_KINDS = { atm = true, trade = true }
 

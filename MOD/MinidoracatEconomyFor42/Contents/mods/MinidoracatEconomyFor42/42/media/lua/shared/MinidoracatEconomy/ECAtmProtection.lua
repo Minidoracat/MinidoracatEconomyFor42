@@ -1,8 +1,11 @@
--- Native map ATMs: reject ordinary sledgehammer and furniture-scrap operations on both sides.
--- NetTimedAction.perform calls complete, not isValid (NetTimedAction.java:118-138).
--- Pickup/rotation already require IsMoveAble, absent on all four ATM sprites in this build.
--- These sprites also have no attached flags or SpriteGrid: removing a wall does not remove them.
--- Direct removal packets, fire/explosions and other mods' world edits are outside this guard.
+-- Native map ATMs and the mod's own terminal tiles: reject ordinary sledgehammer and furniture-scrap
+-- operations on both sides. The own tiles are always held back for anyone but a terminal manager;
+-- map ATMs follow MapATMAllowDestruction. NetTimedAction.perform calls complete, not isValid
+-- (NetTimedAction.java:118-138). Pickup/rotation already require IsMoveAble, absent on all of
+-- these sprites. They also have no attached flags or SpriteGrid: removing a wall does not remove
+-- them. The own tiles take no damage at all (ECTerminal keeps them plain IsoObjects, which
+-- zombies, melee and animals cannot hit) and fire skips them (tiledef firerequirement); for map
+-- ATMs, fire, explosions and other mods' world edits are outside this guard.
 require "MinidoracatEconomy/ECCore"
 require "TimedActions/ISDestroyStuffAction"
 require "Moveables/ISMoveableSpriteProps"
@@ -12,6 +15,8 @@ if EC.AtmProtection then return end
 local P = {}
 
 function P.blocked(player, object)
+    local sprite = object and object:getSprite()
+    if sprite and EC.isOwnTerminalSprite(sprite:getName()) then return not EC.canManageTerminals(player) end
     if not EC.isAtmObject(object) then return false end
     local option = isClient() and EC.Client and EC.Client.options and EC.Client.options.MapATMAllowDestruction
     local allowed

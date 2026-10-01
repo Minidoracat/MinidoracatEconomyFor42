@@ -50,11 +50,15 @@ FACES = ["S", "E", "N", "W"]
 CELL_W, CELL_H = 128, 256
 MAX_W = 124                   # never wider than the tile footprint (vanilla consoles are 114)
 
+# firerequirement 900000: a burning square skips the object (IsoGridSquare.BurnWalls only touches
+# sprites below FIRE_IMMUNE_THRESHOLD 800000, IsoGridSquare.java:6296; vanilla boulders use
+# 900000). The loader keeps it as a sprite field, not a property (IsoWorld.java:767-770).
 PROPS = {
     "BlocksPlacement": "",
     "GroupName": "Economy",
     "Material": "Electric",
     "MaterialType": "Metal",
+    "firerequirement": "900000",
     "solidtrans": "",
 }
 

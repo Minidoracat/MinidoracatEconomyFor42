@@ -685,6 +685,15 @@ function getCell()
             end
             return at - 1
         end
+        -- transmitAddObjectToSquare(obj, index): AddTileObject at index, then the add packet
+        -- (IsoGridSquare.java:5929-5936); an object already on the square is left alone.
+        sq.transmitAddObjectToSquare = function(_, o, index)
+            local list = worldObjects[key] or {}
+            worldObjects[key] = list
+            for _, other in ipairs(list) do if other == o then return end end
+            table.insert(list, math.min(math.max(index, 0), #list) + 1, o)
+            o.transmitted = true
+        end
         sq.RecalcProperties = function() end
         sq.RecalcAllWithNeighbours = function() end
         return sq
@@ -877,6 +886,23 @@ ISDestroyStuffAction = {
         return true
     end,
 }
+-- Vanilla server build entry (ISBuildIsoEntity.lua:501): the original only records that it ran.
+ISBuildIsoEntity = { create = function(self, x, y, z, north, sprite)
+    self.created = (self.created or 0) + 1
+    return true
+end }
+-- MapObjects.OnLoadWithSprite (MapObjects.java:163-182): sprite name -> callback the engine calls
+-- for each loaded object with that sprite; the scenario calls it the way IsoChunk would.
+mapObjectsOnLoad = {}
+MapObjects = { OnLoadWithSprite = function(names, fn, priority)
+    for _, name in ipairs(names) do mapObjectsOnLoad[name] = { fn = fn, priority = priority } end
+end }
+-- IsoObject.new(cell, square, sprite name): a plain map object on the shared tiledef sprite.
+IsoObject = { new = function(_cell, square, name)
+    return { __class = "IsoObject", plainNew = true,
+        getSprite = function() return { getName = function() return name end } end,
+        getSquare = function() return square end }
+end }
 
 -- 每個假玩家一個固定的 slot 與一個生死旗標：伺服器是按 getPlayerNum() 分槽去讀自己那份生存
 -- 時數的，而一具屍體的時數還會繼續往上跑，所以 isDead 必須答得出來——否則「還在活的這條命」
@@ -924,6 +950,7 @@ local loaded = {
     ["TimedActions/ISDeviceBatteryAction"] = true,
     ["TimedActions/ISDeviceMediaAction"] = true,
     ["TimedActions/ISDestroyStuffAction"] = true,
+    ["BuildingObjects/ISBuildIsoEntity"] = true,
 }
 function require(name)
     if loaded[name] then return true end
@@ -989,6 +1016,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: review of the death fixe
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: final pass: a later login does not turn a tie start into proof (LG-tie2); a lifeBreak mark survives a world rollback through the ledger (DU-7 unverified death, spent, stays spent; DU-8 CreatePlayer; DU-9 a lost claim older than a lost mark)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a repeated CreatePlayer does not grow the rollback ledger (DU-10)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 23   -- +23: a character that died does not come back on its old save (scenario RS: login rule, seat rule, pacing, fresh, same-uptime reconnect, dead sighting, impostor, rename, SteamID, alive occupant, no Steam mode, animal, a death that did not stick (prune and judgment), a death not processed yet, a refused reload hides nothing, a crash back, a late-settled death, verified after the first sighting, a judgment after its own death)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: the mod's own terminal object cannot be destroyed (scenario TG: load hook on the eight tiles, in-place swap to a plain object at load and at build, idempotent, other thumpables untouched, refused engine removal, one log each, sledgehammer and scrap refused, ATM removal option does not open it, manager sledgehammer, build refused for non-managers, manager build, other builds)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -14343,6 +14371,126 @@ end)()
     EC.optionOverride = previousOverride
     check(EC.AtmProtection.blocked(nil, object("location_business_bank_01_67")),
         "missing actor never grants ATM removal permission")
+end)()
+
+-- Scenario TG: the mod's own terminal object cannot be destroyed. The build used to leave an
+-- IsoThumpable (thumpable, 10 health) on the square: ECTerminal swaps it for a plain IsoObject when
+-- it is added and when a chunk holding an older one loads, ECAtmProtection refuses a
+-- non-manager's sledgehammer and scrap, and only a terminal manager may build one.
+;(function()
+    local realLog, logs = EC.log, {}
+    EC.log = function(m) logs[#logs + 1] = tostring(m) end
+    local function thumpable(name, x, y, z)
+        local o = { __class = "IsoThumpable" }
+        o.getSprite = function() return { getName = function() return name end } end
+        o.getSquare = function() return getCell():getGridSquare(x, y, z) end
+        return o
+    end
+    local function onSquare(x, y, z) return worldObjects[worldKey(x, y, z)] or {} end
+    local hooks = 0
+    for name in pairs(EC.TERMINAL_SPRITES) do
+        local h = mapObjectsOnLoad[name]
+        if EC.isOwnTerminalSprite(name) then
+            if h and h.priority == 5 then hooks = hooks + 1 end
+        elseif h then hooks = -100 end
+    end
+    check(hooks == 8, "the load hook covers the mod's eight terminal tiles and no vanilla console")
+    local load = mapObjectsOnLoad["MinidoracatEconomy_catgirl_2"].fn
+
+    -- a square as an old build left it: a floor, the thumpable terminal, a radio beside it
+    worldLoaded["900,900,0"] = true
+    local floor = { __class = "IsoObject", getSprite = function() return { getName = function() return "floors_1" end } end }
+    local old = thumpable("MinidoracatEconomy_catgirl_2", 900, 900, 0)
+    local radio = { __class = "IsoRadio", getSprite = function() return { getName = function() return "x" end } end }
+    worldObjects["900,900,0"] = { floor, old, radio }
+    load(old)
+    local list = onSquare(900, 900, 0)
+    check(#list == 3 and list[1] == floor and list[3] == radio and list[2].plainNew == true
+        and list[2]:getSprite():getName() == "MinidoracatEconomy_catgirl_2" and list[2].transmitted == true
+        and old.removed == true,
+        "an old thumpable terminal is replaced in place by a plain object on the same sprite and sent to clients")
+    load(list[2])
+    check(#onSquare(900, 900, 0) == 3 and onSquare(900, 900, 0)[2] == list[2], "loading the plain object again changes nothing")
+
+    -- the build: OnObjectAdded fires for the object placeMoveableInternal just added
+    worldLoaded["901,900,0"] = true
+    local built = thumpable("MinidoracatEconomy_terminal_0", 901, 900, 0)
+    worldObjects["901,900,0"] = { built }
+    fire("OnObjectAdded", built)
+    local b = onSquare(901, 900, 0)
+    check(#b == 1 and b[1].plainNew == true and b[1]:getSprite():getName() == "MinidoracatEconomy_terminal_0",
+        "a freshly built terminal is swapped for a plain object as soon as it is added")
+
+    -- other objects keep theirs
+    worldLoaded["902,900,0"] = true
+    local console = thumpable("appliances_com_01_52", 902, 900, 0)
+    local door = thumpable("fixtures_doors_01_0", 902, 900, 0)
+    worldObjects["902,900,0"] = { console, door }
+    fire("OnObjectAdded", console)
+    fire("OnObjectAdded", door)
+    local c = onSquare(902, 900, 0)
+    check(#c == 2 and c[1] == console and c[2] == door and not console.removed,
+        "a thumpable vanilla console and any other thumpable keep their object")
+
+    -- an engine that removed nothing gets no second object
+    worldLoaded["903,900,0"] = true
+    local stuck = thumpable("MinidoracatEconomy_catgirl_1", 903, 900, 0)
+    worldObjects["903,900,0"] = { stuck }
+    worldRemoveRefuses[stuck] = true
+    load(stuck)
+    worldRemoveRefuses[stuck] = nil
+    local s = onSquare(903, 900, 0)
+    check(#s == 1 and s[1] == stuck, "a removal the engine refused adds no second terminal on the square")
+    check(#logs == 2, "one log line per replaced terminal (" .. #logs .. ")")
+
+    -- sledgehammer and scrap
+    local player, boss = fakePlayer("tg-user"), fakePlayer("tg-boss")
+    boss.role = "admin"
+    local function tile(name)
+        local obj = { removed = false }
+        local sq = { transmitRemoveItemFromSquare = function(_, target) target.removed = true end }
+        obj.getSprite = function() return { getName = function() return name end } end
+        obj.getSquare = function() return sq end
+        return obj
+    end
+    local own = tile("MinidoracatEconomy_catgirl_0")
+    local action = { character = player, item = own }
+    check(not ISDestroyStuffAction.isValid(action) and not ISDestroyStuffAction.complete(action) and not own.removed,
+        "a player's sledgehammer is refused on the terminal at admission and at completion")
+    local result, chance = ISMoveableSpriteProps.canScrapObject({ object = own }, player)
+    check(not result.canScrap and chance == 0
+        and ISMoveableSpriteProps.scrapObjectInternal({}, player, {}, own:getSquare(), own, {}, 100, nil) == 0
+        and not own.removed, "a player cannot scrap the terminal either")
+    local previousOverride = EC.optionOverride
+    EC.optionOverride = function(key)
+        if key == "MapATMAllowDestruction" then return true end
+        return previousOverride and previousOverride(key)
+    end
+    check(not ISDestroyStuffAction.complete(action) and not own.removed,
+        "opening map ATM removal does not open the mod's own terminals")
+    EC.optionOverride = previousOverride
+    check(ISDestroyStuffAction.complete({ character = boss, item = own }) and own.removed,
+        "a terminal manager's sledgehammer still takes it down")
+
+    -- building
+    local function buildItem(who, tiles)
+        return { character = who, objectInfo = { getScript = function()
+            return { getAllTileNames = function() return javaList(tiles) end }
+        end } }
+    end
+    local item = buildItem(player, { "MinidoracatEconomy_catgirl_0", "MinidoracatEconomy_catgirl_1" })
+    check(ISBuildIsoEntity.create(item, 1, 2, 0, false, "MinidoracatEconomy_catgirl_0") == false and item.created == nil,
+        "a player who is not a terminal manager cannot build a terminal: refused before the build runs")
+    item = buildItem(boss, { "MinidoracatEconomy_catgirl_0" })
+    check(ISBuildIsoEntity.create(item, 1, 2, 0, false, "MinidoracatEconomy_catgirl_0") == true and item.created == 1,
+        "a terminal manager builds it")
+    item = buildItem(player, { "carpentry_02_68" })
+    check(ISBuildIsoEntity.create(item, 1, 2, 0, false, "carpentry_02_68") == true and item.created == 1,
+        "other entities build as before")
+    for _, key in ipairs({ "900,900,0", "901,900,0", "902,900,0", "903,900,0" }) do
+        worldObjects[key], worldLoaded[key] = nil, nil
+    end
+    EC.log = realLog
 end)()
 
 ;(function()
