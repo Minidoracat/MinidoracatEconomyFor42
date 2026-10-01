@@ -579,6 +579,9 @@ function S.dispatch(module, command, player, args)
     if throttled(username, command, EC.now()) then
         return
     end
+    -- An old row brought back from a death is killed on sight (ECRecovery judgeReturn) and is no
+    -- one's session: nothing acts for it.
+    if S.isPhantom and S.isPhantom(player) then return end
     -- No command may act before this session's save has been matched against the world once
     -- (ECMailbox: a claim sent before hello would otherwise take a letter the save already has).
     if command ~= "hello" and S.ensureReconciled then S.ensureReconciled(player) end

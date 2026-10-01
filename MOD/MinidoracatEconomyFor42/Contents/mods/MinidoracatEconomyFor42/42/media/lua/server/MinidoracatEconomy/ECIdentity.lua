@@ -451,11 +451,11 @@ Id.actorOf = actorOf
 -- the onlineID, :93) and GameServer.receivePlayerConnect names the player with it (:2848), while
 -- the character is still the login's own (GameServer.java:2814). A respawn with a new character
 -- sends CreatePlayer first (util/AddCoopPlayer.java:48-50: OnNewGame under the true login); a seat
--- reconnected with an existing object sends none (LuaManager.java:6555-6596) and reloads the
--- login's last saved row. That row is written only on CreatePlayer, disconnect (GameServer.java:3040),
--- trades and the periodic save every 180 s (NetworkPlayerManager.java:25-28); ConnectCoop's
--- disconnectPlayer (ConnectCoopPacket.java:94 -> GameServer.java:2616) does not save it, so that
--- respawn usually comes back ALIVE: the alive check does not guard it, the slot rule below does.
+-- given back without one sends none and reloads the login's last saved row. That row is written
+-- only on CreatePlayer, disconnect (GameServer.java:3040), trades and the periodic save every
+-- 180 s (NetworkPlayerManager.java:25-28); ConnectCoop's disconnectPlayer (ConnectCoopPacket.java:94
+-- -> GameServer.java:2616) does not save it, so that respawn usually comes back ALIVE: the alive
+-- check does not guard it, the slot rule below does (and ECRecovery kills that old row).
 -- First sight binds only an alive player with a valid name (not a system account) and SteamID,
 -- whose seat occupancy carries no rename evidence, and whom the one-account policy lets in;
 -- otherwise the name is nil.

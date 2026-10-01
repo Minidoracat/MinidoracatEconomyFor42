@@ -578,6 +578,7 @@ function fakeInventory(maxWeight)
         return it
     end
     inv.Remove = function(_, it) for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i) end end end
+    inv.removeAllItems = function() inv.items = {} end   -- ItemContainer.java:2925-2944
     inv.getItems = function() return javaList(inv.items) end
     inv.contains = function(_, item)
         for _, present in ipairs(inv.items) do if present == item then return true end end
@@ -987,6 +988,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: deaths and new character
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: review of the death fixes: a save within a tick of the commit is held, not voided (LG-tie); an unflagged impostor's death only marks (DU-2b); a never-verified object dead without its event marks, at the next first sighting and at the prune (DU-6, DU-6b)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: final pass: a later login does not turn a tie start into proof (LG-tie2); a lifeBreak mark survives a world rollback through the ledger (DU-7 unverified death, spent, stays spent; DU-8 CreatePlayer; DU-9 a lost claim older than a lost mark)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a repeated CreatePlayer does not grow the rollback ledger (DU-10)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 23   -- +23: a character that died does not come back on its old save (scenario RS: login rule, seat rule, pacing, fresh, same-uptime reconnect, dead sighting, impostor, rename, SteamID, alive occupant, no Steam mode, animal, a death that did not stick (prune and judgment), a death not processed yet, a refused reload hides nothing, a crash back, a late-settled death, verified after the first sighting, a judgment after its own death)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -18108,6 +18110,7 @@ onlinePlayers = { ob }
 tick()
 ob.dead = true
 onlinePlayers = {}
+-- (the prune keeps a seat that left within RESPAWN_MS: the jump below is far past it)
 tick(M.PRUNE_EVERY_MS + 1000)
 local markedO = M.entryOf("du-o", lo.id).lifeBreak == true
 local oa2 = seat("du-o", A7, 16, 0.5)
@@ -18228,8 +18231,9 @@ check(tenZ == 1 and brkLines("du-z") == 2 and M.entryOf("du-z", lz.id).lifeBreak
 
 -- DU-3..5 without Steam mode: the seat is the login, the question is only whether the death came
 steamModeActive = false
--- DU-3: health 0, the event never came, ConnectCoop replaced the seat with the login's row as it
--- was loaded: the new object's first sighting settles the dead one
+-- DU-3: health 0, the event never came, and a new character took the seat in that window (its
+-- CreatePlayer row has zero hours; the login's old row coming back alive is scenario RS): the new
+-- object's first sighting settles the dead one
 local d1 = seat("du-d", nil, 8, 10)
 onlinePlayers = { d1 }
 tick()
@@ -18237,7 +18241,7 @@ local ld = M.add("du-d", { item = "Base.Bandage", qty = 1, kind = "shop" })
 assert(M.claim(d1, ld.id).ok)
 d1.inventory.items = {}
 d1.dead = true                               -- BodyDamage set health 0; die() never ran
-local d2 = seat("du-d", nil, 8, 0.5)
+local d2 = seat("du-d", nil, 8, 0)
 onlinePlayers = { d2 }
 tick()
 hello(d2)
@@ -18257,6 +18261,7 @@ assert(M.claim(e1, le.id).ok)
 e1.inventory.items = {}
 e1.dead = true
 onlinePlayers = {}
+-- (the prune keeps a seat that left within RESPAWN_MS: the jump below is far past it)
 tick(M.PRUNE_EVERY_MS + 1000)
 local settledByPrune = M.entryOf("du-e", le.id).state == "settled"
 local e2 = seat("du-e", nil, 9, 0.5)
@@ -18284,6 +18289,408 @@ check(M.entryOf("du-f", lf.id).state == "claimed" and f2.inventory.count("Base.B
     and Rc.life("du-f") == 0 and settledFor("du-f") == nil,
     "DU-5: an alive character logging out and back settles nothing")
 X.emit = realEmit
+onlinePlayers = {}
+end)()
+
+-- 死掉的角色不能帶著死前的存檔回來：引擎可能不建新角色就把死掉的座位交回，讀回那個帳號死前最後
+-- 一次存檔（活的），屍體身上也有同一批東西（E2E resurrect-mp 實機重現）。
+io.write("scenario RS: a character that died does not come back on its old save\n")
+;(function()
+local M, Rc = S.Mailbox, S.Recovery
+local md = mgWorld()
+local adm = fakePlayer("rs-admin")
+adm.role, adm.onlineId, adm.hours = "admin", 90, 1
+-- the first online player is the probe: 0.01 h a tick makes the fresh band FRESH_STEPS of that
+local function tick(ms)
+    adm.hours = adm.hours + 0.01
+    nowMs = nowMs + (ms or 100)
+    fire("OnTickEvenPaused")
+end
+local function far() tick(Rc.RESPAWN_MS + 1000) end   -- past the seat rule's window
+local function hello(who) nowMs = nowMs + 600; fire("OnClientCommand", EC.COMMAND_MODULE, "hello", who, {}) end
+local function seat(name, text, id, hours, items)
+    local p = mgPlayer(name, text)
+    p.onlineId, p.hours, p.x, p.y = id, hours or 0, 101, 200
+    p.inventory = fakeInventory(1000)
+    for _ = 1, items or 0 do p.inventory:AddItem(instanceItem("Base.Hammer")) end
+    p.primary, p.worn, p.attached = "hammer", 3, 1
+    p.setPrimaryHandItem = function(_, it) p.primary = it end
+    p.setSecondaryHandItem = function(_, it) p.secondary = it end
+    p.clearWornItems = function() p.worn = 0 end
+    p.clearAttachedItems = function() p.attached = 0 end
+    p.getBodyDamage = function() return { setOverallBodyHealth = function(_, v) p.bodyHealth = v end } end
+    p.setHealth = function(_, v) p.health = v; if v <= 0 then p.dead = true end end   -- isDead: health <= 0
+    return p
+end
+local function online(...) onlinePlayers = { adm, ... } end
+local function sent(p, command)
+    local n = 0
+    for _, c in ipairs(sentCommands) do if c.player == p and c.command == command then n = n + 1 end end
+    return n
+end
+local function killed(p) return p.dead == true and p.health == 0 and p.inventory.count() == 0 end
+local function untouched(p, n) return p.dead ~= true and p.health == nil and p.inventory.count() == n end
+online()
+tick()
+
+-- RS-1: rs-a dies; the client re-adds the dead player object and the server loads the last saved
+-- row: alive, a little under the death's hours, carrying what the corpse holds too
+local a1 = seat("rs-a", mgT(301), 21, 10, 3)
+online(a1)
+tick()
+a1.dead = true
+fire("OnCharacterDeath", a1)
+local lifeA = Rc.life("rs-a")
+local b1 = seat("rs-a", mgT(301), 21, 9.5, 4)
+-- the old row also carries an old pending out: a reconcile of it would act on that
+b1.modData[EC.PLAYER_MODDATA_KEY] = { pendingOuts = { ["1600000000000:7"] = { protocol = 2, epoch = "1600000000000", seq = 7 } } }
+local startsA = #(md.recovery.lives["rs-a"].starts or {})
+online(b1)
+tick()
+check(killed(b1) and b1.worn == 0 and b1.attached == 0 and b1.primary == nil,
+    "RS-1: the dead login's old row coming back alive is emptied and killed")
+check(mgAudits("RESURRECTION", "carried") == 1 and sent(adm, "recovery.resurrection") == 1
+    and sent(b1, "recovery.resurrection") == 0,
+    "RS-1b: one RESURRECTION audit line, and one toast for the administrator online only")
+hello(b1)
+check(sent(b1, "hello.ack") == 0 and M.reconcile(b1) == true and Rc.isPhantom(b1) and Rc.heldCount("rs-a") == 0
+    and #(md.recovery.lives["rs-a"].starts or {}) == startsA,
+    "RS-1c: no economy command, reconcile or session start acts for it")
+fire("OnCharacterDeath", b1)
+check(Rc.life("rs-a") == lifeA, "RS-1d: its death is no character's death: no new life")
+local b2 = seat("rs-a", mgT(301), 21, 9.5, 4)
+online(b2)
+tick()
+check(killed(b2) and mgAudits("RESURRECTION", "carried") == 1 and sent(adm, "recovery.resurrection") == 1,
+    "RS-1e: given back again at once it is killed again; one audit line a minute, one toast in ten seconds")
+
+-- RS-2: rs-c dies and makes a new character: its CreatePlayer row has zero hours and is first
+-- seen a tick later, within FRESH_STEPS of the probe's step. Left alone, the death's note goes,
+-- and the new character's next login is just a login
+local c1 = seat("rs-c", mgT(302), 22, 10, 3)
+online(c1)
+tick()
+c1.dead = true
+fire("OnCharacterDeath", c1)
+fire("OnNewGame", seat("rs-c", mgT(302), nil, 0), nil)
+local c2 = seat("rs-c", mgT(302), 22, 0.05, 2)
+online(c2)
+tick()
+local freshKept = untouched(c2, 2)
+online()
+far()
+local c3 = seat("rs-c", mgT(302), 23, 6, 2)
+online(c3)
+tick()
+check(freshKept and untouched(c3, 2), "RS-2: a new character is left alone, and so is its next login")
+
+-- RS-3: rs-d dies and its client leaves before the seat is given back (stage 1 alone): the row
+-- stays the living one. The login comes back on a new connection in the same uptime: refused
+local d1 = seat("rs-d", mgT(303), 24, 10, 3)
+online(d1)
+tick()
+d1.dead = true
+fire("OnCharacterDeath", d1)
+online()
+far()
+tick(M.PRUNE_EVERY_MS + 1000)
+-- an object made for OnNewGame (never online) is no sighting of the login
+Rc.session(seat("rs-d", mgT(303), nil, 0))
+local d2 = seat("rs-d", mgT(303), 25, 9.8, 4)
+online(d2)
+tick()
+check(killed(d2), "RS-3: past a prune and an OnNewGame object, the login's old row on a new connection is refused")
+
+-- RS-4: a death that reached the row (a disconnect saved it dead): the login's next object is
+-- first seen dead and the note goes. That object's own death is an earlier session's: it does not
+-- count as an unprocessed death (rs-e, before any prune), nor is it noted again when the prune
+-- settles it (rs-e2). A later living row of the login is left alone either way
+local e1 = seat("rs-e", mgT(304), 26, 10, 3)
+online(e1)
+tick()
+e1.dead = true
+fire("OnCharacterDeath", e1)
+online()
+far()
+local e2 = seat("rs-e", mgT(304), 27, 10, 3)
+e2.dead = true
+online(e2)
+tick()
+online()
+far()
+local e3 = seat("rs-e", mgT(304), 59, 10, 3)
+online(e3)
+tick()
+local ee1 = seat("rs-e2", mgT(321), 62, 10, 3)
+online(ee1)
+tick()
+ee1.dead = true
+fire("OnCharacterDeath", ee1)
+online()
+far()
+local ee2 = seat("rs-e2", mgT(321), 63, 10, 3)
+ee2.dead = true
+online(ee2)
+tick()
+online()
+tick(M.PRUNE_EVERY_MS + 1000)
+local ee3 = seat("rs-e2", mgT(321), 64, 10, 3)
+online(ee3)
+tick()
+check(e2.health == nil and e2.inventory.count() == 3 and untouched(e3, 3) and untouched(ee3, 3),
+    "RS-4: an object of the login first seen dead shows the death was saved: the note goes, and its own death is not a new one")
+
+-- RS-5: an impostor's death under a victim's name (another SteamID: unverified) is never noted,
+-- and the victim's next login is left alone
+local v1 = seat("rs-v", mgT(305), 28, 20, 2)
+online(v1)
+tick()
+online()
+far()
+local i1 = seat("rs-v", mgT(306), 29, 3, 1)
+online(i1)
+tick()
+i1.dead = true
+fire("OnCharacterDeath", i1)
+online()
+far()
+local v2 = seat("rs-v", mgT(305), 30, 20, 2)
+online(v2)
+tick()
+check(untouched(v2, 2),
+    "RS-5: a death the binding does not vouch for pins nothing on the name: the victim's login is left alone")
+
+-- RS-6: the seat rule. a) rs-f's seat is given back at once under another name (a suspected
+-- rename, unverified) - still the login's old row: refused
+local f1 = seat("rs-f", mgT(307), 31, 10, 3)
+online(f1)
+tick()
+f1.dead = true
+fire("OnCharacterDeath", f1)
+local f2 = seat("rs-x", mgT(307), 31, 9.9, 3)
+online(f2)
+tick()
+check(S.login(f2) == nil and killed(f2), "RS-6a: a seat given back at once under another name is refused by the seat rule")
+-- b) another SteamID on that onlineID is no return
+local g1 = seat("rs-g", mgT(308), 32, 10, 3)
+online(g1)
+tick()
+g1.dead = true
+fire("OnCharacterDeath", g1)
+local g2 = seat("rs-h", mgT(309), 32, 30, 2)
+online(g2)
+tick()
+check(untouched(g2, 2), "RS-6b: the seat rule needs the same SteamID")
+-- c) the occupant it replaced must be dead
+local h1 = seat("rs-i", mgT(310), 33, 12, 2)
+online(h1)
+tick()
+local h2 = seat("rs-i", mgT(310), 33, 12, 2)
+online(h2)
+tick()
+check(untouched(h2, 2), "RS-6c: the seat rule needs the occupant it replaced to be dead")
+-- d) without Steam mode: the seat rule holds within RESPAWN_MS of the replaced object's last
+-- sighting (kept by a prune between the two stages); after it nothing does, and a name's
+-- unprocessed death condemns nothing
+steamModeActive = false
+local k1 = seat("rs-k", nil, 34, 10, 3)
+online(k1)
+tick(M.PRUNE_EVERY_MS + 1000)               -- a prune with k1 online
+tick(M.PRUNE_EVERY_MS - 3000)               -- k1 seen; the next prune is 3 s away
+k1.dead = true
+fire("OnCharacterDeath", k1)
+online()                                    -- stage 1 took it
+tick(3500)                                  -- the prune runs between the two stages and keeps it
+local k2 = seat("rs-k", nil, 34, 9.5, 3)
+online(k2)
+tick()
+local j1 = seat("rs-j", nil, 35, 10, 3)
+online(j1)
+tick()
+j1.dead = true
+fire("OnCharacterDeath", j1)
+online()
+tick(Rc.RESPAWN_MS + 1000)
+local j2 = seat("rs-j", nil, 35, 9.5, 3)
+online(j2)
+tick()
+local q1 = seat("rs-q", nil, 39, 3, 1)
+online(q1)
+tick()
+q1.dead = true
+local q2 = seat("rs-q", nil, 40, 20, 2)
+online(q2)
+tick()
+check(killed(k2) and untouched(j2, 3) and untouched(q2, 2),
+    "RS-6d: without Steam mode the seat rule holds within RESPAWN_MS and nothing is judged by name")
+steamModeActive = true
+
+-- RS-7: an animal on a dead seat's onlineID (IsoAnimal extends IsoPlayer) is never judged
+local m1 = seat("rs-m", mgT(311), 36, 10, 3)
+online(m1)
+tick()
+m1.dead = true
+fire("OnCharacterDeath", m1)
+local cow = seat("rs-m", mgT(311), 36, 50, 1)
+cow.__class = "IsoAnimal"
+online(cow)
+tick()
+check(untouched(cow, 1), "RS-7: an animal is never judged")
+
+-- RS-8: a processed death that did not stick (the same object alive again) never reached the
+-- row: the minute prune drops the note while the object is still around; the next login, after
+-- that object's session is gone too, is left alone
+local n1 = seat("rs-n", mgT(312), 37, 10, 2)
+online(n1)
+tick()
+n1.dead = true
+fire("OnCharacterDeath", n1)
+n1.dead = false
+tick(M.PRUNE_EVERY_MS + 1000)
+online()
+tick(M.PRUNE_EVERY_MS + 1000)               -- the next prune drops n1's session
+local n2 = seat("rs-n", mgT(312), 38, 10.5, 2)
+online(n2)
+tick()
+check(untouched(n2, 2), "RS-8: a death that did not stick is dropped from the notes by the prune")
+
+-- RS-9: a verified death the server has not processed yet (health 0, no event yet: ConnectCoop can
+-- take the seat in that window) counts too: the login on a new connection is refused
+local z1 = seat("rs-z", mgT(313), 41, 10, 3)
+online(z1)
+tick()
+z1.dead = true
+online()
+tick()
+local z2 = seat("rs-z", mgT(313), 42, 9.7, 3)
+online(z2)
+tick()
+check(killed(z2), "RS-9: a verified death not processed yet counts as well (another onlineID: not the seat rule)")
+-- RS-9b: that refused object is no character: when the prune settles the old death later, it is
+-- still the login's newest one and is noted, so the next reload is refused too
+online()
+tick(M.PRUNE_EVERY_MS + 1000)
+local z3 = seat("rs-z", mgT(313), 53, 9.7, 3)
+online(z3)
+tick()
+check(killed(z3), "RS-9b: a refused reload does not hide the death it came from")
+
+local function crashTo(snap)
+    proofSettle()
+    onlinePlayers = {}
+    modDataStore[EC.MODDATA_KEY] = snap
+    nowMs = nowMs + 1000
+    fire("OnServerStarted")
+end
+
+-- RS-10: a death, a world save, a new character (players.db keeps it, hours on) and a crash back
+-- to that world save: the notes are process memory, so the new character logs in untouched
+local r1 = seat("rs-r", mgT(314), 43, 10, 3)
+online(r1)
+tick()
+r1.dead = true
+fire("OnCharacterDeath", r1)
+local snapR = proofSnapshot()
+local r2 = seat("rs-r", mgT(314), 43, 0, 2)
+online(r2)
+tick()
+crashTo(snapR)
+online()
+tick()
+local r3 = seat("rs-r", mgT(314), 44, 4, 2)
+online(r3)
+tick()
+check(untouched(r3, 2), "RS-10: a crash back to a world save made after the death: the new character is left alone")
+
+-- RS-11: the death event never came and a new character took the seat; its first sighting
+-- settles that death late, which notes nothing (not the newest object), and the new
+-- character's next login is left alone
+local w1 = seat("rs-w", mgT(315), 45, 10, 3)
+online(w1)
+tick()
+w1.dead = true
+local w2 = seat("rs-w", mgT(315), 45, 0, 2)
+online(w2)
+tick()
+online()
+tick(M.PRUNE_EVERY_MS + 1000)
+local w3 = seat("rs-w", mgT(315), 46, 3, 2)
+online(w3)
+tick()
+check(untouched(w3, 2) and Rc.life("rs-w") == 1,
+    "RS-11: a death settled after a new character was seen notes nothing: the new character's next login is left alone")
+
+-- RS-12: the object whose death set the note came back to life and logged out; the next login
+-- comes before any prune: the judgment itself sees that the death did not stick
+local y1 = seat("rs-y", mgT(316), 47, 10, 2)
+online(y1)
+tick()
+y1.dead = true
+fire("OnCharacterDeath", y1)
+y1.dead = false
+online()
+tick(Rc.RESPAWN_MS + 1000)
+local y2 = seat("rs-y", mgT(316), 48, 10.5, 2)
+online(y2)
+tick()
+check(untouched(y2, 2), "RS-12: a death that did not stick is seen at the next login itself")
+
+-- RS-13: an old row first seen while its SteamID cannot be read (unverified) is judged by login
+-- once it is verified: a) at its first command, b) at the once-a-second first-sighting retry
+local t1 = seat("rs-t", mgT(317), 49, 10, 3)
+online(t1)
+tick()
+t1.dead = true
+fire("OnCharacterDeath", t1)
+online()
+tick(Rc.RESPAWN_MS + 1000)
+local t2 = seat("rs-t", mgT(317), 50, 9.6, 3)
+local sidT = t2.steamId
+t2.steamId = nil
+online(t2)
+tick()
+local sparedT = untouched(t2, 3)
+t2.steamId = sidT
+hello(t2)
+check(sparedT and killed(t2) and sent(t2, "hello.ack") == 0,
+    "RS-13a: an object verified after its first sighting is judged by login at its first command")
+local u1 = seat("rs-u", mgT(318), 51, 10, 3)
+online(u1)
+tick()
+u1.dead = true
+fire("OnCharacterDeath", u1)
+online()
+tick(Rc.RESPAWN_MS + 1000)
+local u2 = seat("rs-u", mgT(318), 52, 9.6, 3)
+local sidU = u2.steamId
+u2.steamId = nil
+online(u2)
+tick()
+local sparedU = untouched(u2, 3)
+u2.steamId = sidU
+tick(1100)
+check(sparedU and killed(u2), "RS-13b: an object verified after its first sighting is judged by login at the retry")
+
+-- RS-15: a new character (its CreatePlayer bound the name) first seen unverified dies before its
+-- first verified sighting: that late judgment does not take its own death for a new
+-- character's, and its old row is refused
+fire("OnNewGame", seat("rs-xx", mgT(320), nil, 0), nil)
+local x1 = seat("rs-xx", mgT(320), 60, 0, 2)
+local sidX = x1.steamId
+x1.steamId = nil
+online(x1)
+tick()
+x1.steamId = sidX
+x1.hours, x1.dead = 2, true
+fire("OnCharacterDeath", x1)
+tick(1100)
+online()
+far()
+local x2 = seat("rs-xx", mgT(320), 61, 1.9, 2)
+online(x2)
+tick()
+check(killed(x2), "RS-15: a judgment after the object's own death keeps that death noted")
+steamModeActive = false
 onlinePlayers = {}
 end)()
 

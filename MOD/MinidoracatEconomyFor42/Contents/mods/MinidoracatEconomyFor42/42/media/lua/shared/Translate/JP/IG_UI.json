@@ -2238,5 +2238,8 @@
   "IGUI_MinidoracatEconomy_Player_IdentityOneAccountDetail": "この Steam アカウントは別のログイン名で経済システムを使用中です。このサーバーでは Steam アカウント 1 つにつき経済アカウントは 1 つのため、経済システムは現在ログイン名「%1」に応答しません。管理者に連絡してください。口座と残高は変わりません。",
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_IDENTITY_ALERT": "本人確認の警告",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_LOGIN": "初回確認",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "詳細は本人確認ページ（今回の起動中）とサーバーの監査ファイル"
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "詳細は本人確認ページ（今回の起動中）とサーバーの監査ファイル",
+  "IGUI_MinidoracatEconomy_Admin_Resurrection": "%1 が古いセーブで死亡から復帰しようとしたため阻止しました：所持品 %2 個を削除し、キャラクターを死亡させました。死体はそのままです。",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Action_RESURRECTION": "死亡後の復活を阻止",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_carried": "所持品の数"
 }

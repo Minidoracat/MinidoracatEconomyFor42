@@ -2238,5 +2238,8 @@
   "IGUI_MinidoracatEconomy_Player_IdentityOneAccountDetail": "这个 Steam 帐号已经用另一个登录帐号使用经济系统。本服务器每个 Steam 帐号只能使用一个经济帐号，所以经济系统暂时不回应登录帐号「%1」。请联系管理员；你的帐户与余额不受影响。",
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_IDENTITY_ALERT": "身分警示",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_LOGIN": "首次登录",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "详情见身分页（本次开服）与服务器审核档"
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "详情见身分页（本次开服）与服务器审核档",
+  "IGUI_MinidoracatEconomy_Admin_Resurrection": "已阻止 %1 死后带着旧存盘复活：移除身上 %2 件物品并让角色死亡，尸体不受影响。",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Action_RESURRECTION": "阻止死后复活",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_carried": "身上物品件数"
 }

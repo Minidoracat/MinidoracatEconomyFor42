@@ -2238,5 +2238,8 @@
   "IGUI_MinidoracatEconomy_Player_IdentityOneAccountDetail": "這個 Steam 帳號已經用另一個登入帳號使用經濟系統。本伺服器每個 Steam 帳號只能使用一個經濟帳號，所以經濟系統暫時不回應登入帳號「%1」。請聯絡管理員；你的帳戶與餘額不受影響。",
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_IDENTITY_ALERT": "身分警示",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_LOGIN": "首次登入",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "詳情見身分頁（本次開服）與伺服器稽核檔"
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "詳情見身分頁（本次開服）與伺服器稽核檔",
+  "IGUI_MinidoracatEconomy_Admin_Resurrection": "已阻止 %1 死後帶著舊存檔復活：移除身上 %2 件物品並讓角色死亡，屍體不受影響。",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Action_RESURRECTION": "阻止死後復活",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_carried": "身上物品件數"
 }

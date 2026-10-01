@@ -90,12 +90,20 @@ R.TICK_EPS_MIN = 0.01         -- game hours: the narrowest tie band a save/commi
 R.EPS_WINDOW_MS = 60000       -- the per-tick hours step is the largest seen over about this long
 R.STARTS_MAX = 128            -- session starts kept per login name
 R.CLAIMED_HOLDS_PER_HOUR = 64 -- new receipt-less pend: holds one login may open per hour
+R.RESPAWN_MS = 5000           -- a dead seat ConnectCoop gives back gets its next object within this
+R.FRESH_STEPS = 10            -- a new character's row has zero hours: first seen within a tick or two
+R.RETURN_AUDIT_MS = 60000     -- one RESURRECTION audit line per name and minute
+R.RETURN_TOAST_MS = 10000     -- one administrator toast every ten seconds, server-wide
 
 local md = nil
 local reserved, reservedCount, consumedIndex = {}, 0, {}
 -- Process memory of the player sessions (see "player sessions" below).
 local sessions, outAnchors, claimedHourly, unanchoredNoted = {}, {}, {}, {}
 local epsProbe, epsProbeH, epsNow, epsPrev, epsAt = nil, nil, 0, 0, 0
+-- each login's newest object and the death noted for it this uptime (judgeReturn), and the refused
+-- returns' audit and toast pacing
+local latestSeq, deadNotes, returnAudited, returnToastAt = {}, {}, {}, 0
+local judgeReturn   -- defined with the rule ("a character that died does not come back")
 -- Epochs whose ledger file this start could not read in full (ECMailbox harvest): what they held
 -- is unknown, so nothing that happened up to them is decided from the ledger's silence.
 local ledgerGaps = {}
@@ -327,6 +335,7 @@ function R.init(root)
     -- a new process has no player objects yet: every session starts over
     sessions, outAnchors, claimedHourly, unanchoredNoted = {}, {}, {}, {}
     epsProbe, epsProbeH, epsNow, epsPrev, epsAt = nil, nil, 0, 0, 0
+    latestSeq, deadNotes, returnAudited, returnToastAt = {}, {}, {}, 0
     ledgerGaps, R.ledgerGapsAt = {}, nil
     for _, receipt in pairs(rec.ops) do indexReceipt(receipt) end
 end
@@ -790,12 +799,17 @@ end
 
 -- Created by the per-tick first sighting (R.observeSessions); a lookup before that tick creates
 -- it on the spot. A late creation only makes h0 larger, which only ever withholds a delivery.
+-- A new object is judged once, here: a character that died does not come back (judgeReturn).
 function R.session(player)
     local s = sessions[player]
     if s == nil then
         local seq = S.nextSeq()
-        s = { sid = EC.makeId(md.meta.epoch, seq), seq = seq, h0 = hoursOf(player), noted = {} }
+        local okId, oid = pcall(function() return player:getOnlineID() end)
+        s = { sid = EC.makeId(md.meta.epoch, seq), seq = seq, h0 = hoursOf(player), noted = {},
+            oid = okId and type(oid) == "number" and oid >= 0 and oid or nil, seenAt = EC.now() }
         sessions[player] = s
+        local ok, err = pcall(judgeReturn, player, s)
+        if not ok then EC.log("return check failed for " .. S.claimedName(player) .. ": " .. tostring(err)) end
     end
     return s
 end
@@ -831,12 +845,209 @@ function R.life(login)
     return rec and tonumber(rec.life) or 0
 end
 
+-- ---------- a character that died does not come back ----------
+--
+-- The engine can hand a dead seat back without a new character: ConnectCoop removes the dead
+-- player through GameServer.disconnectPlayer (ConnectCoopPacket.java:91-102 -> GameServer.java:
+-- 2616-2667, no save) and loads the connection's row again (GameServer.java:2805-2848, keyed by
+-- connection.getUserName() whatever name the seat was given). Nothing writes that row at a death
+-- - CreatePlayer (CreatePlayerPacket.java:302), a disconnect (GameServer.java:3036-3043), the
+-- 180 s save (NetworkPlayerManager.java:24-28), trades and the world save do - while the corpse
+-- took the backpack, worn and attached items (IsoDeadBody.java:322-336). So the last saved
+-- character can come back alive beside a corpse holding the same things, at once or at the
+-- login's next session. A new character always arrives with zero hours: CreatePlayer writes a
+-- fresh row (CreatePlayerPacket.java:288-303) and the server only adds to them (GameTime.java:
+-- 540-546).
+--
+-- So a new object first seen alive with more than FRESH_STEPS ticks of hours, where this server
+-- knows the character died, is that old row: what it carries is removed and it is killed - the
+-- corpse keeps the character's things - audited (RESURRECTION) and the administrators online are
+-- told. It is no session of anything: no economy command, reconcile or death bookkeeping. The
+-- death is known two ways:
+--   seat   the object that held the same onlineID (stage 1 keeps it, :93-100) was seen within
+--          RESPAWN_MS, is dead and has the same SteamID. A new connection gets its slot at
+--          login (GameServer.java:2669-2686) and needs a world load before it has a player.
+--   login  in Steam mode, a verified death of this login's newest object is noted, in process
+--          memory only (deadNotes); a death of the newest object not processed yet counts too.
+--          An object of the login first seen dead (the death was saved) or fresh (a new
+--          character) clears the note, and so does the object that died seen alive again. A
+--          name the binding does not vouch for is never noted or judged, so no death can be
+--          pinned on another login. An object not verified when first seen is judged again by
+--          login once it is.
+-- Memory, not the world: players.db and Global ModData reach the disk on their own clocks, so a
+-- note the world kept could be older than the character players.db kept, and nothing written
+-- elsewhere to clear it is certain to survive a crash. A restart forgets every note.
+-- ponytail: a return after a restart passes, and so do (without Steam mode) any return after a
+-- reconnect, a split-screen seat after a reconnect, and a seat given back on the same connection
+-- after RESPAWN_MS under another name; saving the dead player at stage 1 (engine) closes them all.
+
+local function steamMode()
+    local Id = S.Identity
+    return Id ~= nil and Id.steamMode() == true
+end
+
+local function deadNow(p)
+    local ok, dead = pcall(function() return p:isDead() end)
+    return ok and dead == true
+end
+
+local function sidOf(p)
+    local Id = S.Identity
+    local ok, v = pcall(function() if Id ~= nil then return Id.sidOf(p) end return p:getSteamID() end)
+    return ok and v or nil
+end
+
+local function onlineNow(p)
+    local players = S.seats()
+    for i = 0, (players and players:size() or 0) - 1 do
+        if players:get(i) == p then return true end
+    end
+    return false
+end
+
+-- FRESH_STEPS hours steps: this update's step (GameTime.java:520) or the largest the probe player
+-- showed lately (R.observeSessions), whichever is larger.
+local function freshHours()
+    local ok, step = pcall(function()
+        local gt = getGameTime()
+        return 1 / gt:getMinutesPerDay() / 60 * gt:getMultiplier() / 2
+    end)
+    step = ok and type(step) == "number" and step == step and step > 0 and step < math.huge and step or 0
+    if epsNow > step then step = epsNow end
+    if epsPrev > step then step = epsPrev end
+    return R.FRESH_STEPS * step
+end
+
+local function clearNote(login)
+    deadNotes[login] = nil
+end
+
+local function sessionBySid(sid)
+    for q, sq in pairs(sessions) do
+        if sq.sid == sid then return q end
+    end
+    return nil
+end
+
+local function seatDied(p, s, now)
+    if s.oid == nil then return false end
+    local prev, at = nil, nil
+    for q, sq in pairs(sessions) do
+        if q ~= p and sq.oid == s.oid and type(sq.seenAt) == "number" and now - sq.seenAt <= R.RESPAWN_MS
+            and (at == nil or sq.seenAt > at) then prev, at = q, sq.seenAt end
+    end
+    return prev ~= nil and not instanceof(prev, "IsoAnimal") and deadNow(prev) and sidOf(prev) == sidOf(p)
+end
+
+local function loginDied(login, p)
+    local d = deadNotes[login]
+    if d ~= nil then
+        local q = sessionBySid(d.sid)
+        if q == nil or deadNow(q) then return true end
+        clearNote(login)
+    end
+    for _, u in ipairs(R.unsettledDeaths(login, p)) do
+        -- an object first seen dead died in an earlier session: its death is in the row already
+        if not u.unverified and not sessions[u.player].seenDead then return true end
+    end
+    return false
+end
+
+local function tellAdmins(payload)
+    local A, players = EC.Admin, S.seats()
+    for i = 0, (players and players:size() or 0) - 1 do
+        local p = players:get(i)
+        local ok, admin = pcall(function() return p:getPlayerNum() == 0 and A ~= nil and A.canRead(p) end)
+        if ok and admin == true then S.reply(p, "recovery.resurrection", payload) end
+    end
+end
+
+local function refuseReturn(p, s, login, rule)
+    s.phantom, s.proved, s.reconciled, s.died = true, true, true, true
+    local name, items = login or S.claimedName(p), 0
+    -- the corpse holds these already; die() would drop the hands (IsoGameCharacter.java:14633-14640)
+    local cleared, clearErr = pcall(function()
+        p:setPrimaryHandItem(nil)
+        p:setSecondaryHandItem(nil)
+        p:clearWornItems()
+        p:clearAttachedItems()
+        local inv = p:getInventory()
+        items = inv:getItems():size()
+        inv:removeAllItems()
+    end)
+    -- Kill's own two writes without its death event inside this call (IsoGameCharacter.java:
+    -- 14605-14612): isDead() is true at once (:4913) and the server's next update dies (:9177-9179)
+    local killed, killErr = pcall(function()
+        p:getBodyDamage():setOverallBodyHealth(0)
+        p:setHealth(0)
+    end)
+    EC.log("return refused (" .. rule .. "): " .. name .. ", " .. tostring(items) .. " carried item(s) removed"
+        .. (cleared and "" or (", clear failed: " .. tostring(clearErr)))
+        .. (killed and "" or (", kill failed: " .. tostring(killErr))))
+    local ms = EC.now()
+    local last = returnAudited[name]
+    if last == nil or ms - last >= R.RETURN_AUDIT_MS then
+        returnAudited[name] = ms
+        local Id, sid = S.Identity, sidOf(p)
+        local text = (Id ~= nil and type(sid) == "number" and sid > 0) and Id.sidText(sid) or nil
+        X.audit({ action = "RESURRECTION", admin = "SYSTEM", target = name, field = "carried", before = items, after = 0 },
+            { steamId = text, rule = rule, hours = numText(s.h0) })
+    end
+    if ms - returnToastAt >= R.RETURN_TOAST_MS then
+        returnToastAt = ms
+        local ok, err = pcall(tellAdmins, { name = name, items = items })
+        if not ok then EC.log("resurrection notice failed: " .. tostring(err)) end
+    end
+end
+
+-- At the creation of a session, and again by login once an object first seen unverified is
+-- verified (s.judged false). Dead or fresh is how the object first appeared (s.resolves; first
+-- seen dead also s.seenDead). A refused object is no character: it never becomes the login's
+-- newest object.
+judgeReturn = function(p, s)
+    if s.phantom or instanceof(p, "IsoAnimal") or not onlineNow(p) then return end
+    local ok, login = pcall(S.login, p)
+    login = ok and type(login) == "string" and login or nil
+    s.judged = login or false
+    if s.resolves == nil then
+        s.seenDead = deadNow(p)
+        s.resolves = s.seenDead or (s.h0 ~= nil and s.h0 <= freshHours())
+    end
+    local rule = nil
+    if login ~= nil and s.resolves then
+        -- not when this very object has died since (a re-judgment after its own death)
+        if not s.died then clearNote(login) end
+    elseif login ~= nil and s.h0 ~= nil and steamMode() and loginDied(login, p) then
+        rule = "login"
+    end
+    if rule == nil and not s.resolves and s.h0 ~= nil and seatDied(p, s, EC.now()) then rule = "seat" end
+    if rule ~= nil then
+        refuseReturn(p, s, login, rule)
+    elseif login ~= nil and (latestSeq[login] or -1) < s.seq then
+        latestSeq[login] = s.seq
+    end
+end
+
+-- A refused return (S.dispatch, ECMailbox.reconcile): nothing the economy does applies to it.
+function R.isPhantom(player)
+    if md == nil then return false end
+    local s = R.session(player)
+    if s.judged == false then pcall(judgeReturn, player, s) end
+    return s.phantom == true
+end
+S.isPhantom = R.isPhantom
+
 -- The next character of this login: the main seat died while the server watched (M.onDeath).
-function R.newLife(login)
+-- The death of the login's newest object is also noted until the row shows it (judgeReturn);
+-- `session` is the object that died.
+function R.newLife(login, session)
     local rec = lifeRec(login, true)
     rec.life = (tonumber(rec.life) or 0) + 1
     -- this world save watched the life begin (a death)
     rec.seen = rec.life
+    if session ~= nil and not session.seenDead and session.seq >= (latestSeq[login] or -1) then
+        deadNotes[login] = { sid = session.sid, at = EC.now() }
+    end
     ledger({ k = "life", l = login, s = S.nextSeq(), life = rec.life })
     return rec.life
 end
@@ -1079,6 +1290,7 @@ function R.observeSessions(onFirst)
         local p = players:get(i)
         if p ~= nil then
             local s = sessions[p] or R.session(p)
+            s.seenAt = now
             if p == epsProbe then
                 probeSeen = true
                 local h = hoursOf(p)
@@ -1089,8 +1301,12 @@ function R.observeSessions(onFirst)
                 s.tryAt = now
                 local ok, login = pcall(S.login, p)
                 if ok and type(login) == "string" then
-                    local done, err = pcall(onFirst, p, login, s)
-                    if not done then EC.log("first sighting failed for " .. login .. ": " .. tostring(err)) end
+                    -- first seen unverified: judged by its login now, before anything acts for it
+                    if s.judged == false then pcall(judgeReturn, p, s) end
+                    if not s.phantom then
+                        local done, err = pcall(onFirst, p, login, s)
+                        if not done then EC.log("first sighting failed for " .. login .. ": " .. tostring(err)) end
+                    end
                 else
                     -- an object the binding does not vouch for keeps the name its seat may be
                     -- held to for a death nobody processed (R.unsettledDeaths): the same rules as
@@ -1132,17 +1348,23 @@ function R.unsettledDeaths(login, except)
     return out
 end
 
--- On the minute clock: forget the objects that left. A departing object that is dead and whose
--- death nobody processed is handed to `onDeadGone(player, name, session, unverified)` first, so a
--- prune that runs before the login's next object is seen does not lose that death.
+-- On the minute clock: forget the objects that left (RESPAWN_MS later: the seat rule needs the
+-- one a new object replaced). A departing object that is dead and whose death nobody processed is
+-- handed to `onDeadGone(player, name, session, unverified)` first, so a prune that runs before the
+-- login's next object is seen does not lose that death.
 function R.pruneSessions(onDeadGone)
-    local players, online, gone = S.seats(), {}, {}
+    local players, online, gone, now = S.seats(), {}, {}, EC.now()
     for i = 0, (players and players:size() or 0) - 1 do
         local p = players:get(i)
         if p ~= nil then online[p] = true end
     end
-    for p in pairs(sessions) do
-        if not online[p] then gone[#gone + 1] = p end
+    for p, s in pairs(sessions) do
+        if not online[p] and now - (s.seenAt or 0) > R.RESPAWN_MS then gone[#gone + 1] = p end
+        -- the object whose death set the note alive again: that death never reached the row
+        if s.died and not s.phantom and type(s.login) == "string" and not deadNow(p) then
+            local d = deadNotes[s.login]
+            if d ~= nil and d.sid == s.sid then clearNote(s.login) end
+        end
     end
     for _, p in ipairs(gone) do
         local s = sessions[p]

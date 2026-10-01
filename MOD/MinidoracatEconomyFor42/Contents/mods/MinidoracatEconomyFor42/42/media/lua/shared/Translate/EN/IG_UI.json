@@ -2238,5 +2238,8 @@
   "IGUI_MinidoracatEconomy_Player_IdentityOneAccountDetail": "This Steam account already uses the economy with another login. This server allows one economy account per Steam account, so the economy does not answer the login name \"%1\" for now. Please contact an administrator; your account and balances are unchanged.",
   "IGUI_MinidoracatEconomy_Admin_Audit_Action_IDENTITY_ALERT": "Identity alert",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_LOGIN": "First sight",
-  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "Details on the identity page (this uptime) and in the server audit file"
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_identity": "Details on the identity page (this uptime) and in the server audit file",
+  "IGUI_MinidoracatEconomy_Admin_Resurrection": "Blocked %1 coming back from death on an old save: %2 carried items removed and the character killed; the corpse is untouched.",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Action_RESURRECTION": "Resurrection blocked",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_carried": "Carried items"
 }

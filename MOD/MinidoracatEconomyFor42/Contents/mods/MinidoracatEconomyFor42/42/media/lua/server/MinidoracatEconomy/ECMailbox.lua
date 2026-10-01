@@ -1305,8 +1305,9 @@ end
 -- A death of `login`'s character: the letters that very login claimed went with it (settled),
 -- and the next character is a new life - a world rollback to before this death still settles
 -- them (the ledger's life line outlives the world save). `how`: nil for the verified seat whose
--- OnCharacterDeath ran, "unseen" for a verified object whose event never came.
-local function settleDeath(login, how)
+-- OnCharacterDeath ran, "unseen" for a verified object whose event never came. `session` is the
+-- object that died (ECRecovery notes the death only when it was the login's newest object).
+local function settleDeath(login, how, session)
     local settled = claimedLetters(login)
     for _, entry in ipairs(settled) do entry.state, entry.lifeBreak = "settled", nil end
     if #settled > 0 then
@@ -1315,7 +1316,7 @@ local function settleDeath(login, how)
     if how ~= nil then
         EC.log("mailbox death of " .. login .. " (" .. how .. "): " .. tostring(#settled) .. " claimed letter(s) settled")
     end
-    R.newLife(login)
+    R.newLife(login, session)
 end
 
 -- The death of a seat the binding does not vouch for, under the seat's own name (Id.seatName).
@@ -1337,7 +1338,7 @@ end
 local function settleUnseenDeath(_, login, session, unverified)
     if session.died then return end
     session.died = true
-    if unverified then markUnverifiedDeath(login, "unseen") else settleDeath(login, "unseen") end
+    if unverified then markUnverifiedDeath(login, "unseen") else settleDeath(login, "unseen", session) end
 end
 
 -- Once per session, the first tick its login is verified (or the first command, whichever
@@ -1398,6 +1399,8 @@ function M.reconcile(player)
     local username = S.login(player)
     local account = S.accountOf(username)
     local session = R.session(player)
+    -- an old row refused its return (ECRecovery judgeReturn) is no save of anything to judge
+    if session.phantom then return true end
     if not session.proved then M.firstSight(player, username, session) end
     local inv = player:getInventory()
     if not inv then
@@ -1878,7 +1881,7 @@ function M.onDeath(character)
             X.emit("player.died", { username = username, pendingOuts = n })
         end
     end
-    settleDeath(username, nil)
+    settleDeath(username, nil, session)
 end
 
 -- Keyed by login on both sides (the death above): the new character is named with the

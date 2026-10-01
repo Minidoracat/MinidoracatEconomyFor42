@@ -1057,6 +1057,14 @@ handlers["identity.alert"] = function(args)
     C.toast(getText("IGUI_MinidoracatEconomy_Identity_Alert", tostring(args.name), kind))
 end
 
+-- A character that died came back on its old save and the server killed it (ECRecovery
+-- judgeReturn); pushed to the administrators online, like an identity alert.
+handlers["recovery.resurrection"] = function(args)
+    local panel = C.AdminPanel
+    if not (panel and panel.canRead and panel.canRead()) then return end
+    C.toast(getText("IGUI_MinidoracatEconomy_Admin_Resurrection", tostring(args.name), tostring(args.items)))
+end
+
 -- The session this client never received while it was refused: say hello again.
 handlers["identity.verified"] = function()
     setIdentity(false)
