@@ -36,7 +36,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]Map ATMs[/b]: vanilla floor and wall ATMs work within 2 tiles on the same floor, no registration needed (the server can turn this off).
 [*] [b]Custom terminals[/b] (machine, catgirl or supported cabinets) are registered by an admin as an ATM or a trade station; only trade stations have the market radio.
 [*] [b]One shared market[/b]: list at station A, someone buys at station B, you collect at station C.
-[*] [b]Map ATM protection[/b]: ordinary players cannot sledgehammer or disassemble supported vanilla ATMs; admins can.
+[*] [b]Protection[/b]: machine and catgirl terminals cannot be destroyed; players cannot remove registered cabinets or supported map ATMs.
 [/list]
 
 [h3]System shop[/h3]

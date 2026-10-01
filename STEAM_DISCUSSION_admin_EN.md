@@ -28,14 +28,14 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [h2]💸 Player transfers[/h2]
 [list]
 [*] [b]Off by default.[/b] Settings - Player transfers: master switch, sending away from a terminal or ATM (off), fee (5%, paid by the sender and burned), per-transfer and daily limits, and the wait for new accounts (3 days; accounts older than the update are exempt).
-[*] Also enable each transferable currency under Currency settings (Discord-bought currencies show a warning), and each other mod that may transfer on the Integrations page.
+[*] Also enable each transferable currency under Currency settings, and each other mod that may transfer on the Integrations page.
 [/list]
 
 [h2]🏧 Terminals and market radio[/h2]
 [list]
 [*] [b]Map ATMs[/b]: Settings - General has "Use map ATMs as terminals" (on) and "Allow players to remove map ATMs" (off).
-[*] [b]Custom terminals[/b] (machine or catgirl, build menu - Furniture, admins only): right-click to register as an economy terminal: ATM (no radio) or trade station (market radio). To switch, unregister first.
-[*] [b]Market summaries[/b]: trade stations broadcast text summaries on a timer, shown in each player's own game language; an interval of 0 stops only the summary. ATMs never broadcast.
+[*] [b]Custom terminals[/b] (machine or catgirl, build menu - Furniture) cannot be destroyed; only admins build or remove them. Right-click to register as an economy terminal: ATM (no radio) or trade station (market radio); to switch, unregister first. Registered cabinets are locked too.
+[*] [b]Market summaries[/b]: trade stations broadcast them on a timer in each player's language; interval 0 stops only the summary. ATMs never broadcast.
 [*] [b]Voice pickup[/b] (Settings - Market radio) is [b]off by default[/b]; it follows server voice settings, and nearby or lower-floor devices may hear it.
 [*] [b]Before removing this mod[/b], unregister each trade station while its area is loaded and save normally; disabling the mod runs no cleanup.
 [/list]
