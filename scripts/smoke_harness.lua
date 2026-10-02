@@ -1063,6 +1063,8 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: heavy items carried in 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: wristwatches are listable with their alarm (scenario 28d: not fixed while a standing alarm clock is, alarm time and switch rebuilt, the rolled alarm left out of the buyback comparison)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the picker's worn / in-hand tag (scenario 28d: an equipped refusal says where the item is, worn and held copies stay apart)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a lot leaves out the hidden records nothing reads back (scenario LM: one picker row, the stored lot keeps only records every copy shares, an auction lot the same, a single copy keeps everything)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the identity page's logins list (LP-2 paging and the last page, LP-3 query and filter counts, LP-4 refused conditions, LP-5 a refused role learns nothing; LP-1 replaces the old capped-list check)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: the export status a page reads (scenario MG-1: no file and nothing accepted is none, never "earlier data stays in effect"; an accepted export that disappears is missing)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16068,7 +16070,7 @@ function mgAudits(action, field)
     return n
 end
 function mgMember(name)
-    for _, g in ipairs(S.Merge.status().list) do
+    for _, g in ipairs(S.Merge.planGroups()) do
         for _, m in ipairs(g.members) do if m.name == name then return m, g end end
     end
     return nil
@@ -16121,6 +16123,10 @@ local function rejected(variant, opts, rows)
     mgPoll()
     return Id.exportStatus().status == variant and untouched()
 end
+files[Id.EXPORT_FILE] = nil
+mgPoll()
+check(Id.exportStatus().status == "none" and untouched(),
+    "with no export file and nothing accepted yet the status stays none: the page never says earlier data stays in effect")
 check(rejected("server_mismatch", { serverName = "another-server" }), "an export for another server name is refused and nothing of it is applied")
 check(rejected("truncated", { noTrailer = true }), "an export without its trailer line is refused whole: truncated")
 check(rejected("truncated", { count = 9, trailerCount = 9 }), "an export with fewer rows than its count is refused whole: truncated")
@@ -16167,6 +16173,14 @@ check(fay.text == Id.sidText(mgSid(mgT(3))) and fay.exact == nil and Id.unresolv
 check(Id.view().bindings["mg-gone"].reserved == true and Id.view().bindings["mg-cat"] == nil
     and S.login(mgPlayer("mg-zed", mgT(10))) == nil,
     "the first accepted export reserves the economy's unlisted names and starts the strict mode")
+-- the accepted file disappears: what it brought stays in effect, and that is what missing says
+local acceptedFile = files[Id.EXPORT_FILE]
+files[Id.EXPORT_FILE] = nil
+mgPoll()
+local gone = Id.exportStatus()
+files[Id.EXPORT_FILE] = acceptedFile
+check(gone.status == "missing" and gone.acceptedAt ~= nil and Id.view().bindings["mg-alt"] ~= nil,
+    "an accepted export that disappears is missing, and the bindings it brought stay in effect")
 -- the same file again, an older one, a restart
 local lines = #mgRecs()
 mgPoll()
@@ -16305,7 +16319,7 @@ check(gAfter and gAfter.account == "mg-g3" and hAfter and hAfter.account == "mg-
     "after a restart every group keeps its recorded account and nothing is decided again")
 -- the preview, then the pass
 local ready = {}
-for _, g in ipairs(Mg.status().list) do
+for _, g in ipairs(Mg.planGroups()) do
     for _, m in ipairs(g.members) do if m.state == "ready" then ready[#ready + 1] = m.name end end
 end
 EC.sortSafe(ready, function(a, b) return a < b end)
@@ -16974,17 +16988,49 @@ check(S.login(fsPlayer("fs-new", mgT(190), 74)) == nil and bindsOf("fs-new") == 
 onlinePlayers = { boss }
 sentCommands = {}
 nowMs = nowMs + 1000
-fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "status", requestId = "fs-s1" })
-local st = lastSent("admin.identity") and lastSent("admin.identity").args.status or {}
-local multi = st.multi or {}
-local g1 = multi.list and multi.list[1] or {}
-local m1 = g1.members or {}
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "status", requestId = "fs-s1",
+    logins = { filter = "all", page = 1 } })
+local fsReply = lastSent("admin.identity") and lastSent("admin.identity").args or {}
+;(function()
+local st, lp = fsReply.status or {}, fsReply.logins or {}
+local multi, rows = st.multi or {}, lp.rows or {}
 -- (three Steam accounts: X_ fs-atk/fs-ax3, P_ fs-p1/fs-p2, and W_ fs-wa/fs-wb from the account switch)
 check(st.multiAccount == false and multi.steamIds == 3 and multi.logins == 6 and multi.blocked == 3
-    and g1.primary == "fs-atk" and g1.count == 2 and m1[1].name == "fs-atk" and m1[1].state == "primary"
-    and m1[2].name == "fs-ax3" and m1[2].state == "blocked" and multi.list[2].primary == "fs-p2"
+    and #rows == 3 and rows[1].name == "fs-ax3" and rows[1].account == "fs-atk" and rows[1].policy == "blocked"
+    and rows[1].merge == "ready" and rows[1].logins == 2 and rows[1].group[1] == "fs-atk"
+    and rows[2].name == "fs-p1" and rows[2].account == "fs-p2" and rows[3].name == "fs-wb" and rows[3].merge == nil
+    and lp.total == 3 and lp.counts.blocked == 3 and lp.counts.ready == 2
     and type(st.alerts) == "table" and #st.alerts == st.alertCount and st.alerts[1].at >= st.alerts[#st.alerts].at,
-    "admin.identity status lists every Steam account with several logins (primary, blocked), the policy and the alerts newest first")
+    "LP-1: the status counts every Steam account with several logins; the logins page lists each other login once, under its main account, with the policy and the merge plan, and the alerts come newest first")
+local function lpAsk(q, who)
+    nowMs = nowMs + 700
+    sentCommands = {}
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", who or boss, { action = "status", requestId = "lp" .. nowMs, logins = q })
+    local s = lastSent("admin.identity")
+    return s and s.args or {}
+end
+local realPage = Id.LOGINS_PAGE
+Id.LOGINS_PAGE = 2
+local second = lpAsk({ filter = "all", page = 2 }).logins or {}
+local past = lpAsk({ filter = "all", page = 9 }).logins or {}
+Id.LOGINS_PAGE = realPage
+check(second.pages == 2 and second.page == 2 and #second.rows == 1 and second.rows[1].name == "fs-wb" and second.total == 3
+    and past.page == 2 and #past.rows == 1,
+    "LP-2: the list is cut into pages of the server's size, and a page past the last is the last")
+local q = lpAsk({ query = "  FS-P", filter = "all", page = 1 }).logins or {}
+local f = lpAsk({ filter = "ready", page = 1 }).logins or {}
+check(q.query == "FS-P" and q.total == 1 and q.rows[1].name == "fs-p1" and q.counts.all == 1 and q.counts.ready == 1
+    and f.total == 2 and f.rows[1].name == "fs-ax3" and f.rows[2].name == "fs-p1" and f.counts.all == 3,
+    "LP-3: the query matches a login or its main account regardless of case, the filter keeps one state, and the counts are per state over the query's matches")
+local bad1 = lpAsk({ filter = "everything", page = 1 }).logins or {}
+local bad2 = lpAsk({ filter = "all", page = 0 }).logins or {}
+local bad3 = lpAsk({ query = "a\1b", filter = "all", page = 1 }).logins or {}
+check(bad1.error == "invalid_args" and bad2.error == "invalid_args" and bad3.error == "invalid_args" and bad1.rows == nil,
+    "LP-4: an unknown filter, a page below one or a query with a control character is refused, not guessed")
+local refused = lpAsk({ filter = "all", page = 1 }, p2)
+check(refused.error == "forbidden" and refused.status == nil and refused.last == nil and refused.logins == nil,
+    "LP-5: a role that may not read the identity page is refused with nothing else: no status (conflict SteamIDs, who plays which logins), no import summary and no logins page")
+end)()
 
 -- ----- changing the option re-evaluates everybody online -----
 onlinePlayers = { boss, p1, p2 }

@@ -17,7 +17,8 @@
 -- IdentityAutoMerge (sandbox, default false) decides whether anything merges. The plan is
 -- computed and published either way, on start and after every accepted import:
 -- Lua/MinidoracatEconomy/identity/merge-plan.json (server-private; holds exact SteamIDs) - a
--- summary line, then one line per group - and admin.identity status.merge.
+-- summary line, then one line per group - admin.identity status.merge (the counts) and the
+-- merge column of the identity page's logins list (ECIdentity Id.loginsPage, via Mg.planGroups).
 -- Merges run in a start-up pass (every ready alias; OnServerStarted fires inside startServer
 -- before any packet, GameServer.java:828, 1533 vs :894, 910, 939) and then every Mg.TICK_MS on
 -- OnTickEvenPaused (IngameState.java:1317), at most Mg.TICK_MAX aliases a pass.
@@ -41,7 +42,6 @@ Mg.PLAN_FILE = "MinidoracatEconomy/identity/merge-plan.json"
 Mg.VERSION = 1
 Mg.TICK_MS = 60000
 Mg.TICK_MAX = 10          -- aliases merged per running pass; the start-up pass has no limit
-Mg.LIST_MAX = 200         -- groups in one admin.identity reply (the counts are always complete)
 
 local plan = nil
 local lastTick = 0
@@ -380,23 +380,22 @@ function Mg.writePlan()
     return written and closed
 end
 
--- admin.identity status.merge: the counts are complete, the list holds up to Mg.LIST_MAX groups.
+-- admin.identity status.merge: the counts. The members are listed by the logins page.
 function Mg.status()
     local p = plan
-    local out = { enabled = Mg.enabled(), groups = 0, aliases = 0, merged = 0, ready = 0, blocked = {},
-        ineligible = 0, list = {} }
+    local out = { enabled = Mg.enabled(), groups = 0, aliases = 0, merged = 0, ready = 0, blocked = {}, ineligible = 0 }
     if p == nil then return out end
     out.groups, out.aliases, out.merged, out.ready, out.ineligible, out.planAt =
         #p.groups, p.aliases, p.merged, p.ready, p.ineligible, p.at
     for reason, n in pairs(p.blocked) do out.blocked[reason] = n end
-    for i = 1, math.min(#p.groups, Mg.LIST_MAX) do
-        local g = p.groups[i]
-        local members = {}
-        for j, m in ipairs(g.members) do members[j] = { name = m.name, state = m.state, reason = m.reason } end
-        out.list[i] = { account = g.account, members = members }
-    end
-    out.truncated = #p.groups > Mg.LIST_MAX or nil
     return out
+end
+
+-- The plan's groups as Mg.plan computed them ({ account, members = { name, state, reason,
+-- reasons } }) and when, for the logins list; read only. No plan yet: none, nil.
+function Mg.planGroups()
+    if plan == nil then return {}, nil end
+    return plan.groups, plan.at
 end
 
 -- ---------- lifecycle ----------

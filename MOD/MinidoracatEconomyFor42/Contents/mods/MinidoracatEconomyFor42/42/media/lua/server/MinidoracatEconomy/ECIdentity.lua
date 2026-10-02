@@ -115,8 +115,8 @@ Id.WRITE_RETRY_MS = 60000          -- after a failed identity-file write, the au
                                    -- sight, the policy primary) wait this long before opening it again
 Id.ALERT_RING = 50                 -- identity alerts kept in memory for the admin page
 Id.ALERT_TOAST_MS = 10000          -- at most one admin toast every ten seconds, server-wide
-Id.MULTI_LIST_MAX = 50             -- Steam accounts with several logins listed in one reply (counts complete)
-Id.MULTI_MEMBERS_MAX = 20          -- logins listed per Steam account (the count is complete)
+Id.MULTI_MEMBERS_MAX = 20          -- logins of one Steam account a logins row names (its count is complete)
+Id.LOGINS_PAGE = 50                -- rows in one page of the logins list (admin.identity logins)
 
 -- Overridable on purpose: the E2E scenarios run a no-steam server and replace these two with a
 -- Steam mode and a SteamID per connection slot. Everything below calls them through Id.
@@ -1144,7 +1144,8 @@ function Id.pollExport(ms, startup)
     if not opened or reader == nil then
         local ok, exists = pcall(cacheFileExists, Id.EXPORT_FILE)
         if ok and not exists then
-            export = { status = "missing", acceptedAt = export.acceptedAt }
+            -- missing says what an accepted export brought stays in effect: before one, it is none
+            export = { status = export.acceptedAt ~= nil and "missing" or "none", acceptedAt = export.acceptedAt }
         else
             exportReject("unreadable", "open")
         end
@@ -1248,11 +1249,11 @@ end
 
 -- ---------- status ----------
 
--- status.multi: every Steam account with two or more bound logins, as the one-account policy
--- sees it right now (decided without writing): each login is the primary, merged into it,
--- blocked by the policy, or allowed. Lists capped, counts complete.
-local function multiView()
-    local groups, logins, blocked = {}, 0, 0
+-- Every Steam account with two or more bound logins, as the one-account policy sees it right now
+-- (decided without writing): each login is the primary, merged into it, blocked by the policy, or
+-- allowed. Members primary first, then by name.
+local function multiGroups()
+    local groups = {}
     local function add(key, set)
         local primary = primaryOf(key, set.names, true)
         local members = {}
@@ -1263,7 +1264,7 @@ local function multiView()
             elseif S.accountOf(name) == S.accountOf(primary) then
                 state = "merged"
             elseif oneAccountBlock(name, bindings[name], true) ~= nil then
-                state, blocked = "blocked", blocked + 1
+                state = "blocked"
             end
             members[#members + 1] = { name = name, state = state }
         end
@@ -1271,10 +1272,7 @@ local function multiView()
             if (a.state == "primary") ~= (b.state == "primary") then return a.state == "primary" end
             return a.name < b.name
         end)
-        local shown = {}
-        for i = 1, math.min(#members, Id.MULTI_MEMBERS_MAX) do shown[i] = members[i] end
-        logins = logins + #members
-        groups[#groups + 1] = { primary = primary, count = #members, members = shown }
+        groups[#groups + 1] = { primary = primary, members = members }
     end
     for d, set in pairs(bySid) do
         if set.n >= 2 and (doubles[d] or 0) <= 1 then add(Id.sidText(d), set) end
@@ -1284,11 +1282,123 @@ local function multiView()
         local d = set.n >= 2 and sidFromText(text, Id.SID_EXACT) or nil
         if d ~= nil and (doubles[d] or 0) > 1 then add(text, set) end
     end
-    EC.sortSafe(groups, function(a, b) return a.primary < b.primary end)
-    local list = {}
-    for i = 1, math.min(#groups, Id.MULTI_LIST_MAX) do list[i] = groups[i] end
-    return { steamIds = #groups, logins = logins, blocked = blocked, list = list,
-        truncated = #groups > Id.MULTI_LIST_MAX or nil }
+    return groups
+end
+
+-- status.multi: how many Steam accounts have several logins, how many logins they hold and how
+-- many of those the policy keeps out. The logins themselves are paged by Id.loginsPage.
+local function multiView()
+    local groups = multiGroups()
+    local logins, blocked = 0, 0
+    for _, g in ipairs(groups) do
+        logins = logins + #g.members
+        for _, m in ipairs(g.members) do
+            if m.state == "blocked" then blocked = blocked + 1 end
+        end
+    end
+    return { steamIds = #groups, logins = logins, blocked = blocked }
+end
+
+-- ---------- the logins list ----------
+
+local LOGIN_FILTERS = { all = true, blocked = true, ready = true, waiting = true, ineligible = true, merged = true }
+
+local function loginIn(row, filter)
+    if filter == "blocked" then return row.policy == "blocked" end
+    if filter == "ready" then return row.merge == "ready" end
+    if filter == "waiting" then return row.merge == "blocked" end
+    if filter == "ineligible" then return row.merge == "ineligible" end
+    if filter == "merged" then return row.merge == "merged" or row.policy == "merged" end
+    return true
+end
+
+-- One row per login that shares a Steam account with another: what the one-account policy makes
+-- of it now (policy: blocked | allowed | merged | primary) and what the merge plan says (merge:
+-- ready | blocked | ineligible | merged | canonical; why: the plan's reasons in its order; into:
+-- the plan's account where it is not the policy's primary). A Steam account's primary is a row's
+-- `account`, never a row of its own. group: its logins, primary first, capped (logins: the count).
+local function loginRows()
+    local policy, plan = {}, {}
+    for _, g in ipairs(multiGroups()) do
+        for _, m in ipairs(g.members) do policy[m.name] = { state = m.state, group = g } end
+    end
+    local groups, planAt = nil, nil
+    if S.Merge and S.Merge.planGroups then groups, planAt = S.Merge.planGroups() end
+    for _, g in ipairs(groups or {}) do
+        for _, m in ipairs(g.members) do plan[m.name] = { member = m, group = g } end
+    end
+    local rows = {}
+    local function add(name, p, m)
+        if (p == nil or p.state == "primary") and (m == nil or m.member.state == "canonical") then return end
+        local account = (p and p.group.primary) or (m and m.group.account) or nil
+        local members = p and p.group.members or m.group.members
+        local names = {}
+        for i = 1, math.min(#members, Id.MULTI_MEMBERS_MAX) do names[i] = members[i].name end
+        local row = { name = name, account = account, policy = p and p.state or nil, logins = #members, group = names }
+        if m ~= nil then
+            local mem = m.member
+            row.merge = mem.state
+            if type(mem.reasons) == "table" and #mem.reasons > 0 then
+                local why = {}
+                for i, reason in ipairs(mem.reasons) do why[i] = reason end
+                row.why = why
+            elseif mem.reason ~= nil then
+                row.why = { mem.reason }
+            end
+            if m.group.account ~= nil and m.group.account ~= account then row.into = m.group.account end
+        end
+        rows[#rows + 1] = row
+    end
+    for name, p in pairs(policy) do add(name, p, plan[name]) end
+    for name, m in pairs(plan) do
+        if policy[name] == nil then add(name, nil, m) end
+    end
+    return rows, planAt
+end
+
+-- admin.identity logins: q = { query?, filter, page }. The query (trimmed, at most Id.NAME_MAX)
+-- matches the login or its account, case-insensitively; counts are per filter over the query's
+-- matches; rows are sorted by account, then login, and cut into pages of Id.LOGINS_PAGE (a page
+-- past the last is the last).
+function Id.loginsPage(q, ms)
+    local query, filter, page = q.query, q.filter, q.page
+    if query ~= nil and (type(query) ~= "string" or #query > Id.NAME_MAX or string.find(query, "%c")) then
+        return { error = "invalid_args" }
+    end
+    if not LOGIN_FILTERS[filter] or type(page) ~= "number" or page < 1 or page ~= math.floor(page) then
+        return { error = "invalid_args" }
+    end
+    query = query and string.match(query, "^%s*(.-)%s*$") or nil
+    if query == "" then query = nil end
+    local needle = query and string.lower(query) or nil
+    local rows, planAt = loginRows()
+    local counts = { all = 0, blocked = 0, ready = 0, waiting = 0, ineligible = 0, merged = 0 }
+    local shown = {}
+    for _, row in ipairs(rows) do
+        if needle == nil or string.find(string.lower(row.name), needle, 1, true)
+            or (row.account ~= nil and string.find(string.lower(row.account), needle, 1, true)) then
+            for f in pairs(counts) do
+                if loginIn(row, f) then counts[f] = counts[f] + 1 end
+            end
+            if loginIn(row, filter) then
+                row.order = string.lower(row.account or row.name) .. "\1" .. (row.account or "") .. "\1"
+                    .. string.lower(row.name) .. "\1" .. row.name
+                shown[#shown + 1] = row
+            end
+        end
+    end
+    EC.sortSafe(shown, function(a, b) return a.order < b.order end)
+    local per, total = Id.LOGINS_PAGE, #shown
+    local pages = math.max(1, math.ceil(total / per))
+    page = math.min(page, pages)
+    local out = {}
+    for i = (page - 1) * per + 1, math.min(total, page * per) do
+        local r = shown[i]
+        out[#out + 1] = { name = r.name, account = r.account, policy = r.policy, merge = r.merge, why = r.why,
+            into = r.into, logins = r.logins, group = r.group }
+    end
+    return { query = query, filter = filter, page = page, pages = pages, total = total, per = per,
+        counts = counts, rows = out, planAt = planAt, at = ms }
 end
 
 function Id.status()
@@ -1423,10 +1533,14 @@ end
 
 -- ---------- admin.identity ----------
 
--- admin.identity { action = "status" | "import" | "rebind", requestId, rows?, names?, reason? }
+-- admin.identity { action = "status" | "import" | "rebind", requestId, rows?, names?, reason?,
+--                  logins? = { query?, filter, page } }
 -- Exempt from the identity gate (S.IDENTITY_EXEMPT): status needs the read role, import and
--- rebind the write role; roles come from the connection, never from the name. Every reply
--- carries the status, with the companion export (status.export) and the merge plan (status.merge).
+-- rebind the write role; roles come from the connection, never from the name. A reply to a role
+-- that may read carries the status, with the companion export (status.export) and the merge plan
+-- counts (status.merge), and the logins page when one was asked for (Id.loginsPage). A refused
+-- request learns nothing else: the status names who plays which logins and its conflicts carry
+-- exact SteamIDs.
 S.handlers["admin.identity"] = function(player, args)
     args = type(args) == "table" and args or {}
     local action = args.action
@@ -1458,10 +1572,13 @@ S.handlers["admin.identity"] = function(player, args)
     end
     res.action, res.requestId = action, requestId
     res.perms = { read = A.canRead(player), write = A.isAdmin(player) }
-    res.status = Id.status()
-    res.status.export = Id.exportStatus()
-    res.status.merge = S.Merge and S.Merge.status() or nil
-    res.last = importView(lastImport)
+    if res.perms.read then
+        res.status = Id.status()
+        res.status.export = Id.exportStatus()
+        res.status.merge = S.Merge and S.Merge.status() or nil
+        res.last = importView(lastImport)
+        if type(args.logins) == "table" then res.logins = Id.loginsPage(args.logins, EC.now()) end
+    end
     S.reply(player, "admin.identity", res)
 end
 
