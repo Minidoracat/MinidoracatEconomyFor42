@@ -107,6 +107,14 @@ local function defaultSize()
     return math.max(320, axisSize(sw, 0.84, MIN_WIDTH)), math.max(240, axisSize(sh, 0.86, MIN_HEIGHT))
 end
 
+-- One currency's available amount on the header: "-" until the server sent a wallet. A login it
+-- does not answer (identity unconfirmed, one account per Steam account) never gets one, and a 0
+-- there reads as money gone.
+local function headAmount(id)
+    local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
+    return bal and amountText(bal.available or 0) or "-"
+end
+
 -- The width the header's right block needs: every currency's exact available amount with its
 -- coin. Measured in one place, so the layout can hand the left side the room that is really
 -- left over (the page title on one row, the login account on the row under it) and the paint
@@ -115,8 +123,7 @@ end
 local function headMoneyWidth(self)
     local total = 0
     for _, id in ipairs(self:currencies()) do
-        local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
-        total = total + textWidth(amountText(bal and bal.available or 0), UIFont.Medium)
+        total = total + textWidth(headAmount(id), UIFont.Medium)
             + COIN_HEAD + 6 + PAD
     end
     return total
@@ -1033,8 +1040,7 @@ function L.drawHeader(self)
     local title = getText(T .. "Tab_" .. tostring(self.tab))
     local spare = self.width - PAD * 4 - g.headerUsedW
     for _, id in ipairs(ids) do
-        local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
-        spare = spare - textWidth(amountText(bal and bal.available or 0), UIFont.Medium) - COIN_HEAD - 6 - PAD
+        spare = spare - textWidth(headAmount(id), UIFont.Medium) - COIN_HEAD - 6 - PAD
     end
     -- the blocks the tooltip is hit-tested against, rebuilt in place (one table per window)
     local hits = self.headerHits or {}
@@ -1042,7 +1048,7 @@ function L.drawHeader(self)
     for i = #ids, 1, -1 do
         local id = ids[i]
         local bal = C.wallet and C.wallet.balances and C.wallet.balances[id]
-        local avail = amountText(bal and bal.available or 0)
+        local avail = headAmount(id)
         local blockR = x
         x = x - textWidth(avail, UIFont.Medium)
         text(self, avail, x, ty, "accent", UIFont.Medium)

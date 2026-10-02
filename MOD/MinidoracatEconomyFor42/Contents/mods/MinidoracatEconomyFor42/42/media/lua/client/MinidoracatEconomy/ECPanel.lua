@@ -2023,11 +2023,16 @@ function Panel:onIdentity()
 end
 
 -- identity.unverified / identity.verified (ECClient): the chip is relaid and an open record
--- follows it; a closed one is never reopened.
+-- follows it; a closed one is never reopened. Once the server answers this login again, what the
+-- open page asked while it was refused got no reply, so the page asks again.
 function Panel:onIdentityChanged()
     self:layout()
     local body = self:identityText()
     if body ~= nil then Detail.update(self, "identity", getText(T .. "Player_IdentityTitle"), body) end
+    if not C.identityUnverified and self.shown and not self.isCollapsed then
+        self:refresh()
+        if self.tab == "Wallet" then self:loadHistory() end
+    end
 end
 
 -- ----- market -----
