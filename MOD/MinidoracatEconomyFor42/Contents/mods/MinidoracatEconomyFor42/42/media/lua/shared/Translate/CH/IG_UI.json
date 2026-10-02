@@ -384,6 +384,8 @@
   "IGUI_MinidoracatEconomy_Market_Reason_poisoned": "有毒或下過毒的食物不能上架",
   "IGUI_MinidoracatEconomy_Market_Reason_prepared_dish": "加入食材做成的料理不能上架：成分無法隨交易保存",
   "IGUI_MinidoracatEconomy_Market_Reason_fertilized": "受精蛋不能上架",
+  "IGUI_MinidoracatEconomy_Market_Tag_worn": "穿著中",
+  "IGUI_MinidoracatEconomy_Market_Tag_hand": "手持中",
   "IGUI_MinidoracatEconomy_Market_Error_price_range": "定價必須在 %1 到 %2 之間",
   "IGUI_MinidoracatEconomy_Market_Error_too_many_listings": "已達每人刊登上限",
   "IGUI_MinidoracatEconomy_Market_Error_market_full": "市場已滿，請稍後再試",

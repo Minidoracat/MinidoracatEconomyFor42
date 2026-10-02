@@ -292,7 +292,9 @@ end
 -- What the seller can list from the top level of the backpack: every item with the verdict and
 -- the reason, so the picker can grey out the rest instead of round-tripping per item. Identical
 -- copies (same snapshot signature and verdict) fold into one row with every itemId, so the
--- picker offers a quantity instead of forty plank tiles.
+-- picker offers a quantity instead of forty plank tiles. An `equipped` refusal also says where
+-- the item is, worn or in a hand (IsoGameCharacter.isEquipped = isEquippedClothing or
+-- isHandItem, IsoGameCharacter.java:10380-10387), and the picker writes that on the tile.
 function Mk.candidates(player)
     local out, groups = {}, {}
     local inv = player:getInventory()
@@ -304,10 +306,14 @@ function Mk.candidates(player)
         local it = items:get(i)
         if it then
             local pass, reason = Codec.check(it)
-            local id, fullType = nil, nil
+            local id, fullType, equipped = nil, nil, nil
             pcall(function() id = it:getID() fullType = it:getFullType() end)
+            if reason == "equipped" then
+                local okW, worn = pcall(function() return player:isEquippedClothing(it) end)
+                if okW then equipped = worn == true and "worn" or "hand" end
+            end
             if id and fullType then
-                local key = fullType .. "|" .. tostring(pass == true) .. "|" .. tostring(reason or "")
+                local key = fullType .. "|" .. tostring(pass == true) .. "|" .. tostring(reason or "") .. "|" .. tostring(equipped or "")
                 local snap = Codec.snapshot(it)
                 if pass then key = key .. "|" .. Codec.signature(snap) end
                 local row = groups[key]
@@ -316,7 +322,7 @@ function Mk.candidates(player)
                     row.count = row.count + 1
                 else
                     row = { itemId = id, itemIds = { id }, count = 1, item = fullType, ok = pass == true, reason = (not pass) and reason or nil,
-                        state = Codec.preview(snap) }
+                        equipped = equipped, state = Codec.preview(snap) }
                     pcall(function() row.category = it:getDisplayCategory() end)
                     groups[key] = row
                     out[#out + 1] = row

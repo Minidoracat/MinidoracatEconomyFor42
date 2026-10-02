@@ -960,6 +960,8 @@ local function fakePlayer(username)
         if p.secondary == it then p.secondary = nil end
         return true
     end
+    -- 穿著＝wornItems（IsoGameCharacter.isEquippedClothing:10385-10387）；假物品以 equipped 旗標表示穿在身上
+    p.isEquippedClothing = function(_, it) return it ~= nil and it.equipped == true end
     p.getModData = function() return p.modData end
     p.transmitModData = function() p.transmitted = (p.transmitted or 0) + 1 end
     p.role = "user"
@@ -1059,6 +1061,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: a registered vanilla con
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: removing shop items and the item limit (scenario SD: write gate and all-or-nothing, refusals, the server's own reason check, file/revision/push, the audit keeps the row, a resent purchase, pasting the row back with its counts, the limit option and its push, its range, lowering it, the hard ceiling at load and on the wire, removing every row)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: heavy items carried in both hands (scenario HV: picker, list-out empties the hands first, delivery into both hands, hands_full keeps the letter (3), shop buy past the backpack limit, one unit per claim (2), auction and buyback share the list-out, a stale copy in the hands is reclaimed, an aborted list-out puts it back, so does a refusal after the removal)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: wristwatches are listable with their alarm (scenario 28d: not fixed while a standing alarm clock is, alarm time and switch rebuilt, the rolled alarm left out of the buyback comparison)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the picker's worn / in-hand tag (scenario 28d: an equipped refusal says where the item is, worn and held copies stay apart)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3724,6 +3727,22 @@ local mail = M.add("bob", { kind = "return", item = TEE, qty = 1, snapshot = sna
 local listedMail = nil
 for _, r in ipairs(M.list("bob")) do if r.id == mail.id then listedMail = r end end
 check(listedMail ~= nil and listedMail.state.holes == 2 and listedMail.state.patches == 1, "a letter that carries a snapshot lists the same preview")
+-- 選物格寫出「穿著中」「手持中」：拒絕理由同是 equipped，候選列另帶 equipped = worn | hand，兩者不合併成一列
+do
+    local wornTee, heldTee, spareTee = instanceItem(TEE), instanceItem(TEE), instanceItem(TEE)
+    for _, it in ipairs({ wornTee, heldTee, spareTee }) do ann.inventory:AddItem(it) end
+    wornTee.equipped = true
+    ann:setPrimaryHandItem(heldTee)
+    local byId, rows = {}, 0
+    for _, r in ipairs(cmd(ann, "market.candidates").items) do
+        if r.item == TEE then
+            rows = rows + 1
+            for _, id in ipairs(r.itemIds) do byId[id] = tostring(r.reason) .. "/" .. tostring(r.equipped) end
+        end
+    end
+    check(rows == 3 and byId[wornTee.id] == "equipped/worn" and byId[heldTee.id] == "equipped/hand" and byId[spareTee.id] == "nil/nil",
+        "an equipped refusal says whether that item is worn or in hand, the two never fold into one row, a free copy carries neither")
+end
 onlinePlayers = {}
 files["MinidoracatEconomy/whitelist.json"] = nil
 Codec.load()

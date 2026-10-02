@@ -384,6 +384,8 @@
   "IGUI_MinidoracatEconomy_Market_Reason_poisoned": "毒のある食品や毒を入れた食品は出品できません",
   "IGUI_MinidoracatEconomy_Market_Reason_prepared_dish": "材料を加えて作った料理は出品できません（材料が取引で保持されません）",
   "IGUI_MinidoracatEconomy_Market_Reason_fertilized": "受精卵は出品できません",
+  "IGUI_MinidoracatEconomy_Market_Tag_worn": "着用中",
+  "IGUI_MinidoracatEconomy_Market_Tag_hand": "装備中",
   "IGUI_MinidoracatEconomy_Market_Error_price_range": "価格は %1 〜 %2 の範囲で",
   "IGUI_MinidoracatEconomy_Market_Error_too_many_listings": "出品数の上限に達しました",
   "IGUI_MinidoracatEconomy_Market_Error_market_full": "マーケットが満杯です",

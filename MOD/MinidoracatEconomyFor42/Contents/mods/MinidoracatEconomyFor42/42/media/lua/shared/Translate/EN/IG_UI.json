@@ -384,6 +384,8 @@
   "IGUI_MinidoracatEconomy_Market_Reason_poisoned": "Poisonous or poisoned food cannot be listed",
   "IGUI_MinidoracatEconomy_Market_Reason_prepared_dish": "Dishes made with added ingredients cannot be listed; the ingredients would not survive the trade",
   "IGUI_MinidoracatEconomy_Market_Reason_fertilized": "Fertilized eggs cannot be listed",
+  "IGUI_MinidoracatEconomy_Market_Tag_worn": "Wearing",
+  "IGUI_MinidoracatEconomy_Market_Tag_hand": "In hand",
   "IGUI_MinidoracatEconomy_Market_Error_price_range": "The price must be between %1 and %2",
   "IGUI_MinidoracatEconomy_Market_Error_too_many_listings": "You have reached the listing limit",
   "IGUI_MinidoracatEconomy_Market_Error_market_full": "The market is full, try again later",

@@ -30,10 +30,11 @@ local function itemRowHeight()
 end
 
 -- Picker tile (the backpack grid): a 48px icon over one fitted name line, the way the vanilla
--- inventory paints an item. 72x88 at the default font, taller when the player scales the UI font.
+-- inventory paints an item, and under it one short line for where an equipped item is (worn, in
+-- hand). 72x100 at the default font (16 px), taller when the player scales the UI font.
 local TILE_ICON = 48
 local function tileSize()
-    return 72, math.max(88, TILE_ICON + fontH.small + 26)
+    return 72, TILE_ICON + fontH.small * 2 + 20
 end
 
 local function newEntry(width, height, placeholder, numbers)
@@ -535,10 +536,13 @@ local function candidateRow(it)
     if lot then detail = lot .. " " .. detail end
     if status then detail = detail .. " - " .. status end
     if reason then detail = reason .. " - " .. detail end
+    -- the server says where an equipped refusal is (Mk.candidates): written on the tile, so a worn
+    -- shirt and a held axe read as such without hovering them
+    local tag = (it.equipped == "worn" or it.equipped == "hand") and getText(T .. "Market_Tag_" .. it.equipped) or nil
     return {
         itemId = it.itemId, itemIds = ids, count = count, item = it.item, ok = ok,
         name = name, altName = alt, texture = itemTexture(it.item), state = it.state,
-        qtyText = lot, detailText = detail,
+        qtyText = lot, detailText = detail, tagText = tag,
     }
 end
 
@@ -908,7 +912,9 @@ function CandidateCell:render()
         end
         if e.qtyText then textRight(self, e.qtyText, rightX, 4, e.ok and "accent" or "textFaint") end
         local label = fitText(e.name, tw - 8)
-        textCentre(self, label, x + tw / 2, 6 + TILE_ICON + 6, e.ok and "text" or "textFaint")
+        local nameY = 6 + TILE_ICON + 6
+        textCentre(self, label, x + tw / 2, nameY, e.ok and "text" or "textFaint")
+        if e.tagText then textCentre(self, fitText(e.tagText, tw - 8), x + tw / 2, nameY + fontH.small + 1, "warn") end
     end
 end
 
