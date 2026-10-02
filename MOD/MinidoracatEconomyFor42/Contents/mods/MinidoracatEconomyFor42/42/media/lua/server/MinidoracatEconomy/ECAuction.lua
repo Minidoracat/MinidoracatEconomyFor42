@@ -403,6 +403,7 @@ function Au.create(player, args)
     if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
     local name, category = nil, EC.itemCategory(items[1])
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
+    if name == nil then pcall(function() name = items[1]:getDisplayName() end) end
     local a = {
         id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, startPrice = startPrice,
         currency = cur, tradeSchema = L.TRADE_SCHEMA, fee = fee,

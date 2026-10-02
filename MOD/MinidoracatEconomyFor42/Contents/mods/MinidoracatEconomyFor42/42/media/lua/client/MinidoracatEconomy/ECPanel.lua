@@ -1961,6 +1961,9 @@ function Panel:onShop(kind, args)
     local code = tostring(args.error or "unknown")
     if code == "unit_too_heavy" then
         self:buyMessage(deliveryNote(args))
+    elseif code == "not_canonical" and args.reason ~= nil then
+        -- the sale names what is not like new about the copy (Codec.isCanonical)
+        self:buyMessage(W.sellRefusalText(args.reason))
     elseif args.remaining ~= nil and getTextOrNull(T .. "Shop_Error_" .. code) then
         self:buyMessage(getText(T .. "Shop_Error_" .. code, tostring(math.floor(tonumber(args.remaining) or 0))))
     else

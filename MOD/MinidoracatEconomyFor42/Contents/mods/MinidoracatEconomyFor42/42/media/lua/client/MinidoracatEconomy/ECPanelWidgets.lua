@@ -174,6 +174,37 @@ local function shopError(code, recovery, detail)
     return getTextOrNull(T .. "Shop_Error_" .. tostring(code)) or getText(T .. "Rewards_Error_generic", tostring(code))
 end
 
+-- Why the shop will not buy a copy back: a Codec.stateCheck code (the Shop_Error_* refusal) or a
+-- reason from Codec.isCanonical (Shop_NotNew_*); an unknown code reads as "not like new".
+local function sellRefusalText(code)
+    code = tostring(code or "other")
+    return getTextOrNull(T .. "Shop_NotNew_" .. code) or getTextOrNull(T .. "Shop_Error_" .. code)
+        or getText(T .. "Shop_NotNew_other")
+end
+
+-- The copies at the top level the shop will not take (shop.candidates refused = { [code] = n }):
+-- a count, then one line per reason, the commonest first.
+local function sellRefusedLines(refused, out)
+    if type(refused) ~= "table" then return end
+    local list, total = {}, 0
+    for code, n in pairs(refused) do
+        n = math.floor(tonumber(n) or 0)
+        if n > 0 then
+            list[#list + 1] = { code = tostring(code), n = n }
+            total = total + n
+        end
+    end
+    if total == 0 then return end
+    EC.sortSafe(list, function(a, b)
+        if a.n ~= b.n then return a.n > b.n end
+        return a.code < b.code
+    end)
+    out[#out + 1] = getText(T .. "Shop_SellRefused", tostring(total))
+    for _, r in ipairs(list) do
+        out[#out + 1] = getText(T .. "Shop_SellRefusedLine", sellRefusalText(r.code), tostring(r.n))
+    end
+end
+
 -- market.* answers stack their own code space on top of the shop one: a listing error
 -- (Market_Error_*), a whitelist refusal the picker also paints per row (Market_Reason_*),
 -- then the shared codes (not_at_terminal, account_frozen, insufficient_funds, timeout...).
@@ -1238,6 +1269,8 @@ W.setPlaceholder = setPlaceholder
 W.itemBaseName = itemBaseName
 W.drawIcon = drawIcon
 W.shopError = shopError
+W.sellRefusalText = sellRefusalText
+W.sellRefusedLines = sellRefusedLines
 W.marketError = marketError
 W.historyError = historyError
 W.capacityLines = capacityLines

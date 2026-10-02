@@ -1029,13 +1029,55 @@ function C.requestAuctionHistory(opts)
     return requestId
 end
 
+-- Picked-up furniture has no item script of its own: it is made from "Moveables.<sprite>" and
+-- then calls itself "<module>.<sprite>" after the shared Base.Moveable script
+-- (InventoryItemFactory.java:87-92, 144-150), so getItemNameFromFullType answers the raw type
+-- (Translator.java:600-614). The inventory names it from the sprite instead (Moveable.java:151-174):
+-- GroupName + CustomName through the moveables dictionary, "(n/m)" on a piece of a multi-tile
+-- object. The sprite, or nil for a type with a script or a name no sprite answers with a
+-- CustomName (getSprite answers an unknown name with a placeholder).
+function C.moveableSprite(fullType)
+    local sprite = type(fullType) == "string" and string.match(fullType, "^[^.]+%.(.+)$") or nil
+    if sprite == nil or sprite == "Moveable" then return nil end
+    local ok, own = pcall(function()
+        if ScriptManager.instance:FindItem(fullType) ~= nil then return false end
+        local spr = getSprite(sprite)
+        local props = spr and spr:getProperties()
+        return props ~= nil and props:has("CustomName")
+    end)
+    return (ok and own) and sprite or nil
+end
+
+local function moveableLabel(sprite)
+    local ok, spr, name = pcall(function()
+        local s = getSprite(sprite)
+        local props = s and s:getProperties()
+        if not (props and props:has("CustomName")) then return s, nil end
+        local n = props:get("CustomName")
+        if props:has("GroupName") then n = props:get("GroupName") .. " " .. n end
+        return s, Translator.getMoveableDisplayName(n)
+    end)
+    if not ok or type(name) ~= "string" or name == "" then return nil end
+    pcall(function()
+        local grid = spr:getSpriteGrid()
+        if grid == nil then return end
+        if spr:getProperties():has("ForceSingleItem") then name = name .. " (1/1)"
+        else name = name .. " (" .. tostring(grid:getSpriteIndex(spr) + 1) .. "/" .. tostring(grid:getSpriteCount()) .. ")" end
+    end)
+    return name
+end
+
 -- Localised item name (engine call, cached): the notice toast needs it before any UI exists.
 local itemLabels = {}
 function C.itemLabel(fullType)
     local name = itemLabels[fullType]
     if name == nil then
-        local ok, value = pcall(getItemNameFromFullType, fullType)
-        name = (ok and type(value) == "string" and value ~= "") and value or tostring(fullType)
+        local sprite = C.moveableSprite(fullType)
+        name = sprite and moveableLabel(sprite)
+        if name == nil then
+            local ok, value = pcall(getItemNameFromFullType, fullType)
+            name = (ok and type(value) == "string" and value ~= "") and value or tostring(fullType)
+        end
         itemLabels[fullType] = name
     end
     return name

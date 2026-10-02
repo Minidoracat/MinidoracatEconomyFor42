@@ -207,6 +207,7 @@ knownItems = {
     ["Base.Pistol"] = { w = 1, cat = "Weapon", main = "Weapon", weapon = true, gun = true, maxAmmo = 15 }, ["Base.9mmClip"] = { w = 0.1, cat = "Ammo", main = "Normal", maxAmmo = 15 },
     ["Base.RadioRed"] = { w = 1, cat = "Communications", main = "Item", itemType = "RADIO", device = true },
     ["Base.Mov_Chair"] = { w = 5, cat = "Furniture", main = "Item", itemType = "MOVEABLE" },
+    ["Base.Map"] = { w = 0.1, cat = "Cartography", main = "Item", itemType = "MAP" },
     -- 衣物（Clothing.java）：scratch / bite = 腳本 ScratchDefense / BiteDefense；牛仔褲是補丁探針
     ["Base.Tshirt_DefaultTEXTURE"] = { w = 0.2, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 0, bite = 0 } },
     ["Base.Trousers_Denim"] = { w = 0.5, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 20, bite = 0 } },
@@ -594,6 +595,7 @@ function fakeInventory(maxWeight)
     -- 預設 50（:87），比 maxWeight 大時取 maxWeight，要測上限就直接設 inv.capacity。
     inv.getFreeCapacity = function() return math.max(0, inv.maxWeight - inv.weight()) end
     inv.getEffectiveCapacity = function() return inv.capacity or math.max(50, inv.maxWeight) end
+    inv.isEmpty = function() return #inv.items == 0 end
     inv.AddItem = function(_, it)
         if not it then return nil end
         for _, old in ipairs(inv.items) do if old.id ~= nil and old.id == it.id then return old end end
@@ -1066,6 +1068,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a lot leaves out the hid
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the identity page's logins list (LP-2 paging and the last page, LP-3 query and filter counts, LP-4 refused conditions, LP-5 a refused role learns nothing; LP-1 replaces the old capped-list check)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: the export status a page reads (scenario MG-1: no file and nothing accepted is none, never "earlier data stays in effect"; an accepted export that disappears is missing)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: the whitelist's item category and the refusing rule (scenario WC: fixed / category / class fallback, scripts without creating items, picker rows, listing category, excluded, list and auction refusals)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: buyback food states and refusal reasons, classes that left the fixed list (scenario BB: cooked/burnt/frozen/warmed, eaten and sipped, worn and renamed, candidate refusal counts, a refused sale keeps the copy, an empty bag and a full one, padlock key count and lamp light, a map stays fixed, script-less furniture rebuilt from its sprite)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3436,10 +3439,10 @@ check(Codec.detachParts(weapon, inv) == 1 and #weapon.parts == 0 and inv.count("
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories": 5}' }, opens = 0 }
 local okL, errL = Codec.load()
 check(okL == false and Codec.status().error ~= nil and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected and the previous whitelist stays")
--- 固定類別走 ItemType（Moveable 的 getCategory 是 "Item"，主類別字串擋不住）：分類允許也不能上架
+-- 家具不再是固定類別：分類開著就能上架（地圖仍固定：情境 BB-8）
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Furniture","Communications","Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
-check(Codec.load() == true and Codec.check(instanceItem("Base.Mov_Chair")) == false and Codec.check(instanceItem("Base.Saw")) == true,
-    "furniture is refused by item class even when its display category is whitelisted")
+check(Codec.load() == true and Codec.check(instanceItem("Base.Mov_Chair")) == true and Codec.check(instanceItem("Base.Saw")) == true,
+    "furniture is listable once its category is")
 -- 無線電：DeviceData 隨快照走（頻道、電量、開關、音量、耳機、靜音、電池、媒體）
 local radio = instanceItem("Base.RadioRed"); radio.dev.channel = 93200; radio.dev.power = 0.4; radio.dev.on = true; radio.dev.volume = 0.8; radio.dev.headphones = 2; radio.dev.battery = false
 check(Codec.check(radio) == true, "a radio is listable when its category is on")
@@ -3597,8 +3600,9 @@ local function leaves(t)
 end
 files["MinidoracatEconomy/whitelist.json"] = nil
 check(Codec.load() == true and select(2, Codec.check(instanceItem(TEE))) == "not_whitelisted"
-    and EC.isFixedType(ScriptManager.instance:FindItem(TEE)) == false and EC.isFixedType(ScriptManager.instance:FindItem("Base.Bag_ALICEpack")) == true,
-    "clothing is no longer a fixed class, but the shipped default list does not open it; bags stay fixed")
+    and EC.isFixedType(ScriptManager.instance:FindItem(TEE)) == false and EC.isFixedType(ScriptManager.instance:FindItem("Base.Bag_ALICEpack")) == false
+    and EC.isFixedType(ScriptManager.instance:FindItem("Base.Map")) == true,
+    "clothing and bags are no longer fixed classes, but the shipped default list does not open clothing; maps stay fixed")
 files["MinidoracatEconomy/whitelist.json"] = { lines = { EC.jsonEncode({ categories = { "Clothing" } }) }, opens = 0 }
 check(Codec.load() == true and Codec.check(instanceItem(TEE)) == true, "a host that enables the Clothing category can list a plain shirt")
 local worn = instanceItem(TEE); worn.equipped = true
@@ -3640,9 +3644,9 @@ check(Codec.signature(Codec.snapshot(back)) == Codec.signature(snap) and Codec.i
 -- 手錶：不再是固定拒絕類別（鬧鐘時間與開關隨快照走）；擺放式鬧鐘仍固定拒絕
 local WATCH = "Base.WristWatch_Right_DigitalBlack"
 files["MinidoracatEconomy/whitelist.json"] = { lines = { EC.jsonEncode({ categories = { "Clothing", "Accessory", "Electronics" } }) }, opens = 0 }
-check(Codec.load() == true and Codec.check(instanceItem(WATCH)) == true and EC.isFixedType(ScriptManager.instance:FindItem("Base.AlarmClock2")) == true
-    and select(2, Codec.check(instanceItem("Base.AlarmClock2"))) == "not_whitelisted",
-    "a wristwatch in a whitelisted category is listable; a standing alarm clock stays fixed")
+check(Codec.load() == true and Codec.check(instanceItem(WATCH)) == true and EC.isFixedType(ScriptManager.instance:FindItem("Base.AlarmClock2")) == false
+    and Codec.check(instanceItem("Base.AlarmClock2")) == true,
+    "a wristwatch and a standing alarm clock in a whitelisted category are both listable")
 local watch = instanceItem(WATCH); watch.alarmHour, watch.alarmMinutes, watch.alarmSet = 7, 30, true
 local wback = Codec.rebuild(Codec.snapshot(watch))
 local fresh = instanceItem(WATCH)
@@ -19486,10 +19490,10 @@ local function give(fullType)
     seller.inventory:AddItem(it)
     return it
 end
-local jerky, gadget, brain, bag = give("WcMod.Jerky"), give("WcMod.Gadget"), give("Base.Animal_Brain"), give("Base.Bag_ALICEpack")
-local _, _, ruleBag = Codec.check(bag)
+local jerky, gadget, brain, map = give("WcMod.Jerky"), give("WcMod.Gadget"), give("Base.Animal_Brain"), give("Base.Map")
+local _, _, ruleMap = Codec.check(map)
 local _, _, ruleBrain = Codec.check(brain)
-check(ruleBag == "fixed" and ruleBrain == "category" and Codec.check(jerky) == true,
+check(ruleMap == "fixed" and ruleBrain == "category" and Codec.check(jerky) == true,
     "WC-1: a fixed class is refused as fixed, a closed category as category, and a MOD food with no DisplayCategory goes by its class (Food is open)")
 ;(function()
     -- a script's category must not create an item (Item.InstanceItem runs the script's Lua OnCreate)
@@ -19508,7 +19512,7 @@ for _, r in ipairs(cmd(seller, "market.candidates").items) do rows[r.item] = r e
 check(rows["WcMod.Jerky"].ok == true and rows["WcMod.Jerky"].category == "Food"
     and rows["WcMod.Gadget"].ok == false and rows["WcMod.Gadget"].category == "Item" and rows["WcMod.Gadget"].rule == "category"
     and rows["Base.Animal_Brain"].category == "AnimalPart" and rows["Base.Animal_Brain"].rule == "category"
-    and rows["Base.Bag_ALICEpack"].rule == "fixed",
+    and rows["Base.Map"].rule == "fixed",
     "WC-3: every picker row carries the category the whitelist went by and a refused one the rule that refused it")
 local listed = cmd(seller, "market.list", { itemIds = { jerky.id }, price = 30 })
 local lot = listed.ok and S.modData().market.listings[listed.listingId]
@@ -19524,6 +19528,145 @@ local _, _, ruleExcluded = Codec.check(brain)
 check(loaded == true and ruleExcluded == "excluded", "WC-5: an item the host excluded is refused as excluded even when its category is open")
 onlinePlayers = {}
 end)()
+
+-- BB: buyback takes cooked, burnt, frozen and warmed food but not eaten food, names why it refuses
+-- a copy, and the classes that left the fixed list travel (an empty bag, a padlock's key count, a lamp)
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local Codec, Shop = S.Codec, S.Shop
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("bb-admin"); boss.role = "admin"
+local seller = fakePlayer("bb-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "apple", item = "Base.Apple", qty = 1, price = 20, dailyCap = 0, buyback = true, bidPrice = 3, buybackCap = 0 },
+} }) }, opens = 0 }
+assert(Shop.load())
+-- a hot drink quenches and feeds nothing (98 vanilla foods: thirst only); the other three are
+-- classes that left the fixed list, with the getters / setters their Java classes have
+knownItems["BB.Tea"] = { w = 0.3, cat = "Food", main = "Food" }
+knownItems["BB.Padlock"] = { w = 0.3, cat = "Security", main = "Item", itemType = "KEY" }
+knownItems["BB.Lamp"] = { w = 4, cat = "Furniture", main = "Item", itemType = "MOVEABLE" }
+knownItems["BB.Bag"] = { w = 0.5, cat = "Bag", main = "Container" }
+knownItems["BB.Chips"] = { w = 0.2, cat = "Food", main = "Food" }
+local real = instanceItem
+instanceItem = function(fullType)
+    if string.sub(fullType, 1, 10) == "Moveables." then
+        -- picked-up furniture: made from Moveables.<sprite>, named Base.<sprite>, no script of its own
+        local sprite = string.sub(fullType, 11)
+        local it = instanceItem("BB.Lamp")
+        it.fullType = "Base." .. sprite
+        it.getFullType = function() return it.fullType end
+        it.getScriptItem = function() return nil end
+        it.getWorldSprite = function() return sprite end
+        return it
+    end
+    local it = real(fullType)
+    if fullType == "BB.Tea" then it.hunger, it.calories, it.proteins, it.lipids, it.carbs, it.thirst = 0, 0, 0, 0, 0, -20 end
+    if fullType == "BB.Chips" then it.thirst = 5 end
+    if fullType == "BB.Padlock" then
+        it.keys = 2
+        it.getNumberOfKey = function() return it.keys end
+        it.setNumberOfKey = function(_, v) it.keys = v end
+    end
+    if fullType == "BB.Lamp" then
+        it.light = { battery = false, hasBattery = false, bulb = nil, power = 0, delta = 0, r = 1, g = 1, b = 1 }
+        local l = it.light
+        it.isLight = function() return true end
+        it.isLightUseBattery = function() return l.battery end
+        it.setLightUseBattery = function(_, v) l.battery = v end
+        it.isLightHasBattery = function() return l.hasBattery end
+        it.setLightHasBattery = function(_, v) l.hasBattery = v end
+        it.getLightBulbItem = function() return l.bulb end
+        it.setLightBulbItem = function(_, v) l.bulb = v end
+        for key, name in pairs({ power = "Power", delta = "Delta", r = "R", g = "G", b = "B" }) do
+            it["getLight" .. name] = function() return l[key] end
+            it["setLight" .. name] = function(_, v) l[key] = v end
+        end
+    end
+    if fullType == "BB.Bag" then
+        it.inner, it.reduction = fakeInventory(10), 50
+        it.getInventory = function() return it.inner end
+        it.getWeightReduction = function() return it.reduction end
+        it.setWeightReduction = function(_, v) it.reduction = v end
+    end
+    return it
+end
+local function apple(f) local it = instanceItem("Base.Apple"); if f then f(it) end; return it end
+local cooked = apple(function(it) it.cooked, it.cookingTime = true, 30 end)
+local burnt = apple(function(it) it.cooked, it.burnt, it.cookingTime = true, true, 60 end)
+local frozen = apple(function(it) it.frozen, it.freezing, it.age = true, 80, 2 end)
+local warmed = apple(function(it) it.freezing, it.unhappy, it.boredom, it.microwave = 20, 5, 5, true end)
+check(Codec.isCanonical(cooked, "Base.Apple") == true and Codec.isCanonical(burnt, "Base.Apple") == true
+    and Codec.isCanonical(frozen, "Base.Apple") == true and Codec.isCanonical(warmed, "Base.Apple") == true,
+    "BB-1: buyback takes cooked, burnt, frozen, thawing and warmed food as new")
+local eaten = apple(function(it) it.hunger, it.calories, it.carbs = -5, 50, 10 end)
+local sipped = instanceItem("BB.Tea"); sipped.thirst = -10
+local salty = instanceItem("BB.Chips"); salty.thirst, salty.cooked = 0, true
+local okE, whyE = Codec.isCanonical(eaten, "Base.Apple")
+local okS, whyS = Codec.isCanonical(sipped, "BB.Tea")
+check(okE == false and whyE == "eaten" and okS == false and whyS == "eaten" and Codec.isCanonical(instanceItem("BB.Tea"), "BB.Tea") == true
+    and Codec.isCanonical(salty, "BB.Chips") == true,
+    "BB-2: eaten food is refused as eaten, a drink that only quenches too; a thirst that cooking zeroes is not a portion")
+local axe = instanceItem("Base.Axe"); axe.condition = 4
+local bandage = instanceItem("Base.Bandage"); bandage:setName("Mine"); bandage:setCustomName(true)
+check(select(2, Codec.isCanonical(axe, "Base.Axe")) == "worn" and select(2, Codec.isCanonical(bandage, "Base.Bandage")) == "renamed",
+    "BB-3: a copy that is not like new names what differs (condition, a custom name)")
+for _, it in ipairs({ apple(), apple(), cooked, eaten, apple(function(it) it.hunger = -2 end), apple(function(it) it.favorite = true end) }) do
+    seller.inventory:AddItem(it)
+end
+local cand = cmd(seller, "shop.candidates", { id = "apple" })
+check(cand.ok == true and cand.count == 3 and cand.refused.eaten == 2 and cand.refused.favorite == 1,
+    "BB-4: the candidates count what the shop takes and, per reason, the copies it will not take")
+local sold = cmd(seller, "shop.sell", { id = "apple", itemIds = { eaten.id }, revision = Shop.revision() })
+check(sold.ok == false and sold.error == "not_canonical" and sold.reason == "eaten" and seller.inventory:contains(eaten),
+    "BB-5: selling an eaten copy is refused with the reason and the copy stays")
+local bag, full = instanceItem("BB.Bag"), instanceItem("BB.Bag")
+full.inner:AddItem(instanceItem("Base.Nails"))
+local okFull, whyFull = Codec.stateCheck(full)
+bag.reduction = 70
+local bagBack = Codec.rebuild(Codec.snapshot(bag))
+check(Codec.stateCheck(bag) == true and okFull == false and whyFull == "container_not_empty" and bagBack.reduction == 70,
+    "BB-6: an empty bag leaves with its weight reduction, one with anything inside is refused")
+local lock = instanceItem("BB.Padlock"); lock.keys = 1; lock.keyId = 4321
+local lockBack = Codec.rebuild(Codec.snapshot(lock))
+local lamp = instanceItem("BB.Lamp")
+lamp.light.battery, lamp.light.hasBattery, lamp.light.bulb, lamp.light.power, lamp.light.r = true, true, "Base.LightBulbRed", 0.6, 0.2
+local lampBack = Codec.rebuild(Codec.snapshot(lamp))
+check(lockBack.keys == 1 and lockBack.keyId == 4321 and lampBack.light.battery == true and lampBack.light.hasBattery == true
+    and lampBack.light.bulb == "Base.LightBulbRed" and lampBack.light.power == 0.6 and lampBack.light.r == 0.2 and lampBack.light.g == 1,
+    "BB-7: a padlock keeps its key count and id, a lamp its battery, bulb, power and colour")
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Cartography","Bag","Security","Furniture"],"types":["Base.Map"],"excludeTypes":[]}' }, opens = 0 }
+local loadedBB = Codec.load()
+local _, whyMap, ruleMap = Codec.check(instanceItem("Base.Map"))
+check(loadedBB == true and whyMap == "not_whitelisted" and ruleMap == "fixed" and Codec.check(bag) == true
+    and Codec.check(lock) == true and Codec.check(lamp) == true,
+    "BB-8: a map stays fixed even when its category and the item itself are listed; a bag, a padlock and furniture are listable")
+local floor = instanceItem("Moveables.lighting_indoor_01_8"); floor.light.power = 0.3
+lamp.getWorldSprite = function() return "lighting_indoor_01_9" end
+local floorSnap = Codec.snapshot(floor)
+local floorBack = Codec.rebuild(floorSnap)
+check(floorSnap.type == "Base.lighting_indoor_01_8" and floorSnap.sprite == "lighting_indoor_01_8" and floorBack ~= nil
+    and floorBack:getFullType() == "Base.lighting_indoor_01_8" and floorBack.light.power == 0.3 and Codec.snapshot(lamp).sprite == nil,
+    "BB-9: picked-up furniture without a script of its own is rebuilt from its sprite; one with a script keeps its type")
+instanceItem = real
+onlinePlayers = {}
+end)()
+
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then

@@ -9,10 +9,11 @@
 -- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
 -- or one item per write, written straight back, refused with whitelist_stale when the file on disk
 -- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
--- the file: none of EC.LISTING_FIXED_TYPES (containers, keys, maps, moveables, standing alarm
--- clocks, animals; radios travel with their DeviceData, clothing with its per-part holes / blood /
--- dirt / patches and its look, a wristwatch with its alarm), nothing rotten, equipped (worn
--- clothing included) or favourite or broken, and no modData
+-- the file: none of EC.LISTING_FIXED_TYPES (maps and animals; radios travel with their DeviceData,
+-- clothing with its per-part holes / blood / dirt / patches and its look, a watch or alarm clock
+-- with its alarm, a key with its id and a padlock with its key count, furniture with its sprite
+-- and light), nothing rotten, equipped (worn clothing and bags included) or favourite or broken,
+-- no bag or key ring with anything in it, and no modData
 -- larger than the snapshot may carry (the data itself travels: vanilla writes customName /
 -- condition:* there). State a snapshot cannot carry is refused instead of dropped: a notebook's
 -- writing or author lock, applied poison, a prepared dish's ingredients, a fertilized egg, a
@@ -403,7 +404,9 @@ end
 -- texture choices, decal) is rolled on the first getVisual of every new instance, so it is always
 -- stored, kept apart in s.look and left out of the buyback comparison.
 local function clothSnapshot(item, s)
-    if call(item, "IsClothing") ~= true then return end
+    -- clothing, and anything else a ClothingItem dresses (bags: their look is rolled the same way and
+    -- saved with them, InventoryItem.save writes the visual; InventoryItem.java:2323-2339)
+    if call(item, "IsClothing") ~= true and call(item, "getClothingItem") == nil then return end
     local c, any = {}, false
     local vis, list = call(item, "getVisual"), bodyParts()
     if vis and list then
@@ -537,6 +540,13 @@ function Codec.stateCheck(item)
     -- FluidContainer.java:855-857) would come back as the whole amount of its primary fluid.
     local fc = call(item, "getFluidContainer")
     if fc and call(fc, "isMixture") == true then return false, "fluid_mixture" end
+    -- A bag's contents and a key ring's keys are items of their own (with our stamps on them), and
+    -- the bag saves them with itself (InventoryContainer.java:57-60): only an empty one leaves, so
+    -- nothing inside can be rebuilt away or sold off with it.
+    local inner = call(item, "getInventory")
+    if inner ~= nil and call(inner, "isEmpty") ~= true then return false, "container_not_empty" end
+    local keys = call(item, "getKeys")
+    if keys ~= nil and call(keys, "isEmpty") ~= true then return false, "container_not_empty" end
     return true
 end
 
@@ -556,26 +566,57 @@ end
 
 -- The system buys only what it could have handed out itself: the item must look like a freshly
 -- created one of that type in everything the shop pays for (condition, uses, repairs, read
--- pages, food state, fluid, no custom name, clothing wear). Age, modData, a garment's look and a
--- watch's alarm are not compared: vanilla writes the first two on ordinary items (planks carry
--- customName, Food.updateAge ticks age; Food.java:774) and rolls the other two for every new copy.
+-- pages, how much of a food is left, fluid, no custom name, clothing wear). Age, modData, a
+-- garment's look and a watch's alarm are not compared: vanilla writes the first two on ordinary
+-- items (planks carry customName, Food.updateAge ticks age; Food.java:774) and rolls the other two
+-- for every new copy. Of a food only the portion counts (owner decision 2026-10-02): eating scales
+-- hunger, nutrition and thirst together (Food.multiplyFoodValues, Food.java:2265-2281), while
+-- cooking, burning, freezing, thawing and warming only move flags, timers and the mood values
+-- (Food.java:395-504, InventoryItem.java:2690-2706) - and the shop destroys what it buys, so none
+-- of those is worth anything to it. A positive thirst (salty food) is zeroed by cooking
+-- (Food.java:456-468), so only a quenching (negative) one is a portion.
 local canonical = {}
-local function canonicalSignature(s)
+local FOOD_PORTION = { "hunger", "calories", "proteins", "lipids", "carbs" }
+local function canonicalCopy(s)
     local copy = {}
     for k, v in pairs(s) do if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" then copy[k] = v end end
-    return Codec.signature(copy)
+    if type(s.food) == "table" then
+        local portion = {}
+        for _, key in ipairs(FOOD_PORTION) do portion[key] = s.food[key] end
+        if type(s.food.thirst) == "number" and s.food.thirst < 0 then portion.thirst = s.food.thirst end
+        copy.food = portion
+    end
+    return copy
 end
 
+-- Why a copy is not new, in the order a refusal names it: the first field (in this order) that
+-- differs from a fresh copy decides; a difference in anything else is "other".
+local NOT_NEW = {
+    { "food", "eaten" }, { "condition", "worn" }, { "head", "worn" }, { "sharpness", "worn" },
+    { "uses", "used" }, { "keys", "used" }, { "repaired", "repaired" }, { "headRepaired", "repaired" },
+    { "readPages", "read" }, { "name", "renamed" }, { "fluid", "fluid" }, { "cloth", "clothing_wear" },
+    { "ammo", "weapon" }, { "clip", "weapon" }, { "chamber", "weapon" }, { "jammed", "weapon" },
+    { "fireMode", "weapon" }, { "device", "device" }, { "light", "device" },
+}
+local function encoded(v) return v == nil and "" or EC.jsonEncode(v) end
+
+-- true, or false and the reason (NOT_NEW's codes, "other" for anything else)
 function Codec.isCanonical(item, fullType)
-    if call(item, "getFullType") ~= fullType then return false end
+    if call(item, "getFullType") ~= fullType then return false, "other" end
     local ref = canonical[fullType]
     if not ref then
         local fresh = instanceItem(fullType)
-        if not fresh then return false end
-        ref = canonicalSignature(Codec.snapshot(fresh))
+        if not fresh then return false, "other" end
+        local copy = canonicalCopy(Codec.snapshot(fresh))
+        ref = { copy = copy, sig = Codec.signature(copy) }
         canonical[fullType] = ref
     end
-    return canonicalSignature(Codec.snapshot(item)) == ref
+    local copy = canonicalCopy(Codec.snapshot(item))
+    if Codec.signature(copy) == ref.sig then return true end
+    for _, pair in ipairs(NOT_NEW) do
+        if encoded(copy[pair[1]]) ~= encoded(ref.copy[pair[1]]) then return false, pair[2] end
+    end
+    return false, "other"
 end
 
 -- Bounded snapshot; call after Codec.check passed. Food keeps its edible state and the world
@@ -654,6 +695,31 @@ function Codec.snapshot(item)
     local remoteId, remoteRange = call(item, "getRemoteControlID"), call(item, "getRemoteRange")
     if (type(remoteId) == "number" and remoteId ~= -1) or (type(remoteRange) == "number" and remoteRange ~= 0) then
         s.remote = { id = remoteId, range = remoteRange }
+    end
+    -- a padlock's key count: placing it hands that many keys out (Key.java:126-137 saves it,
+    -- ISPadlockAction.lua:28); a plain key has none
+    local keyCount = call(item, "getNumberOfKey")
+    if type(keyCount) == "number" and keyCount ~= 0 then s.keys = keyCount end
+    -- a bag's weight reduction is saved with it (InventoryContainer.java:57-60), and a MOD may raise it
+    if call(item, "getInventory") ~= nil then
+        local reduction = call(item, "getWeightReduction")
+        if type(reduction) == "number" then s.reduction = reduction end
+    end
+    -- picked-up furniture without a script of its own is its sprite (freshOf; Moveable.save keeps it,
+    -- Moveable.java:362-364), and a lamp keeps its battery, bulb and colour (:365-380, getters :289-360)
+    local sprite = call(item, "getWorldSprite")
+    if type(sprite) == "string" and sprite ~= "" and #sprite <= Codec.MODDATA_STRING_MAX
+        and ScriptManager.instance:FindItem(s.type) == nil then
+        s.sprite = sprite
+    end
+    if call(item, "isLight") == true then
+        local bulb = call(item, "getLightBulbItem")
+        s.light = {
+            battery = call(item, "isLightUseBattery") == true, hasBattery = call(item, "isLightHasBattery") == true,
+            bulb = type(bulb) == "string" and #bulb <= Codec.MODDATA_STRING_MAX and bulb or nil,
+            power = call(item, "getLightPower"), delta = call(item, "getLightDelta"),
+            r = call(item, "getLightR"), g = call(item, "getLightG"), b = call(item, "getLightB"),
+        }
     end
     -- radio / walkie-talkie: the tuned state lives in DeviceData (Radio.java:46; getters and the
     -- side-effect-free *Raw setters DeviceData.java:382-604, 1314-1326)
@@ -754,10 +820,19 @@ function Codec.lotSnapshot(items)
     return s
 end
 
+-- A fresh item for a snapshot. Picked-up furniture has no script of its own: it is made from
+-- "Moveables.<sprite>" (InventoryItemFactory.java:87-92), but answers getFullType with the module
+-- of the shared Base.Moveable script ("Base.<sprite>", :144-150), which instanceItem cannot make
+-- again - so its sprite is kept apart (Codec.snapshot) and the item is made from that.
+local function freshOf(s)
+    if type(s.sprite) == "string" then return instanceItem("Moveables." .. s.sprite) end
+    return instanceItem(s.type)
+end
+
 -- Fresh item from a snapshot; nil, err when the script no longer exists on this server.
 function Codec.rebuild(s)
     if type(s) ~= "table" or type(s.type) ~= "string" then return nil, "invalid_snapshot" end
-    local item = instanceItem(s.type)
+    local item = freshOf(s)
     if not item then return nil, "item_unavailable" end
     if type(s.condition) == "number" then call(item, "setCondition", s.condition) end
     -- head before edge: the edge is capped by the head's share of its maximum
@@ -834,6 +909,17 @@ function Codec.rebuild(s)
         if type(s.alarm.minute) == "number" then call(item, "setMinute", s.alarm.minute) end
         call(item, "setAlarmSet", s.alarm.set == true)
     end
+    if type(s.keys) == "number" then call(item, "setNumberOfKey", s.keys) end
+    if type(s.reduction) == "number" then call(item, "setWeightReduction", s.reduction) end
+    if type(s.light) == "table" then
+        local l = s.light
+        call(item, "setLightUseBattery", l.battery == true)
+        call(item, "setLightHasBattery", l.hasBattery == true)
+        if type(l.bulb) == "string" then call(item, "setLightBulbItem", l.bulb) end
+        for key, setter in pairs({ power = "setLightPower", delta = "setLightDelta", r = "setLightR", g = "setLightG", b = "setLightB" }) do
+            if type(l[key]) == "number" then call(item, setter, l[key]) end
+        end
+    end
     -- a fresh container starts with its script's fluid (FluidContainer.readFromScript,
     -- FluidContainer.java:99-112) and an empty one leaves no fluid in the snapshot: empty it either way
     local fc = call(item, "getFluidContainer")
@@ -859,11 +945,12 @@ end
 -- (owner decision 2026-09-28), no key or remote ids (flags only), no raw per-part bytes. Maxima come
 -- from one fresh copy per fullType, the way isCanonical gets its reference.
 local maxima = {}
-local function maximaOf(fullType)
+local function maximaOf(s)
+    local fullType = s.type
     local m = maxima[fullType]
     if m then return m end
     m = {}
-    local fresh = instanceItem(fullType)
+    local fresh = freshOf(s)
     if fresh then
         m.cond = call(fresh, "getConditionMax")
         if call(fresh, "hasHeadCondition") == true then m.head = call(fresh, "getHeadConditionMax") end
@@ -890,7 +977,7 @@ end
 
 function Codec.preview(s)
     if type(s) ~= "table" or type(s.type) ~= "string" then return nil end
-    local m = maximaOf(s.type)
+    local m = maximaOf(s)
     local p = { cond = num(s.condition), condMax = num(m.cond) }
     if num(m.head) then p.head, p.headMax = num(s.head) or m.head, m.head end
     if m.sharp then

@@ -425,7 +425,10 @@ function Mk.list(player, args)
     if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
     -- phase 3: listing + fee in ModData (same tick). pending stays until reconcile clears it.
     local name, category = nil, EC.itemCategory(items[1])
+    -- picked-up furniture (Moveables.<sprite>) has no script of its own: the item names itself
+    -- from its sprite (Moveable.getName, Moveable.java:61-74)
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
+    if name == nil then pcall(function() name = items[1]:getDisplayName() end) end
     local l = {
         id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, price = price,
         currency = currency, tradeSchema = L.TRADE_SCHEMA, fee = fee,

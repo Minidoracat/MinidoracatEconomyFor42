@@ -126,16 +126,18 @@ function EC.nearMapAtm(player)
     return false
 end
 
--- Item classes the market can never list, whatever whitelist.json says: their Java-side state
--- (contents, keys, map markers, attached objects, the animal) is not in the bounded snapshot, so a
--- rebuilt copy would silently lose it. Script items carry their class as an ItemType
--- (Item.java:1375-1385 getItemType/isItemType; the registry names are the static fields of
--- ItemType.java:7-22, exposed to Lua by LuaManager.java:2311). Shared: the server refuses in
--- Codec.check, the admin page hides these classes from the category list. Radios, clothing and
--- wristwatches are not here: DeviceData, the per-part wear and a watch's alarm travel in the
--- snapshot (Codec.snapshot / rebuild); bags and pockets are CONTAINER, and worn clothing is
--- refused as equipped by Codec.stateCheck. A standing alarm clock (ALARM_CLOCK) stays fixed.
-EC.LISTING_FIXED_TYPES = { "CONTAINER", "KEY", "KEY_RING", "MOVEABLE", "MAP", "ALARM_CLOCK", "ANIMAL" }
+-- Item classes the market can never list, whatever whitelist.json says, because Lua can neither
+-- read nor rebuild their Java-side state: a map's own markers (MapItem.getSymbols is
+-- @HiddenFromLua, MapItem.java:142-152, so an annotated map cannot even be told from a clean one)
+-- and the live animal an AnimalInventoryItem carries. Script items carry their class as an
+-- ItemType (Item.java:1375-1385 getItemType/isItemType; the registry names are the static fields
+-- of ItemType.java:7-22, exposed to Lua by LuaManager.java:2311). Shared: the server refuses in
+-- Codec.check, the admin page hides these classes from the category list. Every other class
+-- travels in the snapshot (Codec.snapshot / rebuild): radios with their DeviceData, clothing with
+-- its per-part wear, alarm clocks and watches with their alarm, keys and padlocks with their id
+-- and key count, furniture with its sprite and light, bags and key rings only empty
+-- (Codec.stateCheck container_not_empty); worn clothing and bags are refused as equipped.
+EC.LISTING_FIXED_TYPES = { "MAP", "ANIMAL" }
 function EC.isFixedType(script)
     if script == nil or ItemType == nil then return false end
     for _, name in ipairs(EC.LISTING_FIXED_TYPES) do

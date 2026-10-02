@@ -130,22 +130,29 @@ function U.currencyName(id)
 end
 
 function U.itemName(fullType)
-    if type(getItemNameFromFullType) == "function" then
-        local ok, name = pcall(getItemNameFromFullType, fullType)
-        if ok and type(name) == "string" and name ~= "" then return name end
-    end
-    return tostring(fullType or "-")
+    if type(fullType) ~= "string" then return tostring(fullType or "-") end
+    return C.itemLabel(fullType)
 end
 
 -- Item icon (Item.java:1650-1652), cached per fullType for the whole session; false = asked and
 -- missing. Every geometry change rebuilds every row, and ScriptManager lookups are not free.
+-- Picked-up furniture (C.moveableSprite) has no script: its icon is the sprite cut to an icon, or
+-- the flat-pack box for a piece of a multi-tile object, as the inventory paints it
+-- (Moveable.java:175-227).
 local itemTextures = {}
 function U.itemTexture(fullType)
     if type(fullType) ~= "string" then return nil end
     local cached = itemTextures[fullType]
     if cached ~= nil then return cached or nil end
     local tex = nil
+    local sprite = C.moveableSprite(fullType)
     pcall(function()
+        if sprite then
+            local grid = getSprite(sprite):getSpriteGrid()
+            tex = grid and getTexture("Item_Flatpack") or getTexture(sprite)
+            if tex and not grid then tex = tex:splitIcon() end
+            return
+        end
         local script = ScriptManager and ScriptManager.instance and ScriptManager.instance:FindItem(fullType)
         if script then tex = script:getNormalTexture() end
     end)

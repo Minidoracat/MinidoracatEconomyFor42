@@ -315,14 +315,19 @@ function BuyDialog:summaryLines()
     local total = self:total()
     local available = self:available()
     if sell then
-        -- what the backpack holds, in the server's words (only canonical copies count)
+        -- what the backpack holds, in the server's words (only canonical copies count), and how
+        -- many other copies it will not take and why
         if not c then out[#out + 1] = getText(T .. "Wallet_Loading")
         elseif (tonumber(c.count) or 0) < 1 then
-            -- what is missing, then the rule that decides it, each on its own line
+            -- what is missing, the copies that are there but refused, then the rule that decides it
             out[#out + 1] = getText(T .. "Shop_SellNone")
+            W.sellRefusedLines(c.refused, out)
             out[#out + 1] = getText(T .. "Shop_SellRule")
-        else out[#out + 1] = getText(T .. "Shop_SellHave", tostring(math.floor(tonumber(c.count) or 0)),
-            tostring(math.floor(tonumber(c.unitQty) or 1)), amountOrDash(unit)) end
+        else
+            out[#out + 1] = getText(T .. "Shop_SellHave", tostring(math.floor(tonumber(c.count) or 0)),
+                tostring(math.floor(tonumber(c.unitQty) or 1)), amountOrDash(unit))
+            W.sellRefusedLines(c.refused, out)
+        end
         out[#out + 1] = detailLine("Shop_Col_Bid", moneyText(unit, cur))
         out[#out + 1] = detailLine("Shop_SellUnits", tostring(self.count))
         out[#out + 1] = detailLine("Shop_SellTotal", moneyText(total, cur))
@@ -371,7 +376,8 @@ function BuyDialog:syncSummary()
     local c = self.cand
     local d, e = self.mailRequired == true, nil
     if self.sell then
-        d, e = c and (tonumber(c.count) or 0) or -1, c and c.bidPrice or nil
+        -- the reply itself: a new one may move the refused copies without moving the count
+        d, e = c or -1, c and c.bidPrice or nil
     end
     if not summaryMoved(self, self.count, self:available(), self.message, d, e)
         and self.sumCur == self.currency then return end

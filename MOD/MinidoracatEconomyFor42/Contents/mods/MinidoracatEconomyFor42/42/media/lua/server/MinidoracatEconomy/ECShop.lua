@@ -1320,7 +1320,8 @@ function Shop.sell(player, args)
         if not item then return { ok = false, error = "item_not_found" } end
         local pass, reason = Codec.stateCheck(item)
         if not pass then return { ok = false, error = reason } end
-        if not Codec.isCanonical(item, sku.item) then return { ok = false, error = "not_canonical" } end
+        local new, why = Codec.isCanonical(item, sku.item)
+        if not new then return { ok = false, error = "not_canonical", reason = why } end
         items[#items + 1] = item
     end
 
@@ -1452,8 +1453,11 @@ end
 -- args = { id, currency, requestId? }: what this player could sell for a SKU right now in that
 -- currency - the ids of the canonical copies at the top level of the backpack (state-checked
 -- too, so the dialog counts only what shop.sell would take), the currency's bid price and the
--- room left today. id, currency and requestId are echoed so a late reply cannot be read as the
--- answer to the currency the player has since switched to.
+-- room left today - and, per reason, how many other copies of that item at the top level the
+-- shop will not take (refused = { [reason] = count }: a Codec.stateCheck code, or not-new reasons
+-- from Codec.isCanonical), so the dialog can say why instead of only counting what it takes.
+-- id, currency and requestId are echoed so a late reply cannot be read as the answer to the
+-- currency the player has since switched to.
 function Shop.candidates(player, args)
     args = type(args) == "table" and args or {}
     local requested = type(args.currency) == "string" and args.currency or nil
@@ -1474,17 +1478,23 @@ function Shop.candidates(player, args)
         EC.log("shop candidates: no inventory for " .. S.claimedName(player))
         return { ok = false, error = "read_failed", id = sku.id, currency = requested }
     end
-    local ids = {}
+    local ids, refused = {}, {}
     local read = pcall(function()
         local items = inv:getItems()
         if items == nil then error("getItems gave no container") end
         for i = 0, items:size() - 1 do
             local item = items:get(i)
             if item == nil then error("container row " .. tostring(i) .. " is not readable") end
-            if #ids < Shop.ITEMS_PER_BUY_MAX and Codec.stateCheck(item) and Codec.isCanonical(item, sku.item) then
-                local itemId = item:getID()
-                if itemId == nil then error("an item id is not readable") end
-                ids[#ids + 1] = itemId
+            if item:getFullType() == sku.item then
+                local pass, reason = Codec.stateCheck(item)
+                if pass then pass, reason = Codec.isCanonical(item, sku.item) end
+                if not pass then
+                    refused[reason] = (refused[reason] or 0) + 1
+                elseif #ids < Shop.ITEMS_PER_BUY_MAX then
+                    local itemId = item:getID()
+                    if itemId == nil then error("an item id is not readable") end
+                    ids[#ids + 1] = itemId
+                end
             end
         end
     end)
@@ -1495,7 +1505,7 @@ function Shop.candidates(player, args)
     local ms = EC.now()
     local room = Shop.buybackRoom(S.principal(player), sku.id, ms, requested)
     return {
-        ok = true, id = sku.id, currency = requested, item = sku.item, itemIds = ids, count = #ids,
+        ok = true, id = sku.id, currency = requested, item = sku.item, itemIds = ids, count = #ids, refused = refused,
         unitQty = sku.qty, bidPrice = quote.bidPrice, revision = Shop.revision(),
         enabled = Shop.buybackEnabled(), accountRemaining = room.account, serverRemaining = room.server,
         buyback = Shop.buybackView(S.principal(player), ms, sku.id),
