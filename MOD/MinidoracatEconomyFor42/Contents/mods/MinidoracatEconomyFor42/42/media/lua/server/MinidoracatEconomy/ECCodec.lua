@@ -4,7 +4,8 @@
 -- The market never stores an InventoryItem (Lua has no ByteBuffer for save/load): a listing keeps a
 -- bounded snapshot and the buyer gets a rebuilt item. Only item classes whose rebuild is faithful
 -- may be listed, and the host decides which in {cachedir}/Lua/MinidoracatEconomy/whitelist.json
--- (display categories, extra fullTypes, excluded fullTypes). The file is the single source of
+-- (display categories -- EC.itemCategory, the class's own when a MOD script sets none -- extra
+-- fullTypes, excluded fullTypes). The file is the single source of
 -- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
 -- or one item per write, written straight back, refused with whitelist_stale when the file on disk
 -- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
@@ -539,14 +540,17 @@ function Codec.stateCheck(item)
     return true
 end
 
+-- pass, reason[, rule]: a not_whitelisted refusal also says which rule refused the item, so the
+-- picker can say what would change the answer -- "excluded" (the item itself is on excludeTypes),
+-- "fixed" (EC.LISTING_FIXED_TYPES: never, whatever the file says) or "category" (its
+-- EC.itemCategory is not on the list; the picker names that category).
 function Codec.check(item)
     local fullType = call(item, "getFullType")
     if type(fullType) ~= "string" then return false, "invalid_item" end
-    if wl.excludeTypes[fullType] then return false, "not_whitelisted" end
+    if wl.excludeTypes[fullType] then return false, "not_whitelisted", "excluded" end
     local script = call(item, "getScriptItem")
-    if EC.isFixedType(script) then return false, "not_whitelisted" end
-    local display = call(item, "getDisplayCategory")
-    if not wl.types[fullType] and not (type(display) == "string" and wl.categories[display]) then return false, "not_whitelisted" end
+    if EC.isFixedType(script) then return false, "not_whitelisted", "fixed" end
+    if not wl.types[fullType] and not wl.categories[EC.itemCategory(item)] then return false, "not_whitelisted", "category" end
     return Codec.stateCheck(item)
 end
 

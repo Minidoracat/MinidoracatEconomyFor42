@@ -148,6 +148,43 @@ function EC.isFixedType(script)
     return false
 end
 
+-- The category vanilla's inventory column paints for an item (ISInventoryPane.lua:2546-2549):
+-- its DisplayCategory, else the item class's own getCategory() -- "Item" from the base class
+-- (InventoryItem.java:682-684) unless the class overrides it (Food.java:142, Clothing.java:84,
+-- HandWeapon.java:185, Literature.java:73, WeaponPart.java:55, AlarmClock.java:254,
+-- AlarmClockClothing.java:257, InventoryContainer.java:45, Key.java:121, KeyRing.java:32,
+-- AnimalInventoryItem.java:142). Only MOD scripts leave DisplayCategory out (every vanilla one
+-- sets it). Takes an item or its script: a script has no getCategory(), so its class comes from
+-- the ItemType it declares, without creating an item (creating one runs the script's Lua OnCreate,
+-- Item.java:1915-1918). The whitelist, the market's listings, the picker and the admin page all
+-- read this one answer.
+local CLASS_CATEGORY = {
+    FOOD = "Food", CLOTHING = "Clothing", WEAPON = "Weapon", LITERATURE = "Literature",
+    WEAPON_PART = "WeaponPart", ALARM_CLOCK = "AlarmClock", ALARM_CLOCK_CLOTHING = "AlarmClock",
+    CONTAINER = "Container", KEY = "Key", KEY_RING = "Key Ring", ANIMAL = "Animal",
+}
+local function callText(obj, method)
+    local fn = obj[method]
+    if type(fn) ~= "function" then return nil end
+    local ok, v = pcall(fn, obj)
+    return ok and type(v) == "string" and v ~= "" and v or nil
+end
+function EC.classCategory(script)
+    if script == nil or ItemType == nil then return "Item" end
+    for name, category in pairs(CLASS_CATEGORY) do
+        local t = ItemType[name]
+        if t ~= nil then
+            local ok, hit = pcall(script.isItemType, script, t)
+            if ok and hit == true then return category end
+        end
+    end
+    return "Item"
+end
+function EC.itemCategory(obj)
+    if obj == nil then return nil end
+    return callText(obj, "getDisplayCategory") or callText(obj, "getCategory") or EC.classCategory(obj)
+end
+
 -- The local player's role name, exactly as the engine spells it, or "" when there is none. Read
 -- from the player object, never from the connection: the deprecated global getAccessLevel()
 -- dereferences GameClient.connection (LuaManager.java:4435-4436), which is null once the client

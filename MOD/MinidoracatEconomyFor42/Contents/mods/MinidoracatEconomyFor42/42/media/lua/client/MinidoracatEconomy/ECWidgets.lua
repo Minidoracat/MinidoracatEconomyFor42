@@ -158,6 +158,12 @@ function U.categoryText(category)
     return getTextOrNull(T .. "Shop_Cat_" .. tostring(category)) or tostring(category or "-")
 end
 
+-- An item's own category (EC.itemCategory), named the way vanilla's inventory names it
+-- (IGUI_ItemCat_*, ISInventoryPane.lua:2547); a MOD category with no translation shows its key.
+function U.itemCategoryText(category)
+    return getTextOrNull("IGUI_ItemCat_" .. tostring(category)) or tostring(category or "-")
+end
+
 function U.newEntry(width, height, opts)
     local e = ISTextEntryBox:new("", 0, 0, width, height)
     e:initialise()

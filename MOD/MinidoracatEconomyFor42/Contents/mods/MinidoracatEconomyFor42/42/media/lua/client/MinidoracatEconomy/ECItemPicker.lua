@@ -78,16 +78,19 @@ function P.universe()
     end
     local uni = { items = {}, byType = {}, cats = {} }
     -- the framework's records are shared with every consumer and read-only: this mod builds its
-    -- own on top (the English fields and the listing policy are Economy's, not the scan's)
+    -- own on top (the English fields and the listing policy are Economy's, not the scan's). The
+    -- category is the server whitelist's own (EC.itemCategory): the framework writes "Item" for a
+    -- MOD script that sets no DisplayCategory, where vanilla and the server go by the item class.
     for _, src in ipairs(U.framework.ItemPicker.universe().items) do
+        local category = EC.itemCategory(src.script) or src.category
         local record = {
-            fullType = src.fullType, name = src.name, category = src.category, script = src.script,
+            fullType = src.fullType, name = src.name, category = category, script = src.script,
             original = "", search = "",       -- applyEnglish below owns both
             fixed = EC.isFixedType(src.script),
         }
         uni.byType[src.fullType] = record
         uni.items[#uni.items + 1] = record
-        uni.cats[src.category] = (uni.cats[src.category] or 0) + 1
+        uni.cats[category] = (uni.cats[category] or 0) + 1
     end
     -- an empty answer is not cached: the script manager had nothing to say yet, and caching that
     -- would leave every picker on this session permanently empty

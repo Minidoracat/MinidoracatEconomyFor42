@@ -662,7 +662,9 @@ end
 function MarketDialog:keyboardTargets()
     local out = {}
     if self.pickList:getIsVisible() then
-        out[#out + 1] = { kind = "list", control = self.pickList, label = getText(T .. "Admin_Pick_Title") }
+        -- no label: the framework draws a list's label as a caption right under the ring
+        -- (Focus.drawCaption), which is where the status line reads the focused tile out
+        out[#out + 1] = { kind = "list", control = self.pickList }
         out[#out + 1] = { kind = "button", control = self.onlyButton, label = self.onlyButton.fullTitle }
     else
         -- the reader holds every value of this step: the ring scrolls it, and never focuses it

@@ -370,8 +370,8 @@ function Au.create(player, args)
     for _, id in ipairs(ids) do
         local item = M.findTopLevel(inv, id)
         if not item then return { ok = false, error = "item_not_found" } end
-        local pass, reason = Codec.check(item)
-        if not pass then return { ok = false, error = reason } end
+        local pass, reason, rule = Codec.check(item)
+        if not pass then return { ok = false, error = reason, rule = rule, category = EC.itemCategory(item) } end
         local sig = Codec.signature(Codec.snapshot(item))
         if signature == nil then signature = sig
         elseif sig ~= signature then return { ok = false, error = "mixed_items" } end
@@ -401,9 +401,8 @@ function Au.create(player, args)
     -- phase 2: the items leave the backpack
     local taken, takeError = M.takeOut(player, id, items)
     if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
-    local name, category = nil, nil
+    local name, category = nil, EC.itemCategory(items[1])
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
-    pcall(function() category = items[1]:getDisplayCategory() end)
     local a = {
         id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, startPrice = startPrice,
         currency = cur, tradeSchema = L.TRADE_SCHEMA, fee = fee,
@@ -727,7 +726,7 @@ function Au.restoreFromPending(username, id, pend)
     pcall(function()
         local script = ScriptManager.instance:FindItem(a.item)
         a.name = script:getDisplayName()
-        a.category = script:getDisplayCategory() or "other"
+        a.category = EC.itemCategory(script) or "other"
     end)
     add(a)
     X.market(seller, { kind = "auction_restored", listingId = id, item = a.item, qty = a.qty, price = a.startPrice, currency = currency })

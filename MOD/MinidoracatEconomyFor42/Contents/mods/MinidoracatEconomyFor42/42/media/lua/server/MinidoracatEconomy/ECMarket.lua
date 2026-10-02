@@ -294,7 +294,9 @@ end
 -- copies (same snapshot signature and verdict) fold into one row with every itemId, so the
 -- picker offers a quantity instead of forty plank tiles. An `equipped` refusal also says where
 -- the item is, worn or in a hand (IsoGameCharacter.isEquipped = isEquippedClothing or
--- isHandItem, IsoGameCharacter.java:10380-10387), and the picker writes that on the tile.
+-- isHandItem, IsoGameCharacter.java:10380-10387), and the picker writes that on the tile. Every
+-- row carries the category the whitelist went by (EC.itemCategory) and a not_whitelisted one the
+-- rule that refused it (Codec.check), so the picker can name what would have to change.
 function Mk.candidates(player)
     local out, groups = {}, {}
     local inv = player:getInventory()
@@ -305,7 +307,7 @@ function Mk.candidates(player)
         if #out >= Mk.CANDIDATES_MAX then break end
         local it = items:get(i)
         if it then
-            local pass, reason = Codec.check(it)
+            local pass, reason, rule = Codec.check(it)
             local id, fullType, equipped = nil, nil, nil
             pcall(function() id = it:getID() fullType = it:getFullType() end)
             if reason == "equipped" then
@@ -322,8 +324,7 @@ function Mk.candidates(player)
                     row.count = row.count + 1
                 else
                     row = { itemId = id, itemIds = { id }, count = 1, item = fullType, ok = pass == true, reason = (not pass) and reason or nil,
-                        equipped = equipped, state = Codec.preview(snap) }
-                    pcall(function() row.category = it:getDisplayCategory() end)
+                        rule = (not pass) and rule or nil, equipped = equipped, state = Codec.preview(snap), category = EC.itemCategory(it) }
                     groups[key] = row
                     out[#out + 1] = row
                 end
@@ -389,8 +390,8 @@ function Mk.list(player, args)
     for _, id in ipairs(ids) do
         local item = M.findTopLevel(inv, id)
         if not item then return { ok = false, error = "item_not_found" } end
-        local pass, reason = Codec.check(item)
-        if not pass then return { ok = false, error = reason } end
+        local pass, reason, rule = Codec.check(item)
+        if not pass then return { ok = false, error = reason, rule = rule, category = EC.itemCategory(item) } end
         local sig = Codec.signature(Codec.snapshot(item))
         if signature == nil then signature = sig
         elseif sig ~= signature then return { ok = false, error = "mixed_items" } end
@@ -423,9 +424,8 @@ function Mk.list(player, args)
     local taken, takeError = M.takeOut(player, id, items)
     if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
     -- phase 3: listing + fee in ModData (same tick). pending stays until reconcile clears it.
-    local name, category = nil, nil
+    local name, category = nil, EC.itemCategory(items[1])
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
-    pcall(function() category = items[1]:getDisplayCategory() end)
     local l = {
         id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, price = price,
         currency = currency, tradeSchema = L.TRADE_SCHEMA, fee = fee,
@@ -676,7 +676,7 @@ function Mk.restoreFromPending(username, id, pend)
     pcall(function()
         local script = ScriptManager.instance:FindItem(l.item)
         l.name = script:getDisplayName()
-        l.category = script:getDisplayCategory() or "other"
+        l.category = EC.itemCategory(script) or "other"
     end)
     addListing(l)
     X.market(l.seller, { kind = "restored", listingId = id, item = l.item, qty = l.qty, price = l.price, currency = currency })

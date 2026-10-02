@@ -1065,6 +1065,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the picker's worn / in-h
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a lot leaves out the hidden records nothing reads back (scenario LM: one picker row, the stored lot keeps only records every copy shares, an auction lot the same, a single copy keeps everything)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the identity page's logins list (LP-2 paging and the last page, LP-3 query and filter counts, LP-4 refused conditions, LP-5 a refused role learns nothing; LP-1 replaces the old capped-list check)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: the export status a page reads (scenario MG-1: no file and nothing accepted is none, never "earlier data stays in effect"; an accepted export that disappears is missing)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: the whitelist's item category and the refusing rule (scenario WC: fixed / category / class fallback, scripts without creating items, picker rows, listing category, excluded, list and auction refusals)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19450,6 +19451,77 @@ local single = cmd(seller, "market.list", { itemIds = { h.id }, price = 10 })
 local one = single.ok and S.modData().market.listings[single.listingId].snapshot.modData or {}
 check(single.ok == true and one["Base.Rope"] == 1 and one.MIC42_t == "lm-seller,1790776800",
     "LM-4: a single copy keeps every record it had")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 WC：白名單依物品分類，選物格說出是哪一條規則擋下 =====
+io.write("scenario WC: the category the whitelist goes by and the rule that refused an item\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local Codec = S.Codec
+-- MOD scripts that set no DisplayCategory: the class decides (vanilla's inventory column does the same)
+knownItems["WcMod.Jerky"] = { w = 0.2, main = "Food" }
+knownItems["WcMod.Gadget"] = { w = 0.2, main = "Item" }
+knownItems["Base.Animal_Brain"] = { w = 0.3, cat = "AnimalPart", main = "Food" }
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("wc-admin"); boss.role = "admin"
+local seller = fakePlayer("wc-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("wc-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "wc-seed", reasonCode = "t" })
+local function give(fullType)
+    local it = instanceItem(fullType)
+    seller.inventory:AddItem(it)
+    return it
+end
+local jerky, gadget, brain, bag = give("WcMod.Jerky"), give("WcMod.Gadget"), give("Base.Animal_Brain"), give("Base.Bag_ALICEpack")
+local _, _, ruleBag = Codec.check(bag)
+local _, _, ruleBrain = Codec.check(brain)
+check(ruleBag == "fixed" and ruleBrain == "category" and Codec.check(jerky) == true,
+    "WC-1: a fixed class is refused as fixed, a closed category as category, and a MOD food with no DisplayCategory goes by its class (Food is open)")
+;(function()
+    -- a script's category must not create an item (Item.InstanceItem runs the script's Lua OnCreate)
+    local real = instanceItem
+    instanceItem = function() error("an item was created") end
+    local okCat, jerkyCat, gadgetCat, brainCat = pcall(function()
+        return EC.itemCategory(ScriptManager.instance:FindItem("WcMod.Jerky")), EC.itemCategory(ScriptManager.instance:FindItem("WcMod.Gadget")),
+            EC.itemCategory(ScriptManager.instance:FindItem("Base.Animal_Brain"))
+    end)
+    instanceItem = real
+    check(okCat and jerkyCat == "Food" and gadgetCat == "Item" and brainCat == "AnimalPart",
+        "WC-2: a script with no DisplayCategory takes its class's category without creating an item; one that has it keeps it")
+end)()
+local rows = {}
+for _, r in ipairs(cmd(seller, "market.candidates").items) do rows[r.item] = r end
+check(rows["WcMod.Jerky"].ok == true and rows["WcMod.Jerky"].category == "Food"
+    and rows["WcMod.Gadget"].ok == false and rows["WcMod.Gadget"].category == "Item" and rows["WcMod.Gadget"].rule == "category"
+    and rows["Base.Animal_Brain"].category == "AnimalPart" and rows["Base.Animal_Brain"].rule == "category"
+    and rows["Base.Bag_ALICEpack"].rule == "fixed",
+    "WC-3: every picker row carries the category the whitelist went by and a refused one the rule that refused it")
+local listed = cmd(seller, "market.list", { itemIds = { jerky.id }, price = 30 })
+local lot = listed.ok and S.modData().market.listings[listed.listingId]
+check(listed.ok == true and lot.category == "Food", "WC-4: the listing files a MOD item under the same category the whitelist used")
+local refusedList = cmd(seller, "market.list", { itemIds = { gadget.id }, price = 30 })
+local refusedAuction = cmd(seller, "auction.create", { itemIds = { gadget.id }, startPrice = 20, hours = 24 })
+check(refusedList.error == "not_whitelisted" and refusedList.rule == "category" and refusedList.category == "Item"
+    and refusedAuction.error == "not_whitelisted" and refusedAuction.rule == "category" and refusedAuction.category == "Item",
+    "WC-6: a listing or an auction refused by the whitelist names the rule and the category, as the picker does")
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["AnimalPart"],"types":[],"excludeTypes":["Base.Animal_Brain"]}' }, opens = 0 }
+local loaded = Codec.load()
+local _, _, ruleExcluded = Codec.check(brain)
+check(loaded == true and ruleExcluded == "excluded", "WC-5: an item the host excluded is refused as excluded even when its category is open")
 onlinePlayers = {}
 end)()
 

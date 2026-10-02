@@ -192,6 +192,14 @@ local function marketError(args)
     if code == "hours_range" then
         return getText(T .. "Market_Error_hours_range", tostring(args.min), tostring(args.max))
     end
+    -- a whitelist refusal says which rule refused the item (Codec.check): the category a host can
+    -- open is named, and a class that is never listed or an item the host excluded says so instead
+    if code == "not_whitelisted" and args.rule == "category" and type(args.category) == "string" then
+        return getText(T .. "Market_Reason_not_whitelisted_category", U.itemCategoryText(args.category))
+    end
+    if code == "not_whitelisted" and (args.rule == "fixed" or args.rule == "excluded") then
+        return getText(T .. "Market_Reason_not_whitelisted_" .. args.rule)
+    end
     return getTextOrNull(T .. "Market_Error_" .. code) or getTextOrNull(T .. "Market_Reason_" .. code)
         or shopError(code, args and args.recovery)
 end
@@ -518,22 +526,28 @@ local function auctionRow(it, context)
 end
 
 -- One backpack candidate. The tile itself only has room for the name, so everything else the
--- player may want (the script name, the item-state line, and the server's refusal when the
--- item may not be listed) is joined once here for the picker's status line. A refusal leads:
--- the line may be cut, and why the item cannot go (and what to do about it) is what counts.
+-- player may want (the script name, the category the whitelist goes by, the item-state line, and
+-- the server's refusal when the item may not be listed) is joined once here for the picker's
+-- status line. A refusal leads: the line may be cut, and why the item cannot go (and what to do
+-- about it) is what counts.
 local function candidateRow(it)
     local ok = it.ok == true
     local name = itemName(it.item)
     local alt = itemBaseName(it.item)
     local status = listingStatus(it)
+    local category = type(it.category) == "string" and it.category ~= "" and it.category or nil
     local reason = nil
-    if not ok then reason = marketError({ error = it.reason }) end
+    if not ok then reason = marketError({ error = it.reason, rule = it.rule, category = category }) end
     -- the server merges same-state stacks into one row: itemIds is the whole lot
     local ids = type(it.itemIds) == "table" and it.itemIds or { it.itemId }
     local count = math.max(1, math.floor(tonumber(it.count) or #ids))
     local lot = lotText(count)
     local detail = alt and (name .. " (" .. alt .. ")") or name
     if lot then detail = lot .. " " .. detail end
+    -- a category refusal already names the category up front
+    if category and not (reason and it.rule == "category") then
+        detail = detail .. " - " .. detailLine("Market_Category", U.itemCategoryText(category))
+    end
     if status then detail = detail .. " - " .. status end
     if reason then detail = reason .. " - " .. detail end
     -- the server says where an equipped refusal is (Mk.candidates): written on the tile, so a worn
