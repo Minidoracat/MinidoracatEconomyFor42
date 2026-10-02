@@ -42,13 +42,16 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]System shop[/h3]
 [list]
 [*] Buy at fixed server prices, with per-player or server-wide daily limits.
-[*] When buyback is enabled you can sell qualifying items back to the server.
+[*] When buyback is enabled you can sell qualifying items back to the server. An entry the admin took off sale but still buys back shows as "Not for sale": you can sell it, not buy it.
 [*] Survivor Coin and Cat Coin prices are set per entry; each trade uses the currency you choose, and [b]no quote never means free[/b].
 [/list]
 
 [h3]Player market[/h3]
 [list]
 [*] List items from your bag at a fixed price at a terminal; identical items can go in one lot. Browse, search, filter and sort every listing and buy.
+[*] [b]Drag items in[/b]: drag an item from your bag, a container or the floor onto the market, auction or shop page of the Economy Center to open the listing, auction or sell window with that item already picked. While you drag, the window says what will happen or why it cannot take the item. Items outside the top level of your main inventory are moved there first with the vanilla action.
+[*] [b]Item right-click "Economy"[/b]: "List on the market", "Start an auction", and "Sell to the shop" for items the shop buys back. Unavailable entries are greyed out and explain why on hover.
+[*] [b]Heavy items[/b] such as generators can be listed, auctioned or sold while held in both hands; a standing generator's right-click menu has the same entries and picks it up with the vanilla action first.
 [*] Rows show the item's key state (condition, blade head, sharpness, ammo, charge, freshness, clothing holes…); details show the full state at listing time.
 [*] The seller pays the sales tax; listing fees are not refunded; unsold listings return to your mailbox.
 [*] Type part of a name to pick a seller from the list. Tax and fee are shown under the market title; "Fees and rules" has the full text.
@@ -64,6 +67,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [list]
 [*] Purchases, wins, cancellations and returns arrive here; claim one by one or with "Claim all".
 [*] If your bag cannot take a whole letter, the pieces that fit are handed over and the rest waits; the message says how much room you need.
+[*] Heavy items skip the bag: one per claim, straight into both hands. If your hands already hold a heavy item, the letter waits until you put it down.
 [*] Unclaimed items survive your character's death. Unclaimed mail plus your listings and auctions count towards the mailbox limit.
 [/list]
 

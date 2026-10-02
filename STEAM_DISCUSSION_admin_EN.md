@@ -21,6 +21,8 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [list]
 [*] All options are changed live under Economy Administration - Settings, and audited.
 [*] catalog.json (shop) and whitelist.json (market) are in the server data folder; panel edits are written back. Press Reload after hand edits.
+[*] [b]Shop entries[/b] can be deleted one at a time or several at once, with a required reason; sent mail and transaction records are kept, and re-adding the same ID continues its purchase counts. Delisting only stops sales: also turn off buyback, or delete the entry, to retire it. The entry cap is under Settings - System shop (default 200, up to 1000).
+[*] Drag an item from your bag onto the admin shop page to create an entry, or onto the whitelist page to pick it for a rule; the item right-click "Economy" menu has "Add as a shop item" and "Add a whitelist rule" too.
 [*] [b]Clothing listings[/b] are off by default: open the Clothing, ProtectiveGear and Accessory categories on the whitelist.
 [*] Cat Coin buyback limits default to 0 (off).
 [/list]
