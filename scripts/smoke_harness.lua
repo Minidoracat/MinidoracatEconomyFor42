@@ -331,7 +331,12 @@ function instanceItem(fullType)
     it.setCurrentUses = function(_, v) it.uses = v end
     it.getConditionMax = function() return 10 end
     it.getMaxAmmo = function() return k.maxAmmo or 0 end
-    it.getOffAge = function() return k.offAge or 1000000000 end
+    -- 保鮮期是每件物品自己的值（新品取腳本值；罐頭與煮好的米飯、麵會改，RecipeCodeOnCooked.java:10-15）
+    it.offAge, it.offAgeMax = k.offAge or 1000000000, k.offAgeMax or 1000000000
+    it.getOffAge = function() return it.offAge end
+    it.setOffAge = function(_, v) it.offAge = v end
+    it.getOffAgeMax = function() return it.offAgeMax end
+    it.setOffAgeMax = function(_, v) it.offAgeMax = v end
     -- 物品層的其他存檔狀態（InventoryItem.save:1739-1782）：預設值 = 原版新物品
     it.infected, it.keyId, it.remoteId, it.remoteRange, it.ammo = false, -1, -1, 0, 0
     it.isInfected = function() return it.infected end
@@ -428,6 +433,20 @@ function instanceItem(fullType)
         it.setFrozen = function(_, v) it.frozen = v end
         it.getFreezingTime = function() return it.freezing end
         it.setFreezingTime = function(_, v) it.freezing = v end
+        -- 減輕食物中毒值：讀取時依燒焦、過期、煮熟縮放並截尾（Food.java:2079-2089），存的是原值
+        it.sickness = k.sickness or 0
+        local function trunc(x) if x < 0 then return math.ceil(x) end return math.floor(x) end
+        it.getFoodSicknessChange = function()
+            if it.burnt then return trunc(it.sickness / 3) end
+            if it.age >= it.offAge and it.age < it.offAgeMax then return trunc(it.sickness / 1.3) end
+            if it.age >= it.offAgeMax then return trunc(it.sickness / 2.2) end
+            if it.cooked then return trunc(it.sickness * 1.3) end
+            return it.sickness
+        end
+        it.setFoodSicknessChange = function(_, v) it.sickness = v end
+        it.spices = nil
+        it.getSpices = function() return it.spices end
+        it.setSpices = function(_, list) it.spices = list end
     end
     if k.device then
         local dev = { channel = 88000, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1,
@@ -1069,6 +1088,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the identity page's logi
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: the export status a page reads (scenario MG-1: no file and nothing accepted is none, never "earlier data stays in effect"; an accepted export that disappears is missing)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: the whitelist's item category and the refusing rule (scenario WC: fixed / category / class fallback, scripts without creating items, picker rows, listing category, excluded, list and auction refusals)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: buyback food states and refusal reasons, classes that left the fixed list (scenario BB: cooked/burnt/frozen/warmed, eaten and sipped, worn and renamed, candidate refusal counts, a refused sale keeps the copy, an empty bag and a full one, padlock key count and lamp light, a map stays fixed, script-less furniture rebuilt from its sprite)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: food state the snapshot dropped (scenario SK: eaten and stale relief against food sickness, every scaled state, matched at the listed age, a canned jar's shelf life and its preview, spices and their cap)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19667,6 +19687,59 @@ instanceItem = real
 onlinePlayers = {}
 end)()
 
+-- SK: food state the snapshot used to drop - the relief against food sickness (read through a
+-- getter that scales it by state), the shelf life canning changes, and the spices a recipe put in
+;(function()
+local Codec = S.Codec
+knownItems["Base.LemonGrass"] = { w = 0.1, cat = "Food", main = "Food", offAge = 6, offAgeMax = 10, rots = 10, sickness = -12 }
+knownItems["Base.CannedTomato"] = { w = 0.5, cat = "Food", main = "Food", offAge = 30, offAgeMax = 60, rots = 60 }
+local function round(mutate)
+    local it = instanceItem("Base.LemonGrass")
+    mutate(it)
+    local back = Codec.rebuild(Codec.snapshot(it))
+    return it, back
+end
+local function eat(it, part) it.hunger, it.sickness = it.hunger * part, math.floor(it:getFoodSicknessChange() * part) end
+local half, halfBack = round(function(it) eat(it, 0.5) end)
+local stale, staleBack = round(function(it) it.age = 7 end)
+check(halfBack.sickness == -6 and halfBack:getFoodSicknessChange() == -6 and staleBack.sickness == -12 and staleBack:getFoodSicknessChange() == stale:getFoodSicknessChange(),
+    "SK-1: half a lemongrass keeps half its relief; a whole stale one keeps the stored value, not the scaled reading")
+local cases, wrong = {
+    { "stale half", function(it) it.age = 7; it.sickness = -6 end },
+    { "cooked half", function(it) it.cooked = true; it.sickness = -6 end },
+    { "burnt", function(it) it.burnt = true end },
+    { "burnt half", function(it) it.burnt = true; it.sickness = -6 end },
+}, {}
+for _, c in ipairs(cases) do
+    local it, back = round(c[2])
+    if back.sickness ~= it.sickness or back:getFoodSicknessChange() ~= it:getFoodSicknessChange() then
+        wrong[#wrong + 1] = c[1] .. " " .. tostring(it.sickness) .. "->" .. tostring(back.sickness)
+    end
+end
+check(#wrong == 0, "SK-2: the stored relief comes back in every scaled state (" .. table.concat(wrong, ", ") .. ")")
+local saved = worldHours
+local aging = instanceItem("Base.LemonGrass"); eat(aging, 0.5)
+local agingSnap = Codec.snapshot(aging)
+worldHours = saved + 24 * 8      -- eight days in escrow carry it past fresh (6) into stale
+local agingBack = Codec.rebuild(agingSnap)
+worldHours = saved
+check(agingBack.age > agingBack.offAge and agingBack.sickness == -6,
+    "SK-3: the relief is matched at the age it was listed at, not after the escrow aged it")
+local jar = instanceItem("Base.CannedTomato"); jar.cooked, jar.offAge, jar.offAgeMax, jar.age = true, 730, 1560, 445
+local jarSnap = Codec.snapshot(jar)
+local jarBack = Codec.rebuild(jarSnap)
+local jarView = Codec.preview(jarSnap)
+check(jarBack.offAge == 730 and jarBack.offAgeMax == 1560 and jarBack.age < jarBack.offAgeMax and jarView.food.stale == nil and jarView.food.freshDays ~= nil,
+    "SK-4: a canned jar keeps its long shelf life: delivered fresh, and the buyer's preview says fresh")
+local spiced = instanceItem("Base.LemonGrass"); spiced.spices = ArrayList.new(); spiced.spices:add("Base.Salt"); spiced.spices:add("Base.Pepper")
+local spicedBack = Codec.rebuild(Codec.snapshot(spiced))
+local heavy = instanceItem("Base.LemonGrass"); heavy.spices = ArrayList.new()
+for i = 1, Codec.SPICES_MAX + 1 do heavy.spices:add("Base.Spice" .. i) end
+local okHeavy, whyHeavy = Codec.stateCheck(heavy)
+check(spicedBack.spices ~= nil and spicedBack.spices:size() == 2 and spicedBack.spices:get(1) == "Base.Pepper"
+    and okHeavy == false and whyHeavy == "prepared_dish",
+    "SK-5: the spices travel with the food; more than a snapshot carries is refused")
+end)()
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then

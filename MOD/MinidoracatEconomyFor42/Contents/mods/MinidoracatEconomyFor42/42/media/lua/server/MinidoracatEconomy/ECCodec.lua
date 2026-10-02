@@ -65,6 +65,7 @@ Codec.FILE = X.ROOT .. "/whitelist.json"
 Codec.MODDATA_MAX_LEAVES = 32      -- scalar values a snapshot's modData may carry
 Codec.MODDATA_MAX_DEPTH = 3        -- nesting: modData -> table -> table
 Codec.MODDATA_STRING_MAX = 128
+Codec.SPICES_MAX = 16              -- spices a food may carry (the journal packs a whole snapshot in 128 values)
 Codec.FILE_LINES_MAX = 5000
 Codec.FIELDS = { "categories", "types", "excludeTypes" }
 Codec.DEFAULT = {
@@ -519,13 +520,15 @@ function Codec.stateCheck(item)
     local md = call(item, "getModData")
     if type(md) == "table" and copyModData(md, 0, 0) == nil then return false, "moddata_too_big" end
     -- Refused, not dropped: pages of up to 16 384 characters and their lock, applied poison, a
-    -- dish's ingredient list (its sickness value has no raw getter, Food.java:2081-2096) and an
-    -- egg's genome would all vanish in the rebuild.
+    -- dish's ingredient list and an egg's genome would all vanish in the rebuild; so would spices
+    -- past what a snapshot carries.
     if call(item, "isEmptyPages") == false or call(item, "getLockedBy") ~= nil then return false, "written" end
     local poison = call(item, "getPoisonPower")
     if type(poison) == "number" and poison > 0 then return false, "poisoned" end
     local extra = call(item, "getExtraItems")
     if extra ~= nil and (call(extra, "size") or 0) > 0 then return false, "prepared_dish" end
+    local spices = call(item, "getSpices")
+    if spices ~= nil and (call(spices, "size") or 0) > Codec.SPICES_MAX then return false, "prepared_dish" end
     if call(item, "isFertilized") == true then return false, "fertilized" end
     if call(item, "IsClothing") == true and (call(item, "getPatchesNumber") or 0) > 0 and not patchesCarried(item) then
         return false, "clothing_patch"
@@ -661,10 +664,24 @@ function Codec.snapshot(item)
             pain = call(item, "getPainReduction"),
             flu = call(item, "getFluReduction"),
             cookingTime = call(item, "getCookingTime"),
+            -- what the getter reads, which is not what is stored (restoreSickness)
+            sickness = call(item, "getFoodSicknessChange"),
+            -- a fresh copy has the script's shelf life; canning and cooked rice or pasta change it
+            -- (RecipeCodeOnCooked.java:10-15, Food.java:450-453)
+            offAge = call(item, "getOffAge"),
+            offAgeMax = call(item, "getOffAgeMax"),
         }
         if call(item, "isCookedInMicrowave") == true then s.food.microwave = true end
         local chef = call(item, "getChef")
         if type(chef) == "string" and chef ~= "" and #chef <= Codec.MODDATA_STRING_MAX then s.food.chef = chef end
+        -- the spices a recipe put in (EvolvedRecipe.java:538-544, 596-602): their effect is already in
+        -- the values above, the list is what stops the same spice going in twice
+        local spices = call(item, "getSpices")
+        local n = spices and call(spices, "size") or 0
+        if n > 0 then
+            s.food.spices = {}
+            for i = 0, math.min(n, Codec.SPICES_MAX) - 1 do s.food.spices[i + 1] = call(spices, "get", i) end
+        end
     end
     -- A fresh copy starts at the script's full head and edge: only a worn head, a dull edge or a
     -- repaired head is stored, so new copies keep one signature (and one listing).
@@ -829,6 +846,26 @@ local function freshOf(s)
     return instanceItem(s.type)
 end
 
+-- A food's relief against food sickness (lemongrass -12, ginger -1) is read through a getter that
+-- divides it for a burnt (3), stale (1.3) or rotten (2.2) item and multiplies it for a cooked one
+-- (1.3), truncating (Food.java:2079-2089), so writing the reading back would scale it twice. The
+-- snapshot keeps the reading; the rebuild, in the state and at the age the item was listed in,
+-- looks for the stored value that reads the same, nearest to the reading first (a third
+-- truncates, so up to 3|reading| + 2 away). Any whole copy already reads the same.
+local function restoreSickness(item, want, listedAge)
+    if type(listedAge) == "number" then call(item, "setAge", listedAge) end
+    if call(item, "getFoodSicknessChange") == want then return end
+    local function reads(stored)
+        call(item, "setFoodSicknessChange", stored)
+        return call(item, "getFoodSicknessChange") == want
+    end
+    for d = 0, 3 * math.abs(want) + 2 do
+        if reads(want - d) or reads(want + d) then return end
+    end
+    local script = call(item, "getScriptItem")
+    call(item, "setFoodSicknessChange", script and call(script, "getFoodSicknessChange") or 0)
+end
+
 -- Fresh item from a snapshot; nil, err when the script no longer exists on this server.
 function Codec.rebuild(s)
     if type(s) ~= "table" or type(s.type) ~= "string" then return nil, "invalid_snapshot" end
@@ -850,6 +887,9 @@ function Codec.rebuild(s)
         if type(s.remote.id) == "number" then call(item, "setRemoteControlID", s.remote.id) end
         if type(s.remote.range) == "number" then call(item, "setRemoteRange", s.remote.range) end
     end
+    -- On a food whose uses come from its hunger this eats the fresh copy down to the snapshot's uses
+    -- (Food.java:2208-2219 -> consumeHunger -> multiplyFoodValues, :2264-2281, :2664-2667): every value
+    -- that scales must be written back below, the relief included (restoreSickness).
     if type(s.uses) == "number" then call(item, "setCurrentUses", s.uses) end
     local age = s.age
     local food = s.food
@@ -880,6 +920,16 @@ function Codec.rebuild(s)
         if type(food.cookingTime) == "number" then call(item, "setCookingTime", food.cookingTime) end
         if food.microwave then call(item, "setCookedInMicrowave", true) end
         if type(food.chef) == "string" then call(item, "setChef", food.chef) end
+        if type(food.offAge) == "number" then call(item, "setOffAge", food.offAge) end
+        if type(food.offAgeMax) == "number" then call(item, "setOffAgeMax", food.offAgeMax) end
+        if type(food.spices) == "table" and #food.spices > 0 then
+            pcall(function()
+                local list = ArrayList.new()
+                for _, fullType in ipairs(food.spices) do list:add(fullType) end
+                item:setSpices(list)
+            end)
+        end
+        if type(food.sickness) == "number" then restoreSickness(item, food.sickness, s.age) end
     end
     if type(age) == "number" then call(item, "setAge", age) end
     if type(s.repaired) == "number" then call(item, "setHaveBeenRepaired", s.repaired) end
@@ -1010,7 +1060,7 @@ function Codec.preview(s)
     if type(food) == "table" then
         p.food = { cooked = food.cooked == true, burnt = food.burnt == true, frozen = food.frozen == true }
         -- freshness when it was listed; escrow keeps ageing it (Codec.rebuild), the client says so
-        local age, off = num(s.age), num(m.offAge)
+        local age, off = num(s.age), num(food.offAge) or num(m.offAge)
         if age and off and off < 1000000 then
             if age < off then p.food.freshDays = round((off - age) / rotSpeed(), 0.1) else p.food.stale = true end
         end
