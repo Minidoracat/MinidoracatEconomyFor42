@@ -18,6 +18,7 @@ require "MinidoracatEconomy/ECPanelLayout"
 require "MinidoracatEconomy/ECDetailWindow"
 require "MinidoracatEconomy/ECPlayerPicker"
 require "MinidoracatEconomy/ECLeaderboard"
+require "MinidoracatEconomy/ECItemDrop"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -451,6 +452,12 @@ function Panel:createChildren()
 
     -- the public board: its own controls, its own geometry, its own single read
     self.leaderboard = Leaderboard.create(self)
+
+    -- the drop target (ECItemDrop): items dragged out of an inventory window land on the page that
+    -- takes them - the backpack picker, the market and auction pages, the shop's buyback dialog
+    self.dropLayer = C.ItemDrop.new(function(items) return self:dropJudge(items) end,
+        function(items) self:takeItems(self:dropTarget(), items) end)
+    self:addChild(self.dropLayer)
 
     self:syncCurrencyCombos()
 
@@ -1718,6 +1725,7 @@ function Panel:finishMailBatch(code)
             tostring(batch.partDone), tostring(batch.partLeft)))
     end
     if batch.need ~= nil then C.toast(getText(T .. "Mail_BatchNeed", C.weightText(batch.need, "up"))) end
+    if (batch.hands or 0) > 0 then C.toast(getText(T .. "Mail_BatchHands", tostring(batch.hands))) end
     if batch.lastError ~= nil then C.toast(shopError(batch.lastError)) end
     if code ~= nil then C.toast(shopError(code)) end
 end
@@ -1739,8 +1747,10 @@ function Panel:onMailBatchReply(args)
         tried[r.mailId] = true
         if r.ok == true then
             batch.claimed = batch.claimed + 1
-        elseif r.error == "backpack_full" then
+        elseif r.error == "backpack_full" or r.error == "hands_full" then
             batch.kept = batch.kept + 1
+            -- a heavy letter waits for empty hands, not for room
+            if r.error == "hands_full" then batch.hands = (batch.hands or 0) + 1 end
         elseif r.error == "delivery_partial" then
             -- the letter is still there with fewer items: its own line of the tally, in items
             batch.partial = batch.partial + 1
@@ -1755,7 +1765,7 @@ function Panel:onMailBatchReply(args)
         -- character can hold (heavier than the empty capacity) is not something to free room for
         local unit, free, cap = tonumber(r.unitWeight), tonumber(r.freeCapacity), tonumber(r.capacity)
         if unit ~= nil and free ~= nil and (cap == nil or unit <= cap) and unit > free
-            and (r.error == "backpack_full" or r.error == "delivery_partial") then
+            and r.heavy ~= true and (r.error == "backpack_full" or r.error == "delivery_partial") then
             batch.need = math.min(batch.need or math.huge, unit - free)
         end
     end
@@ -1940,10 +1950,10 @@ function Panel:onShop(kind, args)
         local dlg = self.buyDialog
         if dlg then
             dlg.mailRequired = true
-            dlg.message = getText(T .. "Delivery_ConfirmMail")
+            dlg.message = getText(T .. (args.heavy and "Delivery_ConfirmMailHeavy" or "Delivery_ConfirmMail"))
             return
         end
-        C.toast(getText(T .. "Delivery_ConfirmMail"))
+        C.toast(getText(T .. (args.heavy and "Delivery_ConfirmMailHeavy" or "Delivery_ConfirmMail")))
         return
     end
     -- the buyback cap refusals carry how much room is left today; a unit no backpack of this
@@ -2232,7 +2242,9 @@ function Panel:rebuildMarket()
     self.marketList:setItems(rows)
 end
 
-function Panel:rebuildCandidates()
+-- `args` is the market.candidates reply that brought the rows (nil when the rows are rebuilt from
+-- what is already here): a dropped item waits for the answer to its own read (Panel:takeWanted).
+function Panel:rebuildCandidates(args)
     local rows = {}
     for _, it in ipairs(C.candidates and C.candidates.items or {}) do
         rows[#rows + 1] = candidateRow(it)
@@ -2242,6 +2254,14 @@ function Panel:rebuildCandidates()
     if dlg and dlg.mode == "pick" then
         dlg.pickNote = nil     -- a fresh backpack: the refusal on the status line may be stale
         dlg:rebuildGrid()
+        -- a dropped item is decided by the read asked for after it arrived and by nothing older:
+        -- an earlier answer may still describe it in a state the player has changed since
+        local want = dlg.want
+        if want and want.requestId ~= nil and args ~= nil and args.requestId == want.requestId
+            and not self:takeWanted(dlg) then
+            dlg.want = nil
+            dlg.pickNote = getText(T .. "Drop_NotSeen")
+        end
     end
 end
 
@@ -2741,6 +2761,229 @@ function Panel:onMarketList()
     self:openMarketDialog("pick")
 end
 
+-- ----- items dragged in (ECItemDrop) or sent from the item menu (ECItemMenu) -----
+
+-- Where the drop layer lies: the page band under the title bar, the one the modal backdrop
+-- covers. Nothing while the window shows no page.
+function Panel:dropRect()
+    if not self.shown or self.isCollapsed then return nil end
+    local th = self:titleBarHeight()
+    return 0, th, self.width, math.max(1, self.height - th - (self.resizable and self:resizeWidgetHeight() or 0))
+end
+
+-- What a drop here feeds: "list" / "auction" (the backpack picker of that page, open or to be
+-- opened) or "sell" (the shop's buyback). nil while another dialog of this window is in the way,
+-- false on a page that takes no item.
+function Panel:dropTarget()
+    local dlg = self.marketDialog
+    if dlg then return dlg.mode == "pick" and (dlg.forAuction and "auction" or "list") or nil end
+    if self.buyDialog or self.transferDialog or (self.prefsPopover and self.prefsPopover:getIsVisible()) then
+        return nil
+    end
+    if self.tab == "Market" then return "list" end
+    if self.tab == "Auction" then return "auction" end
+    if self.tab == "Shop" then return "sell" end
+    return false
+end
+
+-- The shop row that buys `fullType` back right now, the page's currency first (W.buybackRow).
+function Panel:buybackRow(fullType)
+    return W.buybackRow(C.shop, fullType, self:shopCurrency())
+end
+
+-- Why `item` cannot go to `target` now, as the sentence the player reads, or nil. Only what the
+-- client can see for certain: the server still judges the item itself (whitelist, state, price).
+function Panel:itemRefusal(target, item)
+    if not self:tradeAllowed() then
+        return marketError({ error = (C.wallet and C.wallet.frozen) and "account_frozen" or "not_at_terminal" })
+    end
+    if self.marketPending or self.buyPending then return getText(T .. "Drop_Busy") end
+    local blocked = C.ItemRoute.blocked(item, getPlayer())
+    if blocked then return target == "sell" and shopError(blocked) or marketError({ error = blocked }) end
+    if target == "sell" then
+        if self:buybackRow(item:getFullType()) == nil then return getText(T .. "Drop_NoBuyback") end
+        return nil
+    end
+    local info = (target == "auction" and self.auctionInfo or self.marketInfo) or {}
+    if target == "auction" and (info.maxAuctions or 0) > 0 and (info.mine or 0) >= info.maxAuctions then
+        return marketError({ error = "too_many_auctions" })
+    end
+    if target == "list" and (info.maxListings or 0) > 0 and (info.mine or 0) >= info.maxListings then
+        return marketError({ error = "too_many_listings" })
+    end
+    local mail = self.marketInfo or {}
+    if mail.mailCapacity and (mail.mailUsed or 0) >= mail.mailCapacity then
+        return marketError({ error = "mailbox_full" })
+    end
+    return nil
+end
+
+-- The drop layer's sentence for the dragged items: what releasing them here does.
+function Panel:dropJudge(items)
+    local item = items[1]
+    local target = self:dropTarget()
+    local refusal = (target == nil and getText(T .. "Drop_Busy"))
+        or (target == false and getText(T .. "Drop_WrongPage"))
+        or self:itemRefusal(target, item)
+    if refusal then return { ok = false, item = item, text = refusal } end
+    local how = C.ItemRoute.move(item, getPlayer())
+    local key = (how == "hands" and "Drop_Hands") or (how == "main" and "Drop_Move") or "Drop_Now"
+    return { ok = true, item = item,
+        text = getText(T .. key, getText(T .. "Drop_Verb_" .. target), item:getDisplayName()) }
+end
+
+-- market.candidates, spaced: the server drops a second one inside 500 ms (ECServer throttle), and
+-- a drop may ask right after the picker itself did.
+function Panel:askCandidates(requestId)
+    local t = EC.now()
+    if self.candAskedAt and t - self.candAskedAt < 650 then
+        self.candDue, self.candDueId = self.candAskedAt + 650, requestId or self.candDueId
+        return
+    end
+    self.candAskedAt, self.candDue, self.candDueId = t, nil, nil
+    C.requestCandidates(requestId)
+end
+
+-- The dropped items' row in the backpack the server listed: picked (on to the price step, the lot
+-- cut to the dragged count) or its refusal on the status line. false while the rows on screen do
+-- not hold them.
+function Panel:takeWanted(dlg)
+    local want = dlg and dlg.want
+    if want == nil or want.moving then return false end
+    local wanted = {}
+    for _, id in ipairs(want.ids) do wanted[id] = true end
+    for _, row in ipairs(self.candidateRows or {}) do
+        local n = 0
+        for _, id in ipairs(row.itemIds) do
+            if wanted[id] then n = n + 1 end
+        end
+        if n > 0 then
+            dlg.want = nil
+            if not row.ok then
+                dlg.pickNote = row.detailText
+                return true
+            end
+            self:onCandidate(row)
+            if self.marketDialog == dlg and dlg.mode ~= "pick" and n < row.count then
+                setEntryText(dlg.qtyEntry, tostring(n))
+                self:layoutMarketDialog()
+            end
+            return true
+        end
+    end
+    return false
+end
+
+-- Take dragged or menu-picked items to `target` ("list", "auction" or "sell"): the picker of that
+-- page opens (exactly as its button would, with the same refusals), the item and the others of its
+-- type are moved to the top of the main inventory with vanilla's actions when they are elsewhere,
+-- and the picker then lands on their row. Shared by the drop layer and ECItemMenu.
+function Panel:takeItems(target, items)
+    local player = getPlayer()
+    local Route = C.ItemRoute
+    local lot = Route.lot(items)
+    if not target or #lot == 0 or player == nil then return end
+    -- a trade step the player is typing into is never thrown away for this: only a picker (which
+    -- holds nothing typed) gives way
+    local open = self.marketDialog
+    local refusal = ((self.buyDialog or self.transferDialog or (open and open.mode ~= "pick")) and getText(T .. "Drop_Busy"))
+        or self:itemRefusal(target, lot[1])
+    if refusal then
+        C.toast(refusal)
+        return
+    end
+    if target == "sell" then return self:takeToShop(lot) end
+    local forAuction = target == "auction"
+    local dlg = self.marketDialog
+    if not (dlg and dlg.mode == "pick" and (dlg.forAuction == true) == forAuction) then
+        self:setTab(forAuction and "Auction" or "Market")
+        if forAuction then self:onAuctionCreate() else self:onMarketList() end
+        dlg = self.marketDialog
+        if not (dlg and dlg.mode == "pick") then return end
+    end
+    local ids = {}
+    for _, item in ipairs(lot) do ids[#ids + 1] = item:getID() end
+    dlg.want = { ids = ids, at = EC.now(), moving = Route.move(lot[1], player) ~= nil }
+    dlg.pickNote = nil
+    Route.bring(lot, player, function(arrived)
+        local want = dlg.want
+        if self.marketDialog ~= dlg or want == nil then return end
+        want.moving = false
+        if #arrived == 0 then
+            dlg.want = nil
+            dlg.pickNote = getText(T .. "Drop_MoveFailed")
+            return
+        end
+        want.ids, want.at = arrived, EC.now()
+        -- even items that were already there wait for a fresh read (takeWanted, rebuildCandidates)
+        want.requestId = C.newRequestId()
+        self:askCandidates(want.requestId)
+    end)
+end
+
+-- The shop's half: the buyback dialog of the row that buys the item, once the items are on the
+-- top of the main inventory (that is what the dialog counts). The page switches to the currency
+-- the row buys in when the page's own does not.
+function Panel:takeToShop(lot)
+    local _, cur = self:buybackRow(lot[1]:getFullType())
+    if cur == nil then return end
+    self:setTab("Shop")
+    if cur ~= self:shopCurrency() then
+        self.shopCur = cur
+        comboSelect(self.shopCurCombo, cur)
+        self:rebuildShop()
+        self:layout()
+    end
+    local fullType = lot[1]:getFullType()
+    C.ItemRoute.bring(lot, getPlayer(), function(arrived)
+        if #arrived == 0 then
+            C.toast(getText(T .. "Drop_MoveFailed"))
+            return
+        end
+        local row = self:buybackRow(fullType)
+        -- the player may have moved on while vanilla carried the items over: a sale dialog only
+        -- opens on the shop page it was asked from, and never over another trade step
+        if row == nil or not self.shown or self.tab ~= "Shop" or self:isModal() or self.buyPending
+            or not self:tradeAllowed() then return end
+        self:openBuy(row, true)
+    end)
+end
+
+-- A generator standing in the world (the world menu, ECItemMenu): vanilla's "Take Generator" puts
+-- a new item into both hands, and from there it goes the way of any item.
+function Panel:takeGenerator(target, obj)
+    local player = getPlayer()
+    if player == nil then return end
+    if not self:tradeAllowed() then
+        C.toast(marketError({ error = (C.wallet and C.wallet.frozen) and "account_frozen" or "not_at_terminal" }))
+        return
+    end
+    C.toast(getText(T .. "Drop_Moving"))
+    C.ItemRoute.takeGenerator(obj, player, function(arrived)
+        local item = arrived[1] and player:getInventory():getItemWithID(arrived[1])
+        if item == nil then
+            C.toast(getText(T .. "Drop_MoveFailed"))
+            return
+        end
+        -- a window closed meanwhile stays closed: the generator is simply in the hands now
+        if self.shown then self:takeItems(target, { item }) end
+    end)
+end
+
+-- Per frame (render): the drop layer follows the drag, and a spaced candidates read goes out.
+-- A dropped item whose read never came back says so instead of waiting forever.
+function Panel:pumpDrop()
+    self.dropLayer:sync(self:dropRect())
+    local t = EC.now()
+    if self.candDue and t >= self.candDue then self:askCandidates(self.candDueId) end
+    local dlg = self.marketDialog
+    local want = dlg and dlg.want
+    if want and not want.moving and t - want.at > TIMEOUT_MS + 2000 then
+        dlg.want = nil
+        dlg.pickNote = getText(T .. "Drop_NotSeen")
+    end
+end
+
 function Panel:onCandidate(cand)
     local dlg = self.marketDialog
     if not dlg or dlg.mode ~= "pick" or not cand then return end
@@ -2794,7 +3037,7 @@ function Panel:openMarketDialog(mode, row, forAuction)
     for _, b in ipairs(dlg.currencyButtons) do b.active = b.internal == dlg.currency end
     if mode == "pick" then
         dlg:rebuildGrid()
-        C.requestCandidates()
+        self:askCandidates()
     end
     self:layoutMarketDialog()
     Keys.focusControl(mode == "pick" and dlg.pickList or dlg.cancelButton, keyboard)
@@ -2898,7 +3141,7 @@ function Panel:onMarket(kind, args)
     end
     if kind == "whitelist" then
         local open = self.marketDialog
-        if open and open.mode == "pick" then C.requestCandidates() end
+        if open and open.mode == "pick" then self:askCandidates() end
         return
     end
     -- The shared slot is released by the very read that reserved it, matched on that read's own
@@ -2951,7 +3194,7 @@ function Panel:onMarket(kind, args)
             self:rebuildMarketCategories()
         end
         self:updateMarketInfo()
-        if kind == "candidates" then self:rebuildCandidates() else self:rebuildMarket() end
+        if kind == "candidates" then self:rebuildCandidates(args) else self:rebuildMarket() end
         self:layout()   -- the chip rows (and the mine counter's own width) may have moved
         return
     end
@@ -2998,10 +3241,10 @@ function Panel:onMarket(kind, args)
         local dlg = self.marketDialog
         if dlg then
             dlg.mailRequired = true
-            dlg.message = getText(T .. "Delivery_ConfirmMail")
+            dlg.message = getText(T .. (args.heavy and "Delivery_ConfirmMailHeavy" or "Delivery_ConfirmMail"))
             return
         end
-        C.toast(getText(T .. "Delivery_ConfirmMail"))
+        C.toast(getText(T .. (args.heavy and "Delivery_ConfirmMailHeavy" or "Delivery_ConfirmMail")))
         return
     end
     -- The offer named a currency the record does not settle in. The step is not patched in
@@ -3742,6 +3985,9 @@ function Panel:prerender()
 end
 
 function Panel:render()
+    -- here, after prerender's layout: a backdrop or dialog that layout raised this frame is under
+    -- the drop layer again before the next mouse event is dispatched
+    self:pumpDrop()
     local w = self:getWidth()
     local h = self:getHeight()
     local th = self:titleBarHeight()
@@ -3905,6 +4151,26 @@ function P.instance()
         C.onIdentity(function() if P.window then P.window:onIdentityChanged() end end)
     end
     return P.window
+end
+
+-- The item menu's way in (ECItemMenu): the window, on the page `target` names, with the items (or
+-- the standing generator, picked up first) on their way to its picker. The page itself refuses
+-- what it would refuse a drop.
+local function openFor()
+    local win = P.instance()
+    if not win then return nil end
+    if win:getIsVisible() then win:bringToTop() else win:setVisible(true) end
+    return win
+end
+
+function P.takeItems(target, items)
+    local win = openFor()
+    if win then win:takeItems(target, items) end
+end
+
+function P.takeGenerator(target, obj)
+    local win = openFor()
+    if win then win:takeGenerator(target, obj) end
 end
 
 -- Hotkey / floating button. With the sandbox option RemoteReadOnly off the window may only be

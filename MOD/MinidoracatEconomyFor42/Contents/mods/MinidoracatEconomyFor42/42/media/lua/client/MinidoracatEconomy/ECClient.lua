@@ -147,6 +147,10 @@ handlers["hello.ack"] = function(args)
         .. " server=" .. tostring(args.version) .. " remoteReadOnly=" .. tostring(args.remoteReadOnly)
         .. " currencies=" .. tostring(args.currencies and #args.currencies or 0)
         .. " terminals=" .. tostring(args.terminals and #args.terminals or 0))
+    -- The item menu offers "sell to the shop" only for an item some SKU buys back, and builds
+    -- itself from what is cached (no request while a menu opens): the catalog is read once per
+    -- session here, and every catalog change after that is pushed (ECShop Shop.pushAll).
+    if C.shop == nil then C.requestShop() end
 end
 
 -- Who this client is to the server (hello.ack): `account` owns the money, the mail and the
@@ -665,7 +669,7 @@ end
 -- needs, and a purchase refused as unit_too_heavy the unit weight against the empty capacity.
 -- This lives in the transport because the auction notice has to toast without any page open.
 local DELIVERY_CODES = { mailbox = true, backpack_full = true, delivery_failed = true, delivery_partial = true,
-    unit_too_heavy = true }
+    unit_too_heavy = true, hands_full = true }
 
 -- A weight as the player reads it (one decimal, like the buy dialog). `round` = "up" for an
 -- amount to free (never shown smaller than the server asked for), "down" for room left (never
@@ -691,6 +695,13 @@ function C.deliveryText(args)
     if code == "unit_too_heavy" then
         return getText(key .. "Delivery_TooHeavyBuy", C.weightText(unit), C.weightText(cap))
     end
+    -- a heavy item goes into both hands, one per claim, whatever the backpack holds (ECMailbox
+    -- deliver): the weights do not apply, the hands do
+    if code == "hands_full" then return getText(key .. "Delivery_HandsFull", left) end
+    if code == "delivery_partial" and args.heavy == true then
+        return getText(key .. "Delivery_HeavyPartial", tostring(math.floor(done or 0)),
+            tostring(math.floor(tonumber(args.remainingQty) or 0)), left)
+    end
     if code == "delivery_partial" then
         local text = getText(key .. "Delivery_Partial", tostring(math.floor(done or 0)),
             tostring(math.floor(tonumber(args.remainingQty) or 0)), left)
@@ -713,11 +724,38 @@ local function finiteWeight(value)
     return type(value) == "number" and value >= 0 and value < math.huge
 end
 
+-- Whether this item type is carried in both hands (vanilla's isForceDropHeavyItem: generators,
+-- base:heavyitem; InventoryItem.java:534-540). The script alone does not say it for every case
+-- (the type name decides for "Generator"), so one throwaway copy per type answers, cached.
+local heavyTypes = {}
+function C.isHeavyType(fullType)
+    if type(fullType) ~= "string" then return false end
+    local known = heavyTypes[fullType]
+    if known ~= nil then return known end
+    local ok, heavy = pcall(function() return instanceItem(fullType):isForceDropHeavyItem() end)
+    heavyTypes[fullType] = ok and heavy == true
+    return heavyTypes[fullType]
+end
+
 -- Preview only: encumbrance is not the hard container capacity. The server prepares the real
 -- items and checks again before debit (ItemContainer.java:195-237, 2247-2270).
 function C.deliveryPreview(fullType, qty, unitWeight)
     local out = { known = false, qty = qty }
     if not finiteWeight(qty) or qty < 1 or qty ~= math.floor(qty) then return out end
+    -- a heavy item is handed over into both hands, one per claim, and never by backpack room
+    -- (ECMailbox M.prepare): a second unit, or hands already on one, means the mailbox
+    if C.isHeavyType(fullType) then
+        local busy = false
+        pcall(function()
+            local player = getPlayer()
+            local a, b = player:getPrimaryHandItem(), player:getSecondaryHandItem()
+            busy = (a ~= nil and a:isForceDropHeavyItem()) or (b ~= nil and b:isForceDropHeavyItem())
+        end)
+        out.known, out.heavy, out.handsBusy = true, true, busy
+        out.fitQty = busy and 0 or 1
+        out.willMail = busy or qty > 1
+        return out
+    end
     if unitWeight == nil then
         local ok, value = pcall(function()
             local script = ScriptManager.instance:FindItem(fullType)
@@ -875,7 +913,8 @@ function C.requestMarket(opts)
         page = opts.page, seller = opts.seller, currency = opts.currency or "all" })
 end
 function C.requestMyListings() askSnapshot(listingsSnapshot) end
-function C.requestCandidates() send("market.candidates") end
+-- requestId (optional) comes back on the reply: a dropped item waits for its own read
+function C.requestCandidates(requestId) send("market.candidates", { requestId = requestId }) end
 -- `itemIds` is the whole lot the player picked; `price` is the total for it.
 function C.listItem(itemIds, price, currency, requestId)
     send("market.list", { itemIds = itemIds, price = price, currency = currency, requestId = requestId })

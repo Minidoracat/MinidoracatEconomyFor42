@@ -317,7 +317,10 @@ function BuyDialog:summaryLines()
     if sell then
         -- what the backpack holds, in the server's words (only canonical copies count)
         if not c then out[#out + 1] = getText(T .. "Wallet_Loading")
-        elseif (tonumber(c.count) or 0) < 1 then out[#out + 1] = getText(T .. "Shop_SellNone")
+        elseif (tonumber(c.count) or 0) < 1 then
+            -- what is missing, then the rule that decides it, each on its own line
+            out[#out + 1] = getText(T .. "Shop_SellNone")
+            out[#out + 1] = getText(T .. "Shop_SellRule")
         else out[#out + 1] = getText(T .. "Shop_SellHave", tostring(math.floor(tonumber(c.count) or 0)),
             tostring(math.floor(tonumber(c.unitQty) or 1)), amountOrDash(unit)) end
         out[#out + 1] = detailLine("Shop_Col_Bid", moneyText(unit, cur))
@@ -1093,11 +1096,13 @@ function MarketDialog:prerender()
             end
         end
         if not hover and Keys.isKeyboardFocused(list) then hover = gridCandidate(list) end
-        -- the hovered tile, else the refusal of the last unlistable tile the player clicked,
-        -- else the invitation to pick one
+        -- an item dragged or sent here and still on its way, else the hovered tile, else the
+        -- refusal of the last unlistable tile the player clicked, else the invitation to pick one
         local status, token = getText(T .. "Market_PickSelect"), "textMuted"
         if info.mailCapacity and (info.mailUsed or 0) >= info.mailCapacity then
             status, token = getText(T .. "Market_Error_mailbox_full"), "errorText"
+        elseif self.want then
+            status, token = getText(T .. (self.want.moving and "Drop_Moving" or "Drop_Reading")), "accent"
         elseif hover then
             status = hover.detailText
             if not hover.ok then token = "warn" end
@@ -1115,10 +1120,17 @@ function MarketDialog:prerender()
             if second then text(self, second, PAD, self.messageY, token) end
         end
         if (self.candTotal or 0) == 0 then
-            text(self, getText(T .. "Market_PickEmpty"), PAD * 2, list.y + 6, "textMuted")
+            -- an empty top level is not an empty character: where the rest is, and that it can
+            -- be dragged in, on up to two lines
+            for i, line in ipairs(U.wrapText(getText(T .. "Market_PickEmpty"), list.width - PAD * 3, 2)) do
+                text(self, line, PAD * 2, list.y + 6 + (i - 1) * (fontH.small + 4), "textMuted")
+            end
         elseif (self.candShown or 0) == 0 then
             text(self, getText(T .. "Market_NoMatch"), PAD * 2, list.y + 6, "textMuted")
         end
+        -- the one place the picker says items can be dragged in, kept beside the buttons
+        text(self, fitText(getText(T .. "Drop_PickHint"), self.cancelButton.x - PAD * 2), PAD,
+            self.buttonY + math.floor((self.cancelButton.height - fontH.small) / 2), "textMuted")
         if self.message then text(self, fitText(self.message, w - PAD * 2), PAD, self.messageY, "errorText") end
         return
     end

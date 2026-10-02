@@ -1161,7 +1161,8 @@ end
 -- purchase is parked in the mailbox instead of being pushed into a full backpack, and the
 -- prepared objects are handed straight over when it does fit (never built twice). A letter that
 -- is too heavy as a whole is claimed later by count; a single unit heavier than the empty backpack
--- is refused before the debit (unit_too_heavy).
+-- is refused before the debit (unit_too_heavy) - unless it is a heavy item, which is carried in
+-- both hands one per claim and never by the backpack (M.prepare `heavy`).
 function Shop.buy(player, args)
     local username = S.principal(player)
     if type(args) ~= "table" or not validId(args.id) or type(args.requestId) ~= "string" or args.requestId == "" or #args.requestId > 96 then
@@ -1206,13 +1207,13 @@ function Shop.buy(player, args)
     -- a unit heavier than this backpack can hold even empty could only ever wait in a letter
     -- nobody can claim: refused here, before the debit, with the two numbers that say why
     local room = M.roomFields({}, player, prepared.unitWeight)
-    if room.capacity ~= nil and prepared.unitWeight > room.capacity then
+    if not prepared.heavy and room.capacity ~= nil and prepared.unitWeight > room.capacity then
         return { ok = false, error = "unit_too_heavy", item = sku.item, unitWeight = prepared.unitWeight,
             capacity = room.capacity, total = total, currency = currency }
     end
     if not prepared.fits and args.acceptMail ~= true then
         return { ok = false, error = "mail_confirmation_required", willMail = true, item = sku.item,
-            qty = prepared.qty, totalWeight = prepared.totalWeight, total = total, currency = currency }
+            qty = prepared.qty, totalWeight = prepared.totalWeight, total = total, currency = currency, heavy = prepared.heavy }
     end
     local res = L.debit(username, currency, total, Shop.BURN_ACCOUNT, {
         kind = "shop_buy", requestId = requestId, reasonCode = "shop_buy",

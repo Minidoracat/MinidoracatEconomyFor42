@@ -218,6 +218,12 @@ local function capacityLines(out, preview)
         out[#out + 1] = getText(T .. "Delivery_Unknown")
         return out
     end
+    -- a heavy item is carried in both hands, one per claim: the backpack numbers do not apply
+    if preview.heavy == true then
+        out[#out + 1] = getText(T .. (preview.handsBusy and "Delivery_HandsBusy" or "Delivery_Hands"))
+        if preview.willMail == true then out[#out + 1] = getText(T .. "Delivery_WillMail") end
+        return out
+    end
     local qty = math.floor(tonumber(preview.qty) or 0)
     local fit = math.floor(tonumber(preview.fitQty) or 0)
     out[#out + 1] = detailLine("Delivery_Fits", getText(T .. "Delivery_FitsCount", tostring(fit), tostring(qty)))
@@ -1245,5 +1251,26 @@ W.closeCombo = closeCombo
 W.sortLabel = sortLabel
 W.MARKET_SORTS = MARKET_SORTS
 W.AUCTION_SORTS = AUCTION_SORTS
+
+-- The shop row that buys `fullType` back right now - the sku's own switch, the server-wide one and
+-- the currency's cap block all open, and allowance left - trying currency `first` before the
+-- others: the row and its currency, or nil. Read from the catalog the client holds (the page and
+-- the item menu share it); the server quotes again when the sale goes out.
+function W.buybackRow(shop, fullType, first)
+    if type(shop) ~= "table" then return nil end
+    local order = { first }
+    for _, id in ipairs(currencyIds()) do
+        if id ~= first then order[#order + 1] = id end
+    end
+    for _, cur in ipairs(order) do
+        for _, it in ipairs(shop.items or {}) do
+            if it.item == fullType then
+                local row = shopRow(it, cur, shop.buyback)
+                if row.buyback == true and row.buybackOpen == true and row.buybackRemaining ~= 0 then return row, cur end
+            end
+        end
+    end
+    return nil
+end
 
 return W

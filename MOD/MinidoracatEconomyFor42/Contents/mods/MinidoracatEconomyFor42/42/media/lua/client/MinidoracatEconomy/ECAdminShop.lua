@@ -1327,23 +1327,43 @@ function Page:onBack()
     self:requestLeave(function() self:dropDraft() end)
 end
 
-function Page:onAdd()
-    if self.catalog == nil then return end
-    if not self.owner:writeAllowed() then
-        self.owner.message = { text = errorText("forbidden"), error = true }
-        return
-    end
-    -- the limit is the host's, and the server refuses past it anyway (catalog_full): this only
-    -- saves the picker round trip and says where the limit is set
+-- What stops a new SKU right now, as the refusal the page shows, or nil. The limit is the host's,
+-- and the server refuses past it anyway (catalog_full): this only saves the picker round trip and
+-- says where the limit is set.
+function Page:addRefusal()
+    if self.catalog == nil then return tr("Admin_Loading") end
+    if not self.owner:writeAllowed() then return errorText("forbidden") end
     local rows, max = self:skus(), self:maxItems()
     if rows ~= nil and max ~= nil and #rows >= max then
-        self.owner.message = { text = getText(T .. "Admin_Shop_Full", tostring(max),
-            tostring(EC.OPTION_BY_KEY.ShopMaxItems.max)), error = true }
+        return getText(T .. "Admin_Shop_Full", tostring(max), tostring(EC.OPTION_BY_KEY.ShopMaxItems.max))
+    end
+    return nil
+end
+
+function Page:onAdd()
+    if self.catalog == nil then return end
+    local refusal = self:addRefusal()
+    if refusal then
+        self.owner.message = { text = refusal, error = true }
         return
     end
     self:requestLeave(function()
         self.picker:open()
         self:layout()
+    end)
+end
+
+-- An item dragged onto the page or sent from the item menu: the same new SKU the picker makes,
+-- with the same checks and the same draft guard, without the search.
+function Page:addRecord(record)
+    local refusal = self:addRefusal()
+    if refusal then
+        self.owner.message = { text = refusal, error = true }
+        return
+    end
+    self:requestLeave(function()
+        if self.picker:isOpen() then self.picker:close() end
+        self:onPicked(record)
     end)
 end
 

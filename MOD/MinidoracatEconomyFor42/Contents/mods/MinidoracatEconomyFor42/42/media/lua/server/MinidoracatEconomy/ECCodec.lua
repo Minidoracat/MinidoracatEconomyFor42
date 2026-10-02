@@ -501,7 +501,10 @@ end
 -- InventoryItem.java:3253-3256, 3262-3271), so a mod-data key is never a reason by itself: the
 -- data travels in the snapshot and only an oversized blob is refused (moddata_too_big).
 function Codec.stateCheck(item)
-    if call(item, "isEquipped") == true then return false, "equipped" end
+    -- A force-drop heavy item (generator, anvil, ore: InventoryItem.java:534-538) is only ever
+    -- carried with both hands on it (ISEquipHeavyItem.lua:59-86), so held is its normal state:
+    -- the list-out empties the hands before it removes the item (ECMailbox M.takeOut).
+    if call(item, "isEquipped") == true and call(item, "isForceDropHeavyItem") ~= true then return false, "equipped" end
     if call(item, "isFavorite") == true then return false, "favorite" end
     if call(item, "isBroken") == true then return false, "broken" end
     if call(item, "isRotten") == true then return false, "perishable" end

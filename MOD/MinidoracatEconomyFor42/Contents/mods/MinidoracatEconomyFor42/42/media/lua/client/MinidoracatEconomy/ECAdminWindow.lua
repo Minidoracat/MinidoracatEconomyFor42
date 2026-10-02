@@ -467,6 +467,16 @@ function AW.openPlans(sourceMod, productId)
     return true
 end
 
+-- The item menu's way in (ECItemMenu): the window, on the shop page (tab "Shop", a new SKU) or the
+-- whitelist page ("Whitelist", a rule), with `item` added exactly as a drop adds it.
+function AW.addItem(tab, item)
+    local win = AW.open()
+    local admin = win and win.adminPanel
+    if admin == nil then return false end
+    admin:addItem(tab, item)
+    return true
+end
+
 -- Session reset (a new world): the page is disposed for real here — this is the one place that
 -- forces it — and the window is rebuilt against the new server state on the next open.
 function AW.reset()

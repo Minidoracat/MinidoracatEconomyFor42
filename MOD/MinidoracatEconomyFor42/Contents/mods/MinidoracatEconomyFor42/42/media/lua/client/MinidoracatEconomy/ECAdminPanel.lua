@@ -60,6 +60,8 @@ require "MinidoracatEconomy/ECPlayerPicker"
 require "MinidoracatEconomy/ECItemNames"
 require "ISUI/ISComboBox"
 require "MinidoracatEconomy/ECDetailWindow"
+require "MinidoracatEconomy/ECItemDrop"
+require "MinidoracatEconomy/ECItemPicker"
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
@@ -2124,7 +2126,61 @@ function Admin:createChildren()
     self.identityPage = C.AdminIdentity.create(self, send, isPending, newRequestId)
     self:addChild(self.identityPage)
 
+    -- the drop target (ECItemDrop): an item dragged out of an inventory window becomes a new SKU on
+    -- the shop page or a rule on the whitelist page; every other page takes none
+    self.dropLayer = C.ItemDrop.new(function(items) return self:itemVerdict(self.tab, items[1]) end,
+        function(items) self:addItem(self.tab, items[1]) end)
+    self:addChild(self.dropLayer)
+
     self:layout()
+end
+
+-- ----- items dragged in (ECItemDrop) or sent from the item menu (ECItemMenu) -----
+
+-- What adding `item` on page `tab` ("Shop": a new SKU, "Whitelist": a rule) does now:
+-- { ok, text, item, record }. `item` is an InventoryItem, or the full type of a world object (a
+-- standing generator). The record is the universe's own (ECItemPicker), the very one the search
+-- would hand over; a type the universe leaves out (hidden, obsolete) has none.
+function Admin:itemVerdict(tab, item)
+    local isItem = type(item) ~= "string"
+    local function no(text) return { ok = false, item = isItem and item or nil, text = text } end
+    if self.dialog ~= nil or (self.tab == "Shop" and self.shopPage.confirm:getIsVisible()) then
+        return no(tr("Drop_Busy"))
+    end
+    local fullType = isItem and item:getFullType() or item
+    local record = C.ItemPicker.universe().byType[fullType]
+    if record == nil then return no(tr("Drop_Hidden")) end
+    local key = "Drop_AddRule"
+    if tab == "Shop" then
+        local refusal = self.shopPage:addRefusal()
+        if refusal then return no(refusal) end
+        key = "Drop_AddSku"
+    elseif record.fixed then
+        return no(tr("Drop_Fixed"))
+    end
+    return { ok = true, item = isItem and item or nil, record = record, text = getText(T .. key, record.name, fullType) }
+end
+
+-- Add `item` on page `tab`, switching to it first (through the draft guard every page switch
+-- takes). A refusal lands on the message line.
+function Admin:addItem(tab, item)
+    local verdict = self:itemVerdict(tab, item)
+    if not verdict.ok then
+        self.message = { text = verdict.text, error = true }
+        return
+    end
+    local page = tab == "Shop" and self.shopPage or self.whitelistPage
+    if self.tab == tab then return page:addRecord(verdict.record) end
+    self:requestClose(function()
+        self:setTab(tab)
+        page:addRecord(verdict.record)
+    end)
+end
+
+-- Where the drop layer lies: the whole page, on the two pages that take an item.
+function Admin:dropRect()
+    if not (self.tab == "Shop" or self.tab == "Whitelist") or not self:readAllowed() then return nil end
+    return 0, 0, self.width, self.height
 end
 
 -- ----- state / actions -----
@@ -7903,7 +7959,11 @@ function Admin:prerender()
     end
 end
 
-function Admin:render() end
+-- After prerender (and its layout and dialogs): the drop layer is the topmost child again before
+-- the next mouse event is dispatched (ECItemDrop).
+function Admin:render()
+    self.dropLayer:sync(self:dropRect())
+end
 
 -- row click selects the currency / integration source the action buttons operate on
 -- Jump to the audit page filtered to one account's freeze history (full reasons come from the

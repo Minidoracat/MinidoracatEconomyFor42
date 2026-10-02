@@ -691,12 +691,31 @@ function R.dropRow(row)
     return true
 end
 
+-- A force-drop heavy item (generator, anvil, ore, corpse: InventoryItem.java:534-538) is carried
+-- in the main inventory with both hands on it (ISEquipHeavyItem.lua:59-86) - vanilla has no other
+-- way to carry one. A reading the engine does not give is "not heavy".
+function R.isHeavy(item)
+    local ok, heavy = pcall(function() return item:isForceDropHeavyItem() end)
+    return ok and heavy == true
+end
+
+-- The force-drop heavy item in this player's hands, or nil.
+function R.heldHeavy(player)
+    local ok, a, b = pcall(function() return player:getPrimaryHandItem(), player:getSecondaryHandItem() end)
+    if not ok then return nil end
+    if a and R.isHeavy(a) then return a end
+    if b and R.isHeavy(b) then return b end
+    return nil
+end
+
 -- What stops a removal the server would otherwise make: it never pulls an object out of an
 -- equipment or hotbar slot, and never deletes a bag that still holds something. A state it
--- cannot read blocks as well.
-function R.removalBlock(row)
+-- cannot read blocks as well. A heavy item in the hands of `player` is no slot: the caller that
+-- passes the player empties the hands before R.dropRow (ECMailbox reclaimStaleCopies).
+function R.removalBlock(row, player)
     local ok, blocked = pcall(function()
-        if row.item:isEquipped() or row.item:getAttachedSlot() > -1 then return "legacy_item_equipped" end
+        local carried = player ~= nil and R.heldHeavy(player) == row.item
+        if (row.item:isEquipped() and not carried) or row.item:getAttachedSlot() > -1 then return "legacy_item_equipped" end
         if row.item.getInventory then
             local contents = row.item:getInventory()
             if contents and contents:getItems():size() > 0 then return "legacy_container_not_empty" end

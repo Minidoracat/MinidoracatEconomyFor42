@@ -212,6 +212,8 @@ knownItems = {
     ["Base.Trousers_Denim"] = { w = 0.5, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 20, bite = 0 } },
     -- 非 Base 模組物品：伺服器的 ScriptManager 認得就算數（目錄新增不是 Base-only）
     ["MiniFarm.CatSnack"] = { w = 0.2, cat = "Food", main = "Normal" },
+    -- 雙手搬運的重物（normal.txt LargeStone：Weight 40、Tags base:heavyitem → InventoryItem.isForceDropHeavyItem）
+    ["Base.LargeStone"] = { w = 40, cat = "Material", main = "Normal", heavy = true },
 }
 -- ItemType 是暴露給 Lua 的 Java 類別（靜態欄位 CONTAINER…；LuaManager.java:2311）：這裡用哨兵表代替
 ItemType = {}
@@ -313,7 +315,9 @@ function instanceItem(fullType)
     it.getCategory = function() return k.main end
     it.getDisplayCategory = function() return k.cat end
     it.getScriptItem = function() return ScriptManager.instance:FindItem(fullType) end
-    it.isEquipped = function() return it.equipped end
+    -- 手上拿著也算裝備中（IsoGameCharacter.isEquipped:10380-10382 = 穿著或 isHandItem）
+    it.isEquipped = function() return it.equipped or (it.holder ~= nil and (it.holder.primary == it or it.holder.secondary == it)) end
+    it.isForceDropHeavyItem = function() return k.heavy == true end
     it.getAttachedSlot = function() return it.attachedSlot or -1 end
     it.isFavorite = function() return it.favorite end
     it.isBroken = function() return it.broken end
@@ -550,6 +554,12 @@ sentItemPackets = {}
 function sendAddItemsToContainer(container, list) sentItemPackets[#sentItemPackets + 1] = { container = container, add = list.items } end
 function sendAddItemToContainer(container, item) sentItemPackets[#sentItemPackets + 1] = { container = container, add = { item } } end
 function sendRemoveItemFromContainer(container, item) sentItemPackets[#sentItemPackets + 1] = { container = container, remove = item } end
+-- sendEquip(player)（LuaManager.java:4313-4316 → updateHandEquips 送 Equip 封包）：記下當下雙手與
+-- 它排在第幾個物品封包之後，情境才驗得出「先有物品、才裝備」「先卸下、才移除」的順序。
+sentEquips = {}
+function sendEquip(player)
+    sentEquips[#sentEquips + 1] = { player = player, primary = player.primary, secondary = player.secondary, after = #sentItemPackets }
+end
 -- syncItemModData(player, item)：LuaManager.java:12262-12269 -> SyncItemModDataPacket.java:32-60。
 -- 只把該物件的 modData 推到 client 端同一個 item，不移除也不新增容器內容；server 端的寫入本來就
 -- 隨 player blob 存檔（ServerPlayerDB.java:348-364）。無效的 player／item 在這裡就丟，受測碼不得
@@ -577,7 +587,11 @@ function fakeInventory(maxWeight)
         inv.items[#inv.items + 1] = it
         return it
     end
-    inv.Remove = function(_, it) for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i) end end end
+    -- ItemContainer.Remove 先清持有者雙手（ItemContainer.java:2036-2039），只在伺服器端
+    inv.Remove = function(_, it)
+        if inv.character then inv.character:removeFromHands(it) end
+        for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i) end end
+    end
     inv.removeAllItems = function() inv.items = {} end   -- ItemContainer.java:2925-2944
     inv.getItems = function() return javaList(inv.items) end
     inv.contains = function(_, item)
@@ -922,6 +936,17 @@ local function fakePlayer(username)
     p.getOnlineID = function() return p.onlineId end
     p.isDead = function() return p.dead == true end
     p.getInventory = function() return p.inventory end
+    -- 雙手（IsoGameCharacter.java:3766-3777 removeFromHands）；重物是同一個物件放在兩隻手
+    p.inventory.character = p
+    p.getPrimaryHandItem = function() return p.primary end
+    p.getSecondaryHandItem = function() return p.secondary end
+    p.setPrimaryHandItem = function(_, it) p.primary = it; if it then it.holder = p end end
+    p.setSecondaryHandItem = function(_, it) p.secondary = it; if it then it.holder = p end end
+    p.removeFromHands = function(_, it)
+        if p.primary == it then p.primary = nil end
+        if p.secondary == it then p.secondary = nil end
+        return true
+    end
     p.getModData = function() return p.modData end
     p.transmitModData = function() p.transmitted = (p.transmitted or 0) + 1 end
     p.role = "user"
@@ -1019,6 +1044,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 23   -- +23: a character that died d
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: the mod's own terminal object cannot be destroyed (scenario TG: load hook on the eight tiles, in-place swap to a plain object at load and at build, idempotent, other thumpables untouched, refused engine removal, one log each, sledgehammer and scrap refused, ATM removal option does not open it, manager sledgehammer, build refused for non-managers, manager build, other builds)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: a registered vanilla console is locked (scenario TG: sledgehammer, scrap, pickup gate and execution, the map ATM option does not open it, a terminal manager still can, an unregistered console and an unregistered-again console stay ordinary); the build entry follows AdminRoles (scenario RL)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: removing shop items and the item limit (scenario SD: write gate and all-or-nothing, refusals, the server's own reason check, file/revision/push, the audit keeps the row, a resent purchase, pasting the row back with its counts, the limit option and its push, its range, lowering it, the hard ceiling at load and on the wire, removing every row)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: heavy items carried in both hands (scenario HV: picker, list-out empties the hands first, delivery into both hands, hands_full keeps the letter (3), shop buy past the backpack limit, one unit per claim (2), auction and buyback share the list-out, a stale copy in the hands is reclaimed, an aborted list-out puts it back, so does a refusal after the removal)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19075,6 +19101,197 @@ check(emptied.ok == true and emptied.extra ~= nil and emptied.extra.count == 2 a
     and #cmd(zed, "shop.list").items == 0,
     "SD-13: removing every row leaves an empty catalog, and a restart does not write the default items back")
 Cfg.setOption("ShopMaxItems", nil, "sd-admin")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 HV：雙手搬運的重物（ISEquipHeavyItem：放進主背包、兩隻手拿同一個物件） =====
+io.write("scenario HV: heavy items carried in both hands\n")
+;(function()
+local M, Mk, Shop = S.Mailbox, S.Market, S.Shop
+local STONE = "Base.LargeStone"
+local serial = 0
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, sentItemPackets, sentEquips = {}, {}, {}, {}
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = 10000
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = 100000
+files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "stone", item = STONE, qty = 1, price = 20, dailyCap = 0, buyback = true, bidPrice = 3, buybackCap = 0 },
+} }) }, opens = 0 }
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local function cmd(p, name, args)
+    serial, nowMs = serial + 1, nowMs + 700
+    args = args or {}
+    args.requestId = args.requestId or ("hv-" .. serial)
+    withCurrency(name, args)
+    local first = #sentCommands + 1
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, p, args)
+    for i = first, #sentCommands do
+        local reply = sentCommands[i]
+        if reply.player == p and reply.command == name then return reply.args end
+    end
+    error("missing reply: " .. name)
+end
+local boss = fakePlayer("hv-boss"); boss.role = "admin"
+local seller, buyer, carrier, porter = fakePlayer("hv-seller"), fakePlayer("hv-buyer"), fakePlayer("hv-carrier"), fakePlayer("hv-porter")
+onlinePlayers = { boss, seller, buyer, carrier, porter }
+assert(cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" }).ok)
+for _, p in ipairs({ seller, buyer, carrier, porter }) do
+    assert(L.credit(p:getUsername(), "survivor", 10000, "SYSTEM_MINT", { requestId = "hv-seed-" .. p:getUsername(), reasonCode = "test" }).ok)
+end
+-- ISEquipHeavyItem.complete:59-86：主背包裡、兩隻手拿著同一個物件
+local function carry(p, item)
+    if not p.inventory:contains(item) then p.inventory:AddItem(item) end
+    p:setPrimaryHandItem(item); p:setSecondaryHandItem(item)
+    return item
+end
+local function drop(p, item) p:removeFromHands(item); p.inventory:Remove(item) end
+-- 最後一個送給 p 的裝備封包，與 item 被移除／加入的物品封包序號
+local function lastEquip(p)
+    for i = #sentEquips, 1, -1 do if sentEquips[i].player == p then return sentEquips[i] end end
+    return nil
+end
+local function packetOf(item, field)
+    for i = #sentItemPackets, 1, -1 do
+        local pk = sentItemPackets[i]
+        if field == "remove" and pk.remove == item then return i end
+        if field == "add" and pk.add then for _, it in ipairs(pk.add) do if it == item then return i end end end
+    end
+    return nil
+end
+-- the hands were emptied and the client told so before the object's remove packet
+local function releasedFirst(p, item, equipsBefore)
+    local eq, removedAt = lastEquip(p), packetOf(item, "remove")
+    return p.primary == nil and p.secondary == nil and not p.inventory:contains(item) and #sentEquips > equipsBefore
+        and eq ~= nil and eq.primary == nil and eq.secondary == nil and removedAt ~= nil and eq.after < removedAt
+end
+-- both hands hold item and the equip went out after the client had the object
+local function heldAfterAdd(p, item)
+    local eq, addedAt = lastEquip(p), packetOf(item, "add")
+    return item ~= nil and p.primary == item and p.secondary == item and p.inventory:contains(item)
+        and eq ~= nil and eq.primary == item and eq.secondary == item and addedAt ~= nil and eq.after >= addedAt
+end
+
+-- HV-1: the picker offers the stone in both hands; an ordinary equipped item stays refused
+local stone = carry(seller, instanceItem(STONE))
+local axe = instanceItem("Base.Axe"); seller.inventory:AddItem(axe); axe.equipped = true
+local rows = {}
+for _, r in ipairs(cmd(seller, "market.candidates").items) do rows[r.item] = r end
+check(rows[STONE] ~= nil and rows[STONE].ok == true and rows["Base.Axe"] ~= nil and rows["Base.Axe"].ok == false
+    and rows["Base.Axe"].reason == "equipped",
+    "HV-1: a heavy item held in both hands is a listing candidate; an ordinary equipped item is still refused")
+drop(seller, axe)
+
+-- HV-2: the list-out empties both hands and tells the client before the remove packet
+local equips = #sentEquips
+local listed = cmd(seller, "market.list", { itemId = stone.id, price = 100 })
+check(listed.ok == true and releasedFirst(seller, stone, equips),
+    "HV-2: listing a heavy item clears both hands and sends the equip before its removal")
+
+-- HV-3: the buyer gets it in both hands, past a backpack that could never hold 40
+local bought = cmd(buyer, "market.buy", { listingId = listed.listingId, price = 100 })
+local got = buyer.primary
+check(bought.ok == true and bought.delivered == true and got ~= nil and got.fullType == STONE and got ~= stone
+    and heldAfterAdd(buyer, got),
+    "HV-3: buying a heavy listing delivers it into both hands, the equip after the item packet")
+
+-- HV-4: hands already on a heavy item take nothing more; the letter waits and nothing is lost
+local second = carry(seller, instanceItem(STONE))
+local listed2 = cmd(seller, "market.list", { itemId = second.id, price = 100 })
+local confirm = cmd(buyer, "market.buy", { listingId = listed2.listingId, price = 100 })
+local shopConfirm = cmd(buyer, "shop.buy", { id = "stone", count = 1, revision = Shop.revision() })
+check(listed2.ok == true and confirm.ok == false and confirm.error == "mail_confirmation_required" and confirm.heavy == true
+    and shopConfirm.error == "mail_confirmation_required" and shopConfirm.heavy == true,
+    "HV-4a: buying while holding a heavy item asks for the mailbox and says the letter is heavy (market and shop)")
+local parked = cmd(buyer, "market.buy", { listingId = listed2.listingId, price = 100, acceptMail = true })
+local full = cmd(buyer, "mail.claim", { mailId = parked.mailId })
+local entry = M.entryOf("hv-buyer", parked.mailId)
+check(parked.ok == true and parked.mailed == true and full.ok == false and full.error == "hands_full" and full.heavy == true
+    and full.remainingQty == 1 and entry.state == "ready" and buyer.primary == got and buyer.secondary == got
+    and buyer.inventory.count(STONE) == 1,
+    "HV-4b: claiming with a heavy item in hand answers hands_full, adds nothing and leaves the letter ready")
+drop(buyer, got)
+local freed = cmd(buyer, "mail.claim", { mailId = parked.mailId })
+check(freed.ok == true and entry.state == "claimed" and buyer.inventory.count(STONE) == 1 and heldAfterAdd(buyer, buyer.primary),
+    "HV-4c: once the hands are free the same letter is claimed into both hands")
+
+-- HV-5: the shop does not refuse a heavy unit for the backpack's size
+carrier.inventory = fakeInventory(5); carrier.inventory.capacity = 5; carrier.inventory.character = carrier
+local shopBuy = cmd(carrier, "shop.buy", { id = "stone", count = 1, revision = Shop.revision() })
+check(shopBuy.ok == true and shopBuy.delivered == true and carrier.primary ~= nil and heldAfterAdd(carrier, carrier.primary),
+    "HV-5: a heavy shop item is not unit_too_heavy: it is bought and delivered into both hands")
+
+-- HV-6: a two-unit heavy letter hands over one unit per claim
+local two = M.add("hv-porter", { kind = "shop", item = STONE, qty = 2, txId = "tx-hv-two" })
+equips = #sentEquips
+local firstClaim = cmd(porter, "mail.claim", { mailId = two.id })
+local firstStone = porter.primary
+check(firstClaim.error == "delivery_partial" and firstClaim.deliveredQty == 1 and firstClaim.remainingQty == 1
+    and firstClaim.heavy == true and porter.inventory.count(STONE) == 1 and heldAfterAdd(porter, firstStone)
+    and #sentEquips == equips + 1,
+    "HV-6a: a two-unit heavy letter delivers one unit into both hands (one equip, after the item) and keeps the other in the letter")
+local blocked = cmd(porter, "mail.claimAll", { mailIds = { two.id } })
+blocked = blocked.results and blocked.results[1] or {}
+drop(porter, firstStone)
+local secondClaim = cmd(porter, "mail.claim", { mailId = two.id })
+check(blocked.error == "hands_full" and blocked.heavy == true and secondClaim.ok == true and secondClaim.deliveredQty == 1 and two.state == "claimed"
+    and porter.inventory.count(STONE) == 1 and heldAfterAdd(porter, porter.primary) and porter.primary ~= firstStone,
+    "HV-6b: the second unit waits for free hands and then comes through the same way")
+
+-- HV-7: an auction and a sale to the system take the item out through the same hands-first removal
+local auctioned = carry(seller, instanceItem(STONE))
+equips = #sentEquips
+local auction = cmd(seller, "auction.create", { itemId = auctioned.id, startPrice = 100, hours = 24 })
+check(auction.ok == true and releasedFirst(seller, auctioned, equips),
+    "HV-7a: putting a held heavy item up for auction clears the hands before the removal")
+local sold = carry(seller, instanceItem(STONE))
+equips = #sentEquips
+local sale = cmd(seller, "shop.sell", { id = "stone", itemIds = { sold.id }, revision = Shop.revision() })
+check(sale.ok == true and releasedFirst(seller, sold, equips),
+    "HV-7b: selling a held heavy item to the system clears the hands before the removal")
+
+-- HV-8: an older player save still holding a listed stone in both hands: the login takes it back
+local stale = carry(seller, instanceItem(STONE))
+local function copy(v)
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, value in pairs(v) do out[k] = copy(value) end
+    return out
+end
+local oldPlayer, oldData = copy(seller.modData), copy(stale:getModData())
+local staleListing = cmd(seller, "market.list", { itemId = stale.id, price = 100 })
+seller.modData, stale.modData = copy(oldPlayer), oldData
+carry(seller, stale)
+local meta = S.modData().meta
+files[S.DURABLE_FILE] = { lines = { EC.jsonEncode({ realmId = meta.realmId, epoch = meta.epoch, seq = meta.seq, ts = nowMs }) } }
+S.pollDurable(true)
+equips = #sentEquips
+M.reconcile(seller)
+proofPump(seller:getUsername())
+check(staleListing.ok == true and Mk.listingExists(staleListing.listingId) and releasedFirst(seller, stale, equips),
+    "HV-8: a stale heavy copy held in both hands is reclaimed at login with its hands cleared first")
+
+-- HV-9: a removal that fails puts the object back into the hands it came from
+local kept = carry(seller, instanceItem(STONE))
+local realRemove = seller.inventory.Remove
+seller.inventory.Remove = function() error("removal rejected before mutation") end
+local aborted = cmd(seller, "market.list", { itemId = kept.id, price = 100 })
+seller.inventory.Remove = realRemove
+local eq = lastEquip(seller)
+check(aborted.error == "delivery_failed" and seller.primary == kept and seller.secondary == kept and seller.inventory:contains(kept)
+    and eq.primary == kept and eq.secondary == kept,
+    "HV-9: an aborted list-out puts the heavy item back into both hands and tells the client")
+
+-- HV-10: a refusal after the removal (the listing fee) puts the object back into both hands too
+local refused = carry(seller, instanceItem(STONE))
+local realDebit = L.debit
+L.debit = function() return { ok = false, error = "account_frozen" } end
+local feeRefused = cmd(seller, "market.list", { itemId = refused.id, price = 100 })
+L.debit = realDebit
+check(feeRefused.ok == false and feeRefused.error == "account_frozen" and heldAfterAdd(seller, refused),
+    "HV-10: a fee refused after the removal puts the heavy item back into both hands, the equip after the item")
 onlinePlayers = {}
 end)()
 

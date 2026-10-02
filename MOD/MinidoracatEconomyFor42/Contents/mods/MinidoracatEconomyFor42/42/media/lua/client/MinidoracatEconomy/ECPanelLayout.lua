@@ -1349,7 +1349,9 @@ function L.drawMarket(self)
     end
     -- the header row is a child (UI.TableHeader): it paints the column names and takes the clicks
     if #self.marketList:getItems() == 0 then
-        text(self, getText(T .. (self.marketNoMatch and "Market_NoMatch" or "Market_Empty")),
+        -- the player's own empty list is where listing starts: the button, or a drag
+        local key = (self.marketNoMatch and "Market_NoMatch") or (mine and "Market_MineEmpty") or "Market_Empty"
+        text(self, fitText(getText(T .. key), self.marketList.width - PAD * 2),
             self.marketList.x + PAD, self.marketList.y + math.floor((ROW - fontH.small) / 2), "textMuted")
     end
     if mine then return end
@@ -1428,7 +1430,8 @@ function L.drawAuction(self)
             or getText(T .. "Auction_Bidding")
         text(self, fitText(bidLabel, g.auctionCardW - PAD * 2), labelX, rowTextY(g.aucBidLabelY), "text")
         if #self.auctionSellList:getItems() == 0 and #self.auctionBidList:getItems() == 0 then
-            text(self, getText(T .. "Auction_MineEmpty"), labelX, rowTextY(g.aucSellY), "textMuted")
+            text(self, fitText(getText(T .. "Auction_MineEmpty"), g.auctionCardW - PAD * 2), labelX,
+                rowTextY(g.aucSellY), "textMuted")
         end
         return
     end

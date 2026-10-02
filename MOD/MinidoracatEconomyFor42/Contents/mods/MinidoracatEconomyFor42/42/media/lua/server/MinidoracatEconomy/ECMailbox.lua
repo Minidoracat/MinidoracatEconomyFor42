@@ -477,8 +477,12 @@ function M.prepare(player, entryLike)
         EC.log("mailbox prepare " .. tostring(entryLike.item) .. ": hasRoomFor gave no answer")
         return nil, "item_unavailable"
     end
+    -- A force-drop heavy item is carried in both hands, never by backpack room (R.isHeavy): one
+    -- unit per claim, and hands already on one take nothing more (deliver, hands_full).
+    local heavy = R.isHeavy(items[1])
+    if heavy then room = n == 1 and R.heldHeavy(player) == nil end
     return { item = entryLike.item, qty = n, items = items, weights = weights, totalWeight = total,
-        unitWeight = heaviest, fits = room }
+        unitWeight = heaviest, fits = room, heavy = heavy or nil }
 end
 
 -- The room numbers a player can act on: what one unit weighs, what is free in the main inventory
@@ -486,9 +490,11 @@ end
 -- capacity and weight hasRoomFor compares, :233-264) and the most that inventory holds when empty
 -- (getEffectiveCapacity, :195-208: 50 by default, traits move it). `needWeight` is what has to be
 -- freed for `wanted` more weight to fit. A reading the engine does not give is left out, never
--- guessed.
-function M.roomFields(out, player, unitWeight, wanted)
+-- guessed. `heavy` = a letter carried in the hands (M.prepare): the client names the hands, not
+-- the weights.
+function M.roomFields(out, player, unitWeight, wanted, heavy)
     out.unitWeight = unitWeight
+    if heavy then out.heavy = true end
     local ok, free, cap = pcall(function()
         local inv = player:getInventory()
         return inv:getFreeCapacity(player), inv:getEffectiveCapacity(player)
@@ -525,6 +531,65 @@ local function sendItems(inv, items)
     if not ok then EC.log("mailbox item notification failed: " .. tostring(err)) end
 end
 
+-- Hands. sendEquip ships what the server's hands hold (LuaManager.java:4313-4316); the client
+-- must already have the object it names, so it always goes after the add packet and before the
+-- remove packet - the order of ISTakeGenerator.complete and ISUnequipAction.complete.
+local function sendHands(player)
+    local ok, err = pcall(sendEquip, player)
+    if not ok then EC.log("mailbox equip notification failed: " .. tostring(err)) end
+end
+
+-- Which of `items` this player holds: { item, primary, secondary } per held object.
+local function heldOf(player, items)
+    local held = {}
+    pcall(function()
+        local a, b = player:getPrimaryHandItem(), player:getSecondaryHandItem()
+        for _, item in ipairs(items) do
+            if item == a or item == b then held[#held + 1] = { item = item, primary = item == a, secondary = item == b } end
+        end
+    end)
+    return held
+end
+
+-- Empty the hands holding any of `items` and tell the client once, before they are removed
+-- (ItemContainer.Remove empties them on the server only, ItemContainer.java:2036-2039). Returns
+-- what was held, for restoreHands when the removal does not happen.
+local function releaseHands(player, items)
+    local held = heldOf(player, items)
+    if #held == 0 then return held end
+    for _, h in ipairs(held) do pcall(function() player:removeFromHands(h.item) end) end
+    sendHands(player)
+    return held
+end
+
+-- Put `held` objects the main inventory holds back into their hands; the client is told unless
+-- `quiet` (a caller that has not sent it the object yet tells it afterwards).
+local function restoreHands(player, held, quiet)
+    local inv, back = player:getInventory(), false
+    for _, h in ipairs(held) do
+        pcall(function()
+            if not inv:contains(h.item) then return end
+            if h.primary then player:setPrimaryHandItem(h.item) end
+            if h.secondary then player:setSecondaryHandItem(h.item) end
+            back = true
+        end)
+    end
+    if back and not quiet then sendHands(player) end
+end
+
+-- A heavy object the server just put (back) into the main inventory goes into both hands, the
+-- only way vanilla carries one (ISEquipHeavyItem.lua:59-86), unless the hands already hold one.
+-- `quiet` as in restoreHands.
+local function carryHeavy(player, items, quiet)
+    if R.heldHeavy(player) ~= nil then return end
+    local inv = player:getInventory()
+    for _, item in ipairs(items) do
+        if R.isHeavy(item) and inv:contains(item) then
+            return restoreHands(player, { { item = item, primary = true, secondary = true } }, quiet)
+        end
+    end
+end
+
 -- Stamped items found by the recovery scan (they carry their own container: bags too).
 local function removeStamped(rec)
     for _, r in ipairs(rec.items) do
@@ -559,12 +624,16 @@ end
 -- Returns one of:
 --   { ok = true, qty }              every object of the letter is confirmed in the inventory
 --   { ok = false, error }           nothing of this attempt is in the inventory any more
---                                   (backpack_full: not one unit fits; unitWeight rides along)
+--                                   (backpack_full: not one unit fits; unitWeight rides along;
+--                                   hands_full: a heavy letter and the hands already hold one)
 --   { ok = false, error, kept }     exactly those objects are in the backpack and the caller
 --                                   settles that subset: `fitted` = the room only took that many
 --                                   (not yet announced to the client: the split re-stamps, then
 --                                   sends), otherwise part of a failed attempt could not be taken
 --                                   back
+-- A heavy letter (M.prepare `heavy`) hands over one unit per claim whatever the room, into both
+-- hands as vanilla takes one (ISTakeGenerator.lua:39-55): the equip is sent here after the add
+-- for a whole letter, and by splitDelivered after its send for a part.
 -- sendAddItemsToContainer only ships the packet (A8): the durable half is the item stamp plus
 -- the claim witness, and the login reconcile is what converges. This is not a network-atomic
 -- handover and does not pretend to be one.
@@ -583,8 +652,12 @@ local function deliver(player, entry, claimSeq, prepared)
         if not letter then return { ok = false, error = err or "item_unavailable" } end
     end
     letter.used = true
-    local fit = n
-    local okRoom, room = pcall(function() return inv:hasRoomFor(player, letter.totalWeight) end)
+    if letter.heavy and R.heldHeavy(player) then
+        return { ok = false, error = "hands_full", unitWeight = letter.unitWeight, heavy = true }
+    end
+    local fit = letter.heavy and 1 or n
+    local okRoom, room = true, true
+    if not letter.heavy then okRoom, room = pcall(function() return inv:hasRoomFor(player, letter.totalWeight) end) end
     if not okRoom or room ~= true then
         -- the room test is monotonic in weight: the longest prefix of whole units it accepts
         fit = 0
@@ -612,9 +685,13 @@ local function deliver(player, entry, claimSeq, prepared)
         for _, item in ipairs(items) do
             if not inv:contains(item) then complete = false; break end
         end
+        if complete and letter.heavy then
+            restoreHands(player, { { item = items[1], primary = true, secondary = true } }, fit < n)
+        end
         if complete and fit == n then return { ok = true, qty = n } end
         if complete then
-            return { ok = false, error = "delivery_partial", kept = items, fitted = true, unitWeight = letter.unitWeight }
+            return { ok = false, error = "delivery_partial", kept = items, fitted = true, unitWeight = letter.unitWeight,
+                heavy = letter.heavy }
         end
     end
     EC.log("mailbox deliver " .. tostring(entry.id) .. " incomplete: " .. tostring(perr))
@@ -622,9 +699,12 @@ local function deliver(player, entry, claimSeq, prepared)
     if #kept == 0 then return { ok = false, error = "delivery_failed" } end
     if #kept == n then
         sendItems(inv, kept)
+        if letter.heavy then carryHeavy(player, kept) end
         return { ok = true, qty = n, forced = true }
     end
-    return { ok = false, error = "delivery_partial", kept = kept, unitWeight = letter.unitWeight }
+    -- the part that stayed is announced by splitDelivered, which sends the equip after it
+    if letter.heavy then carryHeavy(player, kept, true) end
+    return { ok = false, error = "delivery_partial", kept = kept, unitWeight = letter.unitWeight, heavy = letter.heavy }
 end
 
 local function anomaly(username, mailId, resolution, extra)
@@ -681,6 +761,8 @@ local function splitDelivered(player, o, entry, claimSeq, kept, ms, inPlace)
         for _, item in ipairs(kept) do syncStamp(player, item) end
     else
         sendItems(player:getInventory(), kept)
+        -- a heavy unit deliver put in the hands: the client hears the equip after it has the unit
+        if #heldOf(player, kept) > 0 then sendHands(player) end
     end
     return child
 end
@@ -708,9 +790,10 @@ end
 
 -- Returns { ok = true, mailId, item, qty, deliveredQty, remainingQty } or
 -- { ok = false, error, deliveredQty, remainingQty, childMailId? } plus, when the room decided it
--- (backpack_full, or a delivery_partial that took what fit), the numbers the player can act on:
--- unitWeight, freeCapacity, capacity and needWeight - for backpack_full what one more unit
--- needs, for delivery_partial what the rest of the letter needs (M.roomFields).
+-- (backpack_full, hands_full, or a delivery_partial that took what fit), the numbers the player
+-- can act on: unitWeight, freeCapacity, capacity and needWeight - for backpack_full what one more
+-- unit needs, for delivery_partial what the rest of the letter needs (M.roomFields) - and
+-- heavy = true when the letter goes into the hands instead.
 -- Item counts accompany, and never replace, the boolean delivery result.
 -- `prepared` is an M.prepare result for this same letter made earlier in the same synchronous
 -- handler (a purchase prepares before it debits): its objects are reused instead of built twice.
@@ -763,16 +846,16 @@ function M.claim(player, mailId, prepared)
         end
         return M.roomFields({ ok = false, error = "delivery_partial", mailId = mailId, childMailId = child.id,
             item = entry.item, qty = total, deliveredQty = child.qty, remainingQty = entry.qty },
-            player, res.unitWeight, (res.unitWeight or 0) * entry.qty)
+            player, res.unitWeight, (res.unitWeight or 0) * entry.qty, res.heavy)
     end
     entry.state = "ready"
     local out = { ok = false, error = res.error, mailId = mailId, item = entry.item, deliveredQty = 0, remainingQty = total }
-    if res.error == "backpack_full" then M.roomFields(out, player, res.unitWeight, res.unitWeight) end
+    if res.error == "backpack_full" or res.error == "hands_full" then M.roomFields(out, player, res.unitWeight, res.unitWeight, res.heavy) end
     return out
 end
 
 -- The room numbers ride along with every copy of a claim result (reply, batch row, notice).
-local ROOM_KEYS = { "unitWeight", "freeCapacity", "needWeight", "capacity" }
+local ROOM_KEYS = { "unitWeight", "freeCapacity", "needWeight", "capacity", "heavy" }
 local function copyRoom(out, claim)
     for _, k in ipairs(ROOM_KEYS) do out[k] = claim[k] end
     return out
@@ -862,12 +945,20 @@ function M.finishOut(username, id, rec, kind, ref)
     return R.finishOut(username, id, rec, kind, ref)
 end
 
+-- An abort after the removal (the fee or the payout was refused): the objects go back
+-- (R.abortOut), and a heavy one back into both hands, as M.takeOut's own abort does.
 function M.abortOut(player, id, items)
-    return R.abortOut(player, id, items)
+    local ok, err = R.abortOut(player, id, items)
+    carryHeavy(player, type(items) == "table" and items or {})
+    return ok, err
 end
 
+-- Hands holding any of the objects are emptied and the client told first (ISUnequipAction.lua:
+-- 111-130: hands and sendEquip, then the container); an abort that puts the objects back puts
+-- them back into those hands, so a heavy item is not left loose in the backpack.
 function M.takeOut(player, id, items)
     local inv = player:getInventory()
+    local held = releaseHands(player, items)
     local ok, err = pcall(function()
         for _, item in ipairs(items) do
             inv:Remove(item)
@@ -878,6 +969,7 @@ function M.takeOut(player, id, items)
     if ok then return true end
     EC.log("list-out removal failed: " .. tostring(err))
     local returned = R.abortOut(player, id, items)
+    restoreHands(player, held)
     return false, returned and "delivery_failed" or "recovery_pending"
 end
 
@@ -973,7 +1065,8 @@ end
 -- holder's market history and a notice. What could make a removal wrong is held instead: a
 -- receipt this run has not seen saved (a rollback would take the operation away and leave
 -- nothing), an id two objects of that type wear, an equipped or hotbar object, a bag with
--- contents.
+-- contents. A heavy item in the hands is no equip slot (R.removalBlock): the hands are emptied
+-- first, and put back if the removal does not happen.
 local function reclaimStaleCopies(player, username, scan)
     local notices, noticeOf = {}, {}
     for id, rows in pairs(scan.byId) do
@@ -989,12 +1082,13 @@ local function reclaimStaleCopies(player, username, scan)
                 end
                 local blocked = (same > 1 and "duplicate_unit")
                     or (R.receiptVerdict(receipt) ~= "survived" and "stale_copy_unsaved")
-                    or R.removalBlock(row)
+                    or R.removalBlock(row, player)
                 if not blocked then
                     -- a listing or an auction detached the parts before its snapshot and left
                     -- them with the seller; a sale to the system took them with the item
                     if receipt.kind ~= "buyback" then S.Codec.detachParts(row.item, player:getInventory()) end
                     local snapshot = S.Codec.snapshot(row.item)
+                    local held = releaseHands(player, { row.item })
                     if R.dropRow(row) then
                         local foreign = receipt.owner ~= username and receipt.owner or nil
                         local reclaimId = R.noteReclaim({ username = username, owner = receipt.owner, opId = opId,
@@ -1014,6 +1108,7 @@ local function reclaimStaleCopies(player, username, scan)
                         end
                         notice.qty = notice.qty + 1
                     else
+                        restoreHands(player, held)
                         blocked = "remove_unconfirmed"
                     end
                 end

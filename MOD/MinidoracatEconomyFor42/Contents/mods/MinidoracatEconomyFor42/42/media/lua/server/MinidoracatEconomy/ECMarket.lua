@@ -556,7 +556,7 @@ function Mk.buy(player, args)
     if not prepared then return { ok = false, error = perr or "item_unavailable" } end
     if not prepared.fits and args.acceptMail ~= true then
         return { ok = false, error = "mail_confirmation_required", willMail = true, listingId = l.id, item = l.item,
-            qty = prepared.qty, totalWeight = prepared.totalWeight, price = l.price, currency = currency }
+            qty = prepared.qty, totalWeight = prepared.totalWeight, price = l.price, currency = currency, heavy = prepared.heavy }
     end
     local tax = pct(l.price, EC.sandbox("MarketSalesTaxPercent", 5))
     if tax >= l.price then tax = l.price - 1 end
@@ -736,8 +736,11 @@ S.handlers["market.mine"] = function(player, args)
         atTerminal = T.near(player), requestId = type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil })
 end
 
+-- requestId is echoed: an item dragged onto the picker waits for the answer to the read it asked
+-- for after the item arrived, not for whichever older read lands first.
 S.handlers["market.candidates"] = function(player, args)
     S.reply(player, "market.candidates", {
+        requestId = type(args) == "table" and type(args.requestId) == "string" and #args.requestId <= 96 and args.requestId or nil,
         items = Mk.candidates(player), atTerminal = T.near(player),
         feePercent = EC.sandbox("MarketListingFeePercent", 2), taxPercent = EC.sandbox("MarketSalesTaxPercent", 5),
         priceMin = EC.sandbox("MarketPriceMin", 1), priceMax = EC.sandbox("MarketPriceMax", 1000000),

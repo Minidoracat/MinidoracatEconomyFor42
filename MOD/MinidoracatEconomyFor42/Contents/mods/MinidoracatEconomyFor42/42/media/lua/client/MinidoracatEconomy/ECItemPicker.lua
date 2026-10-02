@@ -102,11 +102,12 @@ local function notFixed(rec) return not rec.fixed end
 
 -- What the English half of `search` is worth right now. It goes first on the hint line, because
 -- the hint is fitted to one line: the count may be cut, the reason a name is missing may not.
+-- With the index complete, the line says the other way in: drag the item onto the page.
 local function namesNote()
     local names = Names.status()
     if names == "loading" or names == "idle" then return tr("Admin_Pick_NamesLoading") end
     if names == "partial" then return tr("Admin_Pick_NamesPartial") end
-    return nil
+    return tr("Admin_Pick_DragHint")
 end
 
 function P.create(owner, policy, onPick, onCancel)

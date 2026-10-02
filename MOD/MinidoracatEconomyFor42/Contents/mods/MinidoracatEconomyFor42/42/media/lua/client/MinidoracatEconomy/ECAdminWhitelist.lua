@@ -458,6 +458,12 @@ function Page:onPicked(record)
     self:invalidateKeyboard()
 end
 
+-- An item dragged onto the page or sent from the item menu: picked as if from the search.
+function Page:addRecord(record)
+    if self.picker:isOpen() then self.picker:close() end
+    self:onPicked(record)
+end
+
 function Page:onPickCancelled()
     self:layout()
     self:invalidateKeyboard()
