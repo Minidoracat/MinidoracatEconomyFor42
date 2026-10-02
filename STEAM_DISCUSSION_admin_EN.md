@@ -53,7 +53,7 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [list]
 [*] On Steam servers a name acts as its account only when its SteamID matches; otherwise it gets no wallet, trades or notices and sees "Identity not verified". Split-screen players 2-4 never can; AllowCoop=false keeps split-screen off the server.
 [*] [b]Binding is automatic[/b]: at first login and character creation (suspected impersonation alerts online admins), and companion imports the whole whitelist. Without companion, press Import identities on Admin - Identity.
-[*] [b]One economy account per Steam account by default[/b]: other logins are told so, their assets untouched. The first login is the main one; after an import, the one that used the economy first. To allow several, enable "Allow several economy accounts per Steam account" (role-management permission).
+[*] [b]One economy account per Steam account by default[/b]: other logins are told so, their assets untouched. The first login is the main one; after an import, the one that used the economy first. To allow several, enable "Allow several economy accounts per Steam account" (role-management permission). The Identity page's Multi-account list shows every login with its main account and state.
 [*] A name bound to another SteamID becomes a conflict, never rebound automatically; confirm it with a reason only if the owner really changed Steam accounts.
 [*] [b]Logins of one Steam account[/b] can also merge into the main account (money, today's claims, daily limits, unclaimed mail). [b]Preview only by default[/b]: review the plan on the Identity page, then enable "Merge the login names of one Steam account".
 [/list]
