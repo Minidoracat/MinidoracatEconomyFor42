@@ -210,6 +210,9 @@ knownItems = {
     -- 衣物（Clothing.java）：scratch / bite = 腳本 ScratchDefense / BiteDefense；牛仔褲是補丁探針
     ["Base.Tshirt_DefaultTEXTURE"] = { w = 0.2, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 0, bite = 0 } },
     ["Base.Trousers_Denim"] = { w = 0.5, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 20, bite = 0 } },
+    -- 手錶是 AlarmClockClothing（Clothing 子類別，ItemType ALARM_CLOCK_CLOTHING）；擺放式鬧鐘是 ALARM_CLOCK
+    ["Base.WristWatch_Right_DigitalBlack"] = { w = 0.1, cat = "Accessory", main = "Clothing", itemType = "ALARM_CLOCK_CLOTHING", clothing = { scratch = 0, bite = 0 }, alarm = true },
+    ["Base.AlarmClock2"] = { w = 0.3, cat = "Electronics", main = "Normal", itemType = "ALARM_CLOCK", alarm = true },
     -- 非 Base 模組物品：伺服器的 ScriptManager 認得就算數（目錄新增不是 Base-only）
     ["MiniFarm.CatSnack"] = { w = 0.2, cat = "Food", main = "Normal" },
     -- 雙手搬運的重物（normal.txt LargeStone：Weight 40、Tags base:heavyitem → InventoryItem.isForceDropHeavyItem）
@@ -546,6 +549,16 @@ function instanceItem(fullType)
         it.setColor = function(_, c) it.col = c end
         -- Clothing.getName 會加「Bloody」等前綴（Clothing.java:440-472），getDisplayName 是原名
         it.getName = function() if it.bloodLv > 25 then return "Bloody, " .. it.name end; return it.name end
+    end
+    if k.alarm then
+        -- 新物品亂數鬧鐘（AlarmClockClothing.randomizeAlarm:71-79）；這裡用物品 ID 讓每支不同
+        it.alarmHour, it.alarmMinutes, it.alarmSet = id % 24, (id % 6) * 10, id % 2 == 0
+        it.getHour = function() return it.alarmHour end
+        it.setHour = function(_, v) it.alarmHour = v end
+        it.getMinute = function() return it.alarmMinutes end
+        it.setMinute = function(_, v) it.alarmMinutes = v end
+        it.isAlarmSet = function() return it.alarmSet end
+        it.setAlarmSet = function(_, v) it.alarmSet = v end
     end
     return it
 end
@@ -1045,6 +1058,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: the mod's own terminal 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: a registered vanilla console is locked (scenario TG: sledgehammer, scrap, pickup gate and execution, the map ATM option does not open it, a terminal manager still can, an unregistered console and an unregistered-again console stay ordinary); the build entry follows AdminRoles (scenario RL)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: removing shop items and the item limit (scenario SD: write gate and all-or-nothing, refusals, the server's own reason check, file/revision/push, the audit keeps the row, a resent purchase, pasting the row back with its counts, the limit option and its push, its range, lowering it, the hard ceiling at load and on the wire, removing every row)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: heavy items carried in both hands (scenario HV: picker, list-out empties the hands first, delivery into both hands, hands_full keeps the letter (3), shop buy past the backpack limit, one unit per claim (2), auction and buyback share the list-out, a stale copy in the hands is reclaimed, an aborted list-out puts it back, so does a refusal after the removal)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: wristwatches are listable with their alarm (scenario 28d: not fixed while a standing alarm clock is, alarm time and switch rebuilt, the rolled alarm left out of the buyback comparison)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3616,6 +3630,21 @@ check(back.vis.hue == tee.vis.hue and back.vis.tint:getRedFloat() == tee.vis.tin
     and back.vis.choice == tee.vis.choice and back.vis.decal == tee.vis.decal, "the rebuilt shirt keeps the seller's look, not a new roll")
 check(Codec.signature(Codec.snapshot(back)) == Codec.signature(snap) and Codec.isCanonical(tee, TEE) == false,
     "a rebuilt copy snapshots to the same signature, and a worn shirt is never bought back as new")
+-- 手錶：不再是固定拒絕類別（鬧鐘時間與開關隨快照走）；擺放式鬧鐘仍固定拒絕
+local WATCH = "Base.WristWatch_Right_DigitalBlack"
+files["MinidoracatEconomy/whitelist.json"] = { lines = { EC.jsonEncode({ categories = { "Clothing", "Accessory", "Electronics" } }) }, opens = 0 }
+check(Codec.load() == true and Codec.check(instanceItem(WATCH)) == true and EC.isFixedType(ScriptManager.instance:FindItem("Base.AlarmClock2")) == true
+    and select(2, Codec.check(instanceItem("Base.AlarmClock2"))) == "not_whitelisted",
+    "a wristwatch in a whitelisted category is listable; a standing alarm clock stays fixed")
+local watch = instanceItem(WATCH); watch.alarmHour, watch.alarmMinutes, watch.alarmSet = 7, 30, true
+local wback = Codec.rebuild(Codec.snapshot(watch))
+local fresh = instanceItem(WATCH)
+check(wback.alarmHour == 7 and wback.alarmMinutes == 30 and wback.alarmSet == true
+    and (fresh.alarmHour ~= 7 or fresh.alarmMinutes ~= 30 or fresh.alarmSet ~= true),
+    "the rebuilt watch keeps the seller's alarm time and switch, not a new roll")
+local w1, w2 = instanceItem(WATCH), instanceItem(WATCH)
+check(Codec.signature(Codec.snapshot(w1)) ~= Codec.signature(Codec.snapshot(w2)) and Codec.isCanonical(w2, WATCH) == true,
+    "two fresh watches differ only in their rolled alarm, which the buyback comparison ignores")
 -- 補在破洞上的補丁：conditionGain 帶不走 -> 拒絕（上架與收購共用 stateCheck）
 local patched = instanceItem(TEE)
 patched.vis:setHole(part(4)); sew(patched, 4, 1, 2)

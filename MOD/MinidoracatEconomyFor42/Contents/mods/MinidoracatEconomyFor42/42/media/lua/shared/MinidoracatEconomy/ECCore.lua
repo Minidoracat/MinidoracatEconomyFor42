@@ -131,11 +131,11 @@ end
 -- rebuilt copy would silently lose it. Script items carry their class as an ItemType
 -- (Item.java:1375-1385 getItemType/isItemType; the registry names are the static fields of
 -- ItemType.java:7-22, exposed to Lua by LuaManager.java:2311). Shared: the server refuses in
--- Codec.check, the admin page hides these classes from the category list. Radios and clothing are
--- not here: DeviceData and the per-part wear travel in the snapshot (Codec.snapshot / rebuild);
--- bags and pockets are CONTAINER, a wristwatch ALARM_CLOCK_CLOTHING, and worn clothing is refused
--- as equipped by Codec.stateCheck.
-EC.LISTING_FIXED_TYPES = { "CONTAINER", "KEY", "KEY_RING", "MOVEABLE", "MAP", "ALARM_CLOCK", "ALARM_CLOCK_CLOTHING", "ANIMAL" }
+-- Codec.check, the admin page hides these classes from the category list. Radios, clothing and
+-- wristwatches are not here: DeviceData, the per-part wear and a watch's alarm travel in the
+-- snapshot (Codec.snapshot / rebuild); bags and pockets are CONTAINER, and worn clothing is
+-- refused as equipped by Codec.stateCheck. A standing alarm clock (ALARM_CLOCK) stays fixed.
+EC.LISTING_FIXED_TYPES = { "CONTAINER", "KEY", "KEY_RING", "MOVEABLE", "MAP", "ALARM_CLOCK", "ANIMAL" }
 function EC.isFixedType(script)
     if script == nil or ItemType == nil then return false end
     for _, name in ipairs(EC.LISTING_FIXED_TYPES) do

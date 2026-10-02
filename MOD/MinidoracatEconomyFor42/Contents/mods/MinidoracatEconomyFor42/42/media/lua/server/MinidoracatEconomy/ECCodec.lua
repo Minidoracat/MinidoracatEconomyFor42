@@ -8,9 +8,10 @@
 -- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
 -- or one item per write, written straight back, refused with whitelist_stale when the file on disk
 -- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
--- the file: none of EC.LISTING_FIXED_TYPES (containers, keys, maps, moveables, animals; radios
--- travel with their DeviceData, clothing with its per-part holes / blood / dirt / patches and its
--- look), nothing rotten, equipped (worn clothing included) or favourite or broken, and no modData
+-- the file: none of EC.LISTING_FIXED_TYPES (containers, keys, maps, moveables, standing alarm
+-- clocks, animals; radios travel with their DeviceData, clothing with its per-part holes / blood /
+-- dirt / patches and its look, a wristwatch with its alarm), nothing rotten, equipped (worn
+-- clothing included) or favourite or broken, and no modData
 -- larger than the snapshot may carry (the data itself travels: vanilla writes customName /
 -- condition:* there). State a snapshot cannot carry is refused instead of dropped: a notebook's
 -- writing or author lock, applied poison, a prepared dish's ingredients, a fertilized egg, a
@@ -41,6 +42,9 @@
 --   raw custom name (getName adds prefixes)         InventoryItem.java:2428-2479, 3204-3206
 --   preview maxima                                  InventoryItem.java:2502, 2705-2715, 3909-3911 ; FluidContainer.java:530
 --   device battery / medium                         DeviceData.java:84, 259-273, 588-601, 1310-1330 ; KahluaConverterManager.java:206
+--   wristwatch alarm (hour, minute, set)            AlarmClockClothing.java:71-79, 232-254, 262-310
+--                                                   (42.21.0; the server sets it the same way,
+--                                                   SyncPlayerAlarmClockPacket.java:45-58)
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Shop then
     require "MinidoracatEconomy/ECShop"
@@ -548,13 +552,13 @@ end
 
 -- The system buys only what it could have handed out itself: the item must look like a freshly
 -- created one of that type in everything the shop pays for (condition, uses, repairs, read
--- pages, food state, fluid, no custom name, clothing wear). Age, modData and a garment's look are
--- not compared: vanilla writes the first two on ordinary items (planks carry customName,
--- Food.updateAge ticks age; Food.java:774) and rolls the look for every new copy.
+-- pages, food state, fluid, no custom name, clothing wear). Age, modData, a garment's look and a
+-- watch's alarm are not compared: vanilla writes the first two on ordinary items (planks carry
+-- customName, Food.updateAge ticks age; Food.java:774) and rolls the other two for every new copy.
 local canonical = {}
 local function canonicalSignature(s)
     local copy = {}
-    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" and k ~= "look" then copy[k] = v end end
+    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" then copy[k] = v end end
     return Codec.signature(copy)
 end
 
@@ -663,6 +667,12 @@ function Codec.snapshot(item)
             mediaIndex = call(dev, "getMediaIndex"),
         }
     end
+    -- a wristwatch: every new one rolls its alarm (AlarmClockClothing.randomizeAlarm), so it is
+    -- always stored, and left out of the buyback comparison like a garment's look
+    local hour = call(item, "getHour")
+    if type(hour) == "number" then
+        s.alarm = { hour = hour, minute = call(item, "getMinute"), set = call(item, "isAlarmSet") == true }
+    end
     clothSnapshot(item, s)
     local fluid = fluidOf(item)
     if fluid and fluid.name ~= "" and (fluid.amount or 0) > 0 then s.fluid = { name = fluid.name, amount = fluid.amount } end
@@ -763,6 +773,11 @@ function Codec.rebuild(s)
             -- no setMediaIndex: see device_media in Codec.stateCheck (a listed device holds no medium)
             if d.on then call(dev, "setTurnedOnRaw", true) end
         end
+    end
+    if type(s.alarm) == "table" then
+        if type(s.alarm.hour) == "number" then call(item, "setHour", s.alarm.hour) end
+        if type(s.alarm.minute) == "number" then call(item, "setMinute", s.alarm.minute) end
+        call(item, "setAlarmSet", s.alarm.set == true)
     end
     -- a fresh container starts with its script's fluid (FluidContainer.readFromScript,
     -- FluidContainer.java:99-112) and an empty one leaves no fluid in the snapshot: empty it either way
