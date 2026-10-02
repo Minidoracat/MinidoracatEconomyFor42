@@ -384,7 +384,7 @@ function Au.create(player, args)
 
     local ms = EC.now()
     for _, item in ipairs(items) do Codec.detachParts(item, inv) end
-    local snapshot = Codec.snapshot(items[1])
+    local snapshot = Codec.lotSnapshot(items)
     local qty = #items
     local id = S.newId()
     local _, seq = EC.parseId(id)

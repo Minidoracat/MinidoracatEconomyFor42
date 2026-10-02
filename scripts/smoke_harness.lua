@@ -1062,6 +1062,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: removing shop items and
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: heavy items carried in both hands (scenario HV: picker, list-out empties the hands first, delivery into both hands, hands_full keeps the letter (3), shop buy past the backpack limit, one unit per claim (2), auction and buyback share the list-out, a stale copy in the hands is reclaimed, an aborted list-out puts it back, so does a refusal after the removal)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: wristwatches are listable with their alarm (scenario 28d: not fixed while a standing alarm clock is, alarm time and switch rebuilt, the rolled alarm left out of the buyback comparison)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the picker's worn / in-hand tag (scenario 28d: an equipped refusal says where the item is, worn and held copies stay apart)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a lot leaves out the hidden records nothing reads back (scenario LM: one picker row, the stored lot keeps only records every copy shares, an auction lot the same, a single copy keeps everything)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19340,6 +19341,69 @@ local feeRefused = cmd(seller, "market.list", { itemId = refused.id, price = 100
 L.debit = realDebit
 check(feeRefused.ok == false and feeRefused.error == "account_frozen" and heldAfterAdd(seller, refused),
     "HV-10: a fee refused after the removal puts the heavy item back into both hands, the equip after the item")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 LM：合併上架不看沒人讀的隱藏紀錄 =====
+io.write("scenario LM: a lot leaves out the hidden records nothing reads back\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("lm-admin"); boss.role = "admin"
+local seller = fakePlayer("lm-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("lm-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "lm-seed", reasonCode = "t" })
+local function plank(md)
+    local it = instanceItem("Base.Plank")
+    for k, v in pairs(md) do it.modData[k] = v end
+    seller.inventory:AddItem(it)
+    return it
+end
+-- the same plank moved in two different hours (MinidoracatCleaner), once dropped, once made from
+-- rope (the vanilla crafting record); every copy has the same name flag and the same twine count
+local a = plank({ customName = true, ["Base.Twine"] = 2, ["Base.Rope"] = 1, MIC42_t = "lm-seller,1790776800" })
+local b = plank({ customName = true, ["Base.Twine"] = 2, MIC42_t = "lm-seller,1790780400", MIC42_d = "lm-seller" })
+local c = plank({ customName = true, ["Base.Twine"] = 2, MIC42_lastMovedBy = "someone" })
+-- not records: a key that names no item, a count stored as text
+plank({ customName = true, ["Base.Twine"] = 2, ["Base.NotAnItem"] = 1 })
+plank({ customName = true, ["Base.Twine"] = "2" })
+-- a copy left with nothing once its stamp is set aside, and one that never had modData
+local f = plank({ MIC42_d = "lm-seller" })
+local g = plank({})
+local counts = {}
+for _, r in ipairs(cmd(seller, "market.candidates").items) do
+    if r.item == "Base.Plank" then counts[#counts + 1] = r.count end
+end
+check(#counts == 4 and counts[1] == 3 and counts[2] == 1 and counts[3] == 1 and counts[4] == 2,
+    "LM-1: copies differing only in mover stamps and crafting records are one row; a key naming no item or a count stored as text still split")
+local listed = cmd(seller, "market.list", { itemIds = { a.id, b.id, c.id }, price = 30 })
+local lot = listed.ok and S.modData().market.listings[listed.listingId]
+local md = lot and lot.snapshot.modData or {}
+check(listed.ok == true and lot.qty == 3 and md["Base.Twine"] == 2 and md.customName == true
+    and md["Base.Rope"] == nil and md.MIC42_t == nil and md.MIC42_d == nil,
+    "LM-2: the lot keeps a record only when every copy has the same one: the shared twine count stays, the first copy's rope and the differing stamps do not")
+local auction = cmd(seller, "auction.create", { itemIds = { f.id, g.id }, startPrice = 20, hours = 24 })
+local held = auction.ok and S.modData().auctions.items[auction.auctionId]
+check(auction.ok == true and held.qty == 2 and held.snapshot.modData == nil,
+    "LM-3: an auction lot is stored the same way: the first copy's stamp does not reach the copy that had none")
+local h = plank({ ["Base.Rope"] = 1, MIC42_t = "lm-seller,1790776800" })
+local single = cmd(seller, "market.list", { itemIds = { h.id }, price = 10 })
+local one = single.ok and S.modData().market.listings[single.listingId].snapshot.modData or {}
+check(single.ok == true and one["Base.Rope"] == 1 and one.MIC42_t == "lm-seller,1790776800",
+    "LM-4: a single copy keeps every record it had")
 onlinePlayers = {}
 end)()
 

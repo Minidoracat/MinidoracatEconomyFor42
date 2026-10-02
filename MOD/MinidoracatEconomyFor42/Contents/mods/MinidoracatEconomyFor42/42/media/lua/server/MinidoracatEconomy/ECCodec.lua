@@ -684,19 +684,70 @@ function Codec.snapshot(item)
     return s
 end
 
+-- Hidden records two copies of one item may differ in without being different goods. A lot
+-- leaves them out of the comparison (Codec.signature) and keeps one only when every copy carries
+-- the same value (Codec.lotSnapshot), so merging can lose such a record but never hand it to a
+-- copy that did not have it. Nothing reads either kind back (vanilla Lua, the engine and the
+-- production server's mods, searched 2026-10-02):
+--   MIC42_*: MinidoracatCleaner's "<last mover>,<hour>" and dropper stamps
+--     (MinidoracatCleaner_Core.lua:21-34), rewritten whenever the item is moved or dropped
+--   <Module.Type> = count: the inputs of a craft with a single output
+--     (ISHandcraftAction:performRecipe, ISHandcraftAction.lua:236-247)
+local function looseRecord(k, v)
+    if type(k) ~= "string" then return false end
+    if string.sub(k, 1, 6) == "MIC42_" then return true end
+    return type(v) == "number" and string.find(k, ".", 1, true) ~= nil and itemExists(k)
+end
+
 -- Items with the same signature are interchangeable copies (one listing may carry several of
--- them): the whole snapshot except the clock it was taken at.
+-- them): the whole snapshot except the clock it was taken at and the loose records above.
 function Codec.signature(s)
+    local copy = {}
+    for k, v in pairs(s) do copy[k] = v end
     local food = s.food
     if type(food) == "table" and food.listedHours ~= nil then
-        local copy = {}
-        for k, v in pairs(s) do copy[k] = v end
         local f = {}
         for k, v in pairs(food) do if k ~= "listedHours" then f[k] = v end end
         copy.food = f
-        s = copy
     end
-    return EC.jsonEncode(s)
+    if type(s.modData) == "table" then
+        local md, any = {}, false
+        for k, v in pairs(s.modData) do
+            if not looseRecord(k, v) then
+                md[k] = v
+                any = true
+            end
+        end
+        copy.modData = any and md or nil
+    end
+    return EC.jsonEncode(copy)
+end
+
+-- The one snapshot a lot is stored as, once every copy passed the same signature: the first
+-- copy's, with a loose record kept only when all of them carry it with the same value.
+function Codec.lotSnapshot(items)
+    local s = Codec.snapshot(items[1])
+    if #items < 2 or type(s.modData) ~= "table" then return s end
+    local others = {}
+    for i = 2, #items do others[#others + 1] = call(items[i], "getModData") end
+    local md, any = {}, false
+    for k, v in pairs(s.modData) do
+        local keep = true
+        if looseRecord(k, v) then
+            for _, o in ipairs(others) do
+                if type(o) ~= "table" or o[k] ~= v then
+                    keep = false
+                    break
+                end
+            end
+        end
+        if keep then
+            md[k] = v
+            any = true
+        end
+    end
+    s.modData = any and md or nil
+    return s
 end
 
 -- Fresh item from a snapshot; nil, err when the script no longer exists on this server.
