@@ -1034,15 +1034,17 @@ end
 -- (InventoryItemFactory.java:87-92, 144-150), so getItemNameFromFullType answers the raw type
 -- (Translator.java:600-614). The inventory names it from the sprite instead (Moveable.java:151-174):
 -- GroupName + CustomName through the moveables dictionary, "(n/m)" on a piece of a multi-tile
--- object. The sprite, or nil for a type with a script or a name no sprite answers with a
--- CustomName (getSprite answers an unknown name with a placeholder).
+-- object. The sprite, or nil for a type with a script or a name no tile answers with a
+-- CustomName. getSprite makes and keeps a placeholder for a name it does not know
+-- (IsoSpriteManager.java:47-49, 77-81), so the named map is asked first: an item whose MOD was
+-- removed must not leave a fake sprite behind.
 function C.moveableSprite(fullType)
     local sprite = type(fullType) == "string" and string.match(fullType, "^[^.]+%.(.+)$") or nil
     if sprite == nil or sprite == "Moveable" then return nil end
     local ok, own = pcall(function()
         if ScriptManager.instance:FindItem(fullType) ~= nil then return false end
-        local spr = getSprite(sprite)
-        local props = spr and spr:getProperties()
+        if not getSpriteManager(sprite):getNamedMap():containsKey(sprite) then return false end
+        local props = getSprite(sprite):getProperties()
         return props ~= nil and props:has("CustomName")
     end)
     return (ok and own) and sprite or nil
