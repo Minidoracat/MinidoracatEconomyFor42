@@ -3,7 +3,7 @@
   "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "經濟中心開關",
   "UI_MinidoracatEconomy_Options": "Minidoracat 經濟中心",
   "UI_MinidoracatEconomy_ToastSeconds": "通知顯示秒數",
-  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "經濟中心的右上角通知（售出、下架、領取…）停留幾秒",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "經濟中心的右上角通知（售出、下架、領取等）停留幾秒",
   "UI_MinidoracatEconomy_PanelOpacity": "視窗不透明度（%%）",
   "UI_MinidoracatEconomy_PanelOpacity_tooltip": "經濟中心視窗底色的不透明度；可在側欄「設定」調整",
   "UI_MinidoracatEconomy_NavCollapsedPlayer": "經濟中心：導覽只顯示圖示",

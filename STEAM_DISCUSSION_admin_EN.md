@@ -23,8 +23,8 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [*] catalog.json (shop) and whitelist.json (market) are in the server data folder; panel edits are written back. Press Reload after hand edits.
 [*] [b]Shop entries[/b] can be deleted one at a time or several at once, with a required reason; sent mail and transaction records are kept, and re-adding the same ID continues its purchase counts. Delisting only stops sales: also turn off buyback, or delete the entry, to retire it. The entry cap is under Settings - System shop (default 200, up to 1000).
 [*] Drag an item from your bag onto the admin shop page to create an entry, or onto the whitelist page to pick it for a rule; the item right-click "Economy" menu has "Add as a shop item" and "Add a whitelist rule" too.
-[*] [b]Clothing listings[/b] are off by default: open the Clothing, ProtectiveGear and Accessory categories on the whitelist.
-[*] Cat Coin buyback limits default to 0 (off).
+[*] [b]Whitelist categories closed by default[/b]: Clothing, ProtectiveGear and Accessory for clothing; Bag and Container for bags, Security for keys, Furniture for picked-up furniture, Memento for pocket watches. Household (alarm clocks), Literature (hollow books) and the few movables in Camping, Gardening and Material are open by default, so they become listable with 0.7.0; exclude them if you don't want that. Maps and live animals can never be listed; bags and key rings must be empty.
+[*] [b]Buyback[/b] takes only items as good as new; food only needs to be uneaten (cooked, burnt, frozen or stale is fine). Cat Coin buyback limits default to 0 (off).
 [/list]
 
 [h2]💸 Player transfers[/h2]
@@ -91,7 +91,7 @@ The interface and order flow exist, but it is [b]not subscribe-and-go[/b]: you n
 [list]
 [*] [b]A protection limit appeared and items cannot move.[/b] Usually companion is not running or no world save has happened yet; start it, wait for a normal save and check the System page.
 [*] [b]A player sees "Identity not verified".[/b] Check conflicts and alerts on the Identity page. A second login of one Steam account is refused by default; borrowed login names and split-screen players never can.
-[*] [b]A new shop item still can't be listed.[/b] Shop catalog and market whitelist are separate; allow it on the whitelist. Containers, keys and furniture never can; clothing needs its categories opened.
+[*] [b]A new shop item still can't be listed.[/b] Shop catalog and market whitelist are separate; allow it on the whitelist. Only maps and live animals never can; the player's picker names each item's category and why it is refused.
 [/list]
 
 [h2]💬 How to report[/h2]

@@ -42,7 +42,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]System shop[/h3]
 [list]
 [*] Buy at fixed server prices, with per-player or server-wide daily limits.
-[*] When buyback is enabled you can sell qualifying items back to the server. An entry the admin took off sale but still buys back shows as "Not for sale": you can sell it, not buy it.
+[*] When buyback is enabled you can sell items as good as new back to the server; food only needs to be uneaten (cooked, burnt, frozen or stale is fine). The sell window lists the other copies it won't take and why. An entry the admin took off sale but still buys back shows as "Not for sale": you can sell it, not buy it.
 [*] Survivor Coin and Cat Coin prices are set per entry; each trade uses the currency you choose, and [b]no quote never means free[/b].
 [/list]
 
@@ -98,9 +98,10 @@ Supporting mods (Vehicle Manager first) can sell permanent or rented extra slots
 [h2]❓ FAQ[/h2]
 [list]
 [*] [b]Why are the buttons greyed out?[/b] You are not at a terminal; walk within 2 tiles of a map ATM or registered terminal on the same floor.
-[*] [b]Why can't I list my item?[/b] Listing needs the server whitelist plus supported item types and state checks, so [b]not every modded item can be traded[/b]. Containers, keys, furniture, maps, animals, rotten food, equipped or broken items, written or locked notes, poisoned food, dishes with added ingredients, fertilized eggs, mixed fluids and devices holding a disc cannot be listed; the picker explains why.
-[*] [b]Can I list clothing or wristwatches?[/b] Yes, once the server opens the clothing categories (watches are Accessories); holes, patches, blood, dirt, colour and a watch's alarm are kept. Take it off first: the picker marks "Wearing" and "In hand". A patch sewn over a hole cannot be kept: remove it, or at Tailoring 8+ remove it and repair the hole with the same fabric.
-[*] [b]Does food spoil while listed?[/b] Yes.
+[*] [b]Why can't I list my item?[/b] Listing needs the server whitelist plus supported item types and state checks, so [b]not every modded item can be traded[/b]. The picker shows each item's category and why it is refused; ask an admin to open a closed category. Maps and live animals can never be listed; neither can rotten food, equipped or broken items, bags or key rings with something inside, written or locked notes, poisoned food, dishes with added ingredients, fertilized eggs, mixed fluids or devices holding a disc.
+[*] [b]Why won't the shop buy my item?[/b] It only buys items as good as new: full condition, unused, never repaired, not renamed, clothing without holes or dirt; food only needs to be uneaten and not rotten. The sell window lists what it won't take and why.
+[*] [b]Can I list clothing, watches, bags, keys or furniture?[/b] Yes, once the server opens their categories (watches are Accessories; bags, keys, furniture and pocket watches are closed by default). Holes, patches, blood, dirt, colour, alarms, key IDs, a padlock's key count and a lamp's bulb and colour are kept; empty bags and key rings first. Take clothing off first: the picker marks "Wearing" and "In hand". A patch sewn over a hole cannot be kept: remove it, or at Tailoring 8+ remove it and repair the hole with the same fabric.
+[*] [b]Does food spoil while listed?[/b] Yes. Home-canned jars keep their shelf life, and added spices and food-sickness relief go with the food.
 [*] [b]It says "Identity not verified".[/b] The server checks your SteamID; another Steam account on this name, or split-screen players 2-4, cannot use the economy. By default a Steam account uses the economy with one login only (the first); your other logins are told so and keep their wallets. If it is yours, give an admin your Player ID.
 [*] [b]The system took an item out of my bag?[/b] After a crash an older save can bring back items already listed, auctioned or sold. Once the trade is in a world save, the copy is taken back at login with a notice and a line in My market history; worn, hotbar and non-empty bag items are left alone. If it looks wrong, give an admin your Player ID.
 [*] [b]I can't hear the market radio.[/b] Check the device is on, volume is not 0, the band fits and you are in range; after picking "Market Radio" press tune.
