@@ -65,7 +65,9 @@ Codec.FILE = X.ROOT .. "/whitelist.json"
 Codec.MODDATA_MAX_LEAVES = 32      -- scalar values a snapshot's modData may carry
 Codec.MODDATA_MAX_DEPTH = 3        -- nesting: modData -> table -> table
 Codec.MODDATA_STRING_MAX = 128
-Codec.SPICES_MAX = 16              -- spices a food may carry (the journal packs a whole snapshot in 128 values)
+-- spices, and ingredients added to a dish, a food may carry each (the journal packs a whole
+-- snapshot in 128 values; vanilla recipes take at most 6 ingredients, MaxItems in evolvedrecipes.txt)
+Codec.SPICES_MAX = 16
 Codec.FILE_LINES_MAX = 5000
 Codec.FIELDS = { "categories", "types", "excludeTypes" }
 Codec.DEFAULT = {
@@ -519,16 +521,16 @@ function Codec.stateCheck(item)
     if call(item, "isRotten") == true then return false, "perishable" end
     local md = call(item, "getModData")
     if type(md) == "table" and copyModData(md, 0, 0) == nil then return false, "moddata_too_big" end
-    -- Refused, not dropped: pages of up to 16 384 characters and their lock, applied poison, a
-    -- dish's ingredient list and an egg's genome would all vanish in the rebuild; so would spices
-    -- past what a snapshot carries.
+    -- Refused, not dropped: pages of up to 16 384 characters and their lock, applied poison and an
+    -- egg's genome would all vanish in the rebuild; so would spices or ingredients past what a
+    -- snapshot carries.
     if call(item, "isEmptyPages") == false or call(item, "getLockedBy") ~= nil then return false, "written" end
     local poison = call(item, "getPoisonPower")
     if type(poison) == "number" and poison > 0 then return false, "poisoned" end
     local extra = call(item, "getExtraItems")
-    if extra ~= nil and (call(extra, "size") or 0) > 0 then return false, "prepared_dish" end
+    if extra ~= nil and (call(extra, "size") or 0) > Codec.SPICES_MAX then return false, "too_many_ingredients" end
     local spices = call(item, "getSpices")
-    if spices ~= nil and (call(spices, "size") or 0) > Codec.SPICES_MAX then return false, "prepared_dish" end
+    if spices ~= nil and (call(spices, "size") or 0) > Codec.SPICES_MAX then return false, "too_many_ingredients" end
     if call(item, "isFertilized") == true then return false, "fertilized" end
     if call(item, "IsClothing") == true and (call(item, "getPatchesNumber") or 0) > 0 and not patchesCarried(item) then
         return false, "clothing_patch"
@@ -595,6 +597,7 @@ end
 -- Why a copy is not new, in the order a refusal names it: the first field (in this order) that
 -- differs from a fresh copy decides; a difference in anything else is "other".
 local NOT_NEW = {
+    { "dish", "prepared_dish" },
     { "food", "eaten" }, { "condition", "worn" }, { "head", "worn" }, { "sharpness", "worn" },
     { "uses", "used" }, { "keys", "used" }, { "repaired", "repaired" }, { "headRepaired", "repaired" },
     { "readPages", "read" }, { "name", "renamed" }, { "fluid", "fluid" }, { "cloth", "clothing_wear" },
@@ -681,6 +684,22 @@ function Codec.snapshot(item)
         if n > 0 then
             s.food.spices = {}
             for i = 0, math.min(n, Codec.SPICES_MAX) - 1 do s.food.spices[i + 1] = call(spices, "get", i) end
+        end
+        -- A dish (EvolvedRecipe.addItem, EvolvedRecipe.java:228-459): its values above already hold
+        -- what the ingredients added; the list is what the game saves (InventoryItem.java save,
+        -- extraItems), names the dish by and counts for the next ingredient. Raw meat in it makes it
+        -- dangerous uncooked (:357-359), and the result takes the recipe's cookable flag (:257). The
+        -- name ISAddItemInRecipe.checkName gives it is not a custom one, so it is kept apart from
+        -- s.name: a rebuilt dish must still rename itself when the buyer adds to it.
+        local extra = call(item, "getExtraItems")
+        local k = extra and call(extra, "size") or 0
+        if k > 0 then
+            local dish = { items = {}, cookable = call(item, "isCookable") == true }
+            for i = 0, math.min(k, Codec.SPICES_MAX) - 1 do dish.items[i + 1] = call(extra, "get", i) end
+            if call(item, "isbDangerousUncooked") == true then dish.dangerous = true end
+            local name = call(item, "getDisplayName")
+            if s.name == nil and type(name) == "string" and name ~= "" and #name <= Codec.MODDATA_STRING_MAX then dish.name = name end
+            s.dish = dish
         end
     end
     -- A fresh copy starts at the script's full head and edge: only a worn head, a dull edge or a
@@ -935,6 +954,15 @@ function Codec.rebuild(s)
     if type(s.repaired) == "number" then call(item, "setHaveBeenRepaired", s.repaired) end
     if type(s.readPages) == "number" then call(item, "setAlreadyReadPages", s.readPages) end
     if type(s.cloth) == "table" or type(s.look) == "table" then clothRebuild(item, s) end
+    local dish = s.dish
+    if type(dish) == "table" then
+        if type(dish.items) == "table" then
+            for _, fullType in ipairs(dish.items) do call(item, "addExtraItem", fullType) end
+        end
+        if dish.dangerous then call(item, "setbDangerousUncooked", true) end
+        if type(dish.cookable) == "boolean" then call(item, "setIsCookable", dish.cookable) end
+        if type(dish.name) == "string" then call(item, "setName", dish.name) end
+    end
     if type(s.name) == "string" then
         call(item, "setName", s.name)
         call(item, "setCustomName", true)
@@ -1037,7 +1065,8 @@ function Codec.preview(s)
         elseif p.cond and p.condMax and p.condMax > 0 then cap = p.cond / p.condMax end
         p.sharp = math.floor(math.min(num(s.sharpness) or 1, cap, 1) * 100 + 0.5)
     end
-    if num(s.uses) and (num(m.uses) or 0) > 1 then p.uses, p.usesMax = s.uses, m.uses end
+    -- a dish's portions grow with every ingredient, so a fresh copy's count is no maximum for it
+    if num(s.uses) and (num(m.uses) or 0) > 1 and s.dish == nil then p.uses, p.usesMax = s.uses, m.uses end
     -- a battery device (the script's UsesBattery -> setIsBatteryPowered, Item.java:1789): whether
     -- the battery is in and how full it is (DeviceData.java:259-273, 588-601)
     local d = s.device
@@ -1056,6 +1085,7 @@ function Codec.preview(s)
     if s.keyId ~= nil then p.keyed = true end
     if s.remote ~= nil then p.paired = true end
     if type(s.name) == "string" then p.name = s.name end
+    if type(s.dish) == "table" and type(s.dish.items) == "table" and #s.dish.items > 0 then p.ingredients = s.dish.items end
     local food = s.food
     if type(food) == "table" then
         p.food = { cooked = food.cooked == true, burnt = food.burnt == true, frozen = food.frozen == true }

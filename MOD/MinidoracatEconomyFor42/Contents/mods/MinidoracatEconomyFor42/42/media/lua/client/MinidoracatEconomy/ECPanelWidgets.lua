@@ -315,6 +315,11 @@ local function stateTokens(st)
     if food and food.cooked then add("Market_State_Cooked") end
     if food and food.burnt then add("Market_State_Burnt") end
     if food and food.frozen then add("Market_State_Frozen") end
+    if type(st.ingredients) == "table" and #st.ingredients > 0 then
+        local names = {}
+        for i, fullType in ipairs(st.ingredients) do names[i] = itemName(tostring(fullType)) end
+        add("Market_State_Ingredients", table.concat(names, getText(T .. "Admin_Set_ListSep")))
+    end
     if st.clip then add("Market_State_Magazine") end
     if st.chamber then add("Market_State_Chambered") end
     if st.jammed then add("Market_State_Jammed") end

@@ -424,6 +424,12 @@ function instanceItem(fullType)
         it.setChef = function(_, v) it.chef = v end
         it.getPoisonPower = function() return it.poison end
         it.getExtraItems = function() if it.extra then return javaList(it.extra) end; return nil end
+        it.addExtraItem = function(_, v) it.extra = it.extra or {}; it.extra[#it.extra + 1] = v end
+        it.cookable, it.dangerous = k.cookable == true, false
+        it.isCookable = function() return it.cookable end
+        it.setIsCookable = function(_, v) it.cookable = v end
+        it.isbDangerousUncooked = function() return it.dangerous end
+        it.setbDangerousUncooked = function(_, v) it.dangerous = v end
         it.isFertilized = function() return it.fertilized end
         it.isCooked = function() return it.cooked end
         it.setCooked = function(_, v) it.cooked = v end
@@ -1089,6 +1095,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: the export status a page
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: the whitelist's item category and the refusing rule (scenario WC: fixed / category / class fallback, scripts without creating items, picker rows, listing category, excluded, list and auction refusals)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: buyback food states and refusal reasons, classes that left the fixed list (scenario BB: cooked/burnt/frozen/warmed, eaten and sipped, worn and renamed, candidate refusal counts, a refused sale keeps the copy, an empty bag and a full one, padlock key count and lamp light, a map stays fixed, script-less furniture rebuilt from its sprite)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: food state the snapshot dropped (scenario SK: eaten and stale relief against food sickness, every scaled state, matched at the listed age, a canned jar's shelf life and its preview, spices and their cap)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: dishes with added ingredients are listable (scenario DS: the state check, ingredients/name/raw danger/cookable rebuilt, the buyer's preview, no merge across ingredients, the buyback refuses with prepared_dish)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3563,9 +3570,10 @@ local corn = instanceItem("Base.CannedCorn"); corn.poison = 3
 local okP, whyP = Codec.check(corn)
 check(okP == false and whyP == "poisoned" and select(2, Codec.stateCheck(corn)) == "poisoned",
     "poisoned food is refused by the market and by the buyback")
-corn.poison = 0; corn.extra = { "Base.Carrots" }
+corn.poison = 0; corn.extra = {}
+for i = 1, Codec.SPICES_MAX + 1 do corn.extra[i] = "Base.Carrots" end
 local okD, whyD = Codec.check(corn)
-check(okD == false and whyD == "prepared_dish", "a dish with added ingredients is refused")
+check(okD == false and whyD == "too_many_ingredients", "a dish with more ingredients than a snapshot carries is refused")
 corn.extra = nil; corn.fertilized = true
 local okF, whyF = Codec.check(corn)
 check(okF == false and whyF == "fertilized", "a fertilized egg is refused")
@@ -19737,8 +19745,32 @@ local heavy = instanceItem("Base.LemonGrass"); heavy.spices = ArrayList.new()
 for i = 1, Codec.SPICES_MAX + 1 do heavy.spices:add("Base.Spice" .. i) end
 local okHeavy, whyHeavy = Codec.stateCheck(heavy)
 check(spicedBack.spices ~= nil and spicedBack.spices:size() == 2 and spicedBack.spices:get(1) == "Base.Pepper"
-    and okHeavy == false and whyHeavy == "prepared_dish",
+    and okHeavy == false and whyHeavy == "too_many_ingredients",
     "SK-5: the spices travel with the food; more than a snapshot carries is refused")
+end)()
+
+-- DS: a dish made by adding ingredients (EvolvedRecipe.addItem) is listable; its ingredient list,
+-- name, raw-meat danger and cookable flag travel, and the buyback still refuses it.
+;(function()
+local Codec = S.Codec
+local dish = instanceItem("Base.CannedCorn")
+dish.extra = { "Base.Carrots", "Base.Chicken" }; dish.name = "Carrot and Chicken Corn"; dish.dangerous = true; dish.cookable = true
+dish.hunger = -30; dish.calories = 400
+check(Codec.stateCheck(dish) == true, "DS-1: a dish with added ingredients passes the state check")
+local snap = Codec.snapshot(dish)
+local back = Codec.rebuild(snap)
+check(back.extra and #back.extra == 2 and back.extra[2] == "Base.Chicken" and back.name == "Carrot and Chicken Corn"
+    and back.customName == false and back.dangerous == true and back.cookable == true and back.hunger == -30 and back.calories == 400,
+    "DS-2: the rebuilt dish keeps its ingredients, its (non-custom) name, the raw danger, the cookable flag and its food values")
+local view = Codec.preview(snap)
+check(view.ingredients and #view.ingredients == 2 and view.ingredients[1] == "Base.Carrots" and view.name == nil,
+    "DS-3: the buyer's preview lists the ingredients")
+local other = instanceItem("Base.CannedCorn"); other.extra = { "Base.Carrots" }; other.name = dish.name; other.dangerous = true; other.cookable = true
+other.hunger = -30; other.calories = 400
+check(Codec.signature(snap) ~= Codec.signature(Codec.snapshot(other)), "DS-4: dishes with different ingredients never merge into one listing")
+local new, why = Codec.isCanonical(dish, "Base.CannedCorn")
+check(new == false and why == "prepared_dish" and Codec.signature(Codec.snapshot(instanceItem("Base.CannedCorn"))) ~= Codec.signature(snap),
+    "DS-5: the buyback refuses a dish and says why")
 end)()
 
 io.write("\n")
