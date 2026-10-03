@@ -4,7 +4,8 @@
 --   * every string literal must stay ASCII: Kahlua's LexState truncates each char to one byte,
 --     so any user-visible text goes through Translate/<LANG>/*.json keys instead;
 --   * no client-only / server-only globals here (getAccessLevel, sendClientCommand, ...);
---   * Kahlua has no next/assert/xpcall; iterate with pairs, sort with EC.sortSafe.
+--   * Kahlua has no next/xpcall (assert comes from the game's stdlib.lua); iterate with pairs,
+--     sort with EC.sortSafe.
 --
 -- Engine references (snapshot 42.20.4-20260826, see AGENTS.md API table):
 --   getTimestampMs        LuaManager.java:9267-9272  (System.currentTimeMillis, UTC ms)

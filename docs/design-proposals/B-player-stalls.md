@@ -3,7 +3,7 @@
 - 文件性質：產品與 server domain 設計提案
 - 目標版本：Project Zomboid Build 42.20.4
 - 執行環境：多人 dedicated server only；單人不在支援範圍
-- Lua 執行契約：Kahlua；實作禁止呼叫缺失的 `next`／`assert`／`xpcall`，可格式化字串的字面 `%` 一律寫成 `%%`，參數只用 `%1`–`%9`。Kahlua `BaseLib` 的註冊清單見 `BaseLib.java:445-466`
+- Lua 執行契約：Kahlua；實作禁止呼叫缺失的 `next`／`xpcall`，可格式化字串的字面 `%` 一律寫成 `%%`，參數只用 `%1`–`%9`。Kahlua `BaseLib` 的註冊清單見 `BaseLib.java:445-466`
 - 決策狀態：設計候選；第 9、10 章的 blocking gate 通過前不得視為可實作定案
 - 既有決策基線：`docs/economy-system-analysis.md`
 

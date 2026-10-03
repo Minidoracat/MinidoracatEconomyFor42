@@ -515,7 +515,7 @@ client 不可直接用 inventory sync 當交易 mutation。SyncItemDeletePacket 
 
 ### 5.5 Kahlua 與文案安全
 
-- production Lua 不使用 next、assert、xpcall；Kahlua BaseLib 暴露清單沒有這三者：BaseLib.java:445-461。
+- production Lua 不使用 next、xpcall；Kahlua BaseLib 暴露清單沒有這兩者：BaseLib.java:445-461（assert 也不在清單，但遊戲根目錄 stdlib.lua 以 Lua 定義，可用）。
 - table 判空使用 bounded pairs loop；不把每筆 listing 拆成大量無上限的小 table。
 - rawget／rawset 使用全域函式形狀，不用 method call。
 - 翻譯參數只使用 %1 至 %9；字面百分比寫安全的 %%；禁止裸 ASCII %。
@@ -784,7 +784,7 @@ RECONCILE
 | persistent GlobalModData 基礎 | ModData facade：ModData.java:7-49；GlobalModData save／load：GlobalModData.java:218-304；dedicated save pipeline：ServerMap.java:400-412 |
 | 私有文字檔基礎 | getFileReader：LuaManager.java:5933-5964；getFileWriter：6725-6759；允許副檔名：1032-1035；writer methods：12750-12769 |
 | log | writeLog：LuaManager.java:9171-9177；ZLogger timestamp／flush／截斷行為：ZLogger.java:56-79、95-112 |
-| Kahlua base globals | BaseLib 暴露清單：BaseLib.java:445-461；可確認其中沒有 next、assert、xpcall |
+| Kahlua base globals | BaseLib 暴露清單：BaseLib.java:445-461；可確認其中沒有 next、xpcall（assert 也不在清單，由遊戲根目錄 stdlib.lua 以 Lua 定義） |
 
 ### 10.2 只有部分證據，尚不可當完成方案
 
