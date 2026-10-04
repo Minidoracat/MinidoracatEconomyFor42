@@ -1,21 +1,31 @@
 -- MinidoracatEconomyFor42 - generic entitlements (API rev 2, server authority).
 --
 -- A source (ECIntegration) registers products (ECEntitlementPlans owns their price sheets);
--- players buy permanent units or fixed rental groups, opt in to auto-renew, and admins refund a
--- paid order. Consumers read `entitlement.usable` and nothing else (contract supplement 1).
+-- players buy permanent units and any number of independent rentals (each with its own units,
+-- period, renewal and auto-renew consent), and admins refund a paid order. Consumers read
+-- `entitlement.usable` and nothing else (contract supplement 1).
 --
 -- Global ModData (public, financial only - never vehicle ids, coordinates or ACLs):
 --   md.entitlements.rows[modId][username][productId] = Row
 --   Row = { rev,                         -- CAS token, only grows; rows are never deleted
 --           perm,                        -- committed permanent units (durable or not)
 --           pp    = { q, o, epoch, seq, ts, tx } | nil,   -- the part of perm not proven saved
---           lease = { q, D, G, R, cur, amt, tr, start, paidUntil, cycle, last, phase?, reminded? } | nil,
---           pend  = { o, q, D, G, R, cur, amt, tr, renewal?, epoch, seq, ts, tx } | nil,
---           auto  = { on, gen, tr, rev, why?, epoch, seq, at } | nil,
---           orders = { { id, kind, q, amt, cur, tr, renewal?, st, epoch, seq, ts, tx,
+--           rentals = { Rental, ... },   -- creation order, <= RENTALS_MAX; an ended one is pruned
+--           orders = { { id, kind, q, amt, cur, tr, rental?, auto?, renewal?, st, epoch, seq, ts, tx,
 --                        activatedAt?, prev?, rf? }, ... newest first, <= ORDERS_KEEP },
---           notice = { code, at, error? } | nil }
---   D/G/R are milliseconds (period, grace, reminder); tr is the plan revision the terms came from.
+--           notice = { code, at, error?, rental? } | nil }
+--   Rental = { id,                       -- the order id that created it
+--              q,                        -- its units, fixed for its whole life
+--              lease = { price, D, G, R, cur, amt, tr, start, paidUntil, cycle, last, phase?, reminded? } | nil,
+--              pend  = { o, q, price, D, G, R, cur, amt, tr, renewal?, auto?, epoch, seq, ts, tx } | nil,
+--              auto  = { on, gen, price?, cur?, D?, tr, rev, why?, epoch, seq, at } | nil }
+--   D/G/R are milliseconds (period, grace, reminder); price is the rent per unit; tr is the plan
+--   revision the terms came from.
+--   A rental is a contract: each period records the terms it was paid under, and an auto-renew
+--   consent records the money terms the player agreed to (unit price, currency, period). Renewals run
+--   only while the plan still offers exactly those; any other plan edit leaves the consent alone.
+--   Rentals are independent of each other; usable is perm + the units of every live rental, and all
+--   rentals together stay within plan.rentalLimit.
 --
 -- Money and entitlement switch together (contract FINAL 1): every check - including the
 -- consumer's validatePurchase, called before the row and the quote are read again for the CAS -
@@ -41,7 +51,7 @@
 -- a whole, when no line is needed any more.
 --
 -- Scheduler: OnTickEvenPaused (fires on an empty dedicated server, AGENTS.md API table), one step
--- per STEP_MS, at most ROWS_PER_STEP leases per step. Expiry and grace are computed from the clock
+-- per STEP_MS, at most ROWS_PER_STEP rows with rentals per step. Expiry and grace are computed from the clock
 -- on every read; the scheduler only sends notices, activates, and charges consented renewals: the
 -- first attempt at paidUntil, insufficient funds retried every hour until grace ends (then the
 -- consent lapses), other errors paused and retried without touching the consent. A server that was
@@ -70,6 +80,9 @@ local E = EC.Entitlements
 E.QUOTE_TTL_MS = 120000
 E.PERMANENT_QTY_MAX = 100
 E.ORDERS_KEEP = 20
+-- ponytail: a fixed cap on rentals per account keeps the row and the player's list small; raise it
+-- (and page the list) if hosts want many small rentals.
+E.RENTALS_MAX = 10
 E.STEP_MS = 1000
 E.ROWS_PER_STEP = 20
 E.FUNDS_RETRY_MS = 3600000
@@ -88,11 +101,11 @@ local root, ent = nil, nil          -- ModData root, root.entitlements
 local quotes = {}                    -- orderId -> live quote (RAM, this process only)
 local quoteOf = {}                   -- rowKey -> orderId of the one live quote
 local closed, closedRing, closedAt = {}, {}, 0   -- orderId -> { key, error? } of a quote closed unpaid (ring)
-local offOwed = {}                   -- rowKey -> ref: a consent switched off here, its `off` line not read back yet
+local offOwed = {}                   -- rentalKey -> true: a consent switched off here, its `off` line not read back yet
 local waiting = {}                   -- rowKey -> ref: rows with something not yet proven saved
 local leaseRefs, leaseSet, cursor = {}, {}, 1
-local nextRetry = {}                 -- rowKey -> ms before which auto-renew does not try again
-local cooldown = {}                  -- rowKey -> ms before which a new consent is refused
+local nextRetry = {}                 -- rentalKey -> ms before which auto-renew does not try again
+local cooldown = {}                  -- rentalKey -> ms before which a new consent is refused
 local listeners = {}                 -- modId -> { fn, ... }
 local journal = { state = "ok", lines = 0, needSeq = 0, readAt = 0 }
 local lastStep, lastW, dirty = 0, nil, false
@@ -149,15 +162,29 @@ local function copyTable(t)
     return out
 end
 
--- The copy-on-write start of every financial change: a new row table (rev + 1) with a new orders
--- array; nested tables are replaced, never edited.
+-- One rental of a row by id (and its index), or nil.
+local function rentalOf(row, id)
+    for i, r in ipairs(row and row.rentals or {}) do
+        if r.id == id then return r, i end
+    end
+    return nil
+end
+
+-- Process state that belongs to one rental (retry clock, consent cooldown, owed off line).
+local function rentalKey(ref, id)
+    return rowKey(ref.m, ref.u, ref.p) .. "\1" .. tostring(id)
+end
+
+-- The copy-on-write start of every financial change: a new row table (rev + 1) with new orders and
+-- rentals arrays; nested tables (a rental included) are replaced, never edited.
 local function nextRowOf(row)
     local out = row and copyTable(row) or {}
     out.rev = (out.rev or 0) + 1
     out.perm = out.perm or 0
-    local orders = {}
+    local orders, rentals = {}, {}
     for i, o in ipairs(row and row.orders or {}) do orders[i] = o end
-    out.orders = orders
+    for i, r in ipairs(row and row.rentals or {}) do rentals[i] = r end
+    out.orders, out.rentals = orders, rentals
     return out
 end
 
@@ -197,9 +224,36 @@ local function leaseLive(lease, now)
     return lease ~= nil and now < lease.paidUntil + lease.G
 end
 
+-- Rented units that count against plan.rentalLimit: every rental live now or with a payment on the
+-- way (`except` leaves one rental out, for its own renewal).
+local function committed(row, now, except)
+    local n = 0
+    for _, r in ipairs(row and row.rentals or {}) do
+        if r ~= except and (r.pend ~= nil or leaseLive(r.lease, now)) then n = n + r.q end
+    end
+    return n
+end
+
+-- Rented units usable now.
+local function rentedLive(row, now)
+    local n = 0
+    for _, r in ipairs(row and row.rentals or {}) do
+        if leaseLive(r.lease, now) then n = n + r.q end
+    end
+    return n
+end
+
+-- The money terms a consent was given for, against the plan as it stands: auto-renew charges only
+-- while they are the same. A changed price, currency or period waits for the player's new consent.
+local function sameTerms(auto, plan)
+    return auto.price == plan.rentalPrice and auto.cur == plan.rentalCurrency and auto.D == plan.rentalDays * E.DAY_MS
+end
+
 local function hasPending(row, w)
-    if row.pend or pendingPermanent(row, w) > 0 then return true end
-    if row.auto and verdict(row.auto, w) ~= "confirmed" then return true end
+    if pendingPermanent(row, w) > 0 then return true end
+    for _, r in ipairs(row.rentals or {}) do
+        if r.pend or (r.auto and verdict(r.auto, w) ~= "confirmed") then return true end
+    end
     for _, o in ipairs(row.orders or {}) do
         if verdict(o, w) ~= "confirmed" then return true end
         if o.rf and verdict(o.rf, w) ~= "confirmed" then return true end
@@ -317,13 +371,13 @@ end
 
 -- ---------- activation ----------
 
--- Start (or continue) the paid period of `row.pend` at `at`. Only called with the payment proven
--- saved and `at` already in the journal (or read from it).
-local function activate(ref, row, at)
-    local pend, lease = row.pend, row.lease
+-- Start (or continue) the paid period of rental `r`'s pending payment at `at`. Only called with the
+-- payment proven saved and `at` already in the journal (or read from it).
+local function activate(ref, row, r, at)
+    local pend, lease = r.pend, r.lease
     local continuing = lease ~= nil and at < lease.paidUntil + lease.G
     local nextLease = {
-        q = pend.q, D = pend.D, G = pend.G, R = pend.R, cur = pend.cur, amt = pend.amt, tr = pend.tr,
+        price = pend.price, D = pend.D, G = pend.G, R = pend.R, cur = pend.cur, amt = pend.amt, tr = pend.tr,
         start = continuing and lease.start or at,
         paidUntil = (continuing and lease.paidUntil or at) + pend.D,
         cycle = (lease and lease.cycle or 0) + 1, last = pend.o, phase = "active",
@@ -339,50 +393,51 @@ local function activate(ref, row, at)
         end
     end
     local seq = S.nextSeq()
-    row.orders, row.lease, row.pend = orders, nextLease, nil
+    row.orders, r.lease, r.pend = orders, nextLease, nil
     row.rev = row.rev + 1
-    row.notice = { code = continuing and "renewed" or "activated", at = at }
+    row.notice = { code = continuing and "renewed" or "activated", at = at, rental = r.id }
     if seq > journal.needSeq then journal.needSeq = seq end
     trackLease(ref)
     X.emit("entitlement.activated", { sourceMod = ref.m, username = ref.u, productId = ref.p, orderId = pend.o,
-        at = at, paidUntil = nextLease.paidUntil, continuing = continuing })
+        rental = r.id, at = at, paidUntil = nextLease.paidUntil, continuing = continuing })
 end
 
-local function startPeriod(ref, row, now)
+local function startPeriod(ref, row, r, now)
     if journal.state ~= "ok" then return false end
     local ok = appendJournal({ k = "act", realm = root.meta.realmId, src = ref.m, acct = ref.u, prod = ref.p,
-        o = row.pend.o, at = now })
+        o = r.pend.o, at = now })
     if not ok then
-        row.notice = { code = "activation_blocked", at = now }
+        row.notice = { code = "activation_blocked", at = now, rental = r.id }
         return false
     end
-    activate(ref, row, now)
+    activate(ref, row, r, now)
     return true
 end
 
--- Switch a consent off: at once in this process (the scheduler stops charging it), then an `off`
--- line bound to its generation, appended and read back. True once that line is in the journal or
--- the off state is proven saved. Until then a crash before the next world save brings the saved
--- consent back, so no caller may report the switch as done: the line stays owed and is tried again
--- by the next call (a resent cancel, settleWaiting once the journal works again).
+-- Switch rental `r`'s consent off: at once in this process (the scheduler stops charging it), then
+-- an `off` line bound to that rental and generation, appended and read back. True once that line is
+-- in the journal or the off state is proven saved. Until then a crash before the next world save
+-- brings the saved consent back, so no caller may report the switch as done: the line stays owed and
+-- is tried again by the next call (a resent cancel, settleWaiting once the journal works again).
 -- `journaled`: the line was just read from the journal (replay), there is nothing to append.
-local function consentOff(ref, row, why, now, journaled)
-    local k = rowKey(ref.m, ref.u, ref.p)
-    local auto = row.auto
+local function consentOff(ref, row, r, why, now, journaled)
+    local k = rentalKey(ref, r.id)
+    local auto = r.auto
     nextRetry[k] = nil
     if auto and auto.on then
         local seq = S.nextSeq()
         row.rev = row.rev + 1
-        row.auto = { on = false, gen = auto.gen, tr = auto.tr, rev = row.rev, why = why,
+        r.auto = { on = false, gen = auto.gen, tr = auto.tr, rev = row.rev, why = why,
             epoch = root.meta.epoch, seq = seq, at = now }
         -- a line that landed but could not be read back is still needed until this state is saved
         if seq > journal.needSeq then journal.needSeq = seq end
-        offOwed[k] = ref
+        offOwed[k] = true
         wait(ref)
     end
     if offOwed[k] == nil then return true end
-    if journaled or verdict(row.auto, S.durableStatus().seq) == "confirmed" or appendJournal({ k = "off",
-        realm = root.meta.realmId, src = ref.m, acct = ref.u, prod = ref.p, gen = row.auto.gen, at = now }) then
+    if journaled or verdict(r.auto, S.durableStatus().seq) == "confirmed" or appendJournal({ k = "off",
+        realm = root.meta.realmId, src = ref.m, acct = ref.u, prod = ref.p, rental = r.id, gen = r.auto.gen,
+        at = now }) then
         offOwed[k] = nil
         return true
     end
@@ -390,7 +445,8 @@ local function consentOff(ref, row, why, now, journaled)
 end
 
 -- Read the journal and replay what the loaded rows still need (start, and every retry while it
--- is broken). Lines only ever match their own pending order / consent generation.
+-- is broken). Lines only ever match their own pending order / rental consent generation; an `off`
+-- line without a rental (written before rentals existed) matches nothing.
 local function loadJournal(now)
     journal.readAt = now
     local lines, why = readJournal()
@@ -409,22 +465,30 @@ local function loadJournal(now)
                 return false
             end
             local row = rec.realm == realm and rowOf(rec.src, rec.acct, rec.prod) or nil
-            if row and rec.k == "act" and row.pend and row.pend.o == rec.o then
-                acts[#acts + 1] = rec
-            elseif row and rec.k == "off" and row.auto and row.auto.gen == rec.gen
-                and (row.auto.on or offOwed[rowKey(rec.src, rec.acct, rec.prod)]) then
-                offs[#offs + 1] = rec    -- a consent to replay, or an owed line that landed after all
+            if row and rec.k == "act" then
+                for _, r in ipairs(row.rentals or {}) do
+                    if r.pend and r.pend.o == rec.o then acts[#acts + 1] = rec end
+                end
+            elseif row and rec.k == "off" then
+                local r = rentalOf(row, rec.rental)
+                if r and r.auto and r.auto.gen == rec.gen
+                    and (r.auto.on or offOwed[rentalKey({ m = rec.src, u = rec.acct, p = rec.prod }, r.id)]) then
+                    offs[#offs + 1] = rec    -- a consent to replay, or an owed line that landed after all
+                end
             end
         end
     end
     journal.state, journal.lines = "ok", #lines
     for _, rec in ipairs(offs) do
-        consentOff({ m = rec.src, u = rec.acct, p = rec.prod }, rowOf(rec.src, rec.acct, rec.prod), "cancel_replayed", now, true)
+        local row = rowOf(rec.src, rec.acct, rec.prod)
+        consentOff({ m = rec.src, u = rec.acct, p = rec.prod }, row, rentalOf(row, rec.rental), "cancel_replayed", now, true)
     end
     for _, rec in ipairs(acts) do
         local ref = { m = rec.src, u = rec.acct, p = rec.prod }
         local row = rowOf(rec.src, rec.acct, rec.prod)
-        if row.pend and row.pend.o == rec.o then activate(ref, row, rec.at) end
+        for _, r in ipairs(row.rentals) do
+            if r.pend and r.pend.o == rec.o then activate(ref, row, r, rec.at) end
+        end
     end
     if #acts == 0 and #offs == 0 and #lines > 0 and journal.needSeq == 0 then truncateJournal() end
     return true
@@ -452,84 +516,108 @@ end
 
 local function orderView(o, w, ds)
     local v = { orderId = o.id, kind = o.kind, quantity = o.q, amount = o.amt, currency = o.cur,
-        termsRevision = o.tr, status = o.st, paid = true, at = o.ts, renewal = o.renewal,
-        activatedAt = o.activatedAt, durable = { status = verdict(o, w), source = ds.source, seq = ds.seq } }
+        termsRevision = o.tr, status = o.st, paid = true, at = o.ts, renewal = o.renewal, rental = o.rental,
+        auto = o.auto, activatedAt = o.activatedAt, durable = { status = verdict(o, w), source = ds.source, seq = ds.seq } }
     if o.rf then
         v.refund = { amount = o.rf.amt, at = o.rf.ts, txId = o.rf.tx, by = o.rf.by, durable = { status = verdict(o.rf, w) } }
     end
     return v
 end
 
-local function stateOf(row, plan, now, blocked, perm, pendPerm)
-    local lease, pend = row.lease, row.pend
+-- One rental's state. `over`: the account holds more rented units than the plan allows now, so no
+-- rental can be renewed under the plan as it stands.
+local function rentalState(r, plan, now, blocked, over)
+    local lease = r.lease
     local state
-    if lease then
-        if now < lease.paidUntil then
-            state = "active"
-        elseif now < lease.paidUntil + lease.G then
-            state = "grace"
-        else
-            state = pend and "pending" or "expired"
-        end
-    elseif pend then
-        state = "pending"
-    elseif perm > 0 then
+    if lease and now < lease.paidUntil then
         state = "active"
-    elseif pendPerm > 0 then
+    elseif lease and now < lease.paidUntil + lease.G then
+        state = "grace"
+    elseif r.pend then
         state = "pending"
     else
-        state = "none"
+        state = "expired"
     end
-    if state == "pending" and pend and blocked == "journal" then return "paused_system" end
-    if state == "active" and lease and now < lease.paidUntil then
+    if state == "pending" and blocked == "journal" then return "paused_system" end
+    if state == "active" then
         if blocked then return "paused_system" end
-        if not plan.rentalEnabled or plan.rentalQuantity ~= lease.q then return "paused_terms" end
+        if not plan.rentalEnabled or over then return "paused_terms" end
     end
     return state
 end
 
-local function autoStateOf(row, planRow, w, blocked)
-    local auto = row.auto
+local function autoStateOf(r, planRow, w, blocked, over)
+    local auto = r.auto
     if auto == nil then return "off" end
     local proven = verdict(auto, w) == "confirmed"
     if not auto.on then return proven and "off" or "pending_off" end
     if blocked then return "paused_system" end
     local plan = planRow.values
-    local q = row.pend and row.pend.q or (row.lease and row.lease.q)
-    if auto.tr ~= planRow.revision or not plan.rentalEnabled or not plan.autoRenewAllowed or q ~= plan.rentalQuantity then
+    if not sameTerms(auto, plan) or not plan.rentalEnabled or not plan.autoRenewAllowed or over then
         return "paused_terms"
     end
     return proven and "on" or "pending_on"
 end
 
+-- What the contract says: the terms of the period it runs (or is paid for), and the money terms its
+-- auto-renew consent was given for.
+local function rentalView(r, planRow, now, w, blocked, over)
+    local lease, pend, auto = r.lease, r.pend, r.auto
+    local t = lease or pend
+    return { id = r.id, quantity = r.q, state = rentalState(r, planRow.values, now, blocked, over),
+        paidUntil = lease and lease.paidUntil or nil, graceUntil = lease and (lease.paidUntil + lease.G) or nil,
+        autoRenew = auto ~= nil and auto.on == true, autoRenewState = autoStateOf(r, planRow, w, blocked, over),
+        termsRevision = t and t.tr or nil,
+        terms = t and { price = t.price, amount = t.amt, currency = t.cur, days = t.D / E.DAY_MS,
+            graceHours = t.G / E.HOUR_MS } or nil,
+        autoTerms = (auto and auto.on and auto.price) and { price = auto.price, currency = auto.cur,
+            days = auto.D / E.DAY_MS } or nil,
+        pendingOrderId = pend and pend.o or nil, autoPending = (pend and pend.auto) or nil }
+end
+
 local function entitlementView(row, planRow, now, ds, blocked)
     local w = ds.seq
-    local out = { revision = 0, permanent = 0, rental = 0, usable = 0, state = "none", autoRenew = false,
-        autoRenewState = "off", pendingQuantity = 0,
+    local out = { revision = 0, permanent = 0, rental = 0, usable = 0, state = "none", pendingQuantity = 0,
+        rentalCommitted = 0, rentalsMax = E.RENTALS_MAX, rentals = {},
         durable = { status = "confirmed", source = ds.source, seq = ds.seq, companion = ds.status, journal = journal.state } }
     if row == nil then return out end
     local pendPerm = pendingPermanent(row, w)
     local perm = (row.perm or 0) - pendPerm
-    local lease, pend = row.lease, row.pend
-    local rental = leaseLive(lease, now) and lease.q or 0
+    local held = committed(row, now)
+    -- a plan row an older version saved may lack the limit (its product is not loaded then)
+    local over = held > (planRow.values.rentalLimit or 0)
+    local rental, pendRent = 0, 0
+    for i, r in ipairs(row.rentals or {}) do
+        if leaseLive(r.lease, now) then
+            rental = rental + r.q
+        elseif r.pend then
+            pendRent = pendRent + r.q
+        end
+        out.rentals[i] = rentalView(r, planRow, now, w, blocked, over)
+    end
     out.revision, out.permanent, out.rental, out.usable = row.rev or 0, perm, rental, perm + rental
-    out.paidUntil = lease and lease.paidUntil or nil
-    out.graceUntil = lease and (lease.paidUntil + lease.G) or nil
-    out.state = stateOf(row, planRow.values, now, blocked, perm, pendPerm)
-    out.autoRenew = row.auto ~= nil and row.auto.on == true
-    out.autoRenewState = autoStateOf(row, planRow, w, blocked)
-    out.termsRevision = (lease and lease.tr) or (pend and pend.tr) or nil
-    out.pendingQuantity = pendPerm + ((pend and not leaseLive(lease, now)) and pend.q or 0)
-    out.pendingOrderId = pend and pend.o or nil
+    out.rentalCommitted, out.pendingQuantity = held, pendPerm + pendRent
+    if out.usable > 0 then
+        out.state = "active"
+    elseif out.pendingQuantity > 0 then
+        out.state = "pending"
+    end
+    -- the newest payment the player started that is not proven saved: a renewal the scheduler
+    -- charged is the server's own, never something the player has to look up
     for _, o in ipairs(row.orders or {}) do
         if out.lastOrderId == nil then out.lastOrderId = o.id end
-        if out.pendingOrderId == nil and o.st == "paid" and verdict(o, w) ~= "confirmed" then out.pendingOrderId = o.id end
+        if out.pendingOrderId == nil and o.st == "paid" and not o.auto and verdict(o, w) ~= "confirmed" then
+            out.pendingOrderId = o.id
+        end
     end
     if hasPending(row, w) then
         out.durable.status = "pending"
         out.wait = waitInfo(ds)
     end
-    if row.notice then out.notice = { code = row.notice.code, kind = row.notice.code, at = row.notice.at, error = row.notice.error } end
+    if row.notice then
+        out.notice = { code = row.notice.code, kind = row.notice.code, at = row.notice.at, error = row.notice.error,
+            rental = row.notice.rental }
+    end
     return out
 end
 
@@ -588,18 +676,20 @@ local function currencyGate(src, cur)
     return nil
 end
 
--- Every rule a new payment must pass, shared by quote, purchase and auto-renew. Returns
--- { kind, q, amt, cur, renewal } or nil, error.
-local function priceOf(modId, planRow, row, username, kind, quantity, now, w)
+-- Every rule a new payment must pass, shared by quote, purchase and auto-renew. `rentalId` names the
+-- rental a "rental" payment renews (nil: a new rental). Returns { kind, q, amt, cur, renewal, rental }
+-- or nil, error.
+local function priceOf(modId, planRow, row, username, kind, quantity, now, w, rentalId)
     local plan = planRow.values
     if planRow.provisional then return nil, "product_unavailable" end
     local src = G.source(modId)
     if not src then return nil, "product_unavailable" end
     if not src.enabled then return nil, "source_disabled" end
     if L.isFrozen(username) then return nil, "account_frozen" end
-    local cur, amt, q, renewal
+    local cur, amt, q, renewal, target
     if kind == "permanent" then
         if not plan.permanentEnabled then return nil, "kind_disabled" end
+        if rentalId ~= nil then return nil, "invalid_args" end
         q = quantity == nil and 1 or quantity
         if not isInt(q) or q < 1 or q > E.PERMANENT_QTY_MAX then return nil, "invalid_args" end
         local held = row and row.perm or 0
@@ -607,29 +697,40 @@ local function priceOf(modId, planRow, row, username, kind, quantity, now, w)
         cur, amt = plan.permanentCurrency, plan.permanentPrice * q
     elseif kind == "rental" then
         if not plan.rentalEnabled then return nil, "kind_disabled" end
-        if quantity ~= nil and quantity ~= plan.rentalQuantity then return nil, "invalid_args" end
         if journal.state ~= "ok" then return nil, "journal_unavailable" end
-        if row and row.pend then return nil, "lease_pending" end
-        local lease = row and row.lease
-        renewal = leaseLive(lease, now)
-        if renewal and lease.q ~= plan.rentalQuantity then return nil, "lease_quantity_changed" end
-        q, cur, amt = plan.rentalQuantity, plan.rentalCurrency, plan.rentalPrice
+        if rentalId == nil then
+            q = quantity == nil and 1 or quantity
+            if not isInt(q) or q < 1 then return nil, "invalid_args" end
+            if #(row and row.rentals or {}) >= E.RENTALS_MAX then return nil, "rental_count_limit" end
+            if committed(row, now) + q > plan.rentalLimit then return nil, "limit_reached" end
+        else
+            local r = rentalOf(row, rentalId)
+            if not r then return nil, "rental_unknown" end
+            if quantity ~= nil and quantity ~= r.q then return nil, "invalid_args" end
+            if r.pend then return nil, "lease_pending" end
+            -- a renewal keeps the units; over the limit nothing renews until other rentals end
+            if committed(row, now, r) + r.q > plan.rentalLimit then return nil, "limit_reached" end
+            q, renewal, target = r.q, leaseLive(r.lease, now), r.id
+        end
+        cur, amt = plan.rentalCurrency, plan.rentalPrice * q
     else
         return nil, "invalid_args"
     end
     local bad = currencyGate(src, cur)
     if bad then return nil, bad end
     if L.getBalance(username, cur).available < amt then return nil, "insufficient_funds" end
-    return { kind = kind, q = q, amt = amt, cur = cur, renewal = renewal == true }
+    return { kind = kind, q = q, amt = amt, cur = cur, renewal = renewal == true, rental = target }
 end
 
 -- What the row would look like after the payment, for the consumer's own gate.
-local function projection(row, kind, q, now, w)
+local function projection(row, kind, q, now, w, rentalId)
     local pendPerm = row and pendingPermanent(row, w) or 0
     local perm = (row and row.perm or 0) - pendPerm
-    local rental = (row and leaseLive(row.lease, now)) and row.lease.q or 0
+    local rental = rentedLive(row, now)
+    local r = rentalId and rentalOf(row, rentalId) or nil
+    local adds = kind == "rental" and not (r and leaseLive(r.lease, now))
     return { permanent = perm + pendPerm + (kind == "permanent" and q or 0),
-        rental = kind == "rental" and q or rental, usable = perm + rental,
+        rental = rental + (adds and q or 0), usable = perm + rental,
         pendingQuantity = pendPerm + q }
 end
 
@@ -667,8 +768,9 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
     local bySource = rowsOf(modId)
     local user = bySource[username] and copyTable(bySource[username]) or {}
     local nextRow = nextRowOf(row)
+    local auto = reasonCode == "entitlement_renewal" or nil
     local order = { id = orderId, kind = terms.kind, q = terms.q, amt = terms.amt, cur = terms.cur,
-        tr = planRow.revision, renewal = terms.renewal or nil, st = "paid" }
+        tr = planRow.revision, renewal = terms.renewal or nil, st = "paid", auto = auto }
     table.insert(nextRow.orders, 1, order)
     while #nextRow.orders > E.ORDERS_KEEP do table.remove(nextRow.orders) end
     local stamps = { order }
@@ -680,10 +782,21 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
         stamps[2] = pp
     else
         local plan = planRow.values
-        local pend = { o = orderId, q = terms.q, D = plan.rentalDays * E.DAY_MS, G = plan.graceHours * E.HOUR_MS,
-            R = plan.reminderHours * E.HOUR_MS, cur = terms.cur, amt = terms.amt, tr = planRow.revision,
-            renewal = terms.renewal or nil }
-        nextRow.pend = pend
+        local pend = { o = orderId, q = terms.q, price = plan.rentalPrice, D = plan.rentalDays * E.DAY_MS,
+            G = plan.graceHours * E.HOUR_MS, R = plan.reminderHours * E.HOUR_MS, cur = terms.cur, amt = terms.amt,
+            tr = planRow.revision, renewal = terms.renewal or nil, auto = auto }
+        local r
+        if terms.rental then
+            local old, i = rentalOf(nextRow, terms.rental)
+            if not old then return fail("state_mismatch") end
+            r = copyTable(old)
+            nextRow.rentals[i] = r
+        else
+            r = { id = orderId, q = terms.q }
+            nextRow.rentals[#nextRow.rentals + 1] = r
+        end
+        r.pend = pend
+        order.rental = r.id
         stamps[2] = pend
     end
     nextRow.notice = nil
@@ -706,7 +819,7 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
     wait({ m = modId, u = username, p = productId })
     X.emit("entitlement.order", { sourceMod = modId, username = username, productId = productId, orderId = orderId,
         kind = terms.kind, quantity = terms.q, amount = terms.amt, currency = terms.cur, txId = res.txId,
-        termsRevision = planRow.revision, renewal = terms.renewal or nil })
+        termsRevision = planRow.revision, renewal = terms.renewal or nil, rental = order.rental })
     changed(modId, username, productId)
     return { ok = true, orderId = orderId, txId = res.txId, duplicate = false }
 end
@@ -724,22 +837,26 @@ local function closeQuote(q, err)
     closed[q.id] = { key = q.key, error = err or q.lastError }
 end
 
-function E.quote(modId, username, productId, kind, quantity)
+function E.quote(modId, username, productId, kind, quantity, rental)
     if not ent then return fail("not_ready") end
-    if not validMod(modId) or not validUser(username) or not validProduct(productId) then return fail("invalid_args") end
+    if not validMod(modId) or not validUser(username) or not validProduct(productId)
+        or (rental ~= nil and not validId(rental)) then
+        return fail("invalid_args")
+    end
     local planRow = P.row(modId, productId)
     if not planRow then return fail("unknown_product") end
     local spec = P.product(modId, productId)
     if not spec then return withSnapshot(fail("product_unavailable"), modId, username, productId) end
     local now, w = EC.now(), S.durableStatus().seq
     local row = rowOf(modId, username, productId)
-    local terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w)
+    local terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w, rental)
     if not terms then return withSnapshot(fail(err), modId, username, productId) end
-    local refusal = consumerCheck(spec, username, terms.kind, terms.q, projection(row, terms.kind, terms.q, now, w))
+    local refusal = consumerCheck(spec, username, terms.kind, terms.q,
+        projection(row, terms.kind, terms.q, now, w, terms.rental))
     if refusal then return withSnapshot(fail(refusal), modId, username, productId) end
     -- the callback may have changed anything: price again from what is there now
     planRow, row = P.row(modId, productId), rowOf(modId, username, productId)
-    terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w)
+    terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w, rental)
     if not terms then return withSnapshot(fail(err), modId, username, productId) end
     local k = rowKey(modId, username, productId)
     local old = quoteOf[k] and quotes[quoteOf[k]]
@@ -747,10 +864,11 @@ function E.quote(modId, username, productId, kind, quantity)
     local id = S.newId()
     local q = { id = id, key = k, m = modId, u = username, p = productId, kind = terms.kind, q = terms.q,
         amt = terms.amt, cur = terms.cur, tr = planRow.revision, rev = row and row.rev or 0,
-        renewal = terms.renewal, expiresAt = now + E.QUOTE_TTL_MS }
+        renewal = terms.renewal, rental = terms.rental, expiresAt = now + E.QUOTE_TTL_MS }
     quotes[id], quoteOf[k] = q, id
     return withSnapshot({ ok = true, quote = { id = id, orderId = id, kind = q.kind, quantity = q.q, currency = q.cur,
-        amount = q.amt, termsRevision = q.tr, expiresAt = q.expiresAt, ttlMs = E.QUOTE_TTL_MS, renewal = q.renewal } },
+        amount = q.amt, termsRevision = q.tr, expiresAt = q.expiresAt, ttlMs = E.QUOTE_TTL_MS, renewal = q.renewal,
+        rental = q.rental } },
         modId, username, productId)
 end
 
@@ -774,7 +892,8 @@ function E.purchase(modId, username, orderId)
     local spec = P.product(modId, productId)
     if not spec then return withSnapshot(fail("product_unavailable"), modId, username, productId) end
     local w = S.durableStatus().seq
-    local refusal = consumerCheck(spec, username, q.kind, q.q, projection(rowOf(modId, username, productId), q.kind, q.q, now, w))
+    local refusal = consumerCheck(spec, username, q.kind, q.q,
+        projection(rowOf(modId, username, productId), q.kind, q.q, now, w, q.rental))
     if refusal then
         q.lastError = refusal
         return withSnapshot(fail(refusal), modId, username, productId)
@@ -792,8 +911,9 @@ function E.purchase(modId, username, orderId)
         closeQuote(q, "stale_quote")
         return withSnapshot(fail("stale_quote"), modId, username, productId)
     end
-    local terms, err = priceOf(modId, planRow, row, username, q.kind, q.q, now, w)
-    if terms and (terms.amt ~= q.amt or terms.cur ~= q.cur or terms.q ~= q.q or terms.renewal ~= q.renewal) then
+    local terms, err = priceOf(modId, planRow, row, username, q.kind, q.q, now, w, q.rental)
+    if terms and (terms.amt ~= q.amt or terms.cur ~= q.cur or terms.q ~= q.q or terms.renewal ~= q.renewal
+        or terms.rental ~= q.rental) then
         terms, err = nil, "stale_quote"
     end
     if not terms then
@@ -861,18 +981,20 @@ end
 
 -- ---------- auto-renew consent ----------
 
-function E.setAutoRenew(modId, username, productId, enabled, expectedRevision, termsRevision)
+function E.setAutoRenew(modId, username, productId, enabled, expectedRevision, termsRevision, rentalId)
     if not ent then return fail("not_ready") end
     if not validMod(modId) or not validUser(username) or not validProduct(productId)
-        or type(enabled) ~= "boolean" or not isInt(expectedRevision) then
+        or type(enabled) ~= "boolean" or not isInt(expectedRevision) or not validId(rentalId) then
         return fail("invalid_args")
     end
     local planRow = P.row(modId, productId)
     if not planRow then return fail("unknown_product") end
     local row = rowOf(modId, username, productId)
-    local rev, auto = row and row.rev or 0, row and row.auto
-    local k = rowKey(modId, username, productId)
+    local r = rentalOf(row, rentalId)
+    if not r then return withSnapshot(fail("rental_unknown"), modId, username, productId) end
+    local rev, auto = row.rev or 0, r.auto
     local ref = { m = modId, u = username, p = productId }
+    local k = rentalKey(ref, r.id)
     local now = EC.now()
     if not enabled then
         -- a cancel that is journaled (or saved) is done; one whose line is still owed writes it again
@@ -886,9 +1008,10 @@ function E.setAutoRenew(modId, username, productId, enabled, expectedRevision, t
         end
         if not G.takeCall(modId) then return withSnapshot(fail("rate_limited"), modId, username, productId) end
         local switched = auto.on
-        local done = consentOff(ref, row, "cancelled", now)
+        local done = consentOff(ref, row, r, "cancelled", now)
         if switched then
-            X.emit("entitlement.autorenew", { sourceMod = modId, username = username, productId = productId, on = false, gen = auto.gen })
+            X.emit("entitlement.autorenew", { sourceMod = modId, username = username, productId = productId,
+                rental = r.id, on = false, gen = auto.gen })
         end
         changed(modId, username, productId)
         -- stopped in this process either way, but without the line a crash before the next save brings
@@ -914,28 +1037,28 @@ function E.setAutoRenew(modId, username, productId, enabled, expectedRevision, t
     local bad = currencyGate(src, plan.rentalCurrency)
     if bad then return withSnapshot(fail(bad), modId, username, productId) end
     if termsRevision ~= planRow.revision then return withSnapshot(fail("stale_terms"), modId, username, productId) end
-    if not row or not (leaseLive(row.lease, now) or row.pend) then return withSnapshot(fail("no_lease"), modId, username, productId) end
-    local q = row.pend and row.pend.q or row.lease.q
-    if q ~= plan.rentalQuantity then return withSnapshot(fail("lease_quantity_changed"), modId, username, productId) end
-    if auto and auto.on and auto.tr == termsRevision then return withSnapshot({ ok = true, duplicate = true }, modId, username, productId) end
+    if not (leaseLive(r.lease, now) or r.pend) then return withSnapshot(fail("no_lease"), modId, username, productId) end
+    if auto and auto.on and sameTerms(auto, plan) then return withSnapshot({ ok = true, duplicate = true }, modId, username, productId) end
     if cooldown[k] and now < cooldown[k] then return withSnapshot(fail("rate_limited"), modId, username, productId) end
     if not G.takeCall(modId) then return withSnapshot(fail("rate_limited"), modId, username, productId) end
     row.rev = rev + 1
-    row.auto = { on = true, gen = (auto and auto.gen or 0) + 1, tr = termsRevision, rev = row.rev,
-        epoch = root.meta.epoch, seq = S.nextSeq(), at = now }
+    r.auto = { on = true, gen = (auto and auto.gen or 0) + 1, price = plan.rentalPrice, cur = plan.rentalCurrency,
+        D = plan.rentalDays * E.DAY_MS, tr = termsRevision, rev = row.rev, epoch = root.meta.epoch, seq = S.nextSeq(), at = now }
     cooldown[k] = now + E.CONSENT_COOLDOWN_MS
     wait(ref)
-    X.emit("entitlement.autorenew", { sourceMod = modId, username = username, productId = productId, on = true,
-        gen = row.auto.gen, termsRevision = termsRevision })
+    X.emit("entitlement.autorenew", { sourceMod = modId, username = username, productId = productId, rental = r.id,
+        on = true, gen = r.auto.gen, termsRevision = termsRevision })
     changed(modId, username, productId)
     return withSnapshot({ ok = true }, modId, username, productId)
 end
 
 -- ---------- refund ----------
 
--- The exact reversal of one paid order still in the row's ring, at most its amount, once. The
--- units (or the latest rental period nothing later depends on) leave in the same commit as the
--- money; outside the ring an order needs manual reconciliation.
+-- The exact reversal of one paid order still in the row's ring, at most its amount, once. The units
+-- leave in the same commit as the money: permanent units, a rental's pending payment (with the
+-- rental itself when it never started) or its latest period (back to the one before, or the rental
+-- goes); a rental that already ended and was pruned gives the money back only, for its newest
+-- order. Outside the ring an order needs manual reconciliation.
 -- opts = { reason, actor?, amount? } (actor defaults to the source).
 function E.refund(modId, username, productId, orderId, opts)
     if not ent then return fail("not_ready") end
@@ -977,16 +1100,33 @@ function E.refund(modId, username, productId, orderId, opts)
             nextRow.pp = pp
         end
     else
-        if row.pend and row.pend.o == orderId then
-            nextRow.pend = nil
-        elseif row.lease and row.lease.last == orderId and not row.pend then
-            nextRow.lease = o.prev
+        if o.rental == nil then return withSnapshot(fail("refund_not_latest"), modId, username, productId) end
+        local r, i = rentalOf(row, o.rental)
+        if r then
+            local nr = copyTable(r)
+            if r.pend and r.pend.o == orderId then
+                nr.pend = nil
+            elseif r.lease and r.lease.last == orderId and not r.pend then
+                nr.lease = o.prev
+            else
+                return withSnapshot(fail("refund_not_latest"), modId, username, productId)
+            end
+            if r.auto and r.auto.on then
+                nr.auto = { on = false, gen = r.auto.gen, tr = r.auto.tr, rev = nextRow.rev, why = "refunded", at = now }
+                stamps[#stamps + 1] = nr.auto
+            end
+            if nr.lease == nil and nr.pend == nil then
+                table.remove(nextRow.rentals, i)
+            else
+                nextRow.rentals[i] = nr
+            end
         else
-            return withSnapshot(fail("refund_not_latest"), modId, username, productId)
-        end
-        if row.auto and row.auto.on then
-            nextRow.auto = { on = false, gen = row.auto.gen, tr = row.auto.tr, rev = nextRow.rev, why = "refunded", at = now }
-            stamps[#stamps + 1] = nextRow.auto
+            for _, other in ipairs(row.orders) do
+                if other.rental == o.rental then
+                    if other.id ~= orderId then return withSnapshot(fail("refund_not_latest"), modId, username, productId) end
+                    break
+                end
+            end
         end
     end
     nextRow.notice = { code = "refunded", at = now }
@@ -1009,7 +1149,7 @@ function E.refund(modId, username, productId, orderId, opts)
         return withSnapshot({ ok = true, duplicate = true, orderId = orderId, txId = found.rf and found.rf.tx }, modId, username, productId)
     end
     local ref = { m = modId, u = username, p = productId }
-    if nextRow.lease then trackLease(ref) end
+    if #nextRow.rentals > 0 then trackLease(ref) end
     wait(ref)
     X.audit({ action = "entitlement.refund", target = username, sourceMod = modId, productId = productId, orderId = orderId,
         currency = o.cur, amount = amount, before = o.st, after = "refunded", revision = nextRow.rev, txId = res.txId,
@@ -1042,22 +1182,25 @@ end
 
 -- ---------- scheduler ----------
 
-local function lapse(ref, row, err, now)
-    consentOff(ref, row, "lapsed_funds", now)   -- journaled like a cancel; owed while it cannot be written
-    row.notice = { code = "renewal_failed", at = now, error = err }
+local function lapse(ref, row, r, err, now)
+    -- journaled like a cancel; owed while it cannot be written
+    consentOff(ref, row, r, err == "limit_reached" and "lapsed_limit" or "lapsed_funds", now)
+    row.notice = { code = "renewal_failed", at = now, error = err, rental = r.id }
 end
 
--- A lease due now under a saved consent to the plan as it stands, with no payment pending.
-local function consented(row, planRow, now, w)
-    local auto, lease, plan = row.auto, row.lease, planRow.values
-    return auto ~= nil and auto.on == true and row.pend == nil and lease ~= nil and now >= lease.paidUntil
-        and verdict(auto, w) == "confirmed" and auto.tr == planRow.revision and plan.rentalEnabled
-        and plan.autoRenewAllowed and lease.q == plan.rentalQuantity
+-- A rental due now under a saved consent to the money terms the plan offers now, with no payment
+-- pending.
+local function consented(r, planRow, now, w)
+    local auto, lease, plan = r.auto, r.lease, planRow.values
+    return auto ~= nil and auto.on == true and r.pend == nil and lease ~= nil and now >= lease.paidUntil
+        and verdict(auto, w) == "confirmed" and sameTerms(auto, plan) and plan.rentalEnabled
+        and plan.autoRenewAllowed
 end
 
--- One consented renewal attempt for a lease that is due (auto on and proven, no pending payment).
-local function tryRenew(ref, row, now, w)
-    local k = rowKey(ref.m, ref.u, ref.p)
+-- One consented renewal attempt for a rental that is due (auto on and proven, no pending payment).
+local function tryRenew(ref, row, r, now, w)
+    local id = r.id
+    local k = rentalKey(ref, id)
     if nextRetry[k] and now < nextRetry[k] then return end
     local spec, planRow = P.product(ref.m, ref.p), P.row(ref.m, ref.p)
     if not planRow or systemBlock(ref.m, spec) then
@@ -1065,21 +1208,22 @@ local function tryRenew(ref, row, now, w)
         return
     end
     -- paused_terms: the snapshot says so; nothing is charged on terms nobody agreed to
-    if not consented(row, planRow, now, w) then return end
-    local rev, auto = row.rev, row.auto
-    local terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w)
+    if not consented(r, planRow, now, w) then return end
+    local rev, auto = row.rev, r.auto
+    local terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w, id)
     if terms then
-        err = consumerCheck(spec, ref.u, "rental", terms.q, projection(row, "rental", terms.q, now, w))
+        err = consumerCheck(spec, ref.u, "rental", terms.q, projection(row, "rental", terms.q, now, w, id))
         if err == nil then
             -- the callback may have changed anything (cancelled and consented again, paid, switched the
             -- source off): charge only the very row revision, consent and terms it was asked about
             spec, planRow, row = P.product(ref.m, ref.p), P.row(ref.m, ref.p), rowOf(ref.m, ref.u, ref.p)
+            r = rentalOf(row, id)
             w = S.durableStatus().seq
-            if not row or row.rev ~= rev or row.auto ~= auto or not planRow or systemBlock(ref.m, spec)
-                or not consented(row, planRow, now, w) then
+            if not row or not r or row.rev ~= rev or r.auto ~= auto or not planRow or systemBlock(ref.m, spec)
+                or not consented(r, planRow, now, w) then
                 return
             end
-            terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w)
+            terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w, id)
             if terms then
                 local res = settle(spec, planRow, ref.u, row, terms, S.newId(), "entitlement_renewal")
                 if res.ok then
@@ -1092,53 +1236,83 @@ local function tryRenew(ref, row, now, w)
     end
     if err == "rate_limited" then return end
     row = rowOf(ref.m, ref.u, ref.p)
-    if not row or not row.lease then return end
-    if err == "insufficient_funds" then
-        if now >= row.lease.paidUntil + row.lease.G then
-            lapse(ref, row, err, now)
+    r = rentalOf(row, id)
+    if not r or not r.lease then return end
+    if err == "insufficient_funds" or err == "limit_reached" then
+        -- over the limit waits like missing money (another rental may end first); at the end of grace
+        -- the consent lapses and this rental ends
+        if now >= r.lease.paidUntil + r.lease.G then
+            lapse(ref, row, r, err, now)
         else
             nextRetry[k] = now + E.FUNDS_RETRY_MS
-            row.notice = { code = "renewal_failed", at = now, error = err }
+            row.notice = { code = "renewal_failed", at = now, error = err, rental = id }
         end
     else
         nextRetry[k] = now + E.SYSTEM_RETRY_MS
-        row.notice = { code = "renewal_failed", at = now, error = err }
+        row.notice = { code = "renewal_failed", at = now, error = err, rental = id }
     end
     changed(ref.m, ref.u, ref.p)
 end
 
--- Notices for phase changes and the reminder, then a due renewal. Returns whether the lease still
--- needs scanning.
+-- A rental that ended for good: past grace, nothing paid on the way, no consent that could still
+-- charge it (off and proven saved, no off line owed). Nothing is left to show or to renew.
+local function ended(ref, r, now, w)
+    if r.pend or leaseLive(r.lease, now) then return false end
+    local auto = r.auto
+    if auto and (auto.on or verdict(auto, w) ~= "confirmed") then return false end
+    return not offOwed[rentalKey(ref, r.id)]
+end
+
+-- Notices for phase changes and the reminder, then a due renewal, rental by rental; rentals that
+-- ended for good leave the row. Returns whether the row still needs scanning.
 local function visitLease(ref, now, w)
     local row = rowOf(ref.m, ref.u, ref.p)
-    local lease = row and row.lease
-    if not lease then return false end
-    local phase = "expired"
-    if now < lease.paidUntil then
-        phase = "active"
-    elseif now < lease.paidUntil + lease.G then
-        phase = "grace"
-    end
-    local code = nil
-    if phase ~= lease.phase then
-        lease.phase = phase              -- bookkeeping of this lease only, no money, no quantity
-        if phase ~= "active" then code = phase end
-    end
-    if phase == "active" and lease.R > 0 and now >= lease.paidUntil - lease.R and lease.reminded ~= lease.cycle then
-        lease.reminded = lease.cycle
-        code = "renewal_due"
-    end
-    if code then
-        row.notice = { code = code, at = now }
-        changed(ref.m, ref.u, ref.p)
-    end
-    local auto = row.auto
-    if auto and auto.on and not row.pend and now >= lease.paidUntil and verdict(auto, w) == "confirmed" then
-        tryRenew(ref, row, now, w)
+    if not row or not row.rentals or #row.rentals == 0 then return false end
+    -- a renewal replaces the row: walk the ids and read the row again for each
+    local ids = {}
+    for i, r in ipairs(row.rentals) do ids[i] = r.id end
+    for _, id in ipairs(ids) do
+        row = rowOf(ref.m, ref.u, ref.p)
+        local r = rentalOf(row, id)
+        local lease = r and r.lease
+        if lease then
+            local phase = "expired"
+            if now < lease.paidUntil then
+                phase = "active"
+            elseif now < lease.paidUntil + lease.G then
+                phase = "grace"
+            end
+            local code = nil
+            if phase ~= lease.phase then
+                lease.phase = phase          -- bookkeeping of this lease only, no money, no units
+                if phase ~= "active" then code = phase end
+            end
+            if phase == "active" and lease.R > 0 and now >= lease.paidUntil - lease.R and lease.reminded ~= lease.cycle then
+                lease.reminded = lease.cycle
+                code = "renewal_due"
+            end
+            if code then
+                row.notice = { code = code, at = now, rental = id }
+                changed(ref.m, ref.u, ref.p)
+            end
+            local auto = r.auto
+            if auto and auto.on and not r.pend and now >= lease.paidUntil and verdict(auto, w) == "confirmed" then
+                tryRenew(ref, row, r, now, w)
+            end
+        end
     end
     row = rowOf(ref.m, ref.u, ref.p)
-    if not row or not row.lease then return false end
-    return row.pend ~= nil or row.lease.phase ~= "expired" or (row.auto ~= nil and row.auto.on == true)
+    local kept = {}
+    for _, r in ipairs(row.rentals) do
+        if not ended(ref, r, now, w) then kept[#kept + 1] = r end
+    end
+    if #kept ~= #row.rentals then
+        -- no money, no units, nothing any quote priced (a renewal of it fails as rental_unknown): no
+        -- journal and no new revision, or every open quote of the account would go stale
+        row.rentals = kept
+        changed(ref.m, ref.u, ref.p)
+    end
+    return #kept > 0
 end
 
 -- Promotions (pp proven saved) and activations (payment proven saved), then a refresh of every
@@ -1153,9 +1327,11 @@ local function settleWaiting(now, w)
         local ref = waiting[k]
         local row = ref and rowOf(ref.m, ref.u, ref.p)
         if row then
-            if offOwed[k] then consentOff(ref, row, nil, now) end   -- the owed `off` line, again
             if row.pp and verdict(row.pp, w) == "confirmed" then row.pp = nil end
-            if row.pend and verdict(row.pend, w) == "confirmed" then startPeriod(ref, row, now) end
+            for _, r in ipairs(row.rentals or {}) do
+                if offOwed[rentalKey(ref, r.id)] then consentOff(ref, row, r, nil, now) end   -- the owed `off` line, again
+                if r.pend and verdict(r.pend, w) == "confirmed" then startPeriod(ref, row, r, now) end
+            end
             if not hasPending(row, w) then waiting[k] = nil end
             changed(ref.m, ref.u, ref.p)
         elseif ref then
@@ -1214,8 +1390,14 @@ function E.init(r)
             for productId, row in pairs(byProduct) do
                 local ref = { m = modId, u = username, p = productId }
                 row.orders = row.orders or {}
-                if row.lease then trackLease(ref) end
-                if row.pp or row.pend then wait(ref) end
+                row.rentals = row.rentals or {}
+                local leased, paying = false, row.pp ~= nil
+                for _, r in ipairs(row.rentals) do
+                    leased = leased or r.lease ~= nil
+                    paying = paying or r.pend ~= nil
+                end
+                if leased then trackLease(ref) end
+                if paying then wait(ref) end
             end
         end
     end
@@ -1254,7 +1436,7 @@ end
 
 S.handlers["entitlement.quote"] = function(player, args)
     answer(player, "entitlement.quote", args,
-        E.quote(args.sourceMod, S.login(player), args.productId, args.kind, args.quantity))
+        E.quote(args.sourceMod, S.login(player), args.productId, args.kind, args.quantity, args.rental))
 end
 
 S.handlers["entitlement.purchase"] = function(player, args)
@@ -1263,7 +1445,7 @@ end
 
 S.handlers["entitlement.autoRenew"] = function(player, args)
     answer(player, "entitlement.autoRenew", args, E.setAutoRenew(args.sourceMod, S.login(player), args.productId,
-        args.enabled, args.expectedRevision, args.termsRevision))
+        args.enabled, args.expectedRevision, args.termsRevision, args.rental))
 end
 
 S.handlers["entitlement.order"] = function(player, args)
@@ -1366,12 +1548,14 @@ S.Entitlements = E
 S.onInit(E.init)
 Events.OnTickEvenPaused.Add(E.onTick)
 
--- The facade grows to rev 2 only now that the entitlement half is loaded.
+-- The facade grows to rev 2 only now that the entitlement half is loaded; `rentals` marks the
+-- independent-rentals model (a row holds any number of rentals, see the header).
 G.API_REVISION = 2
 if EC.v1 then
     EC.v1.API_REVISION = 2
     EC.v1.CAPABILITIES.entitlements = true
     EC.v1.CAPABILITIES.subscriptions = true
+    EC.v1.CAPABILITIES.rentals = true
 end
 
 return E

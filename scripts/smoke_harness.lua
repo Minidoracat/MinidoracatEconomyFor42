@@ -1096,6 +1096,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: the whitelist's item cat
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: buyback food states and refusal reasons, classes that left the fixed list (scenario BB: cooked/burnt/frozen/warmed, eaten and sipped, worn and renamed, candidate refusal counts, a refused sale keeps the copy, an empty bag and a full one, padlock key count and lamp light, a map stays fixed, script-less furniture rebuilt from its sprite)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: food state the snapshot dropped (scenario SK: eaten and stale relief against food sickness, every scaled state, matched at the listed age, a canned jar's shelf life and its preview, spices and their cap)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: dishes with added ingredients are listable (scenario DS: the state check, ingredients/name/raw danger/cookable rebuilt, the buyer's preview, no merge across ingredients, the buyback refuses with prepared_dish)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: independent rentals as contracts (scripts/test_entitlements.lua scenario 10: side by side, renewal of one, terms kept by a consent, per-rental charge, per-rental replay, pruning, count cap and refunds, lowered limit, lapse over the limit)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")

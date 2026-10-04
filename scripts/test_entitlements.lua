@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+77 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+87 here).
 
 Native boundaries faked here (and only these): getSandboxOptions / getServerName (the sandbox object
 the engine hands the server), and the companion's durable.json marker. Money, ModData, journal file
@@ -53,11 +53,11 @@ getServerName = function() return "servertest" end
 
 local MAP = { permanentEnabled = "TestVM.PermEnabled", permanentCurrency = "TestVM.PermCurrency",
     permanentPrice = "TestVM.PermPrice", permanentLimit = "TestVM.PermLimit", rentalEnabled = "TestVM.RentEnabled",
-    rentalCurrency = "TestVM.RentCurrency", rentalPrice = "TestVM.RentPrice", rentalQuantity = "TestVM.RentQty",
+    rentalCurrency = "TestVM.RentCurrency", rentalPrice = "TestVM.RentPrice", rentalLimit = "TestVM.RentLimit",
     rentalDays = "TestVM.RentDays", graceHours = "TestVM.Grace", reminderHours = "TestVM.Reminder",
     autoRenewAllowed = "TestVM.AutoAllowed", revision = "TestVM.PlanRevision" }
 local DEFAULTS = { permanentEnabled = true, permanentCurrency = "survivor", permanentPrice = 1000, permanentLimit = 3,
-    rentalEnabled = true, rentalCurrency = "survivor", rentalPrice = 250, rentalQuantity = 1, rentalDays = 7,
+    rentalEnabled = true, rentalCurrency = "survivor", rentalPrice = 250, rentalLimit = 3, rentalDays = 7,
     graceHours = 24, reminderHours = 24, autoRenewAllowed = true }
 local function defaults(over)
     local t = {}
@@ -108,6 +108,7 @@ local function planValues(over)
     for k, v in pairs(over or {}) do t[k] = v end
     return t
 end
+local function rent1(e) return (e and e.rentals and e.rentals[1]) or {} end   -- the first rental (view or row)
 
 -- ---------- a fresh world, two sources with the same product id ----------
 ctx.store()[EC.MODDATA_KEY] = nil
@@ -117,8 +118,8 @@ advance(61000)
 fire("OnServerStarted")
 
 check(V.API_REVISION >= 2 and V.CAPABILITIES.entitlements == true and V.CAPABILITIES.subscriptions == true
-    and V.CAPABILITIES.post == true,
-    "the facade is at least rev 2 with entitlements; the rev 1 capabilities are unchanged")
+    and V.CAPABILITIES.rentals == true and V.CAPABILITIES.post == true,
+    "the facade is at least rev 2 with entitlements and independent rentals; the rev 1 capabilities are unchanged")
 
 local REASONS = { "entitlement_purchase", "entitlement_renewal", "entitlement_refund" }
 local vm = V.registerSource({ modId = "TestVM", currencies = { "survivor", "cat" }, reasonCodes = REASONS })
@@ -161,9 +162,10 @@ local consumerSaw = {}
 vm.onEntitlementChanged(function(username, productId, snap) consumerSaw[#consumerSaw + 1] = snap end)
 
 local st = vm.getEntitlement("ann", "vehicle_slot")
-check(st.ok and st.entitlement.usable == 0 and st.entitlement.state == "none" and st.entitlement.autoRenewState == "off"
-    and st.plan.revision == 1 and st.balances.survivor.available == 5000 and st.available == true,
-    "a fresh account reads as none with auto-renew off")
+check(st.ok and st.entitlement.usable == 0 and st.entitlement.state == "none" and #st.entitlement.rentals == 0
+    and st.entitlement.rentalsMax == E.RENTALS_MAX and st.plan.revision == 1 and st.balances.survivor.available == 5000
+    and st.available == true,
+    "a fresh account reads as none with no rentals")
 check(E.peek("TestVM", "carl", "vehicle_slot") == nil and vm.getEntitlement("carl", "vehicle_slot").ok == true
     and E.peek("TestVM", "carl", "vehicle_slot") == nil and vm.getEntitlement("ann", "nope").error == "unknown_product",
     "reading creates no row, and an unknown product is refused")
@@ -310,7 +312,8 @@ check(vm.getOrder("bob", "vehicle_slot", q6.quote.id).known == false
 local r1q = cmd(ann, "entitlement.quote", with({ kind = "rental" }))
 local r1 = cmd(ann, "entitlement.purchase", { sourceMod = "TestVM", quoteId = r1q.quote.id })
 local re1 = r1.snapshot and r1.snapshot.entitlement or {}
-check(r1.ok and re1.state == "pending" and re1.rental == 0 and re1.pendingQuantity == 1 and re1.paidUntil == nil,
+check(r1.ok and rent1(re1).state == "pending" and re1.rental == 0 and re1.pendingQuantity == 1
+    and rent1(re1).paidUntil == nil and rent1(re1).id == r1.orderId and re1.rentalCommitted == 1,
     "a paid rental waits for the save: no period starts before it is proven")
 local savedPaid = proofSnapshot()             -- the world save holds the payment, not the activation
 advance(HOUR)                                 -- an hour waiting for the save is not eaten
@@ -318,10 +321,10 @@ confirmAll()
 local activatedAt = ctx.now()
 local ra = vm.getEntitlement("ann", "vehicle_slot").entitlement
 local journalLines = ctx.files()[E.JOURNAL_FILE]
-check(ra.state == "active" and ra.rental == 1 and ra.usable == 3 and ra.paidUntil == activatedAt + 7 * DAY
-    and ra.graceUntil == ra.paidUntil + DAY and journalLines ~= nil and #journalLines.lines == 1,
+check(rent1(ra).state == "active" and ra.rental == 1 and ra.usable == 3 and rent1(ra).paidUntil == activatedAt + 7 * DAY
+    and rent1(ra).graceUntil == rent1(ra).paidUntil + DAY and journalLines ~= nil and #journalLines.lines == 1,
     "the period starts at activation after the save, and the activation is journaled first")
-local paidUntil1 = ra.paidUntil
+local paidUntil1 = rent1(ra).paidUntil
 advance(5 * HOUR)
 proofRestartFrom(savedPaid)
 local rr1 = vm.getEntitlement("ann", "vehicle_slot").entitlement
@@ -329,7 +332,7 @@ advance(HOUR)
 proofRestartFrom(savedPaid)
 fire("OnTickEvenPaused")
 local rr2 = vm.getEntitlement("ann", "vehicle_slot").entitlement
-check(rr1.paidUntil == paidUntil1 and rr2.paidUntil == paidUntil1 and rr2.state == "active",
+check(rent1(rr1).paidUntil == paidUntil1 and rent1(rr2).paidUntil == paidUntil1 and rent1(rr2).state == "active",
     "crashes before the activation is saved replay the journaled time: the period is never extended")
 confirmAll()
 check(#ctx.files()[E.JOURNAL_FILE].lines == 0 and E.journalStatus().state == "ok",
@@ -341,8 +344,8 @@ ctx.writerDeny()[E.JOURNAL_FILE] = true
 confirmAll()
 local bs = vm.getEntitlement("bob", "vehicle_slot").entitlement
 local as = vm.getEntitlement("ann", "vehicle_slot").entitlement
-check(bp.ok and bs.state == "paused_system" and bs.rental == 0 and bs.paidUntil == nil and bs.wait.code == "journal_blocked"
-    and as.usable == 3 and E.journalStatus().state == "write_failed",
+check(bp.ok and rent1(bs).state == "paused_system" and bs.rental == 0 and rent1(bs).paidUntil == nil
+    and bs.wait.code == "journal_blocked" and as.usable == 3 and E.journalStatus().state == "write_failed",
     "a journal that cannot be written pauses activation instead of starting a period, and confirmed units stay usable")
 check(vm.quote("ann", "vehicle_slot", "rental").error == "journal_unavailable",
     "no rental is sold while activation is paused")
@@ -350,37 +353,40 @@ ctx.writerDeny()[E.JOURNAL_FILE] = nil
 advance(61000)
 fire("OnTickEvenPaused")
 local bh = vm.getEntitlement("bob", "vehicle_slot").entitlement
-check(bh.state == "active" and bh.paidUntil == ctx.now() + 7 * DAY and E.journalStatus().state == "ok",
+check(rent1(bh).state == "active" and rent1(bh).paidUntil == ctx.now() + 7 * DAY and E.journalStatus().state == "ok",
     "after the journal recovers the period starts then, never earlier")
 
 -- ---------- auto-renew: consent, durable consent, one charge per cycle ----------
 local st0 = vm.getEntitlement("ann", "vehicle_slot")
 local staleConsent = cmd(ann, "entitlement.autoRenew", with({ enabled = true, expectedRevision = st0.entitlement.revision,
-    termsRevision = st0.plan.revision - 1 }))
+    termsRevision = st0.plan.revision - 1, rental = r1.orderId }))
 local consent = cmd(ann, "entitlement.autoRenew", with({ enabled = true, expectedRevision = st0.entitlement.revision,
-    termsRevision = st0.plan.revision }))
-check(staleConsent.error == "stale_terms" and consent.ok and consent.snapshot.entitlement.autoRenewState == "pending_on",
+    termsRevision = st0.plan.revision, rental = r1.orderId }))
+check(staleConsent.error == "stale_terms" and consent.ok
+    and rent1(consent.snapshot and consent.snapshot.entitlement).autoRenewState == "pending_on",
     "consent names the current terms and stays pending until it is saved")
 local ann0 = L.getBalance("ann", "survivor").available
-local lease0 = E.peek("TestVM", "ann", "vehicle_slot").lease
+local lease0 = rent1(E.peek("TestVM", "ann", "vehicle_slot")).lease
 ctx.setNow(lease0.paidUntil + 1000)
 fire("OnTickEvenPaused")
-check(L.getBalance("ann", "survivor").available == ann0 and vm.getEntitlement("ann", "vehicle_slot").entitlement.state == "grace",
+check(L.getBalance("ann", "survivor").available == ann0 and rent1(vm.getEntitlement("ann", "vehicle_slot").entitlement).state == "grace",
     "an unsaved consent never charges; the lease enters grace")
 confirmAll()
 local afterCharge = L.getBalance("ann", "survivor").available
 local rs = vm.getEntitlement("ann", "vehicle_slot").entitlement
-check(afterCharge == ann0 - 250 and rs.autoRenewState == "on" and rs.state == "grace" and rs.pendingOrderId ~= nil,
+check(afterCharge == ann0 - 250 and rent1(rs).autoRenewState == "on" and rent1(rs).state == "grace"
+    and rent1(rs).pendingOrderId ~= nil,
     "a saved consent charges one period when due; the extension waits for its own save")
-check(vm.quote("ann", "vehicle_slot", "rental").error == "lease_pending" and L.getBalance("ann", "survivor").available == afterCharge,
+check(vm.quote("ann", "vehicle_slot", "rental", nil, r1.orderId).error == "lease_pending"
+    and L.getBalance("ann", "survivor").available == afterCharge,
     "manual and automatic renewal of the same cycle cannot both charge")
 confirmAll()
 local rn = vm.getEntitlement("ann", "vehicle_slot").entitlement
-check(rn.paidUntil == lease0.paidUntil + 7 * DAY and rn.state == "active" and rn.notice.code == "renewed",
+check(rent1(rn).paidUntil == lease0.paidUntil + 7 * DAY and rent1(rn).state == "active" and rn.notice.code == "renewed",
     "a renewal inside grace continues the old period instead of restarting it")
 
 local annB = L.getBalance("ann", "survivor").available
-ctx.setNow(rn.paidUntil + 3 * 7 * DAY)
+ctx.setNow(rent1(rn).paidUntil + 3 * 7 * DAY)
 fire("OnServerStarted")                       -- the server was down for three periods
 fire("OnTickEvenPaused")
 local charged = annB - L.getBalance("ann", "survivor").available
@@ -389,27 +395,27 @@ fire("OnTickEvenPaused")
 local chargedTwice = annB - L.getBalance("ann", "survivor").available
 confirmAll()
 local dn = vm.getEntitlement("ann", "vehicle_slot").entitlement
-check(charged == 250 and chargedTwice == 250 and dn.paidUntil == ctx.now() + 7 * DAY and dn.state == "active",
+check(charged == 250 and chargedTwice == 250 and rent1(dn).paidUntil == ctx.now() + 7 * DAY and rent1(dn).state == "active",
     "after downtime one period is charged, no arrears, and it starts at activation")
 
 local cs = vm.getEntitlement("ann", "vehicle_slot")
 local savedOn = proofSnapshot()               -- a save that still has auto-renew on
 local cancel = cmd(ann, "entitlement.autoRenew", with({ enabled = false, expectedRevision = cs.entitlement.revision,
-    termsRevision = cs.plan.revision }))
-check(cancel.ok and cancel.snapshot.entitlement.autoRenewState == "pending_off",
+    termsRevision = cs.plan.revision, rental = r1.orderId }))
+check(cancel.ok and rent1(cancel.snapshot and cancel.snapshot.entitlement).autoRenewState == "pending_off",
     "a cancel stops at once and shows pending until it is saved")
 proofRestartFrom(savedOn)                     -- the cancel never reached a save
 local replayed = vm.getEntitlement("ann", "vehicle_slot").entitlement
-ctx.setNow(replayed.paidUntil + 1000)
+ctx.setNow(rent1(replayed).paidUntil + 1000)
 local annC = L.getBalance("ann", "survivor").available
 fire("OnTickEvenPaused")
-check(replayed.autoRenew == false and L.getBalance("ann", "survivor").available == annC,
+check(rent1(replayed).autoRenew == false and L.getBalance("ann", "survivor").available == annC,
     "a crash cannot revive a cancelled consent: the journaled cancel is replayed and nothing is charged")
 local s1 = vm.getEntitlement("ann", "vehicle_slot")
 local oldRev = s1.entitlement.revision
-vm.setAutoRenew("ann", "vehicle_slot", true, oldRev, s1.plan.revision)
-local staleCancel = vm.setAutoRenew("ann", "vehicle_slot", false, oldRev - 1, s1.plan.revision)
-check(staleCancel.error == "stale_revision" and vm.getEntitlement("ann", "vehicle_slot").entitlement.autoRenew == true,
+vm.setAutoRenew("ann", "vehicle_slot", true, oldRev, s1.plan.revision, r1.orderId)
+local staleCancel = vm.setAutoRenew("ann", "vehicle_slot", false, oldRev - 1, s1.plan.revision, r1.orderId)
+check(staleCancel.error == "stale_revision" and rent1(vm.getEntitlement("ann", "vehicle_slot").entitlement).autoRenew == true,
     "a cancel naming a revision older than the current consent cannot switch it off")
 
 -- ---------- admin plans: apply, idempotency, conflicts, sandbox mirror ----------
@@ -422,9 +428,9 @@ local ap = cmd(boss, "admin.entitlements", applyArgs)
 check(ap.ok and ap.updated and ap.revision == row.plan.revision + 1 and SandboxVars.TestVM.RentPrice == 300
     and SandboxVars.TestVM.PlanRevision == ap.revision and ap.sandbox.ok == true,
     "an admin apply raises the revision and mirrors it into the saved sandbox")
-check(vm.getEntitlement("ann", "vehicle_slot").entitlement.autoRenewState == "paused_terms"
+check(rent1(vm.getEntitlement("ann", "vehicle_slot").entitlement).autoRenewState == "paused_terms"
     and vm.purchase("ann", qOld.quote.id).error == "stale_terms",
-    "any terms change pauses the old consent and makes old quotes stale")
+    "a rent change pauses the consent given for the old rent and makes old quotes stale")
 local ap2 = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
     expectedRevision = row.plan.revision, values = applyArgs.values, reason = "raise rent", requestId = "apply-1" })
 local conflict = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
@@ -500,9 +506,9 @@ check(today ~= nil and today.refund == 1000 and today.mint == 0 and S.modData().
 local notLatest = vm.refund("ann", "vehicle_slot", r1.orderId, { reason = "old period" })
 check(notLatest.ok == false and notLatest.error == "refund_not_latest",
     "a rental period that a later one depends on cannot be refunded")
-local lastOrder = E.peek("TestVM", "ann", "vehicle_slot").lease.last
+local lastOrder = rent1(E.peek("TestVM", "ann", "vehicle_slot")).lease.last
 local latest = vm.refund("ann", "vehicle_slot", lastOrder, { reason = "latest period" })
-local afterRefund = E.peek("TestVM", "ann", "vehicle_slot")
+local afterRefund = rent1(E.peek("TestVM", "ann", "vehicle_slot"))
 check(latest.ok and afterRefund.auto.on == false and afterRefund.lease.last ~= lastOrder,
     "refunding the latest period restores the previous lease and switches auto-renew off in the same commit")
 
@@ -541,7 +547,7 @@ local function renter(name, funds)             -- a confirmed active lease under
     confirmAll()                               -- the payment is saved: the period starts, journaled
     confirmAll()                               -- the activation is saved
     local s = vm.getEntitlement(name, "vehicle_slot")
-    vm.setAutoRenew(name, "vehicle_slot", true, s.entitlement.revision, s.plan.revision)
+    vm.setAutoRenew(name, "vehicle_slot", true, s.entitlement.revision, s.plan.revision, rent1(s.entitlement).id)
     confirmAll()                               -- the consent is saved
     return vm.getEntitlement(name, "vehicle_slot")
 end
@@ -560,23 +566,24 @@ do
     local cf = renter("cf1", 2000)
     local savedOnCf = proofSnapshot()          -- a save with the consent still on
     ctx.writerDeny()[E.JOURNAL_FILE] = true
-    local cfail = vm.setAutoRenew("cf1", "vehicle_slot", false, cf.entitlement.revision, cf.plan.revision)
-    local cfailAgain = vm.setAutoRenew("cf1", "vehicle_slot", false, cf.entitlement.revision + 1, cf.plan.revision)
+    local cfId = rent1(cf.entitlement).id
+    local cfail = vm.setAutoRenew("cf1", "vehicle_slot", false, cf.entitlement.revision, cf.plan.revision, cfId)
+    local cfailAgain = vm.setAutoRenew("cf1", "vehicle_slot", false, cf.entitlement.revision + 1, cf.plan.revision, cfId)
     local cfe = cfail.snapshot and cfail.snapshot.entitlement or {}
-    check(cfail.ok == false and cfail.error == "journal_unavailable" and cfe.autoRenew == false
-        and cfe.autoRenewState == "pending_off" and cfe.wait ~= nil and cfe.wait.code == "journal_blocked"
+    check(cfail.ok == false and cfail.error == "journal_unavailable" and rent1(cfe).autoRenew == false
+        and rent1(cfe).autoRenewState == "pending_off" and cfe.wait ~= nil and cfe.wait.code == "journal_blocked"
         and cfailAgain.error == "journal_unavailable" and cfailAgain.duplicate == nil,
         "a cancel whose off line cannot be written stops here but is not reported done, and resending it is no duplicate")
     ctx.writerDeny()[E.JOURNAL_FILE] = nil
     advance(61000)
     fire("OnTickEvenPaused")                   -- the journal works again: the owed line is written by itself
     local cfLines = offLinesOf("cf1")
-    local cfResent = vm.setAutoRenew("cf1", "vehicle_slot", false, 0, cf.plan.revision)
+    local cfResent = vm.setAutoRenew("cf1", "vehicle_slot", false, 0, cf.plan.revision, cfId)
     proofRestartFrom(savedOnCf)                -- the cancel never reached a save
-    ctx.setNow(E.peek("TestVM", "cf1", "vehicle_slot").lease.paidUntil + 1000)
+    ctx.setNow(rent1(E.peek("TestVM", "cf1", "vehicle_slot")).lease.paidUntil + 1000)
     local cfBal = L.getBalance("cf1", "survivor").available
     fire("OnTickEvenPaused")
-    check(cfLines == 1 and cfResent.ok and cfResent.duplicate == true and E.peek("TestVM", "cf1", "vehicle_slot").auto.on == false
+    check(cfLines == 1 and cfResent.ok and cfResent.duplicate == true and rent1(E.peek("TestVM", "cf1", "vehicle_slot")).auto.on == false
         and L.getBalance("cf1", "survivor").available == cfBal,
         "the owed off line lands once the journal works; a crash back to the consent replays it and charges nothing")
 end
@@ -614,12 +621,12 @@ do
         end
         return realReader(path, create)
     end
-    local c2off = vm.setAutoRenew("cf2", "vehicle_slot", false, c2.entitlement.revision, c2.plan.revision)
+    local c2off = vm.setAutoRenew("cf2", "vehicle_slot", false, c2.entitlement.revision, c2.plan.revision, rent1(c2.entitlement).id)
     getFileReader = realReader
     advance(61000)
     fire("OnTickEvenPaused")                   -- the journal is read again
     local c2Lines = offLinesOf("cf2")
-    local c2again = vm.setAutoRenew("cf2", "vehicle_slot", false, 0, c2.plan.revision)
+    local c2again = vm.setAutoRenew("cf2", "vehicle_slot", false, 0, c2.plan.revision, rent1(c2.entitlement).id)
     check(c2off.error == "journal_unavailable" and c2Lines == 1 and c2again.ok and c2again.duplicate == true,
         "an off line that landed but could not be read back is found on the next read and kept")
 end
@@ -628,7 +635,7 @@ end
 do
     renter("lp1", rentPrice)
     local lpSaved = proofSnapshot()            -- the consent is on in this save
-    local lpLease = E.peek("TestVM", "lp1", "vehicle_slot").lease
+    local lpLease = rent1(E.peek("TestVM", "lp1", "vehicle_slot")).lease
     ctx.setNow(lpLease.paidUntil + lpLease.G + 1000)
     fire("OnTickEvenPaused")                   -- due, no money, grace over: the consent lapses
     local lapsed = vm.getEntitlement("lp1", "vehicle_slot").entitlement
@@ -637,27 +644,27 @@ do
     local lpBal = L.getBalance("lp1", "survivor").available
     advance(1000)
     fire("OnTickEvenPaused")
-    check(lapsed.autoRenew == false and lapsed.notice ~= nil and lapsed.notice.code == "renewal_failed" and offLinesOf("lp1") == 1
-        and E.peek("TestVM", "lp1", "vehicle_slot").auto.on == false and L.getBalance("lp1", "survivor").available == lpBal,
+    check(rent1(lapsed).autoRenew == false and lapsed.notice ~= nil and lapsed.notice.code == "renewal_failed" and offLinesOf("lp1") == 1
+        and rent1(E.peek("TestVM", "lp1", "vehicle_slot")).auto.on == false and L.getBalance("lp1", "survivor").available == lpBal,
         "a consent that lapsed for want of money is journaled: a crash back to it charges nothing after a top-up")
 end
 
 -- 2. a renewal reads the row, the consent and the plan again after the consumer's callback
 do
     renter("rn1", 2000)
-    ctx.setNow(E.peek("TestVM", "rn1", "vehicle_slot").lease.paidUntil + 1000)
+    ctx.setNow(rent1(E.peek("TestVM", "rn1", "vehicle_slot")).lease.paidUntil + 1000)
     gate.reenter = function()                  -- the consumer cancels and consents again meanwhile
         local s = vm.getEntitlement("rn1", "vehicle_slot")
-        gate.cancelled = vm.setAutoRenew("rn1", "vehicle_slot", false, s.entitlement.revision, s.plan.revision)
+        gate.cancelled = vm.setAutoRenew("rn1", "vehicle_slot", false, s.entitlement.revision, s.plan.revision, rent1(s.entitlement).id)
         s = vm.getEntitlement("rn1", "vehicle_slot")
-        gate.consented = vm.setAutoRenew("rn1", "vehicle_slot", true, s.entitlement.revision, s.plan.revision)
+        gate.consented = vm.setAutoRenew("rn1", "vehicle_slot", true, s.entitlement.revision, s.plan.revision, rent1(s.entitlement).id)
     end
     local rnBal = L.getBalance("rn1", "survivor").available
     fire("OnTickEvenPaused")
     gate.reenter = nil
     local rnE = vm.getEntitlement("rn1", "vehicle_slot").entitlement
     check(gate.cancelled ~= nil and gate.cancelled.ok and gate.consented ~= nil and gate.consented.ok
-        and rnE.autoRenewState == "pending_on" and rnE.pendingOrderId == nil and L.getBalance("rn1", "survivor").available == rnBal,
+        and rent1(rnE).autoRenewState == "pending_on" and rent1(rnE).pendingOrderId == nil and L.getBalance("rn1", "survivor").available == rnBal,
         "a gate that cancels and consents again during a renewal: the new, unsaved consent is never charged")
 end
 
@@ -666,7 +673,7 @@ do
     advance(61000)                             -- past the consent cooldown
     local function consentNow(on)
         local s = vm.getEntitlement("rn1", "vehicle_slot")
-        return vm.setAutoRenew("rn1", "vehicle_slot", on, s.entitlement.revision, s.plan.revision)
+        return vm.setAutoRenew("rn1", "vehicle_slot", on, s.entitlement.revision, s.plan.revision, rent1(s.entitlement).id)
     end
     consentNow(false)
     S.modData().frozen.rn1 = { admin = "boss" }
@@ -682,7 +689,7 @@ do
     local frozenOff = consentNow(false)
     S.modData().frozen.rn1 = nil
     check(frozenOn.error == "account_frozen" and disabledOn.error == "currency_disabled" and fineOn.ok and frozenOff.ok
-        and E.peek("TestVM", "rn1", "vehicle_slot").auto.on == false,
+        and rent1(E.peek("TestVM", "rn1", "vehicle_slot")).auto.on == false,
         "a frozen account or a disabled currency cannot consent to auto-renew; a cancel goes through regardless")
 end
 
@@ -761,6 +768,160 @@ do
     check(blankReason.error == "reason_blank" and longReason.error == "reason_too_long" and cjkReason.ok and cjkReason.updated
         and E.peek("TestVM", "go1", "vehicle_slot").orders[1].st == "paid",
         "entitlement admin writes share the admin reason rule: ideographic blanks and 1001 characters are refused, 1000 CJK pass")
+end
+
+-- 10. independent rentals (2026-10-04): every rental is a contract with its own units, period,
+-- recorded terms, renewal, consent and refund; together they stay within the plan's rental limit.
+-- The blocks share their state through `mx` (this chunk is close to Lua's 200 active locals).
+local mx = {}
+do
+    local planNow = P.row("TestVM", "vehicle_slot").values
+    mx.price, mx.period = planNow.rentalPrice, planNow.rentalDays * DAY
+    L.credit("mx1", "survivor", 30 * mx.price, "SYSTEM_MINT", { requestId = "ent-fix-mx1", reasonCode = "t" })
+    mx.ent = function() return vm.getEntitlement("mx1", "vehicle_slot").entitlement end
+    mx.buy = function(qty, rental)
+        local q = vm.quote("mx1", "vehicle_slot", "rental", qty, rental)
+        if not q.ok then return q end
+        return vm.purchase("mx1", q.quote.id)
+    end
+    local a = mx.buy(2)
+    confirmAll()                               -- the payment is saved: this rental starts now
+    local tA = ctx.now()
+    confirmAll()
+    advance(DAY)
+    local b = mx.buy(1)
+    local overPending = vm.quote("mx1", "vehicle_slot", "rental", 1)
+    confirmAll()
+    local tB = ctx.now()
+    confirmAll()
+    local s = mx.ent()
+    mx.a, mx.ra, mx.rb = a, s.rentals[1] or {}, s.rentals[2] or {}
+    check(a.ok and b.ok and #s.rentals == 2 and mx.ra.id == a.orderId and mx.rb.id == b.orderId
+        and mx.ra.quantity == 2 and mx.rb.quantity == 1 and mx.ra.paidUntil == tA + mx.period
+        and mx.rb.paidUntil == tB + mx.period and s.rental == 3 and s.usable == 3 and s.rentalCommitted == 3
+        and (mx.ra.terms or {}).price == mx.price and (mx.ra.terms or {}).amount == 2 * mx.price
+        and overPending.error == "limit_reached",
+        "rentals stand side by side, each from its own activation and with its own terms; one still being paid counts toward the limit")
+end
+do
+    local renewB = mx.buy(nil, mx.rb.id)
+    confirmAll()
+    confirmAll()
+    local s = mx.ent()
+    check(renewB.ok and (s.rentals[1] or {}).paidUntil == mx.ra.paidUntil
+        and (s.rentals[2] or {}).paidUntil == mx.rb.paidUntil + mx.period
+        and vm.quote("mx1", "vehicle_slot", "rental", 2, mx.rb.id).error == "invalid_args"
+        and vm.quote("mx1", "vehicle_slot", "rental", nil, "no-such-rental").error == "rental_unknown",
+        "a renewal extends only the rental it names and keeps its units; an unknown rental is refused")
+end
+do
+    local sc = vm.getEntitlement("mx1", "vehicle_slot")
+    local noRental = vm.setAutoRenew("mx1", "vehicle_slot", true, sc.entitlement.revision, sc.plan.revision)
+    local onA = vm.setAutoRenew("mx1", "vehicle_slot", true, sc.entitlement.revision, sc.plan.revision, mx.ra.id)
+    confirmAll()                               -- the consent is saved
+    mx.onA = noRental.error == "invalid_args" and onA.ok
+    local function applyPlan(over, id)
+        return cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
+            expectedRevision = P.row("TestVM", "vehicle_slot").revision, values = planValues(over),
+            reason = "contract terms", requestId = id })
+    end
+    local function stateA() return (mx.ent().rentals[1] or {}).autoRenewState end
+    local other = applyPlan({ permanentPrice = P.row("TestVM", "vehicle_slot").values.permanentPrice + 1 }, "apply-mx-perm")
+    local afterOther = stateA()
+    local rent = applyPlan({ rentalPrice = mx.price + 5 }, "apply-mx-rent")
+    local afterRent = stateA()
+    local back = applyPlan({ rentalPrice = mx.price }, "apply-mx-back")
+    check(other.ok and rent.ok and back.ok and afterOther == "on" and afterRent == "paused_terms" and stateA() == "on",
+        "a consent keeps the terms it was given for: another plan edit leaves it on, a rent change pauses it, the agreed rent back resumes it")
+end
+do
+    local bal = L.getBalance("mx1", "survivor").available
+    ctx.setNow(mx.ra.paidUntil + 1000)
+    fire("OnTickEvenPaused")                   -- only rental A is due
+    local s = mx.ent()
+    local ra, rb = s.rentals[1] or {}, s.rentals[2] or {}
+    check(mx.onA and bal - L.getBalance("mx1", "survivor").available == 2 * mx.price
+        and ra.autoPending == true and ra.pendingOrderId ~= nil and s.pendingOrderId == nil and s.rental == 3
+        and (ra.autoTerms or {}).price == mx.price and rb.autoRenewState == "off" and rb.pendingOrderId == nil,
+        "a consent belongs to one rental: only it is charged when due, its units times the agreed rent, and a renewal the server started is not the player's pending purchase")
+end
+do
+    confirmAll()                               -- A's renewal is saved and starts
+    confirmAll()
+    local s4 = vm.getEntitlement("mx1", "vehicle_slot")
+    local onB = vm.setAutoRenew("mx1", "vehicle_slot", true, s4.entitlement.revision, s4.plan.revision, mx.rb.id)
+    confirmAll()
+    local bothOn = proofSnapshot()             -- a save with both consents on
+    local s5 = vm.getEntitlement("mx1", "vehicle_slot")
+    local offA = vm.setAutoRenew("mx1", "vehicle_slot", false, s5.entitlement.revision, s5.plan.revision, mx.ra.id)
+    proofRestartFrom(bothOn)                   -- the cancel of A never reached a save
+    local s = mx.ent()
+    check((s4.entitlement.rentals[1] or {}).paidUntil == mx.ra.paidUntil + mx.period and onB.ok and offA.ok
+        and (s.rentals[1] or {}).autoRenew == false and (s.rentals[2] or {}).autoRenew == true,
+        "a journaled cancel is replayed onto its own rental only: the other rental's consent survives the crash")
+end
+do
+    local s7 = vm.getEntitlement("mx1", "vehicle_slot")
+    vm.setAutoRenew("mx1", "vehicle_slot", false, s7.entitlement.revision, s7.plan.revision, mx.rb.id)
+    confirmAll()                               -- both cancels are saved
+    ctx.setNow((s7.entitlement.rentals[1] or {}).graceUntil + 1000)
+    fire("OnTickEvenPaused")
+    local s = mx.ent()
+    check(#s.rentals == 1 and (s.rentals[1] or {}).id == mx.rb.id and s.rental == 1 and s.usable == 1
+        and s.rentalCommitted == 1,
+        "a rental past its grace with no consent left leaves the list; only its own units stop counting")
+end
+do
+    local cap = E.RENTALS_MAX
+    E.RENTALS_MAX = 1
+    local capped = vm.quote("mx1", "vehicle_slot", "rental", 1)
+    E.RENTALS_MAX = cap
+    local lastA = nil
+    for _, o in ipairs(E.peek("TestVM", "mx1", "vehicle_slot").orders) do
+        if lastA == nil and o.rental == mx.ra.id then lastA = o.id end
+    end
+    local bal = L.getBalance("mx1", "survivor").available
+    local firstA = vm.refund("mx1", "vehicle_slot", mx.a.orderId, { reason = "old period" })
+    local endedA = vm.refund("mx1", "vehicle_slot", lastA, { reason = "ended rental" })
+    local c = mx.buy(1)
+    local cancelC = vm.refund("mx1", "vehicle_slot", c.orderId, { reason = "never started" })
+    local s = mx.ent()
+    check(capped.error == "rental_count_limit" and firstA.error == "refund_not_latest" and endedA.ok and cancelC.ok
+        and #s.rentals == 1 and (s.rentals[1] or {}).id == mx.rb.id
+        and L.getBalance("mx1", "survivor").available == bal + 2 * mx.price,
+        "refunds: an ended rental returns its newest order's money only, an older period is refused, and a rental still being paid goes with its money")
+end
+do
+    local d = mx.buy(2)
+    confirmAll()
+    confirmAll()
+    local applied = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
+        expectedRevision = P.row("TestVM", "vehicle_slot").revision, values = planValues({ rentalLimit = 2 }),
+        reason = "fewer rentals", requestId = "apply-mx1" })
+    local s = mx.ent()
+    local dv = s.rentals[2] or {}
+    mx.d = dv.id
+    check(d.ok and applied.ok and s.rentalCommitted == 3 and dv.state == "paused_terms"
+        and vm.quote("mx1", "vehicle_slot", "rental", 1).error == "limit_reached"
+        and vm.quote("mx1", "vehicle_slot", "rental", nil, dv.id).error == "limit_reached",
+        "below a lowered rental limit an account keeps its rentals running but buys no new rental and renews none")
+end
+do
+    local sb = vm.getEntitlement("mx1", "vehicle_slot")
+    local onB = vm.setAutoRenew("mx1", "vehicle_slot", true, sb.entitlement.revision, sb.plan.revision, mx.rb.id)
+    confirmAll()                               -- the consent is saved; B is due but over the limit
+    local bal = L.getBalance("mx1", "survivor").available
+    local lease = E.peek("TestVM", "mx1", "vehicle_slot").rentals[1].lease
+    ctx.setNow(lease.paidUntil + lease.G + HOUR)
+    fire("OnTickEvenPaused")                   -- grace over, still over the limit: the consent lapses
+    local lapsed = mx.ent()
+    confirmAll()                               -- the lapse is saved: the ended rental leaves
+    local s = mx.ent()
+    check(onB.ok and (lapsed.rentals[1] or {}).autoRenew == false and lapsed.notice ~= nil
+        and lapsed.notice.error == "limit_reached" and lapsed.notice.rental == mx.rb.id
+        and L.getBalance("mx1", "survivor").available == bal and #s.rentals == 1 and (s.rentals[1] or {}).id == mx.d
+        and s.rentalCommitted == 2 and vm.quote("mx1", "vehicle_slot", "rental", nil, mx.d).ok == true,
+        "over the limit a due rental is never charged: at the end of its grace its consent lapses and it ends, and the rest renew again")
 end
 
 getSandboxOptions, getServerName = nil, nil

@@ -4,7 +4,7 @@
 
 ## 使用前提
 
-伺服器先確認 `MinidoracatEconomy.v1` 的 `API_MAJOR == 1`、`API_REVISION >= 2`，以及 `CAPABILITIES.entitlements`、`CAPABILITIES.subscriptions`。既有 `post/credit/debit` 行為不變；舊 `CAPABILITIES.subscribe=false` 不改為新能力的別名。
+伺服器先確認 `MinidoracatEconomy.v1` 的 `API_MAJOR == 1`、`API_REVISION >= 2`，以及 `CAPABILITIES.entitlements`、`CAPABILITIES.subscriptions`、`CAPABILITIES.rentals`。`rentals` 表示租用是**租約清單**：每筆新租用訂單是一張獨立租約，有自己的名額數、到期時間、續租與自動續費；沒有這個能力的 Economy 是舊的單一租約模型，參數與 snapshot 形狀都不同，消費端應視為不可用。既有 `post/credit/debit` 行為不變；舊 `CAPABILITIES.subscribe=false` 不改為新能力的別名。
 
 Economy 是選用整合的消費端不必加 `require=MinidoracatEconomyFor42`。Economy 缺席、版本過舊或查詢失敗時，消費端必須明示付費服務不可用，不猜測可用額度。
 
@@ -17,7 +17,7 @@ Economy 是選用整合的消費端不必加 `require=MinidoracatEconomyFor42`�
 ```lua
 local E = MinidoracatEconomy and MinidoracatEconomy.v1
 if not (E and E.API_MAJOR == 1 and E.API_REVISION >= 2
-    and E.CAPABILITIES.entitlements and E.CAPABILITIES.subscriptions) then return end
+    and E.CAPABILITIES.entitlements and E.CAPABILITIES.subscriptions and E.CAPABILITIES.rentals) then return end
 
 local source, err = E.registerSource({
     modId = "MyMod",
@@ -31,13 +31,25 @@ local result = source.registerProduct({
     nameKey = "IGUI_MyMod_ClaimSlot",
     defaults = {
         permanentEnabled = false, permanentCurrency = "survivor", permanentPrice = 1000, permanentLimit = 10,
-        rentalEnabled = false, rentalCurrency = "survivor", rentalPrice = 250, rentalQuantity = 1,
+        rentalEnabled = false, rentalCurrency = "survivor", rentalPrice = 250, rentalLimit = 5,
         rentalDays = 7, graceHours = 24, reminderHours = 24, autoRenewAllowed = true,
     },
 })
 ```
 
 價格只是預設範例；兩種販售預設都關閉。翻譯鍵由產品的 MOD 提供。產品 ID 為 1–32 字元的小寫英文、數字或底線。重啟後需再次註冊；已保存的方案與權益不會被 defaults 重置。
+
+方案欄位：
+
+| 欄位 | 意義 |
+|---|---|
+| `permanentPrice` | 每個名額的買斷價；一次買 k 個收 k 倍 |
+| `permanentLimit` | 每個帳號最多買斷幾個名額，0–1000 |
+| `rentalPrice` | 每個名額每期的租金；一張 n 個名額的租約每期收 n 倍 |
+| `rentalLimit` | 每個帳號所有租約合計最多租幾個名額，1–1000；停止租用請關 `rentalEnabled` |
+| `rentalDays`／`graceHours`／`reminderHours`／`autoRenewAllowed` | 每期天數、寬限、到期前提醒、是否允許自動續費 |
+
+舊方案的 `rentalQuantity` 已刪除；驗證不過的舊方案列轉為 provisional（不可購買），等沙盒值或管理員重新套用。
 
 可選 `validatePurchase(username, productId, kind, quantity, projected)` 回呼應回 `true` 或 `false, reason`，其中 projected 含 `permanent/rental/usable/pendingQuantity`。回呼失敗或丟出例外會拒絕付款。它適合檢查消費端目前能否提供服務，不應因「基本額度已用完」而拒絕加購額度。
 
@@ -47,24 +59,40 @@ local result = source.registerProduct({
 |---|---|
 | `registerProduct(spec)` | 登錄產品、初始方案、選用沙盒映射及購買驗證回呼 |
 | `getEntitlement(username, productId)` | 唯讀權益、方案、餘額及近期訂單；不建立錢包 |
-| `quote(username, productId, kind, quantity)` | 建立 120 秒有效的伺服器報價；kind 為 `permanent` 或 `rental` |
+| `quote(username, productId, kind, quantity, rental?)` | 建立 120 秒有效的伺服器報價，見下方「報價種類」 |
 | `purchase(username, quoteId)` | 提交同一張報價；不讓客戶端指定價格或貨幣 |
 | `getOrder(username, productId, orderId)` | 查同一筆訂單結果，不再次扣款 |
-| `setAutoRenew(username, productId, enabled, expectedRevision, termsRevision)` | 明示同意或取消自動續費；帶權益與條款版本 |
+| `setAutoRenew(username, productId, enabled, expectedRevision, termsRevision, rental)` | 對某張租約明示同意或取消自動續費；帶權益與條款版本（過期的 termsRevision 仍會被拒，玩家必須看過目前方案），`rental` 必填。同意會記下當下方案的租金、幣別與每期天數 |
 | `refund(username, productId, orderId, opts)` | 對可查的原單退款並收回對應權益；opts 必填 reason，可帶 actor |
 | `onEntitlementChanged(fn)` | 完整變更後呼叫 `fn(username, productId, snapshot)` |
 
 一般結果為 `{ok, error?}`。查詢成功的 snapshot 包含：
 
 - `sourceMod/productId/nameKey/available/plan`。
-- `entitlement.revision/permanent/rental/usable/pendingQuantity/pendingOrderId/lastOrderId`。
-- `entitlement.paidUntil/graceUntil/state/autoRenew/autoRenewState/termsRevision`。
-- `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`。
-- `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`。
+- `entitlement.revision/permanent/rental/usable/pendingQuantity/pendingOrderId/lastOrderId/state`：`rental` 是所有有效租約的名額總和；`pendingQuantity` 是待確認的買斷加上還沒生效、正在等付款確認的租約名額；`pendingOrderId` 只列玩家自己發起、還沒確認的最新訂單（自動續費產生的不算）；`state` 為 `active`（usable > 0）、`pending`（只有待確認）或 `none`。
+- `entitlement.rentalCommitted`：計入 `rentalLimit` 的名額，即有效租約加上有待確認付款的租約。`entitlement.rentalsMax`：每個帳號最多幾張租約（伺服器固定 10）。
+- `entitlement.rentals`：依建立順序的租約清單，每張 `{ id, quantity, state, paidUntil?, graceUntil?, terms?, autoRenew, autoRenewState, autoTerms?, termsRevision?, pendingOrderId?, autoPending? }`。`id` 是建立它的訂單 id；`state` 為 `pending/active/grace/expired/paused_terms/paused_system`（條款改變、租用合計超過 `rentalLimit` 或租用停售時為 `paused_terms`）；`autoRenewState` 為 `off/pending_on/on/pending_off/paused_terms/paused_system`，其中 `paused_terms` 表示目前方案的租金、幣別或每期天數和同意時記下的不同（或租用合計超過上限），要玩家重新同意；`autoPending=true` 表示這張的待確認付款是自動續費發起的。
+- `rentals[i].terms = { price, amount, currency, days, graceHours }`：這張租約正在跑（或已付款待生效）的那一期的條款，`price` 是每個名額的租金、`amount` 是該期總額。`rentals[i].autoTerms = { price, currency, days }`：自動續費開啟時，玩家同意的條款。
+- `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`（`notice.rental` 指出是哪張租約）。
+- `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id），排程自動續費的訂單帶 `auto=true`。
+
+舊的頂層 `paidUntil/graceUntil/autoRenew/autoRenewState/termsRevision` 已刪除，改讀各租約的同名欄位。
 
 **消費端只使用 `entitlement.usable` 作為可新增的付費額度。** 不自行將 pending 相加，不從歷史收據、餘額差或過去快取推測額度。
 
 ## 報價、付款與未知結果
+
+### 報價種類
+
+| 呼叫 | 意義 | 條件 | 價格 |
+|---|---|---|---|
+| `quote(u, p, "permanent", k)` | 買斷 k 個（1–100，預設 1） | 已買斷 + k ≤ `permanentLimit` | k × `permanentPrice` |
+| `quote(u, p, "rental", n)` | 新租約 n 個（1–`rentalLimit`，預設 1） | `rentalCommitted` + n ≤ `rentalLimit`，且租約未滿 `rentalsMax` 張 | n × `rentalPrice` |
+| `quote(u, p, "rental", nil, rentalId)` | 續租該張租約（quantity 省略或等於該張名額數） | 該張沒有待確認付款，且租用合計未超過 `rentalLimit` | 該張名額數 × `rentalPrice` |
+
+- 新租約從存檔確認啟用時起算一整期；等待存檔的時間不算在租期內。
+- 續租期中或寬限期的租約從原 `paidUntil` 延長一期；已過寬限的從啟用時起算。續租不改名額數：要改數量就另租一張，讓舊的到期。
+- 一次一筆玩家發起的待確認購買是**客戶端規則**：`pendingOrderId` 有值時不讓玩家再買。自動續費產生的待確認付款不擋玩家購買，只擋同一張租約再續租（`lease_pending`）。
 
 報價回傳 `quote.id/orderId/kind/quantity/currency/amount/termsRevision/expiresAt`。付款前保存 `quote.orderId`；它與該報價的 id 相同，付款結果仍回同一 orderId。
 
@@ -85,7 +113,7 @@ local result = source.registerProduct({
 
 沒有 companion 時，畫面會說明需等重啟載入確認；不以經過幾秒、主控台存檔訊息或交易 JSON 代替證據。永久權益本體不依賴有限的啟動歷史，因此不會因啟動超過 20 次而被遺忘。
 
-付款保存確認不等於租用已啟用：還須將固定啟用時間寫進日誌並讀回核對。首次／逾期重新啟用從該時間起算；連續續期沿前一期 `paidUntil` 延長。再次崩潰重啟沿用原啟用時間，不重算一整期。取消立即停止本程序尚未執行的續費，但未保存前顯示 `pending_off`；重放以同一授權世代匹配，不能套到後來的新同意。
+付款保存確認不等於租用已啟用：還須將該張租約的固定啟用時間寫進日誌並讀回核對。新租約與過寬限後的續租從該時間起算；連續續期沿前一期 `paidUntil` 延長。再次崩潰重啟沿用原啟用時間，不重算一整期。取消某張租約的自動續費立即停止本程序尚未執行的續費，但未保存前顯示 `pending_off`；重放以同一張租約、同一授權世代匹配，不能套到後來的新同意或別張租約。
 
 日誌位於伺服器 `Lua/MinidoracatEconomy/entitlements-journal.json`，內容為逐行 JSON。取消寫入或讀回確認失敗時，回覆 `ok=false, error=journal_unavailable`；本程序先停止排程，但不能承諾崩潰後仍保持取消。畫面保留待確認狀態，修復日誌或確認 off 狀態真正保存後才能完成。
 
@@ -95,14 +123,32 @@ local result = source.registerProduct({
 
 ## 租用與續費
 
-- 一組租用提供方案的 rentalQuantity 個名額，不因續費多加一組。
-- 自動續費預設關閉。玩家同意綁定當時的條款；同意未確認保存前不排程扣款。
+- 每張租約有自己的名額數、到期時間、寬限、續租與自動續費；綁定上限＝基本＋買斷＋所有有效租約名額。續費不改名額數，也不多加一張。
+- 自動續費預設關閉，逐張開關。每張租約是一份契約：每一期記下自己的租金、幣別、天數與寬限（`terms`），同意自動續費時記下當下的租金、幣別與每期天數（`autoTerms`）；同意未確認保存前不排程扣款。到期時按記下的條款扣該張的租金。
 - 啟用自動續費也會檢查帳戶未凍結、幣別啟用及來源貨幣白名單；取消不受這些付款限制阻擋，但仍驗證授權世代以免舊取消覆蓋新同意。
-- 到期時才嘗試自動續費，事先依 reminderHours 提醒。餘額不足在寬限期間有限重試；系統不可用、凍結及來源停用會另外說明，不記成歷史欠債。
+- 到期時才嘗試自動續費，事先依 reminderHours 提醒。餘額不足在寬限期間每小時重試，寬限結束關閉該張的自動續費；系統不可用、凍結及來源停用會另外說明，不記成歷史欠債。
 - 寬限時間內租用額度仍有效。寬限結束後不再增加可新增名額；VehicleManager 不會因此解除既有車的保護。
 - 伺服器停機跨過多個周期，不補扣多期；重新開通只收一個明示周期。
-- 改價不改寫已付本期的數量或到期日，舊自動續費同意會暫停。租約仍有效但方案數量改變時，要等當期結束後再用新數量租用。
-- 退款綁原訂單、至多原額一次，與權益減少同時提交。租用只允許處理沒有後續周期依賴的最新一期。退款不放寬一般 credit 的發行額度。
+- **到期移除**：寬限結束、沒有待確認付款、自動續費已關閉且已存檔的租約，伺服器自動從清單移除。
+- **改租金、幣別或每期天數**：不改寫已付期間。只要方案的 `rentalPrice`、`rentalCurrency`、`rentalDays` 與某張租約同意時記下的不同，那張的自動續費就暫停（`paused_terms`），玩家重新同意後才會再扣款（同意會記下當時的條款）；方案改回同意時的值，自動續費恢復。其他方案欄位（買斷欄位、`rentalLimit`、寬限、提醒等）的變更不會暫停已同意的自動續費；關閉 `autoRenewAllowed` 則另外停止自動續費。報價仍綁 termsRevision，任何方案變更都會讓舊報價失效。
+- **調低 `rentalLimit`、低於玩家目前的租用合計**：現有租約照常用到到期，已付的續租照常啟用；合計超過上限時不能新租或續租（`limit_reached`），自動續費暫停；寬限期結束仍超過上限的那張關閉自動續費並到期。合計降回上限內後，其餘租約恢復續租。
+- **退款**綁原訂單、至多原額一次，與權益減少同時提交，並關閉該張租約的自動續費：
+  - 待確認的新租約：連同租約一起取消。
+  - 某張租約的最新一期：回到上一期；沒有上一期就移除租約。
+  - 租約已被移除：只要是該張的最新訂單，就只退款，不動任何權益。
+  - 其他情況回 `refund_not_latest`。退款不放寬一般 credit 的發行額度。
+
+### 錯誤碼（租用相關）
+
+| 錯誤 | 意義 |
+|---|---|
+| `limit_reached` | 買斷超過 `permanentLimit`，或租用合計會超過 `rentalLimit`（含已超過時續租） |
+| `rental_count_limit` | 已有 `rentalsMax` 張租約 |
+| `rental_unknown` | 指定的租約不存在（可能已到期移除） |
+| `lease_pending` | 該張租約已有待確認付款 |
+| `no_lease` | 沒有可續租的租約 |
+
+`lease_quantity_changed` 已刪除。
 
 ## 方案管理與沙盒同步
 
@@ -116,12 +162,16 @@ Economy 管理頁「整合方案」集中顯示來源與產品。管理員修改
 - 管理頁套用後會寫回伺服器沙盒檔，並以 MOD 同步訊息更新在線客戶端。
 - 寫回失敗會明示 dirty／錯誤，不能把尚未保存的投影說成已同步。相同內容的套用不增加版本，也不會清除仍存在的寫回錯誤。
 
-管理員可查帳號權益與退款，但不能替玩家開啟自動續費。
+管理員可查帳號權益與退款（帳號頁逐張列出租約、各期條款、同意自動續費時的條款，並標出與目前方案不同之處），但不能替玩家開啟自動續費。
 
 ## 客戶端 API
 
-能力探測位於 `MinidoracatEconomy.v1.Client`（不是客戶端的 `.v1.API_MAJOR`）。確認 major 1、rev >= 2、`CAPABILITIES.entitlements` 後取 `.Entitlements`：
+能力探測位於 `MinidoracatEconomy.v1.Client`（不是客戶端的 `.v1.API_MAJOR`）。確認 major 1、rev >= 2、`CAPABILITIES.entitlements` 與 `CAPABILITIES.rentals` 後取 `.Entitlements`：
 
 `requestState/getState/quote/purchase/setAutoRenew/getOrder/onChanged` 對應上述用途；送出方法回 requestId，若回 `nil, reason` 代表本機未送出且不會呼叫 callback。逾時 callback 包含 unknown 與原付款識別。客戶端只保存投影，不自行授權。
+
+- `quote(sourceMod, productId, kind, quantity, cb, rental?)`：`rental` 省略為買斷或新租約，給租約 id 為續租該張；只有 `kind == "rental"` 能帶 `rental`。
+- `setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental)`：`rental` 必填；同一產品一次只送一筆同意或取消，前一筆未回時回 `nil, "pending"`。
+- 租約 id 與其他 id 同規則（1–96 字元字串、不含控制字元），不合格時本機回 `nil, "invalid_args"`。
 
 `Client.openAdminPlans(sourceMod?, productId?)` 可開啟共用管理頁；讀寫權限仍由伺服器重新驗證。

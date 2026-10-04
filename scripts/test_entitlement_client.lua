@@ -8,7 +8,8 @@ What it pins is what a consumer mod (VehicleManager) relies on: one request in f
 command and the server's 500 ms window respected, every caller's callback kept, stale replies
 never overwriting a newer snapshot, a timeout reported as unknown without a re-send (keeping the
 quote / order identity), a late answer updating the cache without a second callback, public
-refresh signals, the server-driven sandbox sync, and the one shared reading of an order lookup.
+refresh signals, the server-driven sandbox sync, the one shared reading of an order lookup, rental
+ids checked locally and carried on quote / auto-renew, and the admin page's rentals view.
 ]]
 
 local MEDIA = os.getenv("EC_LUA_ROOT") or "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
@@ -102,6 +103,18 @@ local SRC, PROD = "MinidoracatVehicleManagerFor42", "claim_slot"
     check(id == nil and why == "invalid_args", "invalid product id refused locally")
     id, why = E.quote(SRC, PROD, "lifetime", 1, function() end)
     check(id == nil and why == "invalid_args", "unknown kind refused locally")
+    id, why = E.quote(SRC, PROD, "rental", 1, function() end, "")
+    check(id == nil and why == "invalid_args", "empty rental id refused locally")
+    id, why = E.quote(SRC, PROD, "rental", 1, function() end, 42)
+    check(id == nil and why == "invalid_args", "non-string rental id refused locally")
+    id, why = E.quote(SRC, PROD, "rental", 1, function() end, "bad\1id")
+    check(id == nil and why == "invalid_args", "rental id with a control character refused locally")
+    id, why = E.quote(SRC, PROD, "permanent", 1, function() end, "r-1")
+    check(id == nil and why == "invalid_args", "a permanent quote cannot name a rental")
+    id, why = E.setAutoRenew(SRC, PROD, true, 1, 1, function() end)
+    check(id == nil and why == "invalid_args", "auto-renew without a rental refused locally")
+    id, why = E.setAutoRenew(SRC, PROD, true, 1, 1, function() end, string.rep("x", 97))
+    check(id == nil and why == "invalid_args", "over-long rental id refused locally")
     check(#sent == 0, "nothing sent for refused arguments")
 end)()
 
@@ -259,6 +272,34 @@ end)()
     check(E.getState(SRC, PROD).entitlement.revision == 9, "correct command can still adopt the late purchase")
 end)()
 
+-- ---------- rental ids reach the wire; one consent write per product ----------
+;(function()
+    tick(10001)
+    tick(700)
+    E.quote(SRC, PROD, "rental", 2, nil)
+    local newRental = sent[#sent]
+    check(newRental.command == "entitlement.quote" and newRental.args.kind == "rental"
+        and newRental.args.quantity == 2 and newRental.args.rental == nil, "a new rental quote names no rental")
+    reply("entitlement.quote", { ok = false, error = "limit_reached", requestId = newRental.args.requestId })
+    tick(700)
+    E.quote(SRC, PROD, "rental", nil, nil, "1:42")
+    local renew = sent[#sent]
+    check(renew.args.rental == "1:42" and renew.args.quantity == nil and renew.args.requestId ~= newRental.args.requestId,
+        "a renewal quote carries its rental id")
+    reply("entitlement.quote", { ok = false, error = "rental_unknown", requestId = renew.args.requestId })
+    local results = {}
+    local id = E.setAutoRenew(SRC, PROD, true, 9, 1, function(r) results[#results + 1] = r end, "1:42")
+    local consent = sent[#sent]
+    check(consent.command == "entitlement.autoRenew" and consent.args.rental == "1:42"
+        and consent.args.expectedRevision == 9 and consent.args.termsRevision == 1 and consent.args.requestId == id,
+        "auto-renew consent carries its rental id")
+    local again, why = E.setAutoRenew(SRC, PROD, false, 9, 1, function() end, "1:43")
+    check(again == nil and why == "pending", "a second rental's consent waits for the product's open write")
+    tick(10001)
+    check(#results == 1 and results[1].unknown == true and results[1].rental == "1:42",
+        "a consent timeout keeps its rental id")
+end)()
+
 -- ---------- real admin page state machine, with rendering and engine controls replaced ----------
 ;(function()
     local classes = {}
@@ -272,7 +313,9 @@ end)()
     }
     package.loaded["ISUI/ISPanel"] = true
     C.UI = { PAD = 8, T = "IGUI_MinidoracatEconomy_", CARD_TITLE_H = 28,
-        fontH = { small = 16, medium = 20 }, amountText = tostring, currencyName = C.currencyName }
+        fontH = { small = 16, medium = 20 }, amountText = tostring, currencyName = C.currencyName,
+        stampText = function(ms) return "t" .. tostring(ms) end }
+    MinidoracatEconomy.sortSafe = function(list, lt) table.sort(list, lt) end
     dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminEntitlements.lua")
     local Page = classes.MinidoracatEconomyAdminEntPage
 
@@ -289,7 +332,7 @@ end)()
         return { sourceMod = SRC, productId = PROD, applies = applies or {},
             plan = { revision = revision, permanentEnabled = true, permanentCurrency = "survivor",
                 permanentPrice = price, permanentLimit = 10, rentalEnabled = false, rentalCurrency = "survivor",
-                rentalPrice = 250, rentalQuantity = 1, rentalDays = 7, graceHours = 24, reminderHours = 24,
+                rentalPrice = 250, rentalLimit = 5, rentalDays = 7, graceHours = 24, reminderHours = 24,
                 autoRenewAllowed = true } }
     end
     local function page()
@@ -312,7 +355,7 @@ end)()
         for _, name in ipairs({ "reviewButton", "discardButton", "recheckButton", "reasonField", "confirmButton",
             "backButton", "accountField", "lookupButton", "refundButton" }) do p[name] = control() end
         for _, name in ipairs({ "permanentEnabled", "permanentPrice", "permanentLimit", "rentalEnabled",
-            "rentalPrice", "rentalQuantity", "rentalDays", "graceHours", "reminderHours", "autoRenewAllowed" }) do
+            "rentalPrice", "rentalLimit", "rentalDays", "graceHours", "reminderHours", "autoRenewAllowed" }) do
             p.fieldControls[name] = control()
         end
         return p, ioState
@@ -407,6 +450,64 @@ end)()
     p:onCancelled(req.requestId)
     check(req.answered and not req.timedOut and p.pendingApplies[p.selKey] == nil and p:draft() == draft
         and not draft.unknown and p.view == "list", "cancelled unsent write retains draft without inventing unknown outcome")
+
+    -- lowering rentalLimit reviews the over-limit rule; raising it does not
+    p, ioState = page()
+    p:setDraftValue("rentalLimit", "3")
+    p:onReview()
+    check(p.review ~= nil and p.review.values.rentalLimit == 3
+        and string.find(p.review.text, "Ent_Review_EffectRentalLimit", 1, true) ~= nil,
+        "lowering rentalLimit sends it and reviews the over-limit rule")
+    p, ioState = page()
+    p:setDraftValue("rentalLimit", "9")
+    p:onReview()
+    check(p.review ~= nil and string.find(p.review.text, "Ent_Review_EffectRentalLimit", 1, true) == nil,
+        "raising rentalLimit carries no over-limit warning")
+    check(string.find(p.review.text, "Ent_Review_EffectConsentsKept", 1, true) ~= nil,
+        "a rentalLimit edit says agreed auto-renew keeps running")
+    p, ioState = page()
+    p:setDraftValue("rentalPrice", "300")
+    p:onReview()
+    check(p.review ~= nil and string.find(p.review.text, "Ent_Review_EffectConsents", 1, true) ~= nil
+        and string.find(p.review.text, "Ent_Review_EffectConsentsKept", 1, true) == nil,
+        "a rent change says consents agreed to other terms pause")
+
+    -- account view: every rental by creation order with its own terms; orders name their rental
+    -- and mark scheduler renewals
+    local entry = { sourceMod = SRC, productId = PROD, available = true,
+        plan = { revision = 1, rentalPrice = 250, rentalCurrency = "survivor", rentalDays = 7, graceHours = 24 },
+        entitlement = { revision = 4, state = "active", usable = 3, permanent = 0, rental = 3,
+            rentalCommitted = 3, rentalsMax = 10, rentals = {
+                { id = "1:10", quantity = 2, state = "active", paidUntil = 1000, graceUntil = 2000,
+                    autoRenew = true, autoRenewState = "on", termsRevision = 1,
+                    terms = { price = 250, amount = 500, currency = "survivor", days = 7, graceHours = 24 },
+                    autoTerms = { price = 250, currency = "survivor", days = 7 } },
+                { id = "1:11", quantity = 1, state = "grace", paidUntil = 500, graceUntil = 900,
+                    autoRenew = true, autoRenewState = "paused_terms", pendingOrderId = "1:12", autoPending = true,
+                    terms = { price = 250, amount = 250, currency = "survivor", days = 7, graceHours = 24 },
+                    autoTerms = { price = 200, currency = "survivor", days = 7 } } } } }
+    local out = {}
+    p:entryLines(out, entry)
+    local text = table.concat(out, "\n")
+    check(string.find(text, "Ent_RentalsCount|2|10", 1, true) ~= nil
+        and string.find(text, "Ent_RentalHead|1|2", 1, true) ~= nil
+        and string.find(text, "Ent_RentalHead|2|1", 1, true) ~= nil
+        and string.find(text, "1:12  IGUI_MinidoracatEconomy_Ent_AutoOrder", 1, true) ~= nil
+        and string.find(text, "t1000", 1, true) ~= nil and string.find(text, "t900", 1, true) ~= nil
+        and string.find(text, "Ent_RentTermsValue|250|2", 1, true) ~= nil
+        and string.find(text, "Ent_AutoTermsValue|200|cur:survivor", 1, true) ~= nil,
+        "account detail lists each rental with its slots, dates, terms, agreed terms and pending order")
+    check(select(2, string.gsub(text, "Ent_TermsDiffer", "")) == 1,
+        "only the consent agreed to another price is marked as differing from the plan")
+    out = {}
+    p:orderLines(out, { orderId = "1:12", kind = "renewal", status = "paid", rental = "1:11", auto = true }, entry.entitlement)
+    text = table.concat(out, "\n")
+    check(string.find(text, "Ent_RentalNo|2", 1, true) ~= nil and string.find(text, "Ent_AutoOrder", 1, true) ~= nil
+        and string.find(text, "auto: true", 1, true) == nil, "a scheduler renewal names rental #2 and is marked")
+    out = {}
+    p:orderLines(out, { orderId = "1:9", kind = "rental", status = "refunded", rental = "1:9" }, entry.entitlement)
+    check(string.find(table.concat(out, "\n"), "Ent_RentalGone", 1, true) ~= nil,
+        "an order of a pruned rental says the rental is gone")
 end)()
 
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))

@@ -21,9 +21,10 @@
 --             revision. When the plan moves on (another admin, a sandbox edit) the draft is kept
 --             and marked, Review is blocked, and only the admin's own "re-check" moves the draft
 --             onto the new revision -- nothing is ever re-sent against a newer revision on its own.
---   accounts  an exact account read: every product it holds, the recent orders of the picked one
---             and the full record. A refund goes through the same confirm step with a reason.
---             Admins can read a player's auto-renew choice but never change it.
+--   accounts  an exact account read: every product it holds with each of its rentals, the recent
+--             orders of the picked one (each rental order names its rental, scheduler renewals are
+--             marked) and the full record. A refund goes through the same confirm step with a
+--             reason. Admins can read a player's auto-renew choices but never change them.
 -- Every write is a two step affair: Review builds the summary of exactly what will be sent and
 -- locks it; Confirm sends that, once. A timeout is reported as an unknown outcome and never
 -- re-sent.
@@ -72,7 +73,7 @@ local FIELDS = {
     { key = "rentalEnabled", kind = "bool", group = "rental" },
     { key = "rentalCurrency", kind = "currency", group = "rental" },
     { key = "rentalPrice", kind = "int", min = 1, max = 1000000000, unit = "price", group = "rental" },
-    { key = "rentalQuantity", kind = "int", min = 1, max = 1000, group = "rental" },
+    { key = "rentalLimit", kind = "int", min = 1, max = 1000, group = "rental" },
     { key = "rentalDays", kind = "int", min = 1, max = 365, unit = "days", group = "rental" },
     { key = "graceHours", kind = "int", min = 0, max = 168, unit = "hours", group = "renewal" },
     { key = "reminderHours", kind = "int", min = 0, max = 168, unit = "hours", group = "renewal" },
@@ -210,11 +211,26 @@ end
 
 -- Orders are paid | refunded (paid = true) or proven unpaid: unsubmitted | declined | rolledback
 -- (paid = false, final). Only a paid order is offered; the server re-checks every refund (only
--- the latest order of a product may be refunded -- refund_not_latest -- and it says so if not).
+-- the latest order of a product or of one rental may be refunded -- refund_not_latest -- and it
+-- says so if not).
 local function refundable(o)
     if type(o) ~= "table" or orderIdOf(o) == nil then return false end
     if o.refundable ~= nil then return o.refundable == true end
     return o.status == "paid" and o.paid ~= false
+end
+
+-- A rental is shown by its place in the server's list (creation order); nil once it is gone.
+local function rentalIndex(ent, id)
+    if id == nil or type(ent) ~= "table" or type(ent.rentals) ~= "table" then return nil end
+    for i, r in ipairs(ent.rentals) do
+        if type(r) == "table" and r.id == id then return i end
+    end
+    return nil
+end
+
+local function rentalTag(ent, id)
+    local i = rentalIndex(ent, id)
+    return i ~= nil and getText(T .. "Ent_RentalNo", tostring(i)) or getText(T .. "Ent_RentalGone")
 end
 
 local function wrapInto(lines, s, width, token, maxLines)
@@ -415,6 +431,8 @@ function Page:createChildren()
                 placeholder = getText(T .. "Ent_Range", tostring(spec.min), amountText(spec.max)),
                 onChange = function(field, value) self:setDraftValue(field.internal, value, true) end })
             c.scrollTo = function(field) return form:scrollTo(field) end
+            local tip = getTextOrNull(T .. "Ent_Tip_" .. spec.key)
+            if tip ~= nil then c:setTooltip(tip) end
         elseif spec.kind == "bool" then
             c = UI.Checkbox.new({ x = 0, y = PARK_Y, width = 80, height = ch, label = boolText(false),
                 theme = theme, target = self,
@@ -1079,13 +1097,55 @@ local function num(v)
     return n ~= nil and tostring(n) or "-"
 end
 
+local function money(v)
+    local n = tonumber(v)
+    return n ~= nil and amountText(n) or "-"
+end
+
+-- A rental keeps the terms it was signed under and its consent the terms agreed to; either may
+-- differ from today's plan (only price, currency and period decide whether a consent may charge).
+local function termsDiffer(t, plan, withGrace)
+    if type(plan) ~= "table" then return false end
+    return tonumber(t.price) ~= tonumber(plan.rentalPrice) or t.currency ~= plan.rentalCurrency
+        or tonumber(t.days) ~= tonumber(plan.rentalDays)
+        or (withGrace and t.graceHours ~= nil and tonumber(t.graceHours) ~= tonumber(plan.graceHours))
+end
+
 function Page:stamp(ms)
     if type(ms) ~= "number" then return "-" end
     return U.stampText(ms, self.owner.offsetMin)
 end
 
-function Page:detailLine(out, key, value)
-    out[#out + 1] = getText(T .. "Ent_D_Line", tr("Ent_D_" .. key), tostring(value))
+function Page:detailLine(out, key, value, indent)
+    out[#out + 1] = (indent or "") .. getText(T .. "Ent_D_Line", tr("Ent_D_" .. key), tostring(value))
+end
+
+-- One rental, its state, dates and terms indented under a "#n" head (n = creation order).
+function Page:rentalLines(out, i, r, plan)
+    local E, sub = Ent(), "    "
+    out[#out + 1] = "  " .. getText(T .. "Ent_RentalHead", tostring(i), num(r.quantity), E.stateText(r.state))
+    if r.paidUntil ~= nil then self:detailLine(out, "PaidUntil", self:stamp(r.paidUntil), sub) end
+    if r.graceUntil ~= nil then self:detailLine(out, "GraceUntil", self:stamp(r.graceUntil), sub) end
+    local t = type(r.terms) == "table" and r.terms or nil
+    if t ~= nil then
+        self:detailLine(out, "RentTerms", getText(T .. "Ent_RentTermsValue", money(t.price), num(r.quantity),
+            money(t.amount), t.currency and U.currencyName(t.currency) or "-")
+            .. "  " .. getText(T .. "Ent_TermsPeriod", num(t.days), num(t.graceHours))
+            .. (termsDiffer(t, plan, true) and ("  " .. tr("Ent_TermsDiffer")) or ""), sub)
+    end
+    self:detailLine(out, "AutoRenew", E.autoRenewText(r.autoRenewState or (r.autoRenew == true and "on" or "off")), sub)
+    local a = type(r.autoTerms) == "table" and r.autoTerms or nil
+    if a ~= nil then
+        self:detailLine(out, "AutoTerms", getText(T .. "Ent_AutoTermsValue", money(a.price),
+            a.currency and U.currencyName(a.currency) or "-", num(a.days))
+            .. (termsDiffer(a, plan, false) and ("  " .. tr("Ent_TermsDiffer")) or ""), sub)
+    end
+    if r.termsRevision ~= nil then self:detailLine(out, "Terms", num(r.termsRevision), sub) end
+    if r.pendingOrderId ~= nil then
+        self:detailLine(out, "Pending", tostring(r.pendingOrderId)
+            .. (r.autoPending == true and ("  " .. tr("Ent_AutoOrder")) or ""), sub)
+    end
+    self:detailLine(out, "RentalId", tostring(r.id or "-"), sub)
 end
 
 function Page:entryLines(out, e)
@@ -1099,17 +1159,22 @@ function Page:entryLines(out, e)
     if (tonumber(ent.pendingQuantity) or 0) > 0 or ent.pendingOrderId ~= nil then
         self:detailLine(out, "Pending", num(ent.pendingQuantity) .. "  " .. tostring(ent.pendingOrderId or ""))
     end
-    self:detailLine(out, "PaidUntil", self:stamp(ent.paidUntil))
-    self:detailLine(out, "GraceUntil", self:stamp(ent.graceUntil))
-    self:detailLine(out, "AutoRenew", E.autoRenewText(ent.autoRenewState or (ent.autoRenew == true and "on" or "off")))
-    self:detailLine(out, "Terms", num(ent.termsRevision))
+    local rentals = type(ent.rentals) == "table" and ent.rentals or {}
+    self:detailLine(out, "Rentals", getText(T .. "Ent_RentalsCount", tostring(#rentals), num(ent.rentalsMax),
+        num(ent.rentalCommitted)))
+    for i, r in ipairs(rentals) do
+        if type(r) == "table" then self:rentalLines(out, i, r, e.plan) end
+    end
     self:detailLine(out, "LastOrder", tostring(ent.lastOrderId or "-"))
     local dur = type(ent.durable) == "table" and ent.durable or {}
     local seqText = dur.seq ~= nil and ("  (" .. tostring(dur.source or "-") .. " #" .. tostring(dur.seq) .. ")") or ""
     self:detailLine(out, "Durable", E.durableText(dur.status) .. seqText)
     local wait = E.waitText(ent.wait)
     if wait then self:detailLine(out, "Durable", wait) end
-    if ent.notice ~= nil then self:detailLine(out, "Notice", E.noticeText(ent.notice)) end
+    if ent.notice ~= nil then
+        local rental = type(ent.notice) == "table" and ent.notice.rental or nil
+        self:detailLine(out, "Notice", E.noticeText(ent.notice) .. (rental ~= nil and ("  " .. rentalTag(ent, rental)) or ""))
+    end
     self:detailLine(out, "Plan", num(type(e.plan) == "table" and e.plan.revision or nil))
     self:detailLine(out, "Available", tr(e.available == true and "Ent_Yes" or "Ent_No"))
     if type(e.balances) == "table" then
@@ -1131,12 +1196,17 @@ local ORDER_FIELDS = {
     { key = "error", label = "Error" },
 }
 local ORDER_KNOWN = { orderId = true, id = true, amount = true, currency = true, refundable = true,
-    durable = true, paid = true, final = true }
+    durable = true, paid = true, final = true, rental = true, auto = true }
 for _, f in ipairs(ORDER_FIELDS) do ORDER_KNOWN[f.key] = true end
 
-function Page:orderLines(out, o)
+-- ent: the entitlement the order belongs to, so a rental order can name its rental's place.
+function Page:orderLines(out, o, ent)
     local E = Ent()
     self:detailLine(out, "Order", orderIdOf(o) or "-")
+    if o.rental ~= nil then
+        self:detailLine(out, "RentalOf", rentalTag(ent, o.rental) .. "  (" .. tostring(o.rental) .. ")"
+            .. (o.auto == true and ("  " .. tr("Ent_AutoOrder")) or ""))
+    end
     if o.amount ~= nil then
         self:detailLine(out, "Amount", amountText(o.amount) .. " " .. (o.currency and U.currencyName(o.currency) or ""))
     end
@@ -1182,6 +1252,16 @@ function Page:applySummary(d, entry)
         "Ent_Review_EffectSandbox" }) do
         out[#out + 1] = "- " .. tr(key)
     end
+    -- a consent records price, currency and period: only those pause it (until the player agrees again)
+    local consent = false
+    for _, spec in ipairs(d.changed) do
+        if spec.key == "rentalPrice" or spec.key == "rentalCurrency" or spec.key == "rentalDays" then consent = true end
+    end
+    out[#out + 1] = "- " .. tr(consent and "Ent_Review_EffectConsents" or "Ent_Review_EffectConsentsKept")
+    local limit = tonumber(d.values.rentalLimit)
+    if limit ~= nil and limit < (tonumber(d.base.rentalLimit) or 0) then
+        out[#out + 1] = "- " .. tr("Ent_Review_EffectRentalLimit")
+    end
     if entry.loaded == false then out[#out + 1] = "- " .. tr("Ent_NotLoaded") end
     return table.concat(out, "\n")
 end
@@ -1191,9 +1271,10 @@ function Page:refundSummary(username, e, o)
     out[#out + 1] = getText(T .. "Ent_Review_Account", username)
     out[#out + 1] = getText(T .. "Ent_Review_Product", Ent().productName(e), e.sourceMod, e.productId)
     out[#out + 1] = ""
-    self:orderLines(out, o)
+    self:orderLines(out, o, e.entitlement)
     out[#out + 1] = ""
     out[#out + 1] = "- " .. tr("Ent_Review_RefundEffect")
+    if o.rental ~= nil then out[#out + 1] = "- " .. tr("Ent_Review_RefundRental") end
     out[#out + 1] = "- " .. tr("Ent_Review_NoUndo")
     return table.concat(out, "\n")
 end
@@ -1232,31 +1313,36 @@ function Page:rebuildAccountRows()
         items[i] = { line1 = E.productName(e), right1 = E.stateText(ent.state),
             rightToken1 = (ent.state == "active" and "positive") or ((ent.state == "grace" or ent.state == "expired") and "warn") or "textMuted",
             line2 = getText(T .. "Ent_EntryLine", num(ent.usable), num(ent.permanent), num(ent.rental)),
-            right2 = type(ent.paidUntil) == "number" and self:stamp(ent.paidUntil) or nil }
+            right2 = type(ent.rentals) == "table" and #ent.rentals > 0
+                and getText(T .. "Ent_RentalsShort", tostring(#ent.rentals)) or nil }
     end
     self.entryList:setItems(items)
     self.entryList:setSelectedIndex(self.entrySel)
+    local e, o = self:selectedAccountEntry(), self:selectedOrder()
+    local selEnt = e ~= nil and e.entitlement or nil
     local orders = {}
-    for i, o in ipairs(self:selectedOrders()) do
-        if type(o) == "table" then
-            orders[i] = { line1 = orderIdOf(o) or "?",
-                right1 = o.amount ~= nil and (amountText(o.amount) .. " " .. (o.currency and U.currencyName(o.currency) or "")) or nil,
+    for i, row in ipairs(self:selectedOrders()) do
+        if type(row) == "table" then
+            local line2 = E.kindText(row.kind) .. "  " .. E.orderStatusText(row.status)
+            if row.rental ~= nil then line2 = line2 .. "  " .. rentalTag(selEnt, row.rental) end
+            if row.auto == true then line2 = line2 .. "  " .. tr("Ent_AutoOrder") end
+            orders[i] = { line1 = orderIdOf(row) or "?",
+                right1 = row.amount ~= nil and (amountText(row.amount) .. " " .. (row.currency and U.currencyName(row.currency) or "")) or nil,
                 rightToken1 = "text",
-                line2 = E.kindText(o.kind) .. "  " .. E.orderStatusText(o.status),
-                right2 = self:stamp(tonumber(o.at or o.createdAt)),
-                token2 = refundable(o) and nil or "textFaint" }
+                line2 = line2,
+                right2 = self:stamp(tonumber(row.at or row.createdAt)),
+                token2 = refundable(row) and nil or "textFaint" }
         else
             orders[i] = { line1 = "?" }
         end
     end
     self.orderList:setItems(orders)
     self.orderList:setSelectedIndex(self.orderSel)
-    local e, o = self:selectedAccountEntry(), self:selectedOrder()
     local out = {}
     if e ~= nil then self:entryLines(out, e) end
     if o ~= nil then
         out[#out + 1] = ""
-        self:orderLines(out, o)
+        self:orderLines(out, o, selEnt)
     end
     self.detailText = table.concat(out, "\n")
 end

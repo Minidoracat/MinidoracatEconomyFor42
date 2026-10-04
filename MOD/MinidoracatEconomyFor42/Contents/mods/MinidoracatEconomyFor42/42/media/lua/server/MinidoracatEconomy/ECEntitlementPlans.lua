@@ -2,7 +2,7 @@
 --
 -- One flat price sheet per product a source registers (contract "plan shape"):
 --   { revision, permanentEnabled, permanentCurrency, permanentPrice, permanentLimit,
---     rentalEnabled, rentalCurrency, rentalPrice, rentalQuantity, rentalDays,
+--     rentalEnabled, rentalCurrency, rentalPrice, rentalLimit, rentalDays,
 --     graceHours, reminderHours, autoRenewAllowed }
 -- Global ModData is the financial truth: md.entitlements.plans[modId][productId] =
 --   { revision, values, nameKey, lastChange = { actor, origin, at, reason?, requestId?, revision },
@@ -64,7 +64,7 @@ P.FIELDS = {
     { key = "rentalEnabled", kind = "bool" },
     { key = "rentalCurrency", kind = "currency" },
     { key = "rentalPrice", kind = "int", min = 1, max = 1000000000 },
-    { key = "rentalQuantity", kind = "int", min = 1, max = 1000 },
+    { key = "rentalLimit", kind = "int", min = 1, max = 1000 },
     { key = "rentalDays", kind = "int", min = 1, max = 365 },
     { key = "graceHours", kind = "int", min = 0, max = 168 },
     { key = "reminderHours", kind = "int", min = 0, max = 168 },
@@ -364,6 +364,9 @@ function P.reconcile(modId, productId)
     end
     row.nameKey = spec.nameKey
     row.applies = row.applies or {}
+    -- a plan an older version saved (other fields) is not a plan anybody can buy under: provisional
+    -- defaults until valid sandbox options or an admin apply replace it (sync below)
+    if not P.validate(row.values, nil) then row.values, row.provisional = spec.defaults, true end
     sync(spec, row)
 end
 

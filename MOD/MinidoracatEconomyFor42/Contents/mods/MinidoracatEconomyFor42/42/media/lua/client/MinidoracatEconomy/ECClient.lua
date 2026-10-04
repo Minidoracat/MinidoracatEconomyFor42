@@ -1218,14 +1218,15 @@ end)
 -- through their own server handler and MinidoracatEconomy.v1 on the server; the client exposes
 -- the wallet snapshot this UI already holds and, from rev 2, the entitlement transport
 -- (ECEntitlementClient: state / quote / purchase / auto-renew consent / order lookup, all priced
--- and decided by the server). API_MAJOR lives on the server table on purpose: probing
+-- and decided by the server). CAPABILITIES.rentals: quote and auto-renew name a rental id (each
+-- rental order is its own lease). API_MAJOR lives on the server table on purpose: probing
 -- `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
 require "MinidoracatEconomy/ECEntitlementClient"
 EC.v1 = EC.v1 or {}
 EC.v1.Client = {
     API_MAJOR = 1,
     API_REVISION = 2,
-    CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true },
+    CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true },
     getWallet = function() return C.wallet end,
     onWalletChanged = C.onWallet,
     Entitlements = C.Entitlements,

@@ -7,11 +7,14 @@
 --
 --   requestState(sourceMod, productId, cb?)                          -> requestId | nil, why
 --   getState(sourceMod, productId)                                   -> last accepted envelope | nil
---   quote(sourceMod, productId, kind, quantity, cb)                  -> requestId | nil, why
+--   quote(sourceMod, productId, kind, quantity, cb, rental?)         -> requestId | nil, why
 --   purchase(sourceMod, quoteId, cb)                                 -> requestId | nil, why
---   setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb) -> requestId | nil, why
+--   setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental) -> requestId | nil, why
 --   getOrder(sourceMod, productId, orderId, cb)                      -> requestId | nil, why
 --   onChanged(fn)                                                    fn(envelope)
+--
+-- `rental` is a rental id from entitlement.rentals[i].id (CAPABILITIES.rentals): a rental quote
+-- without it opens a new rental, with it renews that one; auto-renew is always per rental.
 --
 -- Transport rules:
 --   * one lane per command: a FIFO of requests, one in flight, sends spaced by the read gate's
@@ -331,14 +334,16 @@ function E.getState(sourceMod, productId)
     return cache[keyOf(sourceMod, productId)]
 end
 
-function E.quote(sourceMod, productId, kind, quantity, cb)
+function E.quote(sourceMod, productId, kind, quantity, cb, rental)
     if not validSource(sourceMod) or not validProduct(productId)
         or (kind ~= "permanent" and kind ~= "rental")
-        or (quantity ~= nil and not whole(quantity, 1, 1000)) then
+        or (quantity ~= nil and not whole(quantity, 1, 1000))
+        or (rental ~= nil and (kind ~= "rental" or not validId(rental))) then
         return nil, "invalid_args"
     end
-    return enqueue(QUOTE, { sourceMod = sourceMod, productId = productId, kind = kind, quantity = quantity }, cb,
-        { sourceMod = sourceMod, productId = productId, kind = kind, quantity = quantity })
+    return enqueue(QUOTE, { sourceMod = sourceMod, productId = productId, kind = kind, quantity = quantity,
+        rental = rental }, cb,
+        { sourceMod = sourceMod, productId = productId, kind = kind, quantity = quantity, rental = rental })
 end
 
 function E.purchase(sourceMod, quoteId, cb)
@@ -350,15 +355,16 @@ function E.purchase(sourceMod, quoteId, cb)
             orderId = memo and memo.orderId or nil })
 end
 
-function E.setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb)
+function E.setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental)
     if not validSource(sourceMod) or not validProduct(productId) or type(enabled) ~= "boolean"
-        or not whole(revision, 0, 1e15) or not whole(termsRevision, 0, 1e15) then
+        or not whole(revision, 0, 1e15) or not whole(termsRevision, 0, 1e15) or not validId(rental) then
         return nil, "invalid_args"
     end
+    -- one consent write per product at a time: every rental's write names the product revision
     if pendingWrite(AUTORENEW, sourceMod, "productId", productId) then return nil, "pending" end
     return enqueue(AUTORENEW, { sourceMod = sourceMod, productId = productId, enabled = enabled,
-        expectedRevision = revision, termsRevision = termsRevision }, cb,
-        { sourceMod = sourceMod, productId = productId, enabled = enabled })
+        expectedRevision = revision, termsRevision = termsRevision, rental = rental }, cb,
+        { sourceMod = sourceMod, productId = productId, enabled = enabled, rental = rental })
 end
 
 function E.getOrder(sourceMod, productId, orderId, cb)
