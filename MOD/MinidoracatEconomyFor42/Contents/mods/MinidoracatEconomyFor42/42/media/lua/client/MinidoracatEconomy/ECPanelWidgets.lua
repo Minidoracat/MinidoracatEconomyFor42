@@ -171,7 +171,11 @@ local function shopError(code, recovery, detail)
             return message
         end
     end
-    return getTextOrNull(T .. "Shop_Error_" .. tostring(code)) or getText(T .. "Rewards_Error_generic", tostring(code))
+    code = tostring(code)
+    local s = getTextOrNull(T .. "Shop_Error_" .. code)
+    if s then return s end
+    U.logUnknown("shop error", code)
+    return getText(T .. "Shop_Error_unknown")
 end
 
 -- Why the shop will not buy a copy back: a Codec.stateCheck code (the Shop_Error_* refusal) or a
@@ -206,8 +210,9 @@ local function sellRefusedLines(refused, out)
 end
 
 -- market.* answers stack their own code space on top of the shop one: a listing error
--- (Market_Error_*), a whitelist refusal the picker also paints per row (Market_Reason_*),
--- then the shared codes (not_at_terminal, account_frozen, insufficient_funds, timeout...).
+-- (Market_Error_*), a whitelist refusal the picker also paints per row (Market_Reason_*), an
+-- auction's own refusal (Auction_Error_*, e.g. currency_conflict on a held auction), then the
+-- shared codes (not_at_terminal, account_frozen, insufficient_funds, timeout...).
 -- Takes the whole reply, not just the code: price_range/bid_too_low/hours_range carry bounds.
 local function marketError(args)
     local code = tostring((args and args.error) or "unknown")
@@ -232,19 +237,23 @@ local function marketError(args)
         return getText(T .. "Market_Reason_not_whitelisted_" .. args.rule)
     end
     return getTextOrNull(T .. "Market_Error_" .. code) or getTextOrNull(T .. "Market_Reason_" .. code)
-        or shopError(code, args and args.recovery)
+        or getTextOrNull(T .. "Auction_Error_" .. code) or shopError(code, args and args.recovery)
 end
 
 -- A history read is a read, never a claim: wallet.history / market.history / auction.history all
 -- answer with the same kind of refusal, and "領取失敗" (the reward claim's wording) is not what
 -- happened. `read_failed` is the file read itself; busy / server_busy are the "come back in a
--- moment" codes the admin pages already word, and an unknown code is kept for a bug report.
--- Every one of them is retried by hand (Panel:onHistoryRetry), never in a loop.
+-- moment" codes the admin pages already word, and an unknown code reads as the plain read
+-- failure, the code in the log. Every one of them is retried by hand (Panel:onHistoryRetry),
+-- never in a loop.
 local function historyError(code)
     local key = tostring(code == nil and "unknown" or code)
     if key == "read_failed" then return getText(T .. "History_ReadFailed") end
-    return getTextOrNull(T .. "Admin_Error_" .. key) or getTextOrNull(T .. "Market_Error_" .. key)
-        or getTextOrNull(T .. "Shop_Error_" .. key) or getText(T .. "History_ReadError", key)
+    local s = getTextOrNull(T .. "Admin_Error_" .. key) or getTextOrNull(T .. "Market_Error_" .. key)
+        or getTextOrNull(T .. "Shop_Error_" .. key)
+    if s then return s end
+    U.logUnknown("history error", key)
+    return getText(T .. "History_ReadFailed")
 end
 
 -- The lines a buy confirmation spends on the room the player has, from C.deliveryPreview. It is
@@ -981,6 +990,12 @@ local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "war
     auction_sold = "positive", auction_won = "positive", auction_outbid = "warn",
     auction_unsold = "warn", auction_cancelled = "warn", auction_created = "textFaint" }
 
+-- A market/auction record kind as words (the filter chips and the rows): a kind a newer server
+-- writes reads as the translated "unknown", the kind in the log.
+local function marketKindText(kind)
+    return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or U.unknownText("market kind", kind)
+end
+
 -- One history line. The amount is what the record moved for this player: a sale nets the tax
 -- off, money leaving the account (a purchase, a bid the auction now holds, the price the
 -- winner paid) is negative, and everything else is the price as it stood. It is always named
@@ -1001,8 +1016,8 @@ local function historyRow(rec, offsetMin)
     if type(rec.other) == "string" and rec.other ~= "" then
         parts[#parts + 1] = getText(T .. "Market_History_Other", rec.other)
     end
-    if type(rec.reason) == "string" and rec.reason ~= "" then parts[#parts + 1] = rec.reason end
-    local label = getTextOrNull(T .. "Market_Kind_" .. kind) or kind
+    if type(rec.reason) == "string" and rec.reason ~= "" then parts[#parts + 1] = U.marketReasonText(rec.reason) end
+    local label = marketKindText(kind)
     local detail = table.concat(parts, "  ")
     return {
         recordKey = U.recordKey(rec),
@@ -1058,7 +1073,7 @@ local function auctionHistoryRow(rec, offsetMin)
         kind = kind,
         ts = tonumber(rec.ts) or 0,           -- the filter bar pages/sorts on the raw numbers
         amount = price or 0,
-        kindText = getTextOrNull(T .. "Market_Kind_" .. kind) or kind,
+        kindText = marketKindText(kind),
         kindToken = HISTORY_TOKENS[kind] or "text",
         nameText = lot and (name .. " " .. lot) or name,
         currency = type(rec.currency) == "string" and rec.currency or nil,
@@ -1295,6 +1310,7 @@ W.CandidateCell = CandidateCell
 W.historyRowHeight = historyRowHeight
 W.HISTORY_KINDS = HISTORY_KINDS
 W.AUCTION_HISTORY_KINDS = AUCTION_HISTORY_KINDS
+W.marketKindText = marketKindText
 W.historyRow = historyRow
 W.auctionHistoryRow = auctionHistoryRow
 W.HistoryCell = HistoryCell

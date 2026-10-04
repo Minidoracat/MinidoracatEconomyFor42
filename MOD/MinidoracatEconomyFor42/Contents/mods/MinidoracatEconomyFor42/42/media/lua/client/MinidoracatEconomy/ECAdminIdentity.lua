@@ -343,7 +343,7 @@ function Page:conflictLine(c)
     elseif c.boundExact ~= true then
         bound = getText(T .. "Admin_Id_Approx", bound)
     end
-    local reason = getTextOrNull(T .. "Admin_Id_Reason_" .. tostring(c.reason)) or tostring(c.reason)
+    local reason = getTextOrNull(T .. "Admin_Id_Reason_" .. tostring(c.reason)) or U.unknownText("identity conflict", c.reason)
     return getText(T .. "Admin_Id_ConflictLine", tostring(c.name), bound, tostring(c.whitelist), reason)
 end
 
@@ -453,9 +453,10 @@ end
 
 local function yesNo(v) return tr(v and "Admin_Id_Yes" or "Admin_Id_No") end
 
--- A server code with its translation, or the code itself when this client has none for it.
+-- A server code with its translation; a code this client has no words for reads as "unknown"
+-- and goes to the log.
 local function codeText(prefix, code)
-    return getTextOrNull(T .. prefix .. tostring(code)) or tostring(code)
+    return getTextOrNull(T .. prefix .. tostring(code)) or U.unknownText(prefix, code)
 end
 
 local function numText(v) return tostring(tonumber(v) or 0) end
@@ -490,6 +491,26 @@ function Page:conflictLines(lines, s)
     end
 end
 
+-- Why the server refused (or only partly took) the companion's export: { code, facts }. The
+-- facts are numbers and the file's own field names, which locate the problem in the file.
+local EXPORT_DETAIL_ARGS = {
+    no_trailer = { "rows" }, bad_line = { "line" }, rows = { "rows", "count" }, bad_row = { "line", "field" },
+    reserved = { "skipped", "dropped" }, header_field = { "field" },
+}
+function P.exportDetailText(r)
+    if type(r) ~= "table" or type(r.code) ~= "string" then return nil end
+    if r.code == "import_failed" then
+        return getText(T .. "Admin_Id_ExportDetail_import_failed", U.adminErrorText(r.error))
+    end
+    local key = T .. "Admin_Id_ExportDetail_" .. r.code
+    if getTextOrNull(key) == nil then return U.unknownText("identity export detail", r.code) end
+    local args = {}
+    for i, name in ipairs(EXPORT_DETAIL_ARGS[r.code] or {}) do args[i] = tostring(r[name] or "-") end
+    if #args == 2 then return getText(key, args[1], args[2]) end
+    if #args == 1 then return getText(key, args[1]) end
+    return getText(key)
+end
+
 -- status.export: what the server made of the companion's whitelist file (identity/whitelist.json).
 function Page:exportLines(lines, e)
     if type(e) ~= "table" then return end
@@ -501,14 +522,15 @@ function Page:exportLines(lines, e)
     if e.acceptedAt ~= nil then
         lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_ExportAccepted", self:stamp(e.acceptedAt))
     end
-    if e.reason ~= nil and e.reason ~= "" then
-        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_ExportReason", tostring(e.reason))
+    local detail = P.exportDetailText(e.reason)
+    if detail ~= nil then
+        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_ExportReason", detail)
     end
 end
 
 -- A sandbox option by its translated label (the settings page shows the same one).
 local function optionLabel(key)
-    return getTextOrNull("Sandbox_MinidoracatEconomy_" .. key) or key
+    return getTextOrNull("Sandbox_MinidoracatEconomy_" .. key) or U.unknownText("sandbox option", key)
 end
 
 -- The one-account policy (IdentityMultiAccount) and status.multi as counts. The hint (enable
@@ -545,7 +567,7 @@ function Page:mergeLines(lines, m)
         listed[code] = true
         if n <= 0 then return end
         total = total + n
-        parts[#parts + 1] = codeText("Admin_Id_Why_", code) .. " " .. tostring(n)
+        parts[#parts + 1] = getText(T .. "Admin_Tx_Pair", codeText("Admin_Id_Why_", code), tostring(n))
     end
     for _, code in ipairs(MERGE_BLOCKERS) do part(code, blocked[code]) end
     for code, n in pairs(blocked) do
@@ -579,8 +601,8 @@ end
 function Page:importLines(lines, s)
     lines[#lines + 1] = ""
     if s.imported then
-        lines[#lines + 1] = getText(T .. "Admin_Id_Imported", self:stamp(s.importedAt), tostring(s.importedBy or "-"))
-        lines[#lines + 1] = getText(T .. "Admin_Id_LastImport", self:stamp(s.lastImportAt), tostring(s.lastImportBy or "-"))
+        lines[#lines + 1] = getText(T .. "Admin_Id_Imported", self:stamp(s.importedAt), U.actorText(s.importedBy or "-"))
+        lines[#lines + 1] = getText(T .. "Admin_Id_LastImport", self:stamp(s.lastImportAt), U.actorText(s.lastImportBy or "-"))
     else
         lines[#lines + 1] = tr("Admin_Id_NotImported")
     end
@@ -592,7 +614,7 @@ function Page:importLines(lines, s)
         lines[#lines + 1] = tr("Admin_Id_NoLast")
         return
     end
-    lines[#lines + 1] = getText(T .. "Admin_Id_LastTitle", self:stamp(last.at), tostring(last.by or "-"))
+    lines[#lines + 1] = getText(T .. "Admin_Id_LastTitle", self:stamp(last.at), U.actorText(last.by or "-"))
     lines[#lines + 1] = getText(T .. "Admin_Id_LastCounts", tostring(last.rows or 0), tostring(last.bound or 0),
         tostring(last.same or 0), tostring(last.ignored or 0), tostring(last.conflicts or 0))
     self:nameList(lines, "Admin_Id_Missing", last.missing, last.missingCount, last.missingTruncated)

@@ -51,6 +51,7 @@ G.API_REVISION = 1
 G.CALLS_PER_TICK = 20
 G.MOD_ID_MAX = 64
 G.NAME_MAX = 32
+G.NAME_KEY_MAX = 96
 G.REASON_CODE_MAX = 32
 G.REASON_TEXT_MAX = 64
 G.REQUEST_ID_MAX = 96
@@ -61,7 +62,7 @@ G.CAP_MAX = 1000000000
 G.DAILY_KEEP_DAYS = 31
 
 local md = nil
-local registry = {}      -- modId -> { modId, displayName, currencies = set, reasonCodes = set, registeredAt }
+local registry = {}      -- modId -> { modId, displayName, nameKey?, currencies = set, reasonCodes = set, registeredAt }
 local tickCalls = {}     -- modId -> calls this tick
 
 -- ---------- validation helpers ----------
@@ -168,7 +169,8 @@ end
 
 -- ---------- registration ----------
 
--- spec = { modId, displayName = { CH=, EN=, ... }, currencies = { id... }, reasonCodes = { code... } }
+-- spec = { modId, displayName = { CH=, EN=, ... }, nameKey? (the source's own translation key for its
+-- name, preferred over displayName by clients), currencies = { id... }, reasonCodes = { code... } }
 -- Returns a handle bound to the source ({ modId, credit, debit, post } plus the rev 2
 -- G.ENTITLEMENT_METHODS) or nil, error.
 -- Re-registering the same modId replaces the spec (mods are reloaded with the server).
@@ -196,8 +198,14 @@ function G.registerSource(spec)
             displayName[lang] = name
         end
     end
+    local nameKey = spec.nameKey
+    if nameKey ~= nil and (type(nameKey) ~= "string" or #nameKey < 1 or #nameKey > G.NAME_KEY_MAX
+        or not string.match(nameKey, "^[%w_]+$")) then
+        return nil, "invalid_args"
+    end
     local modId = spec.modId
-    registry[modId] = { modId = modId, displayName = displayName, currencies = currencies, reasonCodes = reasonCodes, registeredAt = EC.now() }
+    registry[modId] = { modId = modId, displayName = displayName, nameKey = nameKey, currencies = currencies,
+        reasonCodes = reasonCodes, registeredAt = EC.now() }
     if md then configRow(modId, true) end
     EC.log("integration source registered: " .. modId)
     local function bind(fn)
@@ -241,7 +249,7 @@ function G.source(modId)
     if not live then return nil end
     local cfg = md and md.config.sources[modId]
     return { currencies = live.currencies, reasonCodes = live.reasonCodes, enabled = cfg == nil or cfg.enabled ~= false,
-        allowTransfer = cfg ~= nil and cfg.allowTransfer == true }
+        allowTransfer = cfg ~= nil and cfg.allowTransfer == true, nameKey = live.nameKey, displayName = live.displayName }
 end
 
 -- One call of this source's per-tick budget for a mutation that moves no money (auto-renew
@@ -443,6 +451,7 @@ function G.sources()
         out[#out + 1] = {
             modId = modId,
             displayName = live and live.displayName or nil,
+            sourceNameKey = live and live.nameKey or nil,
             loaded = live ~= nil,
             enabled = cfg.enabled ~= false,
             dailyMintCap = cfg.dailyMintCap or 0,

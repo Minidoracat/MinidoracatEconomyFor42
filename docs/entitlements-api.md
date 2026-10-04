@@ -26,6 +26,7 @@ if not (E and E.API_MAJOR == 1 and E.API_REVISION >= 2 and E.CAPABILITIES.entitl
 
 local source, err = E.registerSource({
     modId = "MyMod",
+    nameKey = "IGUI_MyMod_SourceName",   -- 選用：來源名稱的翻譯鍵，管理台優先用它
     displayName = { EN = "My Mod" },
     currencies = { "survivor", "cat" },
     reasonCodes = { "entitlement_purchase", "entitlement_renewal", "entitlement_refund" },
@@ -44,6 +45,10 @@ local result = source.registerProduct({
 ```
 
 價格只是預設範例；兩種販售預設都關閉。翻譯鍵由產品的 MOD 提供。產品 ID 為 1–32 字元的小寫英文、數字或底線。重啟後需再次註冊。`defaults` 只在這個世界第一次看到該產品時建立方案；之後的方案與權益不會被 defaults 重置，要改方案用 `setPlan`。
+
+`registerSource` 的 `nameKey` 選填，是來源名稱的翻譯鍵（`^[%w_]+$`、1–96 位元組，不合格回 `nil, "invalid_args"`）；管理台顯示來源名稱時先找這個翻譯，找不到才用 `displayName`，再沒有就用 modId。`G.sources()`（管理台來源頁）與 `plans` 列都帶 `sourceNameKey`。
+
+交易紀錄的原因：`entitlement_purchase`／`entitlement_renewal`／`entitlement_refund` 由 Economy 翻譯；來源自訂的其他 `reasonCodes` Economy 沒有譯文，管理台顯示成「其他模組的原因：<代碼>」（`Reason_custom`），代碼本身照原樣。
 
 註冊帶 `sandbox` 欄位回 `{ ok = false, error = "invalid_args", field = "sandbox" }`：沙盒同步已移除，Economy 不讀寫任何沙盒選項。`instant` 不是 boolean 時回 `field = "instant"`。
 
@@ -85,7 +90,7 @@ local result = source.registerProduct({
 - `entitlement.rentals`：依建立順序的租約清單，每張 `{ id, quantity, state, paidUntil?, graceUntil?, terms?, autoRenew, autoRenewState, autoTerms?, termsRevision?, pendingOrderId?, autoPending? }`。`id` 是建立它的訂單 id；`state` 為 `pending/active/grace/expired/paused_terms/paused_system`（條款改變、租用合計超過 `rentalLimit` 或租用停售時為 `paused_terms`）；`autoRenewState` 為 `off/pending_on/on/pending_off/paused_terms/paused_system`，其中 `paused_terms` 表示目前方案的租金、幣別或每期天數和同意時記下的不同（或租用合計超過上限），要玩家重新同意；`autoPending=true` 表示這張的待確認付款是自動續租發起的。即時生效商品的租約不會是 `pending`，同意直接是 `on`。
 - `rentals[i].terms = { price, amount, currency, days, graceHours }`：這張租約正在跑（或已付款待生效）的那一期的條款，`price` 是每個名額的租金、`amount` 是該期總額。`rentals[i].autoTerms = { price, currency, days }`：自動續租開啟時，玩家同意的條款。
 - `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`（`notice.rental` 指出是哪張租約）。
-- `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id），排程自動續租的訂單帶 `auto=true`，已生效的訂單帶 `activatedAt`。
+- `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id），排程自動續租的訂單帶 `auto=true`，已生效的訂單帶 `activatedAt`。每筆另帶付款交易 `txId` 與退款判斷（見「管理台」）：`refundable`、`refundEffect?`、`previousUntil?`、`rentalNo?`。
 
 舊的頂層 `paidUntil/graceUntil/autoRenew/autoRenewState/termsRevision` 已刪除，改讀各租約的同名欄位。
 
@@ -116,11 +121,21 @@ local result = source.registerProduct({
 
 ### `getPlan(productId)`
 
-`{ ok = true, plan = { <12 欄>, revision, provisional? }, lastChange = { actor, origin, at, reason, revision }, source = { file?, problem?, at } | nil }`；錯誤 `not_ready`、`unknown_product`。新世界的第一版 `lastChange.origin` 為 `"defaults"`。
+`{ ok = true, plan = { <12 欄>, revision, provisional? }, lastChange = { actor, origin, at, reason, revision }, source = { file?, problem?, at } | nil }`；錯誤 `not_ready`、`unknown_product`。新世界的第一版 `lastChange.origin` 為 `"defaults"`。`source.problem` 是 `setPlanSource` 存的那張表的副本。
 
 ### `setPlanSource(productId, { file?, problem? })`
 
-`{ ok = true }`。只存在記憶體、不進存檔，給唯讀總覽顯示「方案從哪個檔案來、設定檔有沒有錯誤」；Economy 自己記下時間 `at`。先去掉控制字元，`file` 至多 160 位元組、`problem` 至多 200 位元組；`problem` 省略表示沒有錯誤（清掉上一次的錯誤）。產品沒註冊回 `unknown_product`，欄位不合格回 `invalid_args` 與 `field = "file" | "problem"`。
+`{ ok = true }`。只存在記憶體、不進存檔，給唯讀總覽顯示「方案從哪個檔案來、設定檔有沒有錯誤」；Economy 自己記下時間 `at`。`file` 去掉控制字元後至多 160 位元組。
+
+`problem` 省略表示沒有錯誤（清掉上一次的錯誤）；有錯誤時是一張表，讓管理台用讀者的語言組句，不顯示原始錯誤碼：
+
+| 欄位 | 內容 |
+|---|---|
+| `key` | 必填，說明這個錯誤的翻譯鍵（`^[%w_]+$`、1–96 位元組），由來源 MOD 提供；管理台以 `getText(key, <欄位名稱>, <ref>)` 組句 |
+| `field` | 選填，出錯方案欄位顯示名稱的翻譯鍵（同格式） |
+| `ref` | 選填，原文資料（例如設定檔裡的鍵名），去掉控制字元後至多 64 位元組，照原樣顯示 |
+
+字串形式的 `problem`、格式不合的 `key`／`field` 或過長的 `ref` 回 `invalid_args`、`field = "problem"`；產品沒註冊回 `unknown_product`；`file` 不合格回 `field = "file"`。
 
 ## 報價、付款與未知結果
 
@@ -206,7 +221,28 @@ local result = source.registerProduct({
 
 ## 管理台
 
-Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action = "plans"`（讀取權）回 `plans[i] = { sourceMod, productId, nameKey, loaded, instant, plan, lastChange, source }`，顯示各產品目前的條款、最後從哪裡修改、設定檔有沒有錯誤（`source` 是 `setPlanSource` 存的那份，沒有就省略）。方案編輯、`action = "apply"` 與沙盒同步已移除。
+Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action = "plans"`（讀取權）回 `plans[i] = { sourceMod, productId, nameKey, sourceNameKey?, sourceName?, loaded, instant, plan, lastChange, source }`，顯示各產品目前的條款、最後從哪裡修改、設定檔有沒有錯誤（`source` 是 `setPlanSource` 存的那份，沒有就省略；`sourceName` 是來源的 `displayName`，來源本次沒載入時兩個名稱欄位都省略）。方案編輯、`action = "apply"` 與沙盒同步已移除。
+
+### 訂單清單 `action = "orders"`
+
+讀取權（與 `plans`、`account` 同一道閘門；沒有權限回 `forbidden`，不附資料）。參數全部選填：`username`（完整帳號）、`sourceMod`、`productId`、`before = { at, id }`。沒有篩選就是所有帳號、所有商品的訂單（每個帳號每個商品仍只有近期 20 筆）。
+
+- 排序：訂單時間新到舊，同一時間以訂單 id 字串由大到小。`before` 是上一頁最後一列的 `{ at = row.at, id = row.orderId }`，只回排在它之後的。每頁 50 筆（`E.ORDERS_PAGE`）。
+- 回覆：`{ ok = true, orders = { Row, ... }, more = <還有下一頁>, filter = { username?, sourceMod?, productId? } }`。
+- `Row = { username, sourceMod, productId, nameKey, instant, orderId, txId, kind, renewal?, auto?, quantity, amount, currency, status, at, rental?, rentalNo?, refundable, refundEffect?, previousUntil?, refund?, durable? }`：`kind` 為 `permanent`／`rental`；`status` 為 `paid`／`refunded`；`rentalNo` 是該帳號該商品目前租約清單的序號（1 起，租約已移除就省略）；`refund = { amount, at, txId, durable? }`；`durable = { status }` 是原付款的存檔狀態，`refund.durable = { status }` 是退款本身的存檔狀態，兩者都只有一般商品（非 instant）才帶。已退款的訂單看 `refund.durable`。
+- 錯誤：`invalid_args`（帳號、來源、商品或 `before` 格式不合）、`not_ready`、`forbidden`；回覆超過封包上限時 `reply_too_large`。
+
+`refundable` 與 `refundEffect` 和 `refund` 實際的判斷同一套：
+
+| `refundEffect` | 退款後 |
+|---|---|
+| `units` | 收回這筆買斷的名額 |
+| `cancel` | 還沒生效的新租約連同租約一起取消 |
+| `previous` | 租約退回上一期，`previousUntil` 是退回後的到期時間；還沒生效的續租被退款時，租約維持目前這一期（`previousUntil` 是目前的到期時間） |
+| `remove` | 只有一期的租約整張移除 |
+| `money` | 租約已到期移除，只退回金額 |
+
+不能退的訂單 `refundable = false`、沒有 `refundEffect`：已退款、買斷名額已不足、或不是該張租約的最新一期（之後還有續租）。
 
 管理員可查帳號權益與退款（`action = "account"`、`action = "refund"`；帳號頁逐張列出租約、各期條款、同意自動續租時的條款，並標出與目前方案不同之處），但不能替玩家開啟自動續租。
 

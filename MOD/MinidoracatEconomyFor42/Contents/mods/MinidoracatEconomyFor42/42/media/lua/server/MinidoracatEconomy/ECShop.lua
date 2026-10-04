@@ -116,7 +116,7 @@ Shop.DEFAULT_ITEMS = {
 }
 
 local md = nil
-local file = { items = {}, byId = {}, count = 0, loadedAt = 0, error = nil, hash = "0" }
+local file = { items = {}, byId = {}, count = 0, loadedAt = 0, hash = "0" }
 
 -- ---------- currencies ----------
 
@@ -181,76 +181,87 @@ end
 
 -- One currency's quote of a SKU: 0 <= bidPrice < price, and the two direction flags. The flags
 -- (not a zero price) say whether the SKU sells / is bought back in this currency, so a stopped
--- quote keeps the price it will trade at again when it is switched back on.
-local function validateQuote(raw, where, currency)
-    if type(raw) ~= "table" then return nil, where .. ": " .. currency .. " quote is not an object" end
+-- quote keeps the price it will trade at again when it is switched back on. `prefix` is the
+-- quote's own path in the file ("prices.<currency>." or "" for a legacy flat row), so a failure
+-- names the field the host actually wrote.
+local function validateQuote(raw, prefix)
+    if type(raw) ~= "table" then return nil, { code = "not_object", field = string.sub(prefix, 1, -2) } end
     if not isInt(raw.price, 1, Shop.PRICE_MAX) then
-        return nil, where .. ": " .. currency .. " price must be 1-" .. Shop.PRICE_MAX
+        return nil, { code = "range", field = prefix .. "price", min = 1, max = Shop.PRICE_MAX }
     end
     local bid = raw.bidPrice == nil and 0 or raw.bidPrice
     if not isInt(bid, 0, raw.price - 1) then
-        return nil, where .. ": " .. currency .. " bidPrice must be 0-" .. (raw.price - 1)
+        return nil, { code = "range", field = prefix .. "bidPrice", min = 0, max = raw.price - 1 }
     end
     if raw.enabled ~= nil and type(raw.enabled) ~= "boolean" then
-        return nil, where .. ": " .. currency .. " enabled must be true/false"
+        return nil, { code = "not_boolean", field = prefix .. "enabled" }
     end
     if raw.buyback ~= nil and type(raw.buyback) ~= "boolean" then
-        return nil, where .. ": " .. currency .. " buyback must be true/false"
+        return nil, { code = "not_boolean", field = prefix .. "buyback" }
     end
     if raw.buyback == true and bid < 1 then
-        return nil, where .. ": " .. currency .. " buyback needs a bidPrice of at least 1"
+        return nil, { code = "buyback_needs_bid", field = prefix .. "bidPrice" }
     end
     return { price = raw.price, bidPrice = bid, enabled = raw.enabled ~= false, buyback = raw.buyback == true }
 end
 
--- One raw catalog row -> normalised sku or nil, error text (for the panel).
+-- One raw catalog row -> normalised sku or nil, failure. A failure is a code plus the facts the
+-- panel words it from (ECWidgets U.fileErrorText) - the row's index and, once it is valid, its
+-- id, the JSON field, the bounds - never a sentence.
 local function validateSku(raw, index)
-    local where = "item " .. tostring(index)
-    if type(raw) ~= "table" then return nil, where .. ": not an object" end
-    if not validId(raw.id) then return nil, where .. ": bad id" end
-    where = raw.id
-    if not itemExists(raw.item) then return nil, where .. ": unknown item " .. tostring(raw.item) end
+    local at = { index = index }
+    local function fail(failure)
+        failure.index, failure.id = at.index, at.id
+        return nil, failure
+    end
+    if type(raw) ~= "table" then return fail({ code = "row_not_object" }) end
+    if not validId(raw.id) then return fail({ code = "bad_id", field = "id", max = Shop.ID_MAX }) end
+    at.id = raw.id
+    if not itemExists(raw.item) then
+        return fail({ code = "unknown_item", field = "item", item = type(raw.item) == "string" and raw.item or nil })
+    end
     local qty = raw.qty == nil and 1 or raw.qty
-    if not isInt(qty, 1, Shop.QTY_MAX) then return nil, where .. ": qty must be 1-" .. Shop.QTY_MAX end
+    if not isInt(qty, 1, Shop.QTY_MAX) then return fail({ code = "range", field = "qty", min = 1, max = Shop.QTY_MAX }) end
     local cap = raw.dailyCap == nil and 0 or raw.dailyCap
-    if not isInt(cap, 0, Shop.CAP_MAX) then return nil, where .. ": dailyCap must be 0-" .. Shop.CAP_MAX end
+    if not isInt(cap, 0, Shop.CAP_MAX) then return fail({ code = "range", field = "dailyCap", min = 0, max = Shop.CAP_MAX }) end
     -- Shares, not pieces. Keep the published field names; only the mode determines the period.
     -- Older catalogs omit the scope and remain per-player, per reward day.
     local scope = raw.dailyCapScope == nil and "player" or raw.dailyCapScope
     if scope ~= "player" and scope ~= "global" and scope ~= "lifetime" then
-        return nil, where .. ": dailyCapScope must be player, global or lifetime"
+        return fail({ code = "bad_scope", field = "dailyCapScope" })
     end
     local category = raw.category == nil and "other" or raw.category
     if type(category) ~= "string" or category == "" or #category > Shop.CATEGORY_MAX or string.find(category, "%c") then
-        return nil, where .. ": bad category"
+        return fail({ code = "bad_text", field = "category", max = Shop.CATEGORY_MAX })
     end
-    if raw.enabled ~= nil and type(raw.enabled) ~= "boolean" then return nil, where .. ": enabled must be true/false" end
+    if raw.enabled ~= nil and type(raw.enabled) ~= "boolean" then return fail({ code = "not_boolean", field = "enabled" }) end
     local bcap = raw.buybackCap == nil and 0 or raw.buybackCap
-    if not isInt(bcap, 0, Shop.CAP_MAX) then return nil, where .. ": buybackCap must be 0-" .. Shop.CAP_MAX end
+    if not isInt(bcap, 0, Shop.CAP_MAX) then return fail({ code = "range", field = "buybackCap", min = 0, max = Shop.CAP_MAX }) end
     local prices, quoted = {}, 0
     if raw.prices ~= nil then
-        if type(raw.prices) ~= "table" then return nil, where .. ": prices must be an object" end
+        if type(raw.prices) ~= "table" then return fail({ code = "not_object", field = "prices" }) end
         -- a row cannot be both shapes: which of the two the old flat price meant would be a guess
         if raw.price ~= nil or raw.bidPrice ~= nil or raw.buyback ~= nil then
-            return nil, where .. ": prices and a flat price cannot both be given"
+            return fail({ code = "mixed_prices", field = "prices" })
         end
         for currency, quote in pairs(raw.prices) do
-            if not L.isCurrency(currency) then return nil, where .. ": unknown currency " .. tostring(currency) end
-            local q, err = validateQuote(quote, where, currency)
-            if not q then return nil, err end
+            if not L.isCurrency(currency) then
+                return fail({ code = "unknown_currency", field = "prices", currency = tostring(currency) })
+            end
+            local q, err = validateQuote(quote, "prices." .. currency .. ".")
+            if not q then return fail(err) end
             prices[currency] = q
             quoted = quoted + 1
         end
     elseif raw.price ~= nil then
         -- legacy single-currency row, normalised once here: the sale direction was the SKU's own
         -- enabled flag, so the quote itself is on
-        local q, err = validateQuote({ price = raw.price, bidPrice = raw.bidPrice, enabled = true, buyback = raw.buyback },
-            where, L.LEGACY_CURRENCY)
-        if not q then return nil, err end
+        local q, err = validateQuote({ price = raw.price, bidPrice = raw.bidPrice, enabled = true, buyback = raw.buyback }, "")
+        if not q then return fail(err) end
         prices[L.LEGACY_CURRENCY] = q
         quoted = 1
     end
-    if quoted == 0 then return nil, where .. ": no price in any currency" end
+    if quoted == 0 then return fail({ code = "no_price", field = "prices" }) end
     return {
         id = raw.id, item = raw.item, qty = qty, dailyCap = cap, dailyCapScope = scope,
         category = category, enabled = raw.enabled ~= false, buybackCap = bcap, prices = prices,
@@ -302,8 +313,9 @@ local function bestRates(items)
     return byItem
 end
 
--- nil, or { id, currency, otherId, otherCurrency, cycle? } naming the two quotes that close the
--- loop (the buy side first).
+-- nil, or { code = "arbitrage", id, currency, otherId, otherCurrency, cycle? } naming the two
+-- quotes that close the loop (the buy side first). It is both the refusal's extra and a load
+-- failure, so the panel words it the same way wherever it shows up.
 local function arbitrage(items)
     local byItem = bestRates(items)
     for _, row in pairs(byItem) do
@@ -311,7 +323,7 @@ local function arbitrage(items)
             local ask = row.ask[currency]
             -- integers below 1e9 * 50: the cross product is exact in a double
             if ask and bid.price * ask.qty > ask.price * bid.qty then
-                return { field = "prices", id = ask.id, currency = currency, otherId = bid.id, otherCurrency = currency }
+                return { code = "arbitrage", field = "prices", id = ask.id, currency = currency, otherId = bid.id, otherCurrency = currency }
             end
         end
     end
@@ -333,34 +345,42 @@ local function arbitrage(items)
     for _, leg in pairs(best) do
         local back = best[leg.to .. "\1" .. leg.from]
         if back and leg.ratio * back.ratio > 1 + ARBITRAGE_EPSILON then
-            return { field = "prices", id = leg.askId, currency = leg.from,
+            return { code = "arbitrage", field = "prices", id = leg.askId, currency = leg.from,
                 otherId = back.askId, otherCurrency = back.from, cycle = true }
         end
     end
     return nil
 end
 
-local function arbitrageText(conflict)
-    return "arbitrage: " .. tostring(conflict.id) .. " (" .. tostring(conflict.currency) .. ") and "
-        .. tostring(conflict.otherId) .. " (" .. tostring(conflict.otherCurrency) .. ")"
+-- The decoder says "<what> at <pos> near '...'": the line is what a host can go and look at.
+local function jsonFailure(text, err)
+    local at = string.match(tostring(err), " at (%d+) near ")
+    local pos = at and tonumber(at)
+    if not pos then return { code = "json" } end
+    local _, breaks = string.gsub(string.sub(text, 1, pos - 1), "\n", "")
+    return { code = "json", line = breaks + 1 }
 end
 
+-- parsed, or nil, failure, error code (nil = catalog_invalid).
 local function parseCatalog(text)
     local doc, err = EC.jsonDecode(text)
-    if doc == nil then return nil, "json: " .. tostring(err) end
+    if doc == nil then
+        EC.log("catalog.json is not JSON: " .. tostring(err))
+        return nil, jsonFailure(text, err)
+    end
     local rows = type(doc) == "table" and doc.items or nil
-    if type(rows) ~= "table" then return nil, "missing \"items\" array" end
-    if #rows > Shop.MAX_SKUS then return nil, "more than " .. Shop.MAX_SKUS .. " items" end
+    if type(rows) ~= "table" then return nil, { code = "no_items", field = "items" } end
+    if #rows > Shop.MAX_SKUS then return nil, { code = "too_many", field = "items", max = Shop.MAX_SKUS } end
     local items, byId = {}, {}
     for i, raw in ipairs(rows) do
         local sku, e = validateSku(raw, i)
         if not sku then return nil, e end
-        if byId[sku.id] then return nil, sku.id .. ": duplicate id" end
+        if byId[sku.id] then return nil, { code = "duplicate_id", field = "id", index = i, id = sku.id } end
         byId[sku.id] = sku
         items[#items + 1] = sku
     end
     local conflict = arbitrage(items)
-    if conflict then return nil, arbitrageText(conflict), "arbitrage_rejected", conflict end
+    if conflict then return nil, conflict, "arbitrage_rejected" end
     return { items = items, byId = byId }
 end
 
@@ -421,21 +441,22 @@ local function hashOf(text)
 end
 
 -- Adopt only a fully parsed read. Failed panel writes must not alter the live catalog.
--- Returns ok, error text, error code, extra: the code is what a reply carries (a refused reload
--- says arbitrage_rejected, not just "the file is invalid") and the extra names the two quotes.
+-- Returns ok, error code, failure: the code is what a reply carries (a refused reload says
+-- arbitrage_rejected, not just "the file is invalid") and the failure is the code-and-facts
+-- table the panel words (see validateSku).
 local function loadCatalog(text)
-    local parsed, err, code, extra = parseCatalog(text)
+    local parsed, failure, code = parseCatalog(text)
     if not parsed then
-        file.error, file.errorCode, file.errorDetail = err, code or "catalog_invalid", extra
-        EC.log("catalog.json rejected: " .. tostring(err))
-        return false, err, file.errorCode, extra
+        file.errorCode, file.errorDetail = code or "catalog_invalid", failure
+        EC.log("catalog.json rejected: " .. EC.jsonEncode(failure))
+        return false, file.errorCode, failure
     end
     file.items, file.byId, file.count = parsed.items, parsed.byId, #parsed.items
     -- the per-copy weight estimate is taken once here (cached per fullType in ECMailbox), so a
     -- snapshot never builds items just to say how heavy a purchase would be
     for _, sku in ipairs(file.items) do sku.weight = M.scriptWeight(sku.item) end
     file.loadedAt = EC.now()
-    file.error, file.errorCode, file.errorDetail = nil, nil, nil
+    file.errorCode, file.errorDetail = nil, nil
     file.hash = hashOf(text)
     return true
 end
@@ -446,12 +467,12 @@ function Shop.load()
     if text == nil then
         local checked, exists = pcall(cacheFileExists, Shop.FILE)
         if not checked or exists then
-            file.error, file.errorCode, file.errorDetail = "catalog file unreadable", "file_unreadable", nil
-            return false, file.error, file.errorCode
+            file.errorCode, file.errorDetail = "file_unreadable", nil
+            return false, file.errorCode
         end
         if not writeCatalog(Shop.DEFAULT_ITEMS) then
-            file.error, file.errorCode, file.errorDetail = "catalog file unavailable", "file_write_failed", nil
-            return false, file.error, file.errorCode
+            file.errorCode, file.errorDetail = "file_write_failed", nil
+            return false, file.errorCode
         end
         text = readFile() or ""
     end
@@ -459,7 +480,7 @@ function Shop.load()
 end
 
 function Shop.fileStatus()
-    return { count = file.count, loadedAt = file.loadedAt, error = file.error,
+    return { count = file.count, loadedAt = file.loadedAt,
         errorCode = file.errorCode, errorDetail = file.errorDetail, path = Shop.FILE }
 end
 
@@ -1031,15 +1052,15 @@ function Shop.update(id, fields, actor, reason, expectedRevision)
     return Shop.updateMany({ id }, fields, actor, reason, expectedRevision)
 end
 
--- "survivor:20/8 cat:5/2" - every quoted currency in the audit line of a new row, never just
--- the first one.
-local function priceText(sku)
-    local parts = {}
+-- Every quoted currency of a new row, in currency order, as facts for the audit line (the panel
+-- words them): { { currency, price, bidPrice }, ... }.
+local function quotesOf(sku)
+    local out = {}
     for _, currency in ipairs(EC.CURRENCY_ORDER) do
         local q = sku.prices[currency]
-        if q then parts[#parts + 1] = currency .. ":" .. tostring(q.price) .. "/" .. tostring(q.bidPrice) end
+        if q then out[#out + 1] = { currency = currency, price = q.price, bidPrice = q.bidPrice } end
     end
-    return table.concat(parts, " ")
+    return out
 end
 
 -- raw = { id, item, qty?, category?, dailyCap?, dailyCapScope?, enabled?, buybackCap?,
@@ -1070,10 +1091,11 @@ function Shop.add(raw, actor, reason, expectedRevision)
     if conflict then return false, "arbitrage_rejected", conflict end
     local ok, err = commitCatalog(items, expectedRevision)
     if not ok then return false, err end
-    X.emit("admin.catalog", { sku = sku.id, field = "add", after = sku.item, prices = priceText(sku),
+    local quotes = quotesOf(sku)
+    X.emit("admin.catalog", { sku = sku.id, field = "add", item = sku.item, qty = sku.qty, quotes = quotes,
         actor = actor, reason = reason })
-    X.audit({ action = "catalog", target = sku.id, field = "add",
-        after = sku.item .. " x" .. sku.qty .. " @" .. priceText(sku), admin = actor, reason = reason })
+    X.audit({ action = "catalog", target = sku.id, field = "add", item = sku.item, qty = sku.qty,
+        quotes = quotes, admin = actor, reason = reason })
     Shop.pushAll()
     return true
 end
@@ -1118,16 +1140,18 @@ function Shop.remove(ids, actor, reason, expectedRevision)
     return true, nil, { count = #gone }
 end
 
--- Returns ok, error text, error code, extra. A hand-edited file that would open an arbitrage
--- loop is refused with the same arbitrage_rejected code an admin edit answers with, and the
--- live catalog (revision included) is left exactly as it was.
+-- Returns ok, error code, failure (see loadCatalog). A hand-edited file that would open an
+-- arbitrage loop is refused with the same arbitrage_rejected code an admin edit answers with,
+-- and the live catalog (revision included) is left exactly as it was. The audit carries facts
+-- only: ok, the row count, or the same errorCode/errorDetail pair the file status carries.
 function Shop.reload(actor)
-    local ok, err, code, extra = Shop.load()
-    X.emit("admin.catalog", { field = "reload", after = ok and file.count or nil, error = err,
-        errorCode = code, actor = actor })
-    X.audit({ action = "catalog", target = "file", field = "reload", after = ok and tostring(file.count) or ("error: " .. tostring(err)), admin = actor })
+    local ok, code, failure = Shop.load()
+    local count = ok and file.count or nil
+    X.emit("admin.catalog", { field = "reload", after = count, errorCode = code, errorDetail = failure, actor = actor })
+    X.audit({ action = "catalog", target = "file", field = "reload", ok = ok, count = count,
+        errorCode = code, errorDetail = failure, admin = actor })
     if ok then Shop.pushAll() end
-    return ok, err, code, extra
+    return ok, code, failure
 end
 
 -- ---------- request identity ----------

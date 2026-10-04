@@ -349,13 +349,26 @@ end
 
 function E.errorText(code)
     local key = tostring(code == nil and "unknown" or code)
-    return getTextOrNull(T .. "Ent_Error_" .. key) or getTextOrNull(T .. "Admin_Error_" .. key)
-        or getText(T .. "Ent_Error_generic", key)
+    local s = getTextOrNull(T .. "Ent_Error_" .. key) or getTextOrNull(T .. "Admin_Error_" .. key)
+    if s ~= nil then return s end
+    -- a code without a sentence is logged, never shown: the screen only carries translated words
+    EC.log("entitlement error without a translation: " .. key)
+    return getText(T .. "Ent_Error_unknown")
 end
 
+-- A value the translation files do not know reads as the shared "unknown" word; the value goes to
+-- the log once (ECWidgets is not loaded yet when this file is, so it keeps its own record).
+local unknownLogged = {}
 local function enumText(prefix, value)
     if value == nil then return "-" end
-    return getTextOrNull(T .. prefix .. tostring(value)) or tostring(value)
+    local s = getTextOrNull(T .. prefix .. tostring(value))
+    if s ~= nil then return s end
+    local key = prefix .. tostring(value)
+    if not unknownLogged[key] then
+        unknownLogged[key] = true
+        EC.log("entitlement value without a translation: " .. key)
+    end
+    return getText(T .. "Common_Unknown")
 end
 
 function E.stateText(state) return enumText("Ent_State_", state) end

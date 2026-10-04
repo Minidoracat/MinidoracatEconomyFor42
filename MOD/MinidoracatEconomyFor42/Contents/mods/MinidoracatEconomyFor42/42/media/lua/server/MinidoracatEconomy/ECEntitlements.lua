@@ -88,6 +88,9 @@ local E = EC.Entitlements
 E.QUOTE_TTL_MS = 120000
 E.PERMANENT_QTY_MAX = 100
 E.ORDERS_KEEP = 20
+-- ponytail: the admin order list sorts every row's ring on each page (rows x ORDERS_KEEP orders);
+-- index orders by time if a server grows to many thousands of paying accounts.
+E.ORDERS_PAGE = 50
 -- ponytail: a fixed cap on rentals per account keeps the row and the player's list small; raise it
 -- (and page the list) if hosts want many small rentals.
 E.RENTALS_MAX = 10
@@ -531,10 +534,66 @@ local function balancesOf(username, plan)
     return out
 end
 
-local function orderView(o, w, ds)
+-- ---------- refund judgement (E.refund, the admin order list and the snapshot share it) ----------
+
+-- Why order `o` of `row` cannot be refunded now, or nil: "refunded" | "not_refundable" |
+-- "refund_not_latest". The permanent units must still be held; a rental order must be its rental's
+-- pending payment, or its latest period with nothing pending, or - the rental already pruned - the
+-- newest order of that rental still in the ring.
+local function refundBlock(row, o)
+    if o.st == "refunded" then return "refunded" end
+    if o.kind == "permanent" then
+        if (row.perm or 0) < o.q then return "not_refundable" end
+        return nil
+    end
+    if o.rental == nil then return "refund_not_latest" end
+    local r = rentalOf(row, o.rental)
+    if r then
+        if (r.pend and r.pend.o == o.id) or (r.lease and r.lease.last == o.id and not r.pend) then return nil end
+        return "refund_not_latest"
+    end
+    for _, other in ipairs(row.orders or {}) do
+        if other.rental == o.rental then
+            if other.id ~= o.id then return "refund_not_latest" end
+            break
+        end
+    end
+    return nil
+end
+
+-- What refunding a refundable order does: "units" (permanent units back), "cancel" (a new rental
+-- not started yet goes), "previous" (the rental is back to the period before, paid until the second
+-- value: a refunded pending renewal keeps the running period), "remove" (a one-period rental goes),
+-- "money" (the rental was already pruned: money only).
+local function refundEffect(row, o)
+    if o.kind == "permanent" then return "units" end
+    local r = rentalOf(row, o.rental)
+    if not r then return "money" end
+    if r.pend and r.pend.o == o.id then
+        if r.lease then return "previous", r.lease.paidUntil end
+        return "cancel"
+    end
+    if o.prev then return "previous", o.prev.paidUntil end
+    return "remove"
+end
+
+-- The refund facts of one order as a list shows them: refundable, effect, previousUntil, and the
+-- 1-based number of its rental in the row (nil once the rental is gone).
+local function refundFacts(row, o)
+    local refundable = refundBlock(row, o) == nil
+    local effect, previousUntil = nil, nil
+    if refundable then effect, previousUntil = refundEffect(row, o) end
+    local _, rentalNo = nil, nil
+    if o.rental ~= nil then _, rentalNo = rentalOf(row, o.rental) end
+    return refundable, effect, previousUntil, rentalNo
+end
+
+local function orderView(o, w, ds, row)
     local v = { orderId = o.id, kind = o.kind, quantity = o.q, amount = o.amt, currency = o.cur,
         termsRevision = o.tr, status = o.st, paid = true, at = o.ts, renewal = o.renewal, rental = o.rental,
-        auto = o.auto, activatedAt = o.activatedAt, durable = { status = verdict(o, w), source = ds.source, seq = ds.seq } }
+        auto = o.auto, activatedAt = o.activatedAt, txId = o.tx,
+        durable = { status = verdict(o, w), source = ds.source, seq = ds.seq } }
+    v.refundable, v.refundEffect, v.previousUntil, v.rentalNo = refundFacts(row, o)
     if o.rf then
         v.refund = { amount = o.rf.amt, at = o.rf.ts, txId = o.rf.tx, by = o.rf.by, durable = { status = verdict(o.rf, w) } }
     end
@@ -659,7 +718,7 @@ local function snapshot(modId, username, productId)
         plan = P.copy(planRow),
         entitlement = entitlementView(row, planRow, now, ds, blocked, { m = modId, u = username, p = productId }, instant),
         balances = balancesOf(username, plan), orders = {} }
-    for _, o in ipairs(row and row.orders or {}) do env.orders[#env.orders + 1] = orderView(o, ds.seq, ds) end
+    for _, o in ipairs(row and row.orders or {}) do env.orders[#env.orders + 1] = orderView(o, ds.seq, ds, row) end
     return env
 end
 
@@ -1006,7 +1065,7 @@ function E.getOrder(modId, username, productId, orderId)
     local row = rowOf(modId, username, productId)
     for _, o in ipairs(row and row.orders or {}) do
         if o.id == orderId then
-            return reply({ ok = true, known = true, order = orderView(o, ds.seq, ds) })
+            return reply({ ok = true, known = true, order = orderView(o, ds.seq, ds, row) })
         end
     end
     local k = rowKey(modId, username, productId)
@@ -1103,7 +1162,7 @@ end
 -- leave in the same commit as the money: permanent units, a rental's pending payment (with the
 -- rental itself when it never started) or its latest period (back to the one before, or the rental
 -- goes); a rental that already ended and was pruned gives the money back only, for its newest
--- order. Outside the ring an order needs manual reconciliation.
+-- order (refundBlock / refundEffect). Outside the ring an order needs manual reconciliation.
 -- opts = { reason, actor?, amount? } (actor defaults to the source).
 function E.refund(modId, username, productId, orderId, opts)
     if not ent then return fail("not_ready") end
@@ -1120,11 +1179,13 @@ function E.refund(modId, username, productId, orderId, opts)
         if cand.id == orderId then idx, o = i, cand end
     end
     if not o then return withSnapshot(fail("unknown_order"), modId, username, productId) end
-    if o.st == "refunded" then
+    local block = refundBlock(row, o)
+    if block == "refunded" then
         return withSnapshot({ ok = true, duplicate = true, orderId = orderId, txId = o.rf and o.rf.tx }, modId, username, productId)
     end
     local amount = opts.amount == nil and o.amt or opts.amount
     if not isInt(amount) or amount < 1 or amount > o.amt then return fail("invalid_args") end
+    if block then return withSnapshot(fail(block), modId, username, productId) end
     local now, w = EC.now(), S.durableStatus().seq
     local nextRow = nextRowOf(row)
     local rf = { amt = amount, by = actor, reason = string.sub(reason, 1, 64) }
@@ -1133,7 +1194,6 @@ function E.refund(modId, username, productId, orderId, opts)
     nextRow.orders[idx] = refunded
     local stamps = { rf }
     if o.kind == "permanent" then
-        if nextRow.perm < o.q then return withSnapshot(fail("not_refundable"), modId, username, productId) end
         nextRow.perm = nextRow.perm - o.q
         if row.pp and verdict(row.pp, w) ~= "confirmed" and verdict(o, w) ~= "confirmed" then
             local left = row.pp.q - math.min(row.pp.q, o.q)
@@ -1145,16 +1205,13 @@ function E.refund(modId, username, productId, orderId, opts)
             nextRow.pp = pp
         end
     else
-        if o.rental == nil then return withSnapshot(fail("refund_not_latest"), modId, username, productId) end
         local r, i = rentalOf(row, o.rental)
         if r then
             local nr = copyTable(r)
             if r.pend and r.pend.o == orderId then
                 nr.pend = nil
-            elseif r.lease and r.lease.last == orderId and not r.pend then
-                nr.lease = o.prev
             else
-                return withSnapshot(fail("refund_not_latest"), modId, username, productId)
+                nr.lease = o.prev      -- the latest period (refundBlock): back to the one before
             end
             if r.auto and r.auto.on then
                 nr.auto = { on = false, gen = r.auto.gen, tr = r.auto.tr, rev = nextRow.rev, why = "refunded", at = now }
@@ -1164,13 +1221,6 @@ function E.refund(modId, username, productId, orderId, opts)
                 table.remove(nextRow.rentals, i)
             else
                 nextRow.rentals[i] = nr
-            end
-        else
-            for _, other in ipairs(row.orders) do
-                if other.rental == o.rental then
-                    if other.id ~= orderId then return withSnapshot(fail("refund_not_latest"), modId, username, productId) end
-                    break
-                end
             end
         end
     end
@@ -1546,9 +1596,70 @@ local function adminRefund(player, args)
     return res
 end
 
--- admin.entitlements {action = "plans" | "account" (read) | "refund" (write), ...}. Plans are read
--- only here: the source owns them (setPlan). There is no action that consents to auto-renew for a
--- player.
+-- Newest first: by time, then by order id (string) descending.
+local function orderBefore(at, id, cursor)
+    return at < cursor.at or (at == cursor.at and id < cursor.id)
+end
+
+-- One page of the paid orders of every account (or the filtered ones), newest first, for the admin
+-- desk: each row carries the refund judgement E.refund would make now. `before = { at, id }` is the
+-- last row of the previous page.
+local function adminOrders(args)
+    if not ent then return fail("not_ready") end
+    local username, modId, productId, before = args.username, args.sourceMod, args.productId, args.before
+    if (username ~= nil and not validUser(username)) or (modId ~= nil and not validMod(modId))
+        or (productId ~= nil and not validProduct(productId)) then
+        return fail("invalid_args")
+    end
+    if before ~= nil and (type(before) ~= "table" or not isInt(before.at) or not validId(before.id)) then
+        return fail("invalid_args")
+    end
+    local w = S.durableStatus().seq
+    local found = {}
+    for m, byUser in pairs(ent.rows) do
+        if modId == nil or m == modId then
+            for u, byProduct in pairs(byUser) do
+                if username == nil or u == username then
+                    for p, row in pairs(byProduct) do
+                        if productId == nil or p == productId then
+                            for _, o in ipairs(row.orders or {}) do
+                                if before == nil or orderBefore(o.ts or 0, o.id, before) then
+                                    found[#found + 1] = { m = m, u = u, p = p, row = row, o = o }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    EC.sortSafe(found, function(a, b)
+        local ta, tb = a.o.ts or 0, b.o.ts or 0
+        if ta ~= tb then return ta > tb end
+        return a.o.id > b.o.id
+    end)
+    local orders = {}
+    for i = 1, math.min(#found, E.ORDERS_PAGE) do
+        local f = found[i]
+        local o, spec, planRow = f.o, P.product(f.m, f.p), P.row(f.m, f.p)
+        local instant = spec ~= nil and spec.instant == true
+        local v = { username = f.u, sourceMod = f.m, productId = f.p, nameKey = planRow and planRow.nameKey or nil,
+            instant = instant, orderId = o.id, txId = o.tx, kind = o.kind, renewal = o.renewal, auto = o.auto,
+            quantity = o.q, amount = o.amt, currency = o.cur, status = o.st, at = o.ts, rental = o.rental,
+            -- a refund is saved (or not) on its own: a product that waits for the save says which
+            refund = o.rf and { amount = o.rf.amt, at = o.rf.ts, txId = o.rf.tx,
+                durable = (not instant) and { status = verdict(o.rf, w) } or nil } or nil,
+            durable = (not instant) and { status = verdict(o, w) } or nil }
+        v.refundable, v.refundEffect, v.previousUntil, v.rentalNo = refundFacts(f.row, o)
+        orders[i] = v
+    end
+    return { ok = true, orders = orders, more = #found > E.ORDERS_PAGE,
+        filter = { username = username, sourceMod = modId, productId = productId } }
+end
+
+-- admin.entitlements {action = "plans" | "account" | "orders" (read) | "refund" (write), ...}. Plans
+-- are read only here: the source owns them (setPlan). There is no action that consents to auto-renew
+-- for a player.
 S.handlers["admin.entitlements"] = function(player, args)
     local action = args.action
     local write = action == "refund"
@@ -1563,6 +1674,8 @@ S.handlers["admin.entitlements"] = function(player, args)
         res = { ok = true }
     elseif action == "account" then
         res = adminAccount(args)
+    elseif action == "orders" then
+        res = adminOrders(args)
     elseif action == "refund" then
         res = adminRefund(player, args)
     else

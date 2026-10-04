@@ -161,13 +161,14 @@ local function itemOriginal(fullType)
     return original
 end
 
--- The item script's own DisplayCategory. A reference beside the category field and nothing else:
--- the shop's category is the admin's choice, never derived from this.
+-- The item script's own DisplayCategory, in the words the vanilla inventory uses. A reference
+-- beside the category field and nothing else: the shop's category is the admin's choice, never
+-- derived from this.
 local function itemDisplayCategory(fullType)
     local rec = Picker.universe().byType[fullType]
     local cat = rec and rec.category or nil
     if type(cat) ~= "string" or cat == "" then return "-" end
-    return cat
+    return U.itemCategoryText(cat)
 end
 
 local function trimText(s)
@@ -909,8 +910,13 @@ function Page:draftValue(spec)
     return d[spec.key]
 end
 
+-- One currency's column, word order left to the translation ("%1 (%2)": field, currency).
+local function curLabel(cur, key)
+    return getText(T .. "Admin_Audit_FieldCur", tr(key), currencyName(cur))
+end
+
 function Page:specLabel(spec)
-    if spec.currency ~= nil then return currencyName(spec.currency) .. " " .. tr(spec.label) end
+    if spec.currency ~= nil then return curLabel(spec.currency, spec.label) end
     return tr(spec.label)
 end
 
@@ -1790,7 +1796,7 @@ end
 -- ----- the write -----
 
 function Page:reject(label, hint)
-    self.owner.message = { text = label .. ": " .. hint, error = true }
+    self.owner.message = { text = getText(T .. "Admin_Tx_Pair", label, hint), error = true }
 end
 
 -- One Apply, one command: every column the form holds travels in the same admin.catalog write,
@@ -1835,17 +1841,17 @@ function Page:onApply()
             local bid = value["q:" .. cur .. ":bidPrice"] or 0
             local buy = value["q:" .. cur .. ":buyback"] == true
             if bid > price - 1 then
-                return self:reject(currencyName(cur) .. " " .. tr("Admin_Shop_BidPrice"),
+                return self:reject(curLabel(cur, "Admin_Shop_BidPrice"),
                     numberHint(0, price - 1))
             end
             if buy and bid < 1 then
-                return self:reject(currencyName(cur) .. " " .. tr("Admin_Shop_BidPrice"),
+                return self:reject(curLabel(cur, "Admin_Shop_BidPrice"),
                     tr("Admin_Shop_BuybackHint"))
             end
         else
             local was = base ~= nil and base.quotes[cur] or nil
             if was ~= nil and was.exists then
-                return self:reject(currencyName(cur) .. " " .. tr("Admin_Shop_Price"),
+                return self:reject(curLabel(cur, "Admin_Shop_Price"),
                     tr("Admin_Shop_QuoteKeepPrice"))
             end
         end
@@ -1998,11 +2004,11 @@ function Page:applyBatch()
                 local buy = patch ~= nil and patch.buyback
                 if buy == nil then buy = was.buyback end
                 if bid > price - 1 then
-                    return self:reject(currencyName(cur) .. " " .. tr("Admin_Shop_BidPrice"),
+                    return self:reject(curLabel(cur, "Admin_Shop_BidPrice"),
                         getText(T .. "Admin_Shop_BatchRow", name, numberHint(0, price - 1)))
                 end
                 if buy == true and bid < 1 then
-                    return self:reject(currencyName(cur) .. " " .. tr("Admin_Shop_BidPrice"),
+                    return self:reject(curLabel(cur, "Admin_Shop_BidPrice"),
                         getText(T .. "Admin_Shop_BatchRow", name, tr("Admin_Shop_BuybackHint")))
                 end
             end
@@ -2022,15 +2028,11 @@ end
 
 -- Which column the server refused, said in the words the form uses. A nested column arrives as
 -- "prices.<currency>.<leaf>" (the server's own field path), so it is read back as the very
--- control the admin typed into.
+-- control the admin typed into; a path the form has no control for is shown as the server wrote
+-- it, the JSON name a host finds in the file (it only ever appears inside Admin_Shop_ErrorAt).
 function Page:errorFieldLabel(field)
     local cur, leaf = string.match(tostring(field), "^prices%.([^%.]+)%.(.+)$")
-    if cur ~= nil then
-        local spec = self.fieldByKey["q:" .. cur .. ":" .. leaf]
-        if spec ~= nil then return self:specLabel(spec) end
-        return currencyName(cur) .. " " .. tostring(leaf)
-    end
-    local spec = self.fieldByKey[tostring(field)]
+    local spec = cur ~= nil and self.fieldByKey["q:" .. cur .. ":" .. leaf] or self.fieldByKey[tostring(field)]
     if spec ~= nil then return self:specLabel(spec) end
     return tostring(field)
 end
@@ -2053,29 +2055,27 @@ function Page:onReply(kind, args, req)
             self.saveError = nil
         else
             -- the server points at the row, the column and the currency it refused, when it can:
-            -- that is the only way an admin knows which of the picked SKUs to go and look at, and
-            -- a refused cross-SKU price pair names both sides. It is ONE place: reply.extra, the
-            -- table the shop itself returned -- reply's own top level carries the catalog snapshot
-            -- (its `id` is the echo of the SKU this request was about, its `count` the catalog's
-            -- size), so nothing here is read off it. No extra table means the server had nothing
-            -- to add beyond the error code.
-            local body = errorText(args.error)
+            -- that is the only way an admin knows which of the picked SKUs to go and look at. It
+            -- is ONE place: reply.extra, the table the shop itself returned -- reply's own top
+            -- level carries the catalog snapshot (its `id` is the echo of the SKU this request was
+            -- about, its `count` the catalog's size), so nothing here is read off it. A failure
+            -- with a code of its own (a refused reload's `detail`, an arbitrage pair, which names
+            -- both sides) is worded by U.fileErrorText; no extra means the code says it all.
             local extra = type(args.extra) == "table" and args.extra or nil
-            if extra ~= nil then
+            local failure = type(args.detail) == "table" and args.detail
+                or (extra ~= nil and extra.code ~= nil and extra) or nil
+            local body
+            if failure ~= nil then
+                body = U.fileErrorText(args.error, failure)
+            else
+                body = errorText(args.error)
                 local where = {}
-                if type(extra.field) == "string" then where[#where + 1] = self:errorFieldLabel(extra.field) end
-                if type(extra.id) == "string" then where[#where + 1] = tostring(extra.id) end
-                if type(extra.currency) == "string" then where[#where + 1] = currencyName(extra.currency) end
-                if #where > 0 then body = body .. " (" .. table.concat(where, " / ") .. ")" end
-                if type(extra.otherId) == "string" then
-                    body = body .. " " .. getText(T .. "Admin_Shop_ErrorConflict", tostring(extra.otherId),
-                        type(extra.otherCurrency) == "string" and currencyName(extra.otherCurrency) or "-")
+                if extra ~= nil then
+                    if type(extra.field) == "string" then where[#where + 1] = self:errorFieldLabel(extra.field) end
+                    if type(extra.id) == "string" then where[#where + 1] = tostring(extra.id) end
+                    if type(extra.currency) == "string" then where[#where + 1] = currencyName(extra.currency) end
                 end
-            end
-            -- a refusal the server could only say in its own words (a file it could not write,
-            -- the two SKUs a price pair conflicts over): shown as it came, never summarised away
-            if type(args.detail) == "string" and args.detail ~= "" then
-                body = body .. " " .. args.detail
+                if #where > 0 then body = getText(T .. "Admin_Shop_ErrorAt", body, table.concat(where, " / ")) end
             end
             self.saveError = body
         end
@@ -3336,13 +3336,11 @@ function Page:prerender()
         local snap = self.catalog
         local file = type(snap) == "table" and type(snap.file) == "table" and snap.file or nil
         local status, token
-        -- an error the server named by code is read in the mod's own words; one it could only
-        -- describe in text is shown as it came. Either way the count is NOT shown instead: the
-        -- server is still running with the previous catalog and that is the thing to say.
+        -- an error the server named by code is read in the mod's own words, with what the file
+        -- got wrong when it said (U.fileErrorDetail). Either way the count is NOT shown instead:
+        -- the server is still running with the previous catalog and that is the thing to say.
         local fileError = file and type(file.errorCode) == "string" and file.errorCode ~= ""
-            and (errorText(file.errorCode) .. (type(file.errorDetail) == "string" and file.errorDetail ~= ""
-                and (" " .. file.errorDetail) or ""))
-            or (file and type(file.error) == "string" and file.error ~= "" and file.error or nil)
+            and (U.fileErrorDetail(file.errorDetail) or errorText(file.errorCode)) or nil
         if fileError then
             status, token = getText(T .. "Admin_Shop_FileError", fileError), "errorText"
         elseif file then

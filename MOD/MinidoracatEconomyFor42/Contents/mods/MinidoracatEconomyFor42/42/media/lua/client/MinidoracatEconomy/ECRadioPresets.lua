@@ -52,7 +52,7 @@ end
 -- Keep the full label in the native combo item and tooltip. Its stencil clips the display;
 -- RWMChannel.addComboOption would round the frequency and cut the stored string itself.
 local function appendShared(panel, frequency)
-    local label = tr("Radio_Channel") .. " - " .. tostring(frequency / 1000) .. " MHz"
+    local label = tr("Radio_PresetLabel", tr("Radio_Channel"), tr("Admin_Set_Mhz", tostring(frequency / 1000)))
     panel.comboBox:addOptionWithData(label, SHARED, label .. " - " .. tr("Radio_Preset_Hint"))
     return panel.comboBox:getOptionCount()
 end

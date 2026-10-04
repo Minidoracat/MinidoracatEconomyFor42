@@ -536,10 +536,9 @@ function Page:onReply(kind, args)
     if mine then
         self.sent = nil
         if args.ok == false then
-            -- whitelist_invalid carries the file's own parse error: the code alone would not tell
-            -- the host which line to go and fix
-            local body = errorText(args.error)
-            if type(args.detail) == "string" and args.detail ~= "" then body = body .. ": " .. args.detail end
+            -- whitelist_invalid carries what the file got wrong (field, entry): the code alone
+            -- would not tell the host which line to go and fix
+            local body = U.fileErrorText(args.error, args.detail)
             self.owner.message = { text = body, error = true }
             self.readError = body
         elseif sent ~= nil and sent.action == "reload" then
@@ -587,7 +586,6 @@ function Page:catRow(entry, allowed, geo, lh, rowHeight)
     item.nameText = fitText(entry.label, textW)
     local meta = entry.count > 0 and getText(T .. "Admin_Wl_Items", tostring(entry.count))
         or tr("Admin_Wl_Unknown")
-    if entry.label ~= entry.cat then meta = entry.cat .. " / " .. meta end
     item.metaText = fitText(meta, textW)
     item.copyText = entry.cat
     -- the checkbox column and the state word are the control; the rest of the row only selects
@@ -843,8 +841,8 @@ function Page:fileStatusText()
     if wl == nil then
         return self.isPending("admin.whitelist") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), "textFaint"
     end
-    if type(wl.error) == "string" and wl.error ~= "" then
-        return getText(T .. "Admin_Wl_Error", wl.error), "errorText"
+    if type(wl.errorCode) == "string" and wl.errorCode ~= "" then
+        return getText(T .. "Admin_Wl_Error", U.fileErrorDetail(wl.errorDetail) or errorText(wl.errorCode)), "errorText"
     end
     local counts = wl.counts or {}
     return getText(T .. "Admin_Wl_Status", tostring(counts.categories or 0),

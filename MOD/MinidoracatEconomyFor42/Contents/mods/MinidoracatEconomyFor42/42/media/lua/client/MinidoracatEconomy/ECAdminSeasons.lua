@@ -366,9 +366,9 @@ function Page:seasonText(meta, closed)
     end
     if meta.partial == true then lines[#lines + 1] = tr("Season_Partial") end
     lines[#lines + 1] = ""
-    -- an ASCII tag for the opaque identifier: this is what gets pasted into a ticket or read
-    -- back to the server, and a localised label in front of it would only be in the way
-    lines[#lines + 1] = "season   " .. tostring(meta.id)
+    -- the opaque identifier on its own line, after a translated label: it is what gets pasted into
+    -- a ticket or read back to the server
+    lines[#lines + 1] = getText(T .. "Admin_Tx_Pair", tr("Field_season"), tostring(meta.id))
     return table.concat(lines, "\n")
 end
 

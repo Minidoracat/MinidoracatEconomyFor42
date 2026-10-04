@@ -1547,7 +1547,7 @@ local function markSources(username, receipt)
                     if not placed then
                         R.hold(entry.owner or username, "legacy:" .. c.m, slotError or "legacy_slot_unavailable",
                             { mailId = c.m, kind = "legacy", item = entry.item, opId = receipt.id,
-                              detail = "consumption recorded without a slot to account for it" })
+                              detailCode = "slot_missing" })
                     end
                 end
                 if type(entry.outUnits) ~= "table" then entry.outUnits = {} end
@@ -2184,20 +2184,22 @@ function R.gen0Evidence(scan, mailId)
 end
 
 -- Can this unit be named? Returns the upgraded origin, or nil plus the record an administrator
--- acts on: { reason, sourceState, mailId, item, owner, epoch, seq, txId, detail }.
+-- acts on: { reason, sourceState, mailId, item, owner, epoch, seq, txId, detailCode, unitToken?,
+-- claimSeq? }. `detailCode` names the fact behind the reason (the admin page words it,
+-- Admin_Rec_Detail_<code>); its parameters travel as the record's own fields, never as prose.
 function R.judgeGen0(origin, holder, ctx)
     local out = { mailId = origin and origin.mailId, epoch = origin and origin.epoch,
         seq = origin and origin.seq, txId = origin and origin.txId,
         sourceState = "unknown", reason = "legacy_source_unknown" }
     if type(origin) ~= "table" or origin.gen0 ~= true or type(origin.mailId) ~= "string" then
-        out.detail = "not a generation zero stamp"
+        out.detailCode = "not_gen0"
         return nil, out
     end
     local entry, why = R.findLetter(origin.mailId, holder, ctx and ctx.letters)
     local verdict = R.verdict(origin.epoch, origin.seq)
     local consumed, _, proof = R.consumer(origin)
     if proof == "unreadable" then
-        out.detail = "mailbox consumption state could not be read"
+        out.detailCode = "consumption_unreadable"
         return nil, out
     end
     if consumed then
@@ -2211,12 +2213,11 @@ function R.judgeGen0(origin, holder, ctx)
     -- and then a rolled-back claim means the money came back with it.
     if not entry then
         if why == "ambiguous" then
-            out.detail = "more than one account holds letter " .. origin.mailId
+            out.detailCode = "letter_ambiguous"
             out.sourceState = "ambiguous"
         elseif verdict == "rolledback" then
             out.sourceState, out.reason = "rolledback", "legacy_claim_rolledback"
-            out.detail = "claim " .. tostring(origin.epoch) .. ":" .. tostring(origin.seq)
-                .. " did not survive and its letter is gone"
+            out.detailCode = "claim_lost"
         elseif verdict == "survived" or verdict == "current" then
             out.sourceState, out.reason = "pruned", "legacy_source_pruned"
         end
@@ -2231,18 +2232,18 @@ function R.judgeGen0(origin, holder, ctx)
     local clash = groupConflict(ctx, entry.id)
     if clash then
         out.reason = clash
-        out.detail = "two objects of this letter cannot be told apart by their engine id"
+        out.detailCode = "objects_indistinct"
         return nil, out
     end
     local token = R.gen0Token(entry.id, origin.nativeId)
     local tokenConsumer, _, tokenProof = R.consumer({ unit = token, owner = entry.owner,
         mailId = entry.id, item = origin.item })
     if tokenProof == "unreadable" then
-        out.detail = "mailbox consumption state could not be read"
+        out.detailCode = "consumption_unreadable"
         return nil, out
     end
     if tokenConsumer then
-        out.reason, out.detail = "legacy_unit_consumed", "unit " .. token .. " was already transferred out"
+        out.reason, out.detailCode, out.unitToken = "legacy_unit_consumed", "unit_transferred", token
         return nil, out
     end
     local placed, slotError = R.gen0Admit(entry, token, origin.seq, ctx and ctx.scan, true)
@@ -2250,11 +2251,11 @@ function R.judgeGen0(origin, holder, ctx)
         out.reason = slotError
         if slotError == "legacy_source_unclaimed" then
             out.sourceState = "unclaimed"
-            out.detail = "letter state " .. tostring(entry.state)
+            out.detailCode = "letter_" .. tostring(entry.state)
         elseif slotError == "legacy_claim_superseded" then
-            out.detail = "letter claim seq " .. tostring(entry.claimSeq) .. " vs stamp seq " .. tostring(origin.seq)
+            out.detailCode, out.claimSeq = "claim_superseded", tonumber(entry.claimSeq)
         else
-            out.detail = "no unissued placeholder left in letter " .. entry.id
+            out.detailCode = "no_placeholder"
         end
         return nil, out
     end
@@ -2288,7 +2289,7 @@ function R.adoptGen0(player, item, origin, ctx)
             end
             return bound, info
         end
-        info.reason, info.detail = "legacy_source_unknown", "item metadata could not be written"
+        info.reason, info.detailCode = "legacy_source_unknown", "metadata_write_failed"
     end
     if ctx and ctx.scan then info.qty, info.ids = R.gen0Evidence(ctx.scan, info.mailId) end
     return nil, info
@@ -2302,7 +2303,8 @@ function R.holdGen0(username, info)
     local key = "legacy:" .. info.mailId
     R.regroupUnitHolds(username, info.mailId, key)
     return R.holdUpdate(username, key, info.reason, {
-        mailId = info.mailId, sourceState = info.sourceState, detail = info.detail,
+        mailId = info.mailId, sourceState = info.sourceState, detailCode = info.detailCode,
+        unitToken = info.unitToken, claimSeq = info.claimSeq,
         item = info.item, owner = info.owner, epoch = info.epoch, seq = info.seq,
         txId = info.txId, qty = info.qty, ids = info.ids, kind = "legacy",
     })

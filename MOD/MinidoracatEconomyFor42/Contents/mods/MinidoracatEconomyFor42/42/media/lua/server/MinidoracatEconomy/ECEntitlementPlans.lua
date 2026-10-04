@@ -38,7 +38,8 @@ P.NAME_KEY_MAX = 96
 P.REASON_KEEP = 64
 P.ACTOR_MAX = 64
 P.SOURCE_FILE_MAX = 160
-P.SOURCE_PROBLEM_MAX = 200
+P.PROBLEM_KEY_MAX = 96
+P.PROBLEM_REF_MAX = 64
 P.ORIGINS = { file = true, admin = true, source = true }
 P.REQUIRED_REASONS = { "entitlement_purchase", "entitlement_renewal", "entitlement_refund" }
 
@@ -140,9 +141,13 @@ local function lastChangeOf(row)
     return { actor = lc.actor, origin = lc.origin, at = lc.at, reason = lc.reason, revision = lc.revision }
 end
 
+local function copyProblem(p)
+    return p and { key = p.key, field = p.field, ref = p.ref } or nil
+end
+
 local function sourceOf(modId, productId)
     local s = sources[keyOf(modId, productId)]
-    return s and { file = s.file, problem = s.problem, at = s.at } or nil
+    return s and { file = s.file, problem = copyProblem(s.problem), at = s.at } or nil
 end
 
 -- First sight of a product in this ModData creates its plan row from the defaults; a known row
@@ -282,6 +287,20 @@ local function sourceText(v, max)
     return true, v
 end
 
+local function translationKey(v)
+    return type(v) == "string" and #v >= 1 and #v <= P.PROBLEM_KEY_MAX and string.match(v, "^[%w_]+$") ~= nil
+end
+
+-- A problem is nil (no error) or { key = <translation key>, field = <translation key>?, ref = <raw text>? }:
+-- the admin overview words it in the reader's language; ref is data (a file key), shown as is.
+local function problemOf(v)
+    if v == nil then return true, nil end
+    if type(v) ~= "table" or not translationKey(v.key) or (v.field ~= nil and not translationKey(v.field)) then return false end
+    local ok, ref = sourceText(v.ref, P.PROBLEM_REF_MAX)
+    if not ok then return false end
+    return true, { key = v.key, field = v.field, ref = ref }
+end
+
 -- info = { file?, problem? } (problem nil = no error). Memory only, for the admin overview.
 function P.setSource(modId, productId, info)
     if not P.product(modId, productId) then return { ok = false, error = "unknown_product" } end
@@ -289,7 +308,7 @@ function P.setSource(modId, productId, info)
     info = info or {}
     local okFile, file = sourceText(info.file, P.SOURCE_FILE_MAX)
     if not okFile then return { ok = false, error = "invalid_args", field = "file" } end
-    local okProblem, problem = sourceText(info.problem, P.SOURCE_PROBLEM_MAX)
+    local okProblem, problem = problemOf(info.problem)
     if not okProblem then return { ok = false, error = "invalid_args", field = "problem" } end
     sources[keyOf(modId, productId)] = { file = file, problem = problem, at = EC.now() }
     return { ok = true }
@@ -302,8 +321,10 @@ function P.list()
     for modId, bySource in pairs(md.plans) do
         for productId, row in pairs(bySource) do
             local spec = P.product(modId, productId)
+            local src = G.source(modId)
             out[#out + 1] = {
                 sourceMod = modId, productId = productId, nameKey = row.nameKey,
+                sourceNameKey = src and src.nameKey or nil, sourceName = src and src.displayName or nil,
                 loaded = spec ~= nil, instant = spec ~= nil and spec.instant, plan = P.copy(row),
                 lastChange = lastChangeOf(row), source = sourceOf(modId, productId),
             }

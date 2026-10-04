@@ -66,7 +66,7 @@ local function adminEntries(sub, item, fullType)
     if not (C.AdminPanel and C.AdminPanel.canRead()) then return end
     local record = C.ItemPicker and C.ItemPicker.universe().byType[fullType] or nil
     local hidden = record == nil and tr("Drop_Hidden") or nil
-    entry(sub, tr("Menu_AddSku"), hidden or (not C.AdminPanel.canWrite() and W.shopError("forbidden")) or nil,
+    entry(sub, tr("Menu_AddSku"), hidden or (not C.AdminPanel.canWrite() and C.UI.adminErrorText("forbidden")) or nil,
         tr("Menu_AddSku_Tip"), onAdmin, item, "Shop")
     entry(sub, tr("Menu_AddRule"), hidden or (record and record.fixed and tr("Drop_Fixed")) or nil,
         tr("Menu_AddRule_Tip"), onAdmin, item, "Whitelist")

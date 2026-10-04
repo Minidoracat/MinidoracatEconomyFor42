@@ -709,7 +709,7 @@ function C.deliveryText(args)
         return text
     end
     if code == "delivery_failed" then
-        return getText(key .. "Delivery_Failed", getTextOrNull(key .. "Shop_Error_delivery_failed") or code, left)
+        return getText(key .. "Delivery_Failed", getText(key .. "Shop_Error_delivery_failed"), left)
     end
     if code == "backpack_full" and unit ~= nil and cap ~= nil and unit > cap then
         return getText(key .. "Delivery_TooHeavy", C.weightText(unit), C.weightText(cap))
@@ -1136,7 +1136,8 @@ end
 handlers["identity.alert"] = function(args)
     local panel = C.AdminPanel
     if not (panel and panel.canRead and panel.canRead()) then return end
-    local kind = getTextOrNull("IGUI_MinidoracatEconomy_Admin_Id_Alert_" .. tostring(args.kind)) or tostring(args.kind)
+    local kind = getTextOrNull("IGUI_MinidoracatEconomy_Admin_Id_Alert_" .. tostring(args.kind))
+        or C.UI.unknownText("identity alert", args.kind)
     C.toast(getText("IGUI_MinidoracatEconomy_Identity_Alert", tostring(args.name), kind))
 end
 

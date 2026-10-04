@@ -286,30 +286,6 @@ local currencyDef = U.currencyDef
 
 local currencyName = U.currencyName
 
--- Source display names arrive as { CH = ..., EN = ... }. The language option cannot change
--- without a restart, so it is read once; getOptionLanguageName is absent on old builds.
-local langCode = nil
-local function gameLanguage()
-    if langCode then return langCode end
-    langCode = "EN"
-    if type(getCore) == "function" then
-        local ok, name = pcall(function() return getCore():getOptionLanguageName() end)
-        if ok and type(name) == "string" and name ~= "" then langCode = name end
-    end
-    return langCode
-end
-
-local function sourceName(src)
-    local names = src and src.displayName
-    if type(names) == "table" then
-        local lang = gameLanguage()
-        local pick = (lang == "CH" or lang == "CN") and names.CH or names.EN
-        if type(pick) ~= "string" or pick == "" then pick = names.EN or names.CH end
-        if type(pick) == "string" and pick ~= "" then return pick end
-    end
-    return tostring(src and src.modId or "-")
-end
-
 -- a missing daily burn cap means "no limit" (ECIntegration.setSource stores nil for it)
 local function capText(value)
     if value == nil then return tr("Admin_Src_Unlimited") end
@@ -448,9 +424,9 @@ end
 
 local function sizeText(bytes)
     local n = tonumber(bytes) or 0
-    if n >= 1048576 then return string.format("%.1f MB", n / 1048576) end
-    if n >= 1024 then return string.format("%.0f KB", n / 1024) end
-    return tostring(math.floor(n)) .. " B"
+    if n >= 1048576 then return getText(T .. "Admin_Sys_SizeMB", string.format("%.1f", n / 1048576)) end
+    if n >= 1024 then return getText(T .. "Admin_Sys_SizeKB", string.format("%.0f", n / 1024)) end
+    return getText(T .. "Admin_Sys_SizeBytes", tostring(math.floor(n)))
 end
 
 local function agoText(ms, now)
@@ -641,13 +617,13 @@ local function auditSpec()
 end
 
 local function auditActionText(action)
-    return getTextOrNull(T .. "Admin_Audit_Action_" .. tostring(action)) or tostring(action)
+    return getTextOrNull(T .. "Admin_Audit_Action_" .. tostring(action)) or U.unknownText("audit action", action)
 end
 
 local function configValueText(v)
     local t = type(v)
     if t == "table" then
-        if v.rateVersion then return "v" .. tostring(v.rateVersion) end
+        if v.rateVersion then return getText(T .. "Admin_Cur_RateVersion", tostring(v.rateVersion)) end
         return tr("Admin_Cur_Title")
     end
     if t == "boolean" then return v and tr("Admin_On") or tr("Admin_Off") end
@@ -1014,7 +990,7 @@ local function auditFieldText(field)
     local currency, leaf = string.match(raw, "^prices%.([^.]+)%.(.+)$")
     if currency ~= nil then
         return getText(T .. "Admin_Audit_FieldCur",
-            getTextOrNull(T .. "Admin_Audit_Field_" .. leaf) or leaf, currencyName(currency))
+            getTextOrNull(T .. "Admin_Audit_Field_" .. leaf) or U.unknownText("audit field", leaf), currencyName(currency))
     end
     -- "prices.cat" as a whole: the whole quote of one currency was added or removed
     currency = string.match(raw, "^prices%.([^.]+)$")
@@ -1022,7 +998,7 @@ local function auditFieldText(field)
         return getText(T .. "Admin_Audit_FieldCur", tr("Admin_Audit_Field_prices"),
             currencyName(currency))
     end
-    return raw
+    return U.unknownText("audit field", raw)
 end
 
 local function auditValueText(value)
@@ -1037,8 +1013,10 @@ end
 -- verbatim. Anything else that looks like a fullType is shown by its item name.
 local function auditTargetText(action, field, target)
     local raw = tostring(target or "-")
+    -- an account merge pass is about the identity table as a whole, not one target
+    if action == "ACCOUNT_MERGE_PASS" and raw == "identity" then return tr("Admin_Tab_Identity") end
+    if (action == "whitelist" or action == "catalog") and field == "reload" then return auditFieldText("reload") end
     if action == "whitelist" then
-        if field == "reload" then return auditFieldText("reload") end
         if field == "category" then return itemCategoryName(raw) end
         return itemName(raw)
     end
@@ -1048,14 +1026,105 @@ local function auditTargetText(action, field, target)
 end
 
 -- The change column for the structural actions (whitelist / catalog / terminal): "field: before
--- -> after", or the field name alone when the action carries no value pair (a file reload).
--- The money actions keep their signed amount and config keeps its own value pair.
+-- -> after", or the field name alone when the action carries no value pair (a file reload). A
+-- catalog / whitelist line written as facts is worded by U.catalogAuditText first. The money
+-- actions keep their signed amount and config keeps its own value pair.
 local function auditChangeText(e)
+    local structured = U.catalogAuditText(e)
+    if structured ~= nil then return structured end
     local field = e.field
     if field == nil or field == "" then return nil end
     local before, after = auditValueText(e.before), auditValueText(e.after)
     if before == nil and after == nil then return auditFieldText(field) end
     return getText(T .. "Admin_Audit_Change", auditFieldText(field), before or "-", after or "-")
+end
+
+-- ---------- structured audit lines: config, integration plans and sources ----------
+--
+-- These actions write the field's code and the two values; every word shown for them comes from
+-- the translation files. A field this build does not know reads as the shared "unknown" word and
+-- the code goes to the log.
+
+-- currency settings (admin.config with a currency id); a runtime option names its sandbox key
+local CONFIG_FIELD = { nameOverride = "Admin_Audit_Config_nameOverride", enabled = "Admin_Audit_Config_enabled",
+    directTransfer = "Admin_Cur_Transfer", iconHash = "Admin_Audit_Config_iconHash",
+    balanceMax = "Admin_Audit_Config_balanceMax", exchange = "Admin_Audit_Config_exchange" }
+
+local function configTargetText(e)
+    local field = tostring(e.field or e.target or "-")
+    if e.currency == "options" then
+        return getTextOrNull("Sandbox_MinidoracatEconomy_" .. field) or U.unknownText("sandbox option", field)
+    end
+    local key = CONFIG_FIELD[field]
+    return key and tr(key) or U.unknownText("config field", field)
+end
+
+local function configChangeText(e)
+    local spec = e.currency == "options" and EC.OPTION_BY_KEY[tostring(e.field)] or nil
+    local function value(v)
+        if spec ~= nil and v ~= nil then return optionValueText(spec, v) end
+        return configValueText(v)
+    end
+    return value(e.before) .. " > " .. value(e.after)
+end
+
+-- One integration plan field: its label on the plan cards, qualified by the card it is on.
+local PLAN_FIELD = {
+    permanentEnabled = { "Ent_Open", "Ent_CardPermanent" },
+    permanentCurrency = { "Admin_Col_Currency", "Ent_CardPermanent", currency = true },
+    permanentPrice = { "Ent_L_UnitPrice", "Ent_CardPermanent" },
+    permanentLimit = { "Ent_L_Limit", "Ent_CardPermanent" },
+    rentalEnabled = { "Ent_Open", "Ent_CardRental" },
+    rentalCurrency = { "Admin_Col_Currency", "Ent_CardRental", currency = true },
+    rentalPrice = { "Ent_L_UnitPrice", "Ent_CardRental" },
+    rentalLimit = { "Ent_L_RentalLimit", "Ent_CardRental" },
+    rentalDays = { "Ent_L_PeriodDays", "Ent_CardRental" },
+    graceHours = { "Ent_L_GraceHours", "Ent_CardRental" },
+    reminderHours = { "Ent_L_ReminderHours", "Ent_CardRental" },
+    autoRenewAllowed = { "Ent_L_AutoRenew", "Ent_CardRental" },
+}
+-- an integration source's own settings (ECIntegration.setSource)
+local SOURCE_FIELD = { dailyMintCap = "Admin_Src_MintCap", dailyBurnCap = "Admin_Src_BurnCap",
+    enabled = "Admin_Src_Col_Enabled", allowTransfer = "Admin_Src_Transfer" }
+
+local function structuredValue(v, currency, unlimited)
+    if v == nil then return unlimited and tr("Admin_Src_Unlimited") or "-" end
+    if type(v) == "boolean" then return tr(v and "Admin_On" or "Admin_Off") end
+    if currency then return currencyName(tostring(v)) end
+    if type(v) == "number" then return amountText(v) end
+    return tostring(v)
+end
+
+-- The change column of an entitlement.plan / source line; nil for any other action.
+local function structuredChangeText(action, e)
+    local field = tostring(e.field or "")
+    local label, currency, unlimited
+    if action == "entitlement.plan" then
+        local spec = PLAN_FIELD[field]
+        if spec == nil then
+            label = U.unknownText("plan field", field)
+        else
+            label = getText(T .. "Admin_Audit_FieldCur", tr(spec[1]), tr(spec[2]))
+            currency = spec.currency == true
+        end
+    elseif action == "source" then
+        local key = SOURCE_FIELD[field]
+        label = key and tr(key) or U.unknownText("source field", field)
+        unlimited = field == "dailyBurnCap"
+    else
+        return nil
+    end
+    return getText(T .. "Admin_Audit_Change", label, structuredValue(e.before, currency, unlimited),
+        structuredValue(e.after, currency, unlimited))
+end
+
+-- Who did it: a plan the source mod changed from its settings file or by itself names where it
+-- came from; the server's own sentinels are translated; a person's account stays as it is.
+local function auditActorText(action, e)
+    if action == "entitlement.plan" and (e.origin == "file" or e.origin == "source") then
+        return tr("Ent_Origin_" .. e.origin)
+    end
+    return U.actorText(e.admin or "-")
 end
 
 -- ---------- one player's market history (admin.marketHistory) ----------
@@ -1397,14 +1466,14 @@ function Dialog:updateInfo()
         local rec = self.recovery
         if rec ~= nil then
             info[#info + 1] = { text = tostring(rec.headText or rec.key or "-") }
-            info[#info + 1] = { text = "key " .. tostring(rec.key or "-"), token = "textFaint" }
-            info[#info + 1] = { text = "revision " .. tostring(rec.revision or "-"), token = "textFaint" }
+            info[#info + 1] = { text = getText(T .. "Admin_Tx_Pair", tr("Admin_Rec_Key"), tostring(rec.key or "-")), token = "textFaint" }
+            info[#info + 1] = { text = getText(T .. "Admin_Tx_Pair", tr("Common_Revision"), tostring(rec.revision or "-")), token = "textFaint" }
         end
     elseif self.mode == "season" then
         -- the season this rotation replaces, spelled out inside the confirmation: the command
         -- carries that exact id, so a host reads the identity they are authorising instead of
         -- trusting the button to have picked the right one
-        info[#info + 1] = { text = "season " .. tostring(self.seasonExpected or "-"), token = "textFaint" }
+        info[#info + 1] = { text = getText(T .. "Admin_Tx_Pair", tr("Field_season"), tostring(self.seasonExpected or "-")), token = "textFaint" }
     elseif self.hintText and self.mode == "option" then
         info[#info + 1] = { text = self.hintText, token = "textFaint" }
     end
@@ -1741,7 +1810,9 @@ end
 
 local Admin = ISPanel:derive("MinidoracatEconomyAdminPanel")
 
-local function marketKindLabel(kind) return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or tostring(kind) end
+local function marketKindLabel(kind)
+    return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or U.unknownText("market kind", kind)
+end
 
 -- One of this page's local filter rows (UI.FilterBar, rev 11): single-select kind chips that
 -- page with < > when they overflow, the day range, the sort chips and the inline page chips on
@@ -2645,7 +2716,8 @@ function Admin:rebuildAuditActors()
     filterCloseCombo(combo)
     combo:clear()
     combo:addOptionWithData(tr("Filter_All"), "")
-    for _, name in ipairs(names) do combo:addOptionWithData(name, name) end
+    -- the data is the exact name the read filters by; the label translates the server's sentinels
+    for _, name in ipairs(names) do combo:addOptionWithData(U.actorText(name), name) end
     -- the box is what the read is built from: the combo only follows it
     local wanted = self.auditActor or ""
     local width = 140
@@ -2764,7 +2836,7 @@ function Admin:buildAuditDetail(refreshOnly)
     local d = self.auditSelected
     if d == nil then return end
     local body = d.actionText .. " / " .. d.targetText
-    if d.rawTarget ~= d.targetText then body = body .. "\n" .. d.rawTarget end
+    if d.rawShown and d.rawTarget ~= d.targetText then body = body .. "\n" .. d.rawTarget end
     body = body .. "\n" .. d.adminName .. " / " .. d.stamp .. "\n" .. d.changeFull
     if d.txId ~= nil then body = body .. "\n" .. getText(T .. "Admin_Rcpt_Tx", tostring(d.txId)) end
     body = body .. "\n" .. getText(T .. "Admin_Audit_ReasonLine", d.reasonFull)
@@ -2873,7 +2945,8 @@ function Admin:refreshCurrencyReader(id, def)
             local status = self.icons and self.icons[def.id]
             if status and status.error then
                 local code = tostring(status.error)
-                lines[#lines + 1] = getText(T .. "Admin_Cur_IconError", getTextOrNull(T .. "Admin_IconErr_" .. code) or code)
+                lines[#lines + 1] = getText(T .. "Admin_Cur_IconError", getTextOrNull(T .. "Admin_IconErr_" .. code)
+                    or U.unknownText("icon error", code))
             end
             local ex = def.exchange
             if type(ex) == "table" then
@@ -2954,7 +3027,7 @@ function Admin:refreshSourceReader(selected)
         if not selected then
             lines[1] = waiting and tr("Admin_Loading") or tr("Admin_Src_Empty")
         else
-            addReaderLine(lines, tr("Admin_Src_Name"), sourceName(selected))
+            addReaderLine(lines, tr("Admin_Src_Name"), C.AdminEntitlements.sourceName(selected))
             addReaderLine(lines, tr("Admin_Src_RegisteredAt"), selected.registeredAt and stampText(tonumber(selected.registeredAt) or 0, self.offsetMin) or "-")
             local today = selected.today or {}
             addReaderLine(lines, tr("Admin_Src_Col_Mint"), amountText(today.mint or 0) .. " / " .. amountText(selected.dailyMintCap or 0))
@@ -3008,18 +3081,11 @@ function Admin:refreshSystemReader()
                     stampText(gaps[1].at, self.offsetMin))
             end
             local cat = type(sys.catalog) == "table" and sys.catalog or {}
-            -- the catalog now names its failure with a code (file_unreadable / catalog_invalid /
-            -- arbitrage_rejected / file_write_failed) plus the file's own text; the code is
-            -- translated and the detail is appended, and an older reply that only carried
-            -- `error` still reads
+            -- the catalog names its failure with a code (file_unreadable / catalog_invalid /
+            -- arbitrage_rejected / file_write_failed) plus what the file got wrong, both worded here
             local catError = nil
             if type(cat.errorCode) == "string" and cat.errorCode ~= "" then
-                catError = errorText(cat.errorCode)
-                if type(cat.errorDetail) == "string" and cat.errorDetail ~= "" then
-                    catError = catError .. ": " .. cat.errorDetail
-                end
-            elseif type(cat.error) == "string" and cat.error ~= "" then
-                catError = cat.error
+                catError = U.fileErrorText(cat.errorCode, cat.errorDetail)
             end
             addReaderLine(lines, tr("Admin_Sys_Catalog"),
                 catError or getText(T .. "Admin_Shop_Count", tostring(cat.count or 0)))
@@ -3072,7 +3138,9 @@ function Admin:refreshSystemReader()
             end
             local whitelist = type(sys.whitelist) == "table" and sys.whitelist or {}
             local counts = type(whitelist.counts) == "table" and whitelist.counts or {}
-            addReaderLine(lines, tr("Admin_Sys_Whitelist"), whitelist.error and whitelist.error ~= "" and whitelist.error or tostring(counts.categories or 0))
+            local wlError = type(whitelist.errorCode) == "string" and whitelist.errorCode ~= ""
+                and U.fileErrorText(whitelist.errorCode, whitelist.errorDetail) or nil
+            addReaderLine(lines, tr("Admin_Sys_Whitelist"), wlError or tostring(counts.categories or 0))
             addReaderLine(lines, tr("Admin_Sys_Size"), sizeText(sys.sizeEstimate))
             if type(sys.sizeParts) == "table" then
                 lines[#lines + 1] = getText(T .. "Admin_Sys_SizeParts", sizeText(sys.sizeParts.ledger), sizeText(sys.sizeParts.admin))
@@ -4123,7 +4191,7 @@ function Admin:openRecoveryDialog(rec)
     end
     local dlg = self:openDialog("recovery", {
         title = getTextOrNull(T .. "Admin_Rec_Title_" .. decision) or tr("Admin_Rec_List"),
-        confirm = getTextOrNull(T .. "Admin_Rec_Do_" .. decision) or decision,
+        confirm = getTextOrNull(T .. "Admin_Rec_Do_" .. decision) or U.unknownText("recovery decision", decision),
         warn = warn,
         recovery = rec,
         requireAccept = rec.unproven == true,
@@ -4154,7 +4222,7 @@ function Admin:openRecoveryBatchDialog(ctx)
     warn = warn .. "  " .. tr("Admin_Rec_BatchTargets") .. "  " .. table.concat(targets, "  |  ")
     return self:openDialog("recoveryBatch", {
         title = getTextOrNull(T .. "Admin_Rec_Title_" .. decision) or tr("Admin_Rec_List"),
-        confirm = getTextOrNull(T .. "Admin_Rec_Do_" .. decision) or decision,
+        confirm = getTextOrNull(T .. "Admin_Rec_Do_" .. decision) or U.unknownText("recovery decision", decision),
         warn = warn,
         recoveryBatch = ctx,
     })
@@ -5011,14 +5079,15 @@ function Admin:onReply(kind, args)
         if mine then
             self.pendingCatalog = nil
             if not args.ok then
-                -- catalog_invalid carries the file's own parse error: the code alone would not
-                -- tell the host which line to go and fix
-                local body = errorText(args.error)
-                if type(args.detail) == "string" and args.detail ~= "" then body = body .. ": " .. args.detail end
-                -- a refused removal names the one id that stopped the whole list
+                -- a refused reload's `detail` (and an arbitrage pair in `extra`) says what the
+                -- file got wrong: the code alone would not tell the host which line to go and fix
                 local extra = type(args.extra) == "table" and args.extra or nil
-                if req and req.action == "remove" and extra and type(extra.id) == "string" then
-                    body = body .. " (" .. extra.id .. ")"
+                local failure = type(args.detail) == "table" and args.detail
+                    or (extra ~= nil and extra.code ~= nil and extra) or nil
+                local body = U.fileErrorText(args.error, failure)
+                -- a refused removal names the one id that stopped the whole list
+                if failure == nil and req and req.action == "remove" and extra and type(extra.id) == "string" then
+                    body = getText(T .. "Admin_Shop_ErrorAt", body, extra.id)
                 end
                 self:dialogError(self.dialog, body)
             elseif req and req.action == "reload" then
@@ -5094,8 +5163,7 @@ function Admin:onReply(kind, args)
             if not args.ok then
                 -- whitelist_invalid carries the file's own parse error: the code alone would not
                 -- tell the host which line to go and fix
-                local body = errorText(args.error)
-                if type(args.detail) == "string" and args.detail ~= "" then body = body .. ": " .. args.detail end
+                local body = U.fileErrorText(args.error, args.detail)
                 self.message = { text = body, error = true }
             elseif req and req.action == "reload" then
                 self.message = { text = tr("Admin_Wl_Reloaded") }
@@ -5472,11 +5540,17 @@ function Admin:rebuildAudit()
             local action = tostring(e.action or "?")
             local keep = not fromFile or e.rolledBack == true
             local target = e.target or e.field or "-"
-            local targetText = auditTargetText(action, e.field, target)
+            local targetText = action == "config" and configTargetText(e) or auditTargetText(action, e.field, target)
             local delta = tonumber(e.delta)
             local change, changeToken
+            local structured = structuredChangeText(action, e)
             if action == "config" then
-                change = configValueText(e.before) .. " > " .. configValueText(e.after)
+                change = configChangeText(e)
+                changeToken = "text"
+            elseif structured ~= nil then
+                change, changeToken = structured, "text"
+            elseif action == "entitlement.refund" then
+                change = e.amount ~= nil and amountText(tonumber(e.amount) or 0) or "-"
                 changeToken = "text"
             elseif action == "ACCOUNT_MERGE_PASS" then
                 -- one line per merge pass (the ring cannot hold one per alias): `after` is the count
@@ -5487,8 +5561,9 @@ function Admin:rebuildAudit()
                 changeToken = delta >= 0 and "positive" or "negative"
             else
                 -- the structural actions (whitelist / catalog / terminal) name a field, not money
-                change = auditChangeText(e)
-                -- a reconciliation line names what it moved: the key alone is an operation id
+                -- a reconciliation line is worded by the recovery page from its decision code and
+                -- facts (C.AdminRecovery.auditChangeText); the key alone is an operation id
+                change = action == "recovery" and C.AdminRecovery.auditChangeText(e) or auditChangeText(e)
                 if action == "recovery" and type(e.item) == "string" and e.item ~= "" then
                     local qty = tonumber(e.qty)
                     local item = getText(T .. "Admin_Rcpt_Item", itemName(e.item),
@@ -5498,13 +5573,16 @@ function Admin:rebuildAudit()
                 changeToken = change and "text" or "textFaint"
                 change = change or "-"
             end
-            local reason = tostring(e.reason or "-")
+            -- a refused companion export carries no admin reason: its own detail (code and facts)
+            -- is why it was refused, worded the way the identity page words it
+            local reason = e.reason ~= nil and tostring(e.reason)
+                or (action == "IDENTITY_EXPORT_REJECTED" and C.AdminIdentity.exportDetailText(e.detail)) or "-"
             local txId = tostring(e.txId or "-")
-            local admin = tostring(e.admin or "-")
+            local admin = auditActorText(action, e)
             local actionText = auditActionText(action)
             local stamp = stampText(e.ts, self.offsetMin)
             if keep and q then
-                local hay = string.lower(admin .. " " .. action .. " " .. actionText .. " "
+                local hay = string.lower(admin .. " " .. tostring(e.admin or "") .. " " .. action .. " " .. actionText .. " "
                     .. tostring(target) .. " " .. targetText .. " " .. reason .. " " .. txId)
                 keep = string.find(hay, q, 1, true) ~= nil
             end
@@ -5513,7 +5591,7 @@ function Admin:rebuildAudit()
                 matched[#matched + 1] = { action = action, ts = tonumber(e.ts) or 0, row = {
                     cells = {
                         stamp, admin, actionText, targetText,
-                        e.currency and currencyName(e.currency) or "-", change, reason, txId,
+                        (e.currency ~= nil and e.currency ~= "options") and currencyName(e.currency) or "-", change, reason, txId,
                     },
                     tokens = { "textMuted", "text", "text", "text", "textMuted", changeToken, "textMuted", "textFaint" },
                     muted = e.rolledBack == true,
@@ -5530,6 +5608,9 @@ function Admin:rebuildAudit()
                     key = rowKey, month = e.month,
                     full = e.full == true, source = tostring(e.source or "ring"),
                     rawTarget = tostring(target), targetText = targetText, actionText = actionText,
+                    -- the raw target is printed only when it is an id an admin can use (a fullType,
+                    -- a SKU, an account); a field code or the "file" sentinel is never shown
+                    rawShown = action ~= "config" and action ~= "ACCOUNT_MERGE_PASS" and target ~= "file",
                     adminName = admin, stamp = stamp, changeFull = change, reasonFull = reason,
                     txId = e.txId, item = e.item,
                     -- only the SYSTEM line of a login reclaim carries the id a restore needs
@@ -5667,7 +5748,7 @@ function Admin:rebuildSettings()
         local chipH = math.max(20, fontH.small + 6)
         local valueY = math.floor((list.rowHeight - fontH.small) / 2)
         for _, spec in ipairs(EC.OPTIONS) do
-            local name = getTextOrNull("Sandbox_MinidoracatEconomy_" .. spec.key) or spec.key
+            local name = getTextOrNull("Sandbox_MinidoracatEconomy_" .. spec.key) or U.unknownText("sandbox option", spec.key)
             local desc = getTextOrNull("Sandbox_MinidoracatEconomy_" .. spec.key .. "_tooltip") or ""
             local take
             if query then
@@ -5833,7 +5914,7 @@ end
 -- exactly like the wallet's own receipt rows.
 function Admin:auctionHistoryRow(rec, lh, width)
     local kind = tostring(rec.kind or "?")
-    local head = getTextOrNull(T .. "Market_Kind_" .. kind) or kind
+    local head = marketKindLabel(kind)
     if type(rec.item) == "string" and rec.item ~= "" then
         head = head .. "  " .. itemName(rec.item)
         -- an old auction.bid line carries no qty: say nothing rather than invent a lot size
@@ -5856,7 +5937,7 @@ function Admin:auctionHistoryRow(rec, lh, width)
     if type(rec.previous) == "string" and rec.previous ~= "" then
         meta = meta .. " / " .. getText(T .. "Auction_History_Previous", rec.previous)
     end
-    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. rec.reason end
+    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. U.marketReasonText(rec.reason) end
     local rolled = rec.rolledBack == true
     local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
     -- a line with no price (a flow-back, a cancel, an old event that never carried one) shows no
@@ -5927,13 +6008,13 @@ end
 function Admin:historyRow(rec, lh, width)
     local kind = tostring(rec.kind or "?")
     local qty = math.max(1, math.floor(tonumber(rec.qty) or 1))
-    local head = (getTextOrNull(T .. "Market_Kind_" .. kind) or kind) .. "  " .. itemName(rec.item)
+    local head = marketKindLabel(kind) .. "  " .. itemName(rec.item)
     if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
     local meta = stampText(rec.ts, self.offsetMin)
     if type(rec.other) == "string" and rec.other ~= "" then
         meta = meta .. " / " .. getText(T .. "Market_History_Other", rec.other)
     end
-    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. rec.reason end
+    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. U.marketReasonText(rec.reason) end
     local rolled = rec.rolledBack == true
     local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
     local amountLabel = amountText(rec.price)
@@ -7010,7 +7091,7 @@ function Admin:refreshPlayerStatus()
             -- the very sentence the player is shown instead of a second explanation of it
             local code = rewards.blockedReason
             lines[#lines + 1] = getText(T .. "Admin_Player_Blocked",
-                getTextOrNull(T .. "Rewards_Error_" .. code) or code)
+                getTextOrNull(T .. "Rewards_Error_" .. code) or U.unknownText("rewards blocked", code))
         end
         if rewards.nextResetMs then lines[#lines + 1] = getText(T .. "Admin_Player_NextReset", stampText(rewards.nextResetMs, self.offsetMin)) end
         local done, total = 0, 0
@@ -7033,7 +7114,8 @@ function Admin:refreshPlayerStatus()
         -- card uses (ECPanel rewards lines), so the two never describe one failure differently.
         local survivalError = rewards.survivalError
         if survivalError ~= nil then
-            lines[#lines + 1] = getText(T .. "Season_SurvivalFailed", tostring(survivalError))
+            lines[#lines + 1] = getText(T .. "Season_SurvivalFailed", getTextOrNull(T .. "Rewards_Error_" .. tostring(survivalError))
+                or U.unknownText("survival error", survivalError))
         else
             local seasonKnown = rewards.survivalKnown == true
             lines[#lines + 1] = getText(T .. "Rewards_SeasonSurvived",

@@ -9,8 +9,10 @@ command and the server's 500 ms window respected, every caller's callback kept, 
 never overwriting a newer snapshot, a timeout reported as unknown without a re-send (keeping the
 quote / order identity), a late answer updating the cache without a second callback, public
 refresh signals, the one shared reading of an order lookup (instant products included), rental
-ids checked locally and carried on quote / auto-renew, and the admin page's read-only plan
-overview, refund transport and rentals view.
+ids checked locally and carried on quote / auto-renew, an error code never reaching the screen,
+and the admin integration page: order content / status / auto-renew reason / rental line /
+refund dialog / settings file problem wording, the order list's pages and player filter, and a
+refund sent once with its reason.
 ]]
 
 local MEDIA = os.getenv("EC_LUA_ROOT") or "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
@@ -34,10 +36,16 @@ function getPlayer() return { name = "tester" } end
 function sendClientCommand(_, module, command, args)
     sent[#sent + 1] = { module = module, command = command, args = args }
 end
-function getText(key, a, b) return key .. (a and ("|" .. tostring(a)) or "") .. (b and ("|" .. tostring(b)) or "") end
-function getTextOrNull(key)
-    if string.find(key, "Ent_State_active", 1, true) then return "Active" end
-    return nil
+function getText(key, ...)
+    local out = key
+    for i = 1, select("#", ...) do out = out .. "|" .. tostring(select(i, ...)) end
+    return out
+end
+-- keys this client "has": a value is formatted like getText (arguments appended)
+local known = { ["IGUI_MinidoracatEconomy_Ent_State_active"] = "Active" }
+function getTextOrNull(key, ...)
+    if known[key] == nil then return nil end
+    return getText(known[key], ...)
 end
 
 Events = {
@@ -289,7 +297,24 @@ end)()
         "a consent timeout keeps its rental id")
 end)()
 
--- ---------- real admin page state machine, with rendering and engine controls replaced ----------
+-- ---------- an error code never reaches the screen ----------
+;(function()
+    known["IGUI_MinidoracatEconomy_Ent_Error_limit_reached"] = "LIMIT"
+    check(E.errorText("limit_reached") == "LIMIT", "a known error code reads as its sentence")
+    check(E.errorText("made_up_code") == "IGUI_MinidoracatEconomy_Ent_Error_unknown",
+        "an error code without a sentence is shown as the unknown-error sentence, not as the code")
+    known["IGUI_MinidoracatEconomy_Ent_Error_limit_reached"] = nil
+end)()
+
+-- ---------- an entitlement value the files do not know is not shown raw ----------
+;(function()
+    check(E.stateText("active") == "Active", "a known entitlement state reads as its word")
+    check(E.stateText("made_up_state") == "IGUI_MinidoracatEconomy_Common_Unknown"
+        and E.autoRenewText("weird") == "IGUI_MinidoracatEconomy_Common_Unknown",
+        "an entitlement state or auto-renew value without a translation reads as the unknown word, not its code")
+end)()
+
+-- ---------- the admin integration page, with rendering and engine controls replaced ----------
 ;(function()
     local classes = {}
     ISPanel = {
@@ -301,169 +326,330 @@ end)()
         end,
     }
     package.loaded["ISUI/ISPanel"] = true
-    C.UI = { PAD = 8, T = "IGUI_MinidoracatEconomy_", CARD_TITLE_H = 28,
+    package.loaded["MinidoracatEconomy/ECRowActions"] = true
+    package.loaded["MinidoracatEconomy/ECDetailWindow"] = true
+    local details = {}
+    C.DetailWindow = {
+        open = function(owner, key, title, value) details[#details + 1] = { owner = owner, key = key, title = title, value = value } end,
+        update = function() return false end,
+        close = function(owner) details.closedBy = owner end,
+    }
+    local rowTargets = {}
+    C.RowActions = { targets = function() return rowTargets end }
+    local dialogs = {}
+    local function noop() end
+    C.UI = { PAD = 8, T = "IGUI_MinidoracatEconomy_", CARD_TITLE_H = 28, STAMP_SAMPLE = "0000-00-00 00:00",
         fontH = { small = 16, medium = 20 }, amountText = tostring, currencyName = C.currencyName,
-        stampText = function(ms) return "t" .. tostring(ms) end, wrapText = function(s) return { s } end }
+        stampText = function(ms) return "t" .. tostring(ms) end, wrapText = function(s) return { s } end,
+        textWidth = function(s) return #tostring(s) end, fitText = function(s) return s end,
+        text = noop, textRight = noop, card = noop, theme = {},
+        framework = { Dialog = {
+            show = function(opts) dialogs[#dialogs + 1] = opts; return { n = #dialogs } end,
+            close = noop } } }
     MinidoracatEconomy.sortSafe = function(list, lt) table.sort(list, lt) end
     dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminEntitlements.lua")
+    local A = C.AdminEntitlements
     local Page = classes.MinidoracatEconomyAdminEntPage
+    local T = "IGUI_MinidoracatEconomy_"
+    local function has(s, part) return type(s) == "string" and string.find(s, part, 1, true) ~= nil end
+    -- the order status words this client has (an unknown status is the unknown word, tested above)
+    known[T .. "Ent_OrderStatus_paid"], known[T .. "Ent_OrderStatus_refunded"] = "paid", "refunded"
 
-    local function noop() end
-    local function control()
-        return {
-            setEnabled = function(self, enabled) self.enabled = enabled end,
-            setTitle = noop, setStyle = noop,
-            setText = function(self, value) self.value = value end,
-            getText = function(self) return self.value or "" end,
-            getIsVisible = function() return true end,
-        }
+    -- what an order bought, and its status
+    check(A.contentText({ kind = "permanent", quantity = 2 }) == T .. "Ent_Content_Permanent|2",
+        "a bought-outright order names its slots")
+    check(A.contentText({ kind = "rental", quantity = 1, rentalNo = 2 }) == T .. "Ent_Content_New|2|1",
+        "a new rental names its place and slots")
+    check(A.contentText({ kind = "rental", quantity = 2, rentalNo = 1, renewal = true }) == T .. "Ent_Content_Renewal|1|2",
+        "a renewal is a renewal")
+    check(A.contentText({ kind = "rental", quantity = 2, rentalNo = 1, renewal = true, auto = true })
+        == T .. "Ent_Content_Auto|1|2", "a scheduler renewal is an auto-renewal, not a plain renewal")
+    check(A.contentText({ kind = "rental", quantity = 1 }) == T .. "Ent_Content_NewGone|1",
+        "a rental the account no longer holds is named as removed")
+    local pending = { status = "paid", durable = { status = "pending" } }
+    check(A.statusText(pending, true) == "paid", "an instant product never shows a save state")
+    check(A.statusText(pending, false) == T .. "Ent_StatusUnsaved|paid", "a product that waits for the save says so")
+    check(A.statusText({ status = "paid", durable = { status = "confirmed" } }, false) == "paid",
+        "a saved order shows only its status")
+    check(A.statusText({ status = "refunded", durable = { status = "confirmed" }, refund = { durable = { status = "pending" } } }, false)
+        == T .. "Ent_StatusUnsaved|refunded"
+        and A.statusText({ status = "refunded", durable = { status = "pending" }, refund = { durable = { status = "confirmed" } } }, false)
+        == "refunded"
+        and A.statusText({ status = "refunded", durable = { status = "confirmed" }, refund = { durable = { status = "pending" } } }, true)
+        == "refunded",
+        "a refund shows its own save state, not the payment's; an instant product shows none")
+
+    -- the one real reason a rental's auto-renew is paused
+    local plan = { rentalEnabled = true, autoRenewAllowed = true, rentalPrice = 250, rentalCurrency = "survivor",
+        rentalDays = 7, rentalLimit = 5 }
+    local agreed = { price = 250, currency = "survivor", days = 7 }
+    local function tag(state, p, ent, terms)
+        local s, token = A.autoTag({ autoRenewState = state, autoTerms = terms or agreed }, p, ent or { rentalCommitted = 2 })
+        return s, token
     end
-    local function planEntry(extra)
-        local e = { sourceMod = SRC, productId = PROD, loaded = true, instant = true,
-            plan = { revision = 3, permanentEnabled = true, permanentCurrency = "survivor",
-                permanentPrice = 1000, permanentLimit = 10, rentalEnabled = false, rentalCurrency = "survivor",
-                rentalPrice = 250, rentalLimit = 5, rentalDays = 7, graceHours = 24, reminderHours = 12,
-                autoRenewAllowed = true },
-            lastChange = { actor = "admin1", origin = "file", at = 1234, reason = "Price update", revision = 3 },
-            source = { file = "Lua/MinidoracatVehicleManager/srv/paid-slots.json" } }
-        for k, v in pairs(extra or {}) do e[k] = v end
-        return e
+    check(tag("on", plan) == T .. "Ent_AutoTag_on" and select(2, tag("on", plan)) == "textMuted", "auto-renew on")
+    check(tag("off", plan) == T .. "Ent_AutoTag_off", "auto-renew off")
+    check(tag("paused_system", plan) == T .. "Ent_AutoTag_system" and select(2, tag("paused_system", plan)) == "warn",
+        "held by the server")
+    check(tag("paused_terms", plan, { rentalCommitted = 9 }, { price = 200, currency = "survivor", days = 7 })
+        == T .. "Ent_AutoTag_terms", "agreed terms that differ from the plan come first, even over the limit")
+    check(tag("paused_terms", plan, { rentalCommitted = 6 }) == T .. "Ent_AutoTag_limit", "over the rental limit")
+    local stopped = { rentalEnabled = false, autoRenewAllowed = true, rentalPrice = 250, rentalCurrency = "survivor",
+        rentalDays = 7, rentalLimit = 5 }
+    check(tag("paused_terms", stopped) == T .. "Ent_AutoTag_stopped", "the plan stopped renting")
+    local disallowed = { rentalEnabled = true, autoRenewAllowed = false, rentalPrice = 250, rentalCurrency = "survivor",
+        rentalDays = 7, rentalLimit = 5 }
+    check(tag("paused_terms", disallowed) == T .. "Ent_AutoTag_disallowed", "the plan does not allow auto-renew")
+    check(tag("paused_terms", nil) == T .. "Ent_AutoTag_paused", "no plan to compare: a plain pause, no invented reason")
+
+    -- rental lines: what is left in days, or hours below a day
+    local now = 1000000000
+    local line = A.rentalLine(1, { quantity = 2, state = "active", paidUntil = now + 7 * 86400000 + 3 * 3600000 }, now, 0)
+    check(line == T .. "Ent_RentalLine_active|1|2|t" .. tostring(now + 7 * 86400000 + 3 * 3600000) .. "|" .. T .. "Ent_Days|7",
+        "an active rental shows its end and whole days left")
+    check(has(A.rentalLine(1, { quantity = 2, state = "paused_terms", paidUntil = now + 5 * 3600000 }, now, 0),
+        T .. "Ent_Hours|5"), "under a day left is shown in hours")
+    check(A.rentalLine(2, { quantity = 1, state = "grace", paidUntil = now - 10, graceUntil = now + 900 }, now, 0)
+        == T .. "Ent_RentalLine_grace|2|1|t" .. tostring(now + 900), "a rental in grace shows the grace end")
+    check(A.rentalLine(3, { quantity = 1, state = "expired" }, now, 0) == T .. "Ent_RentalLine_expired|3|1", "expired")
+    check(A.rentalLine(4, { quantity = 1, state = "pending" }, now, 0) == T .. "Ent_RentalLine_pending|4|1",
+        "a new rental waiting for the save")
+
+    -- the settings file problem a source reports, in its own words or Economy's
+    known["IGUI_MVM_Paid_FileErr_invalid_plan"] = "VMDETAIL"
+    known["IGUI_MVM_Paid_Name_rentalLimit"] = "RentLimit"
+    check(A.problemText({ key = "IGUI_MVM_Paid_FileErr_invalid_plan", field = "IGUI_MVM_Paid_Name_rentalLimit",
+        ref = "rent.limit" }) == T .. "Ent_FileProblem|VMDETAIL|RentLimit|rent.limit",
+        "the source's sentence gets the field's name and the file key")
+    check(A.problemText({ key = "IGUI_MVM_Paid_FileErr_invalid_plan", field = "IGUI_Missing_Field", ref = "rent.limit" })
+        == T .. "Ent_FileProblem|VMDETAIL|rent.limit|rent.limit", "a field without a name falls back to the file key")
+    known["IGUI_MVM_Paid_FileErr_invalid_plan"], known["IGUI_MVM_Paid_Name_rentalLimit"] = nil, nil
+    local fallback = A.problemText({ key = "IGUI_MVM_Paid_FileErr_invalid_plan", ref = "rent.limit" })
+    check(fallback == T .. "Ent_FileProblem|" .. T .. "Ent_FileProblemGeneric|rent.limit" and not has(fallback, "FileErr"),
+        "without the source's translations: Economy's own sentence with the file key, never the code")
+    check(A.problemText({ key = "IGUI_MVM_Paid_FileErr_other" }) == T .. "Ent_FileProblem|" .. T .. "Ent_FileProblemPlain",
+        "no file key to show: the plain sentence")
+    check(A.problemText(nil) == nil, "no problem, no sentence")
+
+    -- the refund dialog says what goes back to whom and what happens to the slots
+    local function lines(o) return table.concat(A.refundLines(o, "bob", "CONTENT", 0), "\n") end
+    local permanent = lines({ kind = "permanent", quantity = 2, amount = 2000, currency = "survivor", at = 7,
+        refundEffect = "units" })
+    check(has(permanent, T .. "Ent_RefundLine|2000 cur:survivor|bob") and has(permanent, T .. "Ent_Pair|CONTENT|t7")
+        and has(permanent, T .. "Ent_Effect_units|2") and not has(permanent, "Ent_EffectAutoOff")
+        and has(permanent, T .. "Ent_NoUndo"), "a bought-outright refund takes the slots back and cannot be undone")
+    local previous = lines({ kind = "rental", quantity = 1, amount = 250, currency = "survivor", at = 7, rentalNo = 2,
+        refundEffect = "previous", previousUntil = 99 })
+    check(has(previous, T .. "Ent_Effect_previous|2|t99") and has(previous, T .. "Ent_EffectAutoOff"),
+        "a rental's latest period goes back to the previous one and its auto-renew closes")
+    check(has(lines({ kind = "rental", rentalNo = 2, refundEffect = "remove" }), T .. "Ent_Effect_remove|2"), "a rental is removed")
+    check(has(lines({ kind = "rental", refundEffect = "cancel" }), T .. "Ent_Effect_cancel"), "a waiting new rental is cancelled")
+    local money = lines({ kind = "rental", refundEffect = "money" })
+    check(has(money, T .. "Ent_Effect_money") and not has(money, "Ent_EffectAutoOff"),
+        "a removed rental's refund is money only, with no auto-renew to close")
+
+    -- source names: the registered key, else the display name, else the mod id
+    known["IGUI_MVM_SourceName"] = "Vehicle Manager"
+    check(A.sourceName({ sourceNameKey = "IGUI_MVM_SourceName", sourceMod = SRC }) == "Vehicle Manager", "the source's own key")
+    check(A.sourceName({ sourceNameKey = "IGUI_Not_Here", sourceName = { EN = "VM", CH = "VMCH" }, sourceMod = SRC }) == "VM",
+        "a key this client lacks falls back to the display name")
+    check(A.sourceName({ modId = "SomeMod" }) == "SomeMod", "nothing else: the mod id")
+
+    local function control()
+        return { setEnabled = function(self, on) self.enabled = on end, setText = function(self, v) self.value = v end,
+            getText = function(self) return self.value or "" end, getIsVisible = function(self) return self.visible ~= false end,
+            isFocused = function() return false end, _entry = {} }
+    end
+    local function list()
+        local l = control()
+        l.width, l.height, l.rowHeight, l.items = 600, 200, 30, {}
+        l.refundLabel = "REFUND"
+        l.setItems = function(self, items) self.items = items end
+        l.getSelectedItem = function() return nil end
+        l.setSelectedIndex = noop
+        l.resize = noop
+        return l
     end
     local function page()
-        local ioState = { sent = {}, pending = false, write = true }
+        local io = { sent = {}, pending = false, write = true }
         local p = setmetatable({
-            owner = { readAllowed = function() return true end, writeAllowed = function() return ioState.write end },
-            plans = { planEntry() }, section = "plans", view = "list", selKey = SRC .. "\1" .. PROD,
-            tabs = {}, layout = noop, unfocusAll = noop, invalidateKeyboard = noop,
-            rebuildPlanRows = noop, rebuildAccountRows = noop, getIsVisible = function() return true end,
-            isPending = function() return ioState.pending end,
-            newRequestId = function() return "admin-" .. (#ioState.sent + 1) end,
+            owner = { readAllowed = function() return true end, writeAllowed = function() return io.write end, offsetMin = 0 },
+            section = "accounts", tabs = control(), planList = list(), orderList = list(), accountField = control(),
+            lookupButton = control(), allButton = control(), moreButton = control(), idsToggle = control(), productChips = {},
+            rentalsButton = (function() local b = control(); b.visible = false; return b end)(),
+            layout = noop, invalidateKeyboard = noop, getIsVisible = function() return true end,
+            isPending = function() return io.pending end,
+            newRequestId = function() return "admin-" .. (#io.sent + 1) end,
             send = function(command, args)
-                ioState.sent[#ioState.sent + 1] = { command = command, args = args }
-                ioState.pending = true
+                io.sent[#io.sent + 1] = { command = command, args = args }
+                io.pending = true
                 return true
             end,
         }, Page)
-        for _, name in ipairs({ "planList", "planBox", "reasonField", "confirmButton", "backButton", "accountField",
-            "lookupButton", "refundButton" }) do p[name] = control() end
-        return p, ioState
+        return p, io
     end
-    local function receive(p, ioState, args)
-        if p:matchesReply(args) then ioState.pending = false end
+    local function receive(p, io, args)
+        if p:matchesReply(args) then io.pending = false end
         p:onReply(args)
     end
-    local function refund(p)
-        p.account = { username = "bob", entries = { { sourceMod = SRC, productId = PROD,
-            entitlement = {}, orders = { { orderId = "1:5", kind = "permanent", status = "paid" } } } } }
-        p.accountUser, p.entrySel, p.orderSel = "bob", 1, 1
-        p:onRefundReview()
-        p.reasonField:setText("Refund test")
-        p:onConfirm()
-        return p.sent
+    local function row(id, at, user, extra)
+        local r = { username = user or "bob", sourceMod = SRC, productId = PROD, orderId = id, at = at, kind = "permanent",
+            quantity = 1, amount = 500, currency = "survivor", status = "paid", instant = true, refundable = true,
+            refundEffect = "units" }
+        for k, v in pairs(extra or {}) do r[k] = v end
+        return r
     end
 
-    -- the plan overview: read-only, every term with its unit, the last change and the settings file
-    local p, ioState = page()
-    check(Page.onReview == nil and Page.setDraftValue == nil and Page.onApplyReply == nil and Page.onRecheck == nil,
-        "the plan page has no editor, apply or re-check left")
-    local text = p:overviewText(p.plans[1])
-    check(string.find(text, "Ent_D_Instant|IGUI_MinidoracatEconomy_Ent_Instant_Yes", 1, true) ~= nil
-        and string.find(text, "Ent_D_UnitPrice|1000 cur:survivor", 1, true) ~= nil
-        and string.find(text, "Ent_D_Limit|IGUI_MinidoracatEconomy_Ent_Slots|10", 1, true) ~= nil
-        and string.find(text, "Ent_D_PeriodPrice|250 cur:survivor", 1, true) ~= nil
-        and string.find(text, "Ent_D_PeriodDays|IGUI_MinidoracatEconomy_Ent_Days|7", 1, true) ~= nil
-        and string.find(text, "Ent_D_RentalLimit|IGUI_MinidoracatEconomy_Ent_Slots|5", 1, true) ~= nil
-        and string.find(text, "Ent_D_Reminder|IGUI_MinidoracatEconomy_Ent_Hours|12", 1, true) ~= nil
-        and string.find(text, "Ent_D_AutoRenewAllowed|IGUI_MinidoracatEconomy_Ent_Yes", 1, true) ~= nil,
-        "overview lists both sales with price, currency, limits, period and renewal terms")
-    check(string.find(text, "Ent_D_At|t1234", 1, true) ~= nil and string.find(text, "Ent_D_Actor|admin1", 1, true) ~= nil
-        and string.find(text, "Ent_D_Origin|file", 1, true) ~= nil
-        and string.find(text, "Ent_D_Reason|Price update", 1, true) ~= nil
-        and string.find(text, "Ent_D_File|Lua/MinidoracatVehicleManager/srv/paid-slots.json", 1, true) ~= nil,
-        "overview names when, who, from where and why the terms last changed, and the settings file")
-    local notices = p:overviewNotices(p.plans[1], 400)
-    check(#notices == 2 and notices[1].token == "textMuted" and notices[2].s == "IGUI_MinidoracatEconomy_Ent_ManagedBy",
-        "a healthy product shows no warning, only its ids and who manages the terms")
-    local broken = planEntry({ loaded = false, instant = false, source = { problem = "rent.price: invalid_plan" } })
-    broken.plan.provisional, broken.lastChange = true, nil
-    notices = p:overviewNotices(broken, 400)
-    check(#notices == 5 and notices[1].s == "IGUI_MinidoracatEconomy_Ent_FileProblem|rent.price: invalid_plan"
-        and notices[1].token == "warn" and notices[2].s == "IGUI_MinidoracatEconomy_Ent_Provisional"
-        and notices[3].s == "IGUI_MinidoracatEconomy_Ent_NotLoaded" and notices[3].token == "warn",
-        "a settings file problem, a provisional plan and an unloaded source are warned about, worst first")
-    text = p:overviewText(broken)
-    check(string.find(text, "Ent_Instant_No", 1, true) ~= nil and string.find(text, "Ent_NoFile", 1, true) ~= nil
-        and string.find(text, "Ent_D_Reason", 1, true) == nil and string.find(text, "Ent_D_Actor|-", 1, true) ~= nil,
-        "a non-instant product without a file or change record says so instead of inventing one")
-    p.section = "plans"
-    local targets = p:keyboardTargets()
-    check(#targets == 3 and targets[1].control == p.tabs and targets[2].control == p.planList
-        and targets[3].control == p.planBox and targets[3].kind == "scroll",
-        "the plan section's keyboard ring is the tabs, the product list and the terms reader only")
-    receive(p, ioState, { ok = true, plans = { planEntry({ instant = false }) } })
-    check(p.plans[1].instant == true, "a plans reply without the open requestId is ignored")
-
-    -- refunds: one send, a timeout never re-sends, a late answer cannot take the next read's slot
-    p, ioState = page()
-    local req = refund(p)
-    local args = ioState.sent[1] and ioState.sent[1].args or {}
-    check(req ~= nil and req.action == "refund" and args.action == "refund" and args.username == "bob"
-        and args.orderId == "1:5" and args.reason == "Refund test", "a confirmed refund sends exactly the reviewed order")
-    receive(p, ioState, { ok = true })
-    check(not req.answered and ioState.pending, "a reply without requestId cannot complete a refund")
-    ioState.pending = false
-    p:onTimeout()
-    local count = #ioState.sent
-    p:onConfirm()
-    check(req.timedOut and p.view == "list" and #ioState.sent == count, "a refund timeout closes the review and sends nothing again")
-    p.plansWanted = true
+    -- every account's orders, a page at a time; the cursor is the last row's time and id
+    local p, io = page()
+    p.ordersWanted = true
     p:tick(0)
-    local readId = p.sent.requestId
-    receive(p, ioState, { ok = true, requestId = req.requestId, entries = {} })
-    check(ioState.pending and p.sent.action == "plans" and p.sent.requestId == readId and not p.sent.answered,
-        "a late refund reply cannot consume the new read slot")
-    p, ioState = page()
-    req = refund(p)
-    ioState.pending, ioState.write = false, false
-    p:onCancelled(req.requestId)
-    check(req.answered and not req.timedOut and p.view == "list", "a cancelled unsent refund closes without an unknown outcome")
+    check(io.sent[1] and io.sent[1].args.action == "orders" and io.sent[1].args.before == nil,
+        "no filter: the page reads every account's orders from the top")
+    receive(p, io, { ok = true, requestId = io.sent[1].args.requestId, more = true,
+        orders = { row("1:3", 300), row("1:2", 200, "amy") } })
+    check(#p.orders.rows == 2 and p.orders.more == true and #p.orderList.items == 2, "the first page is shown")
+    check(p.orderRows[1].cells[2] == "bob" and #p.orderRows[1].cells == 5, "every account's list has a player column")
+    p:onMore()
+    local before = io.sent[2] and io.sent[2].args.before
+    check(before and before.at == 200 and before.id == "1:2", "show earlier asks after the last row shown")
+    receive(p, io, { ok = true, requestId = io.sent[2].args.requestId, more = false,
+        orders = { row("1:2", 200, "amy"), row("1:1", 100) } })
+    check(#p.orders.rows == 3 and p.orders.rows[3].orderId == "1:1" and p.orders.more == false,
+        "the next page is appended once, a repeated row is not doubled")
+    p:onMore()
+    check(#io.sent == 2, "nothing earlier left: show earlier sends nothing")
+    receive(p, io, { ok = true, requestId = "someone-else", orders = {} })
+    check(#p.orders.rows == 3, "a reply to another request changes nothing")
 
-    -- account view: every rental by creation order with its own terms; orders name their rental
-    -- and mark scheduler renewals
-    local entry = { sourceMod = SRC, productId = PROD, available = true,
-        plan = { revision = 1, rentalPrice = 250, rentalCurrency = "survivor", rentalDays = 7, graceHours = 24 },
-        entitlement = { revision = 4, state = "active", usable = 3, permanent = 0, rental = 3,
-            rentalCommitted = 3, rentalsMax = 10, rentals = {
-                { id = "1:10", quantity = 2, state = "active", paidUntil = 1000, graceUntil = 2000,
-                    autoRenew = true, autoRenewState = "on", termsRevision = 1,
-                    terms = { price = 250, amount = 500, currency = "survivor", days = 7, graceHours = 24 },
-                    autoTerms = { price = 250, currency = "survivor", days = 7 } },
-                { id = "1:11", quantity = 1, state = "grace", paidUntil = 500, graceUntil = 900,
-                    autoRenew = true, autoRenewState = "paused_terms", pendingOrderId = "1:12", autoPending = true,
-                    terms = { price = 250, amount = 250, currency = "survivor", days = 7, graceHours = 24 },
-                    autoTerms = { price = 200, currency = "survivor", days = 7 } } } } }
-    local out = {}
-    p:entryLines(out, entry)
-    local text = table.concat(out, "\n")
-    check(string.find(text, "Ent_RentalsCount|2|10", 1, true) ~= nil
-        and string.find(text, "Ent_RentalHead|1|2", 1, true) ~= nil
-        and string.find(text, "Ent_RentalHead|2|1", 1, true) ~= nil
-        and string.find(text, "1:12  IGUI_MinidoracatEconomy_Ent_AutoOrder", 1, true) ~= nil
-        and string.find(text, "t1000", 1, true) ~= nil and string.find(text, "t900", 1, true) ~= nil
-        and string.find(text, "Ent_RentTermsValue|250|2", 1, true) ~= nil
-        and string.find(text, "Ent_AutoTermsValue|200|cur:survivor", 1, true) ~= nil,
-        "account detail lists each rental with its slots, dates, terms, agreed terms and pending order")
-    check(select(2, string.gsub(text, "Ent_TermsDiffer", "")) == 1,
-        "only the consent agreed to another price is marked as differing from the plan")
-    out = {}
-    p:orderLines(out, { orderId = "1:12", kind = "renewal", status = "paid", rental = "1:11", auto = true }, entry.entitlement)
-    text = table.concat(out, "\n")
-    check(string.find(text, "Ent_RentalNo|2", 1, true) ~= nil and string.find(text, "Ent_AutoOrder", 1, true) ~= nil
-        and string.find(text, "auto: true", 1, true) == nil, "a scheduler renewal names rental #2 and is marked")
-    out = {}
-    p:orderLines(out, { orderId = "1:9", kind = "rental", status = "refunded", rental = "1:9" }, entry.entitlement)
-    check(string.find(table.concat(out, "\n"), "Ent_RentalGone", 1, true) ~= nil,
-        "an order of a pruned rental says the rental is gone")
+    -- a row filters the page to that player and product
+    p:onOrderRow(p.orderList.items[2])
+    local acc = io.sent[3] and io.sent[3].args
+    check(p.accountUser == "amy" and acc and acc.action == "account" and acc.username == "amy"
+        and p.accountField.value == "amy", "a row's player becomes the filter")
+    receive(p, io, { ok = true, requestId = acc.requestId, entries = {
+        { sourceMod = SRC, productId = "other_slot", orders = {} },
+        { sourceMod = SRC, productId = PROD, instant = false, plan = plan, entitlement = { usable = 1, rentals = {} },
+            orders = { row("1:4", 50, nil, { username = nil, durable = { status = "pending" } }),
+                row("1:5", 60, nil, { username = nil, durable = { status = "confirmed" }, refundable = false }) } } } })
+    check(p.entrySel == 2, "the filtered account opens on the product of the row that was picked")
+    check(#p.orderRows == 2 and p.orderRows[1].order.orderId == "1:5" and #p.orderRows[1].cells == 4,
+        "the account's orders: newest first, no player column")
+    check(p.orderRows[2].cells[4] == T .. "Ent_StatusUnsaved|paid" and p.orderRows[1].refundable == false,
+        "a product that waits for the save shows it; a row the server will not refund has no refund")
+    p:onAll()
+    check(p.accountUser == nil and io.sent[4] and io.sent[4].args.action == "orders" and io.sent[4].args.before == nil,
+        "all: back to every account, read again from the top")
+    receive(p, io, { ok = true, requestId = io.sent[4].args.requestId, orders = { row("1:3", 300),
+        row("1:9", 90, "amy", { productId = "other_slot", instant = false, durable = { status = "pending" } }) } })
+    check(p.orderRows[1].cells[5] == "paid" and p.orderRows[2].cells[5] == T .. "Ent_StatusUnsaved|paid",
+        "an instant product's row never shows a save state; a waiting product's does")
+    check(has(p.orderRows[1].cells[3], T .. "Ent_Pair|") and has(p.orderRows[1].cells[3], "Ent_Content_Permanent|1"),
+        "two products in one list: the content names its product")
+
+    -- the keyboard walks every control the accounts section shows, the row's own button included
+    rowTargets = { "refund-button" }
+    p.allButton.visible = false
+    local ring = p:keyboardTargets()
+    check(#ring == 7 and ring[1].control == p.tabs and ring[2].control == p.accountField._entry
+        and ring[3].control == p.lookupButton and ring[4].control == p.orderList and ring[5].controls == rowTargets
+        and ring[6].control == p.moreButton and ring[7].control == p.idsToggle,
+        "accounts: tabs, account box, look up, the list, the row's refund, show earlier, show IDs")
+    p.rentalsButton.visible = true
+    ring = p:keyboardTargets()
+    check(#ring == 8 and ring[4].control == p.rentalsButton, "the all-rentals button is on the keyboard ring when it is shown")
+    p.rentalsButton.visible = false
+
+    -- rentals the page has no room for open in the shared detail window, every one in full
+    local many = {}
+    for i = 1, 10 do
+        many[i] = { id = "r" .. i, quantity = 1, state = "expired", autoRenewState = i == 10 and "paused_system" or "off" }
+    end
+    local zoeEntry = { sourceMod = SRC, productId = PROD, plan = plan, entitlement = { rentals = many, rentalCommitted = 1 } }
+    local listing = A.rentalsText(zoeEntry, now, 0)
+    local lineCount = select(2, string.gsub(listing, "\n", "")) + 1
+    check(lineCount == 10 and has(listing, T .. "Ent_RentalLine_expired|10|1") and has(listing, T .. "Ent_AutoTag_system")
+        and has(listing, T .. "Ent_AutoTag_off"), "the full rental list has every rental, each with its auto-renew label")
+    local p2 = page()
+    p2.accountUser, p2.account, p2.entrySel = "zoe", { username = "zoe", entries = { zoeEntry } }, 1
+    p2.entryKey = SRC .. "\1" .. PROD
+    p2:onAllRentals()
+    local opened = details[#details]
+    check(opened ~= nil and opened.owner == p2 and opened.value == A.rentalsText(zoeEntry, MinidoracatEconomy.now(), 0)
+        and has(opened.title, "zoe"), "the all-rentals button opens the shared detail window on that account's rentals")
+    p2:onAll()
+    check(details.closedBy == p2, "leaving the account closes its rental list")
+    p.section = "plans"
+    ring = p:keyboardTargets()
+    check(#ring == 2 and ring[2].control == p.planList, "plans: the tabs and the product list only")
+    p.section = "accounts"
+
+    -- a refund: the dialog, a required reason, one send
+    io.pending = false
+    local target = p.orderRows[1]
+    p:openRefund(target)
+    local d = dialogs[#dialogs]
+    check(#dialogs == 1 and d.danger == true and d.input ~= nil and d.confirmText == T .. "Ent_RefundConfirm|500 cur:survivor"
+        and has(d.text, T .. "Ent_RefundLine|500 cur:survivor|bob") and has(d.text, T .. "Ent_Reason"),
+        "the refund dialog names the amount and the account and asks for a reason")
+    local count = #io.sent
+    d.onResult(true, "   ")
+    check(#io.sent == count and #dialogs == 2 and string.sub(dialogs[2].text, 1, #(T .. "Ent_ReasonMissing"))
+        == T .. "Ent_ReasonMissing", "a blank reason sends nothing and asks again, saying why first")
+    dialogs[2].onResult(true, "Player misclick")
+    local sentRefund = io.sent[count + 1] and io.sent[count + 1].args
+    check(#io.sent == count + 1 and sentRefund.action == "refund" and sentRefund.username == "bob"
+        and sentRefund.orderId == "1:3" and sentRefund.productId == PROD and sentRefund.reason == "Player misclick",
+        "the confirmed refund is sent once, for that order, with its reason")
+    d.onResult(true, "again")
+    check(#io.sent == count + 1, "a refund in flight is never sent a second time")
+    io.pending = false
+    p:onTimeout()
+    check(#io.sent == count + 1 and p.message.text == T .. "Ent_RefundTimeout", "a refund timeout re-sends nothing")
+    p:openRefund({ refundable = false, order = row("1:8", 1) })
+    check(#dialogs == 2, "a row the server will not refund opens nothing")
+    io.write = false
+    p:openRefund(target)
+    check(#dialogs == 2 and p.message.text == T .. "Ent_ReadOnly", "a read-only admin gets no refund dialog")
+    io.write = true
+    p:openRefund(target)
+    dialogs[#dialogs].onResult(true, "Second try")
+    local last = io.sent[#io.sent].args
+    receive(p, io, { ok = true, requestId = last.requestId })
+    check(p.ordersWanted == true and p.message.text == T .. "Ent_RefundDone|500 cur:survivor|bob",
+        "an answered refund says what went back and reads the list again")
+
+    -- the plan footer: when, where from, the admin only for an in-game change, why, and the file
+    known[T .. "Ent_Origin_admin"], known[T .. "Ent_Origin_file"] = "INGAME", "FILE"
+    local foot = p:planFooter({ lastChange = { at = 5, origin = "file", actor = "file", reason = "r1" },
+        source = { file = "Lua/x/paid-slots.json" } })
+    check(#foot == 2 and foot[1] == T .. "Ent_Pair|" .. T .. "Ent_Pair|" .. T .. "Ent_FootChanged|t5|FILE|" .. T .. "Ent_FootReason|r1"
+        and foot[2] == T .. "Ent_FootFile|Lua/x/paid-slots.json", "a file change names no actor")
+    foot = p:planFooter({ lastChange = { at = 5, origin = "admin", actor = "alice" } })
+    check(#foot == 1 and has(foot[1], "INGAME|alice"), "an in-game change names the admin")
+    foot = p:planFooter({ lastChange = { at = 5, origin = "mystery", actor = "x" } })
+    check(has(foot[1], T .. "Ent_Origin_other") and not has(foot[1], "mystery"), "an unknown origin is not shown raw")
+
+    -- the identity page words the companion export's refusal from its code and facts
+    package.loaded["MinidoracatEconomy/ECDetailWindow"] = true
+    -- (the detail window stub from above stays in place)
+    C.UI.unknownText = function(_, code) return T .. "Common_Unknown" end
+    C.UI.adminErrorText = function(code) return "ERR:" .. tostring(code) end
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminIdentity.lua")
+    local Ident = C.AdminIdentity
+    for _, k in ipairs({ "rows", "bad_row", "open", "reserved" }) do
+        known[T .. "Admin_Id_ExportDetail_" .. k] = T .. "Admin_Id_ExportDetail_" .. k
+    end
+    check(Ident.exportDetailText({ code = "rows", rows = 8, count = 9 }) == T .. "Admin_Id_ExportDetail_rows|8|9"
+        and Ident.exportDetailText({ code = "bad_row", line = 3, field = "u" }) == T .. "Admin_Id_ExportDetail_bad_row|3|u"
+        and Ident.exportDetailText({ code = "reserved", skipped = 2, dropped = 1 }) == T .. "Admin_Id_ExportDetail_reserved|2|1"
+        and Ident.exportDetailText({ code = "open" }) == T .. "Admin_Id_ExportDetail_open",
+        "an export refusal is worded from its code, with the line, field and row counts as data")
+    check(Ident.exportDetailText({ code = "import_failed", error = "write_failed" })
+        == T .. "Admin_Id_ExportDetail_import_failed|ERR:write_failed"
+        and Ident.exportDetailText({ code = "never_heard_of" }) == T .. "Common_Unknown"
+        and Ident.exportDetailText("no trailer after 3 rows") == nil and Ident.exportDetailText(nil) == nil,
+        "an import failure names its error in words; an unknown code is the unknown word; a sentence is never echoed")
 end)()
 
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))

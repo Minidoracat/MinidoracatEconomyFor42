@@ -1249,7 +1249,10 @@ function D.transferError(args, currency)
         return getText(T .. "Transfer_Error_account_too_new", amountOrDash(C.option("TransferMinAccountDays")),
             U.stampText(tonumber(args.availableAt), U.localOffsetMinutes()))
     end
-    return getTextOrNull(T .. "Transfer_Error_" .. code) or getText(T .. "Transfer_Error_other", code)
+    local s = getTextOrNull(T .. "Transfer_Error_" .. code)
+    if s then return s end
+    U.logUnknown("transfer error", code)
+    return getText(T .. "Transfer_Error_other")
 end
 
 function TransferDialog:createChildren()

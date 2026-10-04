@@ -1052,7 +1052,8 @@ local function headerError(h)
 end
 
 -- One refusal: the status says why, and it is audited once per generatedAt (or once per status
--- when the header carried none). Nothing of the file is applied.
+-- when the header carried none). Nothing of the file is applied. `detail` is { code, ...facts }:
+-- the admin page words it (Admin_Id_ExportDetail_<code>), the server never sends a sentence.
 local function exportReject(status, detail, h)
     local gen = type(h) == "table" and whole(h.generatedAt, 1, 9007199254740991) and h.generatedAt or nil
     export = { status = status, generatedAt = gen, count = type(h) == "table" and tonumber(h.count) or nil,
@@ -1060,7 +1061,16 @@ local function exportReject(status, detail, h)
     local key = gen or status
     if rejectAudited[key] then return end
     rejectAudited[key] = true
-    audit("IDENTITY_EXPORT_REJECTED", "whitelist", status, nil, { generatedAt = gen, reason = detail })
+    -- the audit keeps the whole detail (a code and at most two short facts: a flat table the ring
+    -- copies and the files encode), so a later accepted export does not erase why this one failed
+    local kept = nil
+    if type(detail) == "table" then
+        kept = {}
+        for k, v in pairs(detail) do
+            if type(v) == "string" or type(v) == "number" then kept[k] = v end
+        end
+    end
+    audit("IDENTITY_EXPORT_REJECTED", "whitelist", status, nil, { generatedAt = gen, detail = kept })
 end
 
 local function rowError(st, r)
@@ -1080,35 +1090,41 @@ local function readLines(st, budget)
         while left == nil or left > 0 do
             local line = st.reader:readLine()
             if line == nil then
-                if st.ended then status = "ok" else status, detail = "truncated", "no trailer after " .. #st.rows .. " rows" end
+                if st.ended then status = "ok" else status, detail = "truncated", { code = "no_trailer", rows = #st.rows } end
                 return
             end
             if left ~= nil then left = left - 1 end
-            if st.ended then status, detail = "malformed", "a line after the trailer"; return end
+            if st.ended then status, detail = "malformed", { code = "after_trailer" }; return end
             local r = EC.jsonDecode(line)
-            local where = "line " .. tostring(#st.rows + 2)
-            if type(r) ~= "table" then status, detail = "malformed", where; return end
+            local where = #st.rows + 2
+            if type(r) ~= "table" then status, detail = "malformed", { code = "bad_line", line = where }; return end
             if r.type == "end" then
-                if r.count ~= st.header.count then status, detail = "malformed", "trailer count"; return end
-                if #st.rows ~= st.header.count then status, detail = "truncated", #st.rows .. " of " .. st.header.count .. " rows"; return end
+                if r.count ~= st.header.count then status, detail = "malformed", { code = "trailer_count" }; return end
+                if #st.rows ~= st.header.count then
+                    status, detail = "truncated", { code = "rows", rows = #st.rows, count = st.header.count }
+                    return
+                end
                 st.ended = true
             else
-                if #st.rows >= st.header.count then status, detail = "malformed", "more rows than count"; return end
+                if #st.rows >= st.header.count then status, detail = "malformed", { code = "too_many_rows" }; return end
                 local bad = rowError(st, r)
-                if bad then status, detail = "malformed", where .. ": " .. bad; return end
+                if bad then status, detail = "malformed", { code = "bad_row", line = where, field = bad }; return end
                 st.rows[#st.rows + 1] = { u = r.u, s = r.s, id = r.id }
                 st.digest = EC.hashUpdate(st.digest, line)
             end
         end
     end)
-    if not ok then return "unreadable", tostring(err) end
+    if not ok then
+        EC.log("companion whitelist export read failed: " .. tostring(err))
+        return "unreadable", { code = "read_error" }
+    end
     return status, detail
 end
 
 local function finishExport(st, status, detail, ms)
     pcall(function() st.reader:close() end)
     if status == "ok" and st.gen == markerGen and markerDigest ~= nil and st.digest ~= markerDigest then
-        status, detail = "replaced", "same generatedAt, other rows"
+        status, detail = "replaced", { code = "replaced" }
     end
     if status ~= "ok" then
         rejectedGen = st.gen      -- refused whole: not read again until a newer export
@@ -1120,7 +1136,7 @@ local function finishExport(st, status, detail, ms)
         gen = st.gen, count = #st.rows, digest = st.digest })
     if res == nil then
         -- our own file failed, not the export: the next poll tries again
-        export.reason = err
+        export.reason = { code = "import_failed", error = err }
         EC.log("companion whitelist export not applied: " .. tostring(err))
         return
     end
@@ -1129,7 +1145,7 @@ local function finishExport(st, status, detail, ms)
     for _, r in ipairs(st.rows) do wlIds[r.u] = r.id end
     export = { status = res.reserveSkipped and "reserve_suspect" or "accepted", generatedAt = st.gen,
         count = #st.rows, acceptedAt = ms,
-        reason = res.reserveSkipped and (tostring(res.reserveSkipped) .. " reservations skipped, " .. tostring(res.dropped) .. " rows dropped") or nil }
+        reason = res.reserveSkipped and { code = "reserved", skipped = res.reserveSkipped, dropped = res.dropped } or nil }
     imported(ms)
     announce(before)
 end
@@ -1147,14 +1163,22 @@ function Id.pollExport(ms, startup)
             -- missing says what an accepted export brought stays in effect: before one, it is none
             export = { status = export.acceptedAt ~= nil and "missing" or "none", acceptedAt = export.acceptedAt }
         else
-            exportReject("unreadable", "open")
+            exportReject("unreadable", { code = "open" })
         end
         return
     end
     local okLine, line = pcall(function() return reader:readLine() end)
     local h = okLine and type(line) == "string" and EC.jsonDecode(line) or nil
     local status, detail
-    if not okLine then status, detail = "unreadable", "header" else status, detail = headerError(h) end
+    if not okLine then
+        status, detail = "unreadable", { code = "read_error" }
+    else
+        local field
+        status, field = headerError(h)
+        if status ~= nil then
+            detail = field == "header" and { code = "bad_header" } or { code = "header_field", field = field }
+        end
+    end
     if status == nil and ((not startup and acceptedGen ~= nil and h.generatedAt <= acceptedGen) or h.generatedAt == rejectedGen) then
         pcall(function() reader:close() end)      -- unchanged, or refused whole already
         return

@@ -115,7 +115,7 @@ local function listRowH() return lineH() * 2 + 12 end
 local function chipH() return math.max(20, fontH.small + 6) end
 
 local function txGroupText(group)
-    return getTextOrNull(T .. "Admin_Tx_Group_" .. tostring(group)) or tostring(group)
+    return getTextOrNull(T .. "Admin_Tx_Group_" .. tostring(group)) or U.unknownText("tx group", group)
 end
 
 -- "120 倖存幣  3 貓幣": every currency on its own line of the same string, never a sum. The
@@ -156,7 +156,7 @@ local function txSourceName(d)
     if type(d.sourceMod) == "string" and d.sourceMod ~= "" then
         return accountName("MOD:" .. d.sourceMod)
     end
-    if type(d.actor) == "string" and d.actor ~= "" then return d.actor end
+    if type(d.actor) == "string" and d.actor ~= "" then return U.actorText(d.actor) end
     for _, account in ipairs(type(d.accounts) == "table" and d.accounts or {}) do
         local cls = EC.accountClass(account)
         if cls ~= nil and cls ~= "player" then return accountName(account) end
@@ -164,12 +164,12 @@ local function txSourceName(d)
     return "-"
 end
 
--- Every account of one transaction, by name and by raw key. Never fitted to a width: the readers
--- that show this wrap and scroll, and a cut account key is the one thing an audit cannot use.
+-- Every account of one transaction, by name. Never fitted to a width: the readers that show this
+-- wrap and scroll.
 local function txAccountsText(accounts)
     if type(accounts) ~= "table" or #accounts == 0 then return "-" end
-    local out = accountName(accounts[1], true)
-    for i = 2, #accounts do out = out .. ", " .. accountName(accounts[i], true) end
+    local out = accountName(accounts[1])
+    for i = 2, #accounts do out = out .. ", " .. accountName(accounts[i]) end
     return out
 end
 
@@ -178,7 +178,7 @@ end
 -- left and which side it landed on.
 local function txPostingLines(out, index, p)
     out[#out + 1] = getText(T .. "Admin_Tx_Field_Posting", tostring(index),
-        accountName(p.account, true))
+        accountName(p.account))
     local amount = tonumber(p.amount)
     local label = amount and signedText(amount) or "-"
     if amount and type(p.currency) == "string" and p.currency ~= "" then
@@ -1165,7 +1165,7 @@ end
 -- opens the record -- so every pixel of the width is text.
 function Page:transactionRow(e, lh, width)
     local kind = tostring(e.kind or "?")
-    local head = getTextOrNull(T .. "Kind_" .. kind) or kind
+    local head = U.kindText(kind)
     if type(e.item) == "string" and e.item ~= "" then
         head = head .. "  " .. itemName(e.item)
         -- an event that never carried a lot size says nothing rather than inventing one
@@ -1377,7 +1377,7 @@ function Page:txSummaryText(e)
     pair(tr("Admin_Tx_Field_Id"), tostring(e.txId or "-"))
     pair(tr("Wallet_Col_Time"), stampText(e.ts, self.offsetMin))
     local kind = tostring(e.kind or "?")
-    pair(tr("Admin_Tx_Field_Kind"), (getTextOrNull(T .. "Kind_" .. kind) or kind)
+    pair(tr("Admin_Tx_Field_Kind"), U.kindText(kind)
         .. "  /  " .. txGroupText(e.group))
     pair(tr("Admin_Tx_Amount"), txAmountText(e.amounts))
     pair(tr("Admin_Tx_Account"), txAccountsText(e.accounts))
@@ -1396,7 +1396,7 @@ function Page:txSummaryText(e)
     end
     pair(tr("Admin_Tx_Field_Origin"), txSourceName(e))
     if type(e.reasonCode) == "string" and e.reasonCode ~= "" then
-        pair(tr("Admin_Tx_Field_ReasonCode"), e.reasonCode)
+        pair(tr("Admin_Tx_Field_Reason"), reasonText(e.reasonCode) or "-")
     end
     -- a count the row did not carry is a dash: "0 postings" would describe a transaction that
     -- moved nothing, which is not what an absent field says
@@ -1419,7 +1419,7 @@ function Page:txRecordText(d)
     pair(tr("Admin_Tx_Field_Id"), tostring(d.txId or "-"))
     pair(tr("Wallet_Col_Time"), stampText(d.ts, self.offsetMin))
     local kind = tostring(d.kind or "?")
-    pair(tr("Admin_Tx_Field_Kind"), (getTextOrNull(T .. "Kind_" .. kind) or kind) .. "  (" .. kind .. ")")
+    pair(tr("Admin_Tx_Field_Kind"), U.kindText(kind))
     pair(tr("Admin_Tx_Field_Group"), txGroupText(d.group))
     if d.rolledBack == true then out[#out + 1] = tr("Wallet_RolledBack") end
     pair(tr("Admin_Tx_Amount"), txAmountText(d.amounts))
@@ -1435,9 +1435,9 @@ function Page:txRecordText(d)
         if cur then pair(tr(feeKey), amountText(fee) .. " " .. currencyName(cur)) end
     end
     pair(tr("Admin_Tx_Field_Origin"), txSourceName(d))
-    if type(d.actor) == "string" and d.actor ~= "" then pair(tr("Admin_Tx_Field_Actor"), d.actor) end
+    if type(d.actor) == "string" and d.actor ~= "" then pair(tr("Admin_Tx_Field_Actor"), U.actorText(d.actor)) end
     if type(d.sourceMod) == "string" and d.sourceMod ~= "" then
-        pair(tr("Admin_Tx_Field_Mod"), "MOD:" .. d.sourceMod)
+        pair(tr("Admin_Tx_Field_Mod"), d.sourceMod)
     end
     -- its own line: a request id has no space in it, so it is the one field word wrap cannot
     -- break and the one that must never share a line with anything else
@@ -1447,7 +1447,9 @@ function Page:txRecordText(d)
     end
     local ref = d.ref
     if type(ref) == "table" and (ref.id ~= nil or ref.type ~= nil) then
-        pair(tr("Admin_Tx_Field_Ref"), tostring(ref.type or "ref") .. " " .. tostring(ref.id or "-"))
+        local id = tostring(ref.id or "-")
+        pair(tr("Admin_Tx_Field_Ref"), getTextOrNull(T .. "Admin_Tx_RefType_" .. tostring(ref.type), id)
+            or getText(T .. "Admin_Tx_Pair", U.unknownText("tx ref type", ref.type), id))
     end
     for _, key in ipairs(TX_REF_KEYS) do
         if d[key] ~= nil then out[#out + 1] = getText(T .. "Admin_Tx_Ref_" .. key, tostring(d[key])) end
@@ -1464,13 +1466,9 @@ function Page:txRecordText(d)
     if type(d.category) == "string" and d.category ~= "" then
         pair(tr("Admin_Tx_Field_Category"), U.categoryText(d.category))
     end
-    -- every account by name *and* raw key: the raw key is what the event files and the commands
-    -- are reconciled against, so it is never the part that gets dropped
+    -- every account the transaction touched, one per line
     for _, account in ipairs(type(d.accounts) == "table" and d.accounts or {}) do
-        pair(tr("Admin_Tx_Account"), accountName(account, true))
-    end
-    if type(d.reasonCode) == "string" and d.reasonCode ~= "" then
-        pair(tr("Admin_Tx_Field_ReasonCode"), d.reasonCode)
+        pair(tr("Admin_Tx_Account"), accountName(account))
     end
     pair(tr("Admin_Tx_Field_Reason"), reasonText(d.reasonCode, d.reasonText) or "-")
     local postings = type(d.postings) == "table" and d.postings or {}

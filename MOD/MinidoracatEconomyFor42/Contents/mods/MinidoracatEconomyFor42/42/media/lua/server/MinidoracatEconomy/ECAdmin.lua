@@ -1257,11 +1257,12 @@ S.handlers["admin.catalog"] = function(player, args)
         -- A refused reload says which kind of refusal it was (an unreadable file, a broken
         -- document, a price table that would let someone trade in a circle). "catalog_invalid"
         -- is only the fallback for a writer that names no code: telling an admin the file is
-        -- malformed when the disk could not be read sends them to fix the wrong thing.
-        local ok, errText, errorCode, extra = Shop.reload(S.principal(player))
+        -- malformed when the disk could not be read sends them to fix the wrong thing. `detail`
+        -- is the shop's code-and-facts failure table (the arbitrage pair included); the panel
+        -- words it, the server never does.
+        local ok, errorCode, failure = Shop.reload(S.principal(player))
         if not ok then
-            res = { ok = false, error = errorCode or "catalog_invalid", detail = errText }
-            catalogExtra(res, extra)
+            res = { ok = false, error = errorCode or "catalog_invalid", detail = failure }
         end
     end
     if type(args) == "table" then res.requestId = args.requestId end
@@ -1342,7 +1343,7 @@ S.handlers["admin.whitelist"] = function(player, args)
         if not ok then res = { ok = false, error = err } end
     elseif action == "reload" then
         local ok, err = Codec.reload(S.principal(player))
-        if not ok then res = { ok = false, error = "whitelist_invalid", detail = err } end
+        if not ok then res = { ok = false, error = "whitelist_invalid", detail = err } end   -- err: code-and-facts table
     end
     if write and res.ok then
         -- an open picker re-asks for its candidates: the verdicts it shows just changed
@@ -1701,10 +1702,14 @@ local function legacyRows(scan, mailId, consumedOnly)
 end
 
 -- What the page may do with this record, and the fingerprint of the evidence that says so.
+-- `detailCode` plus its own fields (mailId, epoch / seq, unitToken, claimSeq, removed / stuck) is
+-- the fact behind the reason, worded by the page; `detail` is only prose an older build stored.
 local function recoveryRow(username, rec, scan, pdata)
     local out = { key = rec.key, reason = rec.reason, at = rec.at, item = rec.item,
         qty = tonumber(rec.qty), opId = rec.opId, mailId = rec.mailId, txId = rec.txId,
-        epoch = rec.epoch, seq = tonumber(rec.seq), detail = rec.detail,
+        epoch = rec.epoch, seq = tonumber(rec.seq), detail = rec.detail, detailCode = rec.detailCode,
+        unitToken = rec.unitToken, claimSeq = tonumber(rec.claimSeq), removed = tonumber(rec.removed),
+        stuck = tonumber(rec.stuck),
         sourceState = rec.sourceState or "n_a", nativeIds = {},
         actions = { approve = false, remove = false, restore = false, discard = false } }
     local fingerprint = { key = rec.key, reason = rec.reason, scanned = scan ~= nil }
@@ -2360,7 +2365,11 @@ S.handlers["admin.recovery"] = function(player, args)
     if type(args.revision) ~= "string" or args.revision ~= row.revision then
         return recoveryReply(player, target, requestId, page, { ok = false, error = "recovery_stale", key = key })
     end
-    local before = row.reason .. "/" .. tostring(row.sourceState) .. "/" .. tostring(row.presentQty)
+    -- The audit line states facts, never a sentence: the decision code in `after`, the reason the
+    -- record was held in `before`, everything else in fields of its own (the page words them).
+    local facts = { action = "recovery", admin = admin, target = target, field = key, before = row.reason,
+        sourceState = row.sourceState, presentQty = row.presentQty, after = decision, reason = note,
+        item = row.item, mailId = row.mailId }
     if decision == "approve" then
         local observed = legacyRows(scan, row.mailId)
         local named, refused = approveLegacy(target, online, observed)
@@ -2376,9 +2385,8 @@ S.handlers["admin.recovery"] = function(player, args)
         end
         X.emit("recovery.adminResolved", { admin = admin, username = target, key = key,
             decision = decision, mailId = row.mailId, item = row.item, qty = #named, refused = refused })
-        X.audit({ action = "recovery", admin = admin, target = target, field = key,
-            before = before, after = decision .. " " .. tostring(#named) .. " unit(s): " .. table.concat(named, ","),
-            reason = note, item = row.item, qty = #named })
+        facts.qty, facts.refused, facts.ids = #named, refused, table.concat(named, ",")
+        X.audit(facts)
         return recoveryReply(player, target, requestId, page,
             { ok = refused == 0, error = refused > 0 and "recovery_approve_failed" or nil,
                 key = key, decision = decision, approvalToken = table.concat(named, ","), refused = refused })
@@ -2414,10 +2422,8 @@ S.handlers["admin.recovery"] = function(player, args)
         Rcv.transmit(online)
         X.emit("recovery.adminResolved", { admin = admin, username = target, key = key,
             decision = decision, mailId = row.mailId, item = row.item, qty = dropped, stuck = stuck })
-        X.audit({ action = "recovery", admin = admin, target = target, field = key, before = before,
-            after = decision .. " removed=" .. tostring(dropped) .. " stuck=" .. tostring(stuck)
-                .. " ids=" .. table.concat(ids, ","),
-            reason = note, item = row.item, qty = dropped })
+        facts.qty, facts.removed, facts.stuck, facts.ids = dropped, dropped, stuck, table.concat(ids, ",")
+        X.audit(facts)
         if stuck > 0 or dropped == 0 then
             -- The reason this record exists did not change - only the outcome of the last
             -- attempt did. Rewriting the reason would take the remove action off the row and
@@ -2425,7 +2431,7 @@ S.handlers["admin.recovery"] = function(player, args)
             Rcv.holdUpdate(target, key, row.reason, { mailId = row.mailId,
                 item = row.item, sourceState = row.sourceState, kind = "legacy",
                 qty = #observed, ids = table.concat(ids, ","),
-                detail = "admin remove: " .. tostring(dropped) .. " removed, " .. tostring(stuck) .. " refused" })
+                detailCode = "admin_remove_partial", removed = dropped, stuck = stuck })
             return recoveryReply(player, target, requestId, page, { ok = false,
                 error = "recovery_remove_failed", key = key, removed = dropped, stuck = stuck })
         end
@@ -2529,10 +2535,8 @@ S.handlers["admin.recovery"] = function(player, args)
     X.emit("recovery.adminResolved", { admin = admin, username = target, key = key, decision = decision,
         opId = row.opId, item = row.item, qty = qty, mailId = mailId, source = source,
         proofState = judgedReason })
-    X.audit({ action = "recovery", admin = admin, target = target, field = key, before = before,
-        after = decision .. " [" .. source .. "/" .. tostring(judgedReason) .. "]"
-            .. (mailId and (" -> mail " .. mailId .. " x" .. tostring(qty)) or " (void)"),
-        reason = note, item = row.item, qty = qty })
+    facts.qty, facts.mailId, facts.proof, facts.proofState = qty, mailId, source, judgedReason
+    X.audit(facts)
     return recoveryReply(player, target, requestId, page,
         { ok = true, key = key, decision = decision, mailId = mailId, qty = qty, source = source })
 end

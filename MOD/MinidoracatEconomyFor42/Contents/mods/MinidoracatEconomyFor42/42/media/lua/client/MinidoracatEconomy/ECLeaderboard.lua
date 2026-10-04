@@ -569,8 +569,11 @@ end
 -- marked), the first read of all, the public rule in force, and the player's own standing.
 function Page:noteText()
     if self.error ~= nil then
-        local key = T .. "Leaderboard_Error_" .. self.error
-        local note = getTextOrNull(key) or getText(T .. "Leaderboard_Error_generic", self.error)
+        local note = getTextOrNull(T .. "Leaderboard_Error_" .. self.error)
+        if not note then
+            U.logUnknown("leaderboard error", self.error)
+            note = getText(T .. "Leaderboard_Error_generic")
+        end
         if self.snapshot then
             note = getText(T .. "Leaderboard_Stale") .. "\n" .. note .. "\n" .. getText(T .. "History_Stale")
         end

@@ -223,20 +223,25 @@ local function guardRadioWindow()
     end
 end
 
+-- A terminal code as words; a code with no sentence of its own reads as the family's "unknown"
+-- sentence, the code in the log.
+local function codeText(family, code)
+    code = tostring(code)
+    local text = getTextOrNull(T .. family .. code)
+    if text then return text end
+    C.UI.logUnknown(family, code)
+    return getText(T .. family .. "unknown")
+end
+
 local function onReply(okKey, args)
     if args.ok then
         -- the registration itself succeeded; a warning means a part of it did not (the station's
         -- radio could not be put up yet), and saying so is the whole point of carrying it
         local text = getText(T .. okKey)
-        if args.warning ~= nil then
-            local note = getTextOrNull(T .. "Terminal_Warning_" .. tostring(args.warning))
-            text = text .. "\n" .. (note or tostring(args.warning))
-        end
+        if args.warning ~= nil then text = text .. "\n" .. codeText("Terminal_Warning_", args.warning) end
         C.toast(text)
     else
-        local key = T .. "Terminal_Error_" .. tostring(args.error)
-        local text = getTextOrNull(key)
-        C.toast(text or tostring(args.error))
+        C.toast(codeText("Terminal_Error_", args.error))
     end
 end
 

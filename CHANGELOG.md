@@ -20,10 +20,19 @@
 - **付款當下就能用（車輛管理的綁定名額）**：使用名額的 MOD 可以把名額設成「付款當下生效」：買斷、新租約、續租與自動續租在付款的同一刻生效，同意自動續租也立刻生效，不必再等伺服器存檔確認。伺服器若在下次存檔前當機，付款與名額會一起回到存檔時的樣子，不會只扣錢沒名額。車輛管理的綁定名額改用這種方式；其他沒有改用的 MOD 照舊在存檔確認後生效（新租約從那時才開始算一整期）。
 - **每張租約照簽約時的條款走，自動續租只在租金、幣別或租期變了才重新詢問**：每張租約記下自己的租金與租期，已付的期間不受之後的改價影響。以前服主改了方案的任何設定，自動續租都會暫停；現在只有租金、幣別或每期天數和你同意時不同，那張租約的自動續租才會暫停，要重新同意才會再扣款（服主改回原值就恢復）。改上限、寬限或提醒時間等其他設定，不會打斷已同意的自動續租。
 - **付費名額的方案改由使用名額的 MOD 設定，管理台「整合方案」改成唯讀總覽**：價格、幣別、上限、租期與開關，以前在經濟管理台編輯，還會同步到該 MOD 的沙盒選項；現在由該 MOD 自己設定（例如車輛管理的設定檔與遊戲內「付費名額設定」視窗），經濟系統不再改沙盒選項。「整合方案」頁只顯示各商品目前的條款、最後從哪裡修改、設定檔有沒有錯誤。租用上限是每位玩家所有租約加起來最多租幾個名額，租金是每個名額每期；調低上限時，超過上限的玩家現有租約照常用到到期，但不能新租或續租、自動續租暫停。帳號頁照舊可以查詢與退款，並逐張列出玩家的租約（名額數、狀態、到期與寬限時間、這一期的條款、自動續租與同意的條款，標出和目前方案不同之處），訂單標出屬於哪張租約、哪些是自動續租產生的。
+- **管理台「整合方案」簡化，訂單一覽、直接退款**：方案頁改成兩張卡片（買斷、租用）列出目前的條款，設定檔有問題時用你的介面語言說明哪一項有錯、目前沿用哪些條款。帳號與退款頁不必先輸入玩家：預設列出所有玩家的名額訂單，最新的在上面，往下可以載入更早的；可以退款的訂單旁邊直接有「退款」按鈕，確認框會寫清楚退多少給誰、名額或租約會怎麼變（收回名額、取消還沒生效的租約、退回上一期、移除租約，或租約已結束只退錢）。點一筆訂單就只看那位玩家。
 
 > 技術要點：方案欄位 `rentalQuantity` 刪除，改為 `rentalLimit`（1–1000，每帳號所有租約合計名額）；`rentalPrice` 是每個名額每期。整合 API 新增 `CAPABILITIES.rentals`（伺服器與客戶端 facade，API_REVISION 不變）：`quote(..., rental?)` 不帶租約 id 為新租約、帶 id 為續租該張；`setAutoRenew(..., rental)` 必填租約 id。snapshot 的 `entitlement` 新增 `rentals`（每張含 `terms{price,amount,currency,days,graceHours}`，自動續租開啟時另有 `autoTerms{price,currency,days}`）、`rentalCommitted`、`rentalsMax`，刪除頂層 `paidUntil/graceUntil/autoRenew/autoRenewState/termsRevision`；訂單帶 `rental` 與 `auto`。自動續租只在方案的 `rentalPrice/rentalCurrency/rentalDays` 等於同意時記下的值才扣款，不同時為 `paused_terms`；同意仍須帶目前的 termsRevision。新錯誤碼 `rental_unknown`、`rental_count_limit`，刪除 `lease_quantity_changed`。每帳號最多 10 張租約。驗證不過的舊方案轉為暫定（不可購買），等使用名額的 MOD 重新設定方案。
 
 > 技術要點：伺服器 facade 新增 `CAPABILITIES.setPlan`，來源 handle 新增 `setPlan(productId, values, opts)`（完整 12 欄；相同內容不加版本、不看 `expectedRevision`；錯誤 `not_ready`／`unknown_product`／`invalid_args`／`invalid_plan`／`unknown_fields`／`stale_revision`）、`getPlan(productId)`、`setPlanSource(productId, {file?, problem?})`（只存記憶體）。`registerProduct{ instant = true }` 為付款當下生效的商品：不等存檔、不寫啟用日誌行，snapshot 帶 `instant=true`、不出 pending／`wait`／`pendingOrderId`，同意自動續租直接 `on`、排程扣款不要求同意已存檔，`getOrder` 回覆頂層帶 `instant=true`；取消自動續租仍寫 `off` 日誌行。`instant` 不能用在會把物品發到玩家背包的商品（物品不跟 ModData 一起回滾）。破壞性變更：`registerProduct` 的 `sandbox` 映射移除（帶了回 `invalid_args`、`field="sandbox"`），Economy 不再讀寫沙盒選項，`entitlement.sandbox` 推播移除；`admin.entitlements` 的 `action="apply"` 移除，`action="plans"` 每列改為 `{sourceMod, productId, nameKey, loaded, instant, plan, lastChange, source}`（`sandboxStatus`、`applies` 移除）。
+
+> 技術要點：`admin.entitlements` 新增讀取動作 `orders`（選填 `username`／`sourceMod`／`productId`／`before={at,id}`；時間新到舊、同時間依訂單 id 由大到小；每頁 50 筆，回 `{orders, more, filter}`；每列帶 `username`、`instant`、`txId`、`refundable`、`refundEffect`（`units`／`cancel`／`previous`／`remove`／`money`）、`previousUntil`、`rentalNo`，一般商品另帶 `durable.status`）。快照的 `orders[i]` 同樣帶 `txId`、`refundable`、`refundEffect`、`previousUntil`、`rentalNo`；判斷與 `refund` 實際行為共用同一套規則。`setPlanSource` 的 `problem` 改為 `{key, field?, ref?}`（翻譯鍵、欄位名稱翻譯鍵、原文資料），字串形式回 `invalid_args`。`registerSource` 新增選用 `nameKey`（來源名稱翻譯鍵），`G.sources()` 與 `plans` 列帶 `sourceNameKey`（`plans` 另帶 `sourceName`）。
+
+### 修正
+
+- **經濟中心與管理台不再出現英文句子或內部代碼**：以前有些訊息會直接顯示英文或代碼，例如整合來源的拒絕原因「Failed: transfer_not_allowed」、對帳報告的「refused (recovery_stale)」、稽核紀錄的「approve 2 unit(s)」、白名單或商店目錄的載入錯誤「categories[3] must be a short string」、唯讀管理員右鍵新增商品時的「領取失敗：forbidden」，以及拍賣出價的幣別衝突、生存紀錄讀取失敗的原因。現在全部依你的遊戲語言（繁中、簡中、英文、日文）顯示完整說明；萬一遇到沒有說明的狀況，畫面顯示「未知」或通用說明，代碼寫進遊戲記錄檔供回報。其他 MOD 自訂的交易原因會標示「其他模組的原因」再附上代碼。更新前已經寫下的稽核紀錄維持原本的文字。繁體與簡體中文的「刊登定價上下限」「開放系統收購」說明也改正為各幣別通用。
+
+> 技術要點：伺服器改送代碼與參數，由客戶端組句：商店目錄與白名單的載入錯誤（`Shop.load` 回 `ok, code, failure`；`Shop.fileStatus()`／`Codec.status()` 改帶 `errorCode`＋`errorDetail`，拿掉 `error` 字串）、稽核紀錄（目錄新增與重新載入、白名單重新載入、對帳核准／移除／補發／捨棄的 `after` 只放決定碼，數量、信件、證據等放獨立欄位；證據來源欄叫 `proof`）、對帳保留紀錄的 `detailCode`、身分匯出被拒的原因 `{code, …}`。客戶端新增 `U.unknownText`、`U.actorText`，`U.accountName` 拿掉 `withId` 參數。
 
 ## [42.21.0-0.7.1] - 2026-10-03
 

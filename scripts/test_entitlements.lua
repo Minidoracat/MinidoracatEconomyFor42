@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+98 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+109 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -92,9 +92,21 @@ check(V.API_REVISION >= 2 and V.CAPABILITIES.entitlements == true and V.CAPABILI
     "the facade is at least rev 2 with entitlements, independent rentals and source-owned plans; the rev 1 capabilities are unchanged")
 
 local REASONS = { "entitlement_purchase", "entitlement_renewal", "entitlement_refund" }
-local vm = V.registerSource({ modId = "TestVM", currencies = { "survivor", "cat" }, reasonCodes = REASONS })
+local vm = V.registerSource({ modId = "TestVM", currencies = { "survivor", "cat" }, reasonCodes = REASONS,
+    nameKey = "IGUI_Test_Source", displayName = { EN = "Test VM" } })
 local safe = V.registerSource({ modId = "TestSafe", currencies = { "survivor" }, reasonCodes = REASONS })
 local bare = V.registerSource({ modId = "TestBare", currencies = { "survivor" }, reasonCodes = { "other" } })
+do
+    local badKey, badErr = V.registerSource({ modId = "TestBadKey", currencies = { "survivor" }, reasonCodes = REASONS,
+        nameKey = "IGUI bad key" })
+    local longKey = V.registerSource({ modId = "TestBadKey", currencies = { "survivor" }, reasonCodes = REASONS,
+        nameKey = string.rep("K", 97) })
+    local listed = {}
+    for _, s in ipairs(G.sources()) do listed[s.modId] = s end
+    check(vm ~= nil and badKey == nil and badErr == "invalid_args" and longKey == nil and listed.TestBadKey == nil
+        and (listed.TestVM or {}).sourceNameKey == "IGUI_Test_Source" and (listed.TestSafe or {}).sourceNameKey == nil,
+        "a source may name itself with a translation key; a malformed key is refused and the sources list carries it")
+end
 check(bare.registerProduct({ id = "slot", nameKey = "K", defaults = defaults() }).field == "reasonCodes.entitlement_purchase",
     "a source that did not declare the entitlement reason codes cannot register a product")
 check(vm.registerProduct({ id = "Bad-Id", nameKey = "K", defaults = defaults() }).field == "id"
@@ -447,19 +459,29 @@ do
         and vm.purchase("ann", qOld.quote.id).error == "stale_terms",
         "a rent change pauses the consent given for the old rent and makes old quotes stale")
     local longFile = vm.setPlanSource("vehicle_slot", { file = string.rep("f", 161) })
-    local longProblem = vm.setPlanSource("vehicle_slot", { problem = string.rep("p", 201) })
     local noSource = vm.setPlanSource("nope", { file = "x" })
-    local okSource = vm.setPlanSource("vehicle_slot", { file = "Lua/TestVM/paid-slots.json", problem = "rent.price\tbad" })
+    local okSource = vm.setPlanSource("vehicle_slot", { file = "Lua/TestVM/paid-slots.json",
+        problem = { key = "IGUI_Test_FileErr_range", field = "IGUI_Test_Name_rentalPrice", ref = "rent.price\tx" } })
     local gp = vm.getPlan("vehicle_slot")
+    gp.source.problem.key = "changed by the caller"
     local overview = planRowIn(cmd(boss, "admin.entitlements", { action = "plans" }).plans) or {}
+    local op = (overview.source or {}).problem or {}
     local cleared = vm.setPlanSource("vehicle_slot", { file = "Lua/TestVM/paid-slots.json" })
-    check(longFile.error == "invalid_args" and longFile.field == "file" and longProblem.field == "problem"
+    check(longFile.error == "invalid_args" and longFile.field == "file"
         and noSource.error == "unknown_product" and okSource.ok and gp.ok and gp.plan.revision == r0 + 1
         and gp.plan.rentalPrice == 300 and gp.lastChange.origin == "admin" and gp.lastChange.revision == r0 + 1
-        and gp.source.file == "Lua/TestVM/paid-slots.json" and gp.source.problem == "rent.pricebad"
-        and (overview.source or {}).problem == "rent.pricebad" and cleared.ok and vm.getPlan("vehicle_slot").source.problem == nil
-        and vm.getPlan("nope").error == "unknown_product",
-        "getPlan returns the plan, its last change and the source's file state; setPlanSource keeps its limits, strips control characters, clears and refuses unknown products")
+        and gp.source.file == "Lua/TestVM/paid-slots.json" and op.key == "IGUI_Test_FileErr_range"
+        and op.field == "IGUI_Test_Name_rentalPrice" and op.ref == "rent.pricex"
+        and overview.sourceNameKey == "IGUI_Test_Source" and (overview.sourceName or {}).EN == "Test VM"
+        and cleared.ok and vm.getPlan("vehicle_slot").source.problem == nil and vm.getPlan("nope").error == "unknown_product",
+        "getPlan and the overview return the plan, its last change, the source's name key and its file problem as a translatable table (a copy); clearing works")
+    local function bad(problem) return vm.setPlanSource("vehicle_slot", { problem = problem }).field == "problem" end
+    check(bad("rent.price is out of range") and bad({ key = "IGUI bad" }) and bad({ field = "IGUI_Test_Name_rentalPrice" })
+        and bad({ key = "IGUI_Test_FileErr_range", field = "rent.price" }) and bad({ key = string.rep("K", 97) })
+        and bad({ key = "IGUI_Test_FileErr_range", ref = string.rep("r", 65) }) and bad({ key = "IGUI_Test_FileErr_range", ref = 5 })
+        and vm.setPlanSource("vehicle_slot", { problem = { key = "IGUI_Test_FileErr_other", ref = string.rep("r", 64) } }).ok
+        and vm.getPlan("vehicle_slot").source.problem.field == nil,
+        "a file problem is a translation key, an optional field key and a short raw reference; plain text or malformed keys are refused")
 end
 
 -- ---------- refunds ----------
@@ -1019,6 +1041,164 @@ do
     check(instOff.ok and twinOff.ok and #ix.ent().entitlement.rentals == 0 and #kept.rentals == 1
         and rent1(kept).autoRenewState == "pending_off",
         "past grace an instant rental whose cancel is journaled leaves the list without a save; a non-instant one waits for the save")
+end
+
+-- 12. the admin order desk (2026-10-04): every account's orders newest first, a cursor, filters, and
+-- per order the refund judgement E.refund itself makes. Shared state in `od` (locals budget).
+local od = {}
+do
+    od.page = function(args)
+        args.action = "orders"
+        return cmd(boss, "admin.entitlements", args)
+    end
+    for i = 1, 8 do                            -- 24 more orders, all at the same moment: pages cut through a tie
+        local who = "pg" .. i
+        L.credit(who, "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-" .. who, reasonCode = "t" })
+        fire("OnTickEvenPaused")               -- a fresh per-tick budget; the clock stands still
+        for _ = 1, 3 do vm.purchase(who, vm.quote(who, "instant_slot", "permanent", 1).quote.id) end
+    end
+    local denied = cmd(fakePlayer("joe2"), "admin.entitlements", { action = "orders", requestId = "orders-joe" })
+    local total, ids = 0, {}
+    for _, byUser in pairs(S.modData().entitlements.rows) do
+        for _, byProduct in pairs(byUser) do
+            for _, row in pairs(byProduct) do total = total + #(row.orders or {}) end
+        end
+    end
+    local all, pages, first, before = {}, 0, nil, nil
+    repeat
+        local r = od.page({ before = before })
+        pages = pages + 1
+        first = first or r
+        for _, v in ipairs(r.orders or {}) do all[#all + 1] = v end
+        local last = (r.orders or {})[#(r.orders or {})]
+        before = last and { at = last.at, id = last.orderId } or nil
+    until not r.more or pages > 100 or before == nil
+    local sorted, unique = true, true
+    for i, v in ipairs(all) do
+        if ids[v.orderId] then unique = false end
+        ids[v.orderId] = true
+        local prev = all[i - 1]
+        if prev and not (prev.at > v.at or (prev.at == v.at and prev.orderId > v.orderId)) then sorted = false end
+    end
+    check(denied.ok == false and denied.error == "forbidden" and denied.orders == nil and first.ok and first.more == true
+        and #first.orders == E.ORDERS_PAGE and total > E.ORDERS_PAGE and #all == total and sorted and unique
+        and pages == math.ceil(total / E.ORDERS_PAGE),
+        "without a filter the desk pages through every account's orders newest first, 50 at a time, each exactly once; a reader without the role gets nothing")
+end
+do
+    L.credit("od1", "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-od1", reasonCode = "t" })
+    fire("OnTickEvenPaused")
+    local a = vm.purchase("od1", vm.quote("od1", "instant_slot", "permanent", 1).quote.id)
+    local b = vm.purchase("od1", vm.quote("od1", "instant_slot", "permanent", 1).quote.id)
+    local r = od.page({ username = "od1" })
+    local x, y = (r.orders or {})[1] or {}, (r.orders or {})[2] or {}
+    local hi = a.orderId > b.orderId and a.orderId or b.orderId
+    check(a.ok and b.ok and #r.orders == 2 and r.more == false and r.filter.username == "od1" and x.at == y.at
+        and x.orderId == hi and x.username == "od1" and x.sourceMod == "TestVM" and x.productId == "instant_slot"
+        and x.nameKey == "K" and x.instant == true and x.durable == nil and x.kind == "permanent" and x.quantity == 1
+        and x.status == "paid" and x.txId ~= nil and x.refundable == true and x.refundEffect == "units" and x.rentalNo == nil,
+        "two orders at the same time come by order id, highest first; a row says who, what, which product and whether it can be refunded")
+    local byProduct = od.page({ productId = "instant_slot" })
+    local onlyProduct, users = true, {}
+    for _, v in ipairs(byProduct.orders or {}) do
+        if v.productId ~= "instant_slot" then onlyProduct = false end
+        users[v.username] = true
+    end
+    check(byProduct.ok and onlyProduct and users.od1 and users.in1 and od.page({ username = "" }).error == "invalid_args"
+        and od.page({ sourceMod = "bad mod!" }).error == "invalid_args" and od.page({ before = { at = "x", id = "1" } }).error == "invalid_args"
+        and od.page({ before = { at = 1, id = "" } }).error == "invalid_args",
+        "filters narrow the list; a malformed account, source or cursor is refused")
+end
+do
+    L.credit("rf9", "survivor", 50000, "SYSTEM_MINT", { requestId = "ent-rf9", reasonCode = "t" })
+    od.buy = function(prod, kind, qty, rental)
+        fire("OnTickEvenPaused")               -- a fresh per-tick budget for the source
+        local q = vm.quote("rf9", prod, kind, qty, rental)
+        if not q.ok then return q end
+        return vm.purchase("rf9", q.quote.id)
+    end
+    od.row = function(orderId)
+        for _, v in ipairs(od.page({ username = "rf9" }).orders or {}) do
+            if v.orderId == orderId then return v end
+        end
+        return {}
+    end
+    od.refund = function(prod, orderId) return vm.refund("rf9", prod, orderId, { reason = "desk" }) end
+    local p = od.buy("instant_slot", "permanent", 1)
+    local before = od.row(p.orderId)
+    local res = od.refund("instant_slot", p.orderId)
+    local after = od.row(p.orderId)
+    check(before.refundable == true and before.refundEffect == "units" and res.ok and after.status == "refunded"
+        and after.refundable == false and after.refundEffect == nil and (after.refund or {}).amount == before.amount
+        and (after.refund or {}).txId ~= nil,
+        "a permanent order is refundable for its units; once refunded the row says so and offers nothing more")
+end
+do
+    local a = od.buy("instant_slot", "rental", 1)
+    local untilA = rent1(vm.getEntitlement("rf9", "instant_slot").entitlement).paidUntil
+    local b = od.buy("instant_slot", "rental", nil, a.orderId)
+    local ra, rb = od.row(a.orderId), od.row(b.orderId)
+    local refusedA = od.refund("instant_slot", a.orderId)
+    local resB = od.refund("instant_slot", b.orderId)
+    local back = rent1(vm.getEntitlement("rf9", "instant_slot").entitlement)
+    check(a.ok and b.ok and ra.refundable == false and refusedA.error == "refund_not_latest" and rb.refundable == true
+        and rb.refundEffect == "previous" and rb.previousUntil == untilA and rb.rentalNo == 1 and ra.rentalNo == 1
+        and rb.renewal == true and resB.ok and back.paidUntil == untilA,
+        "an earlier period is not refundable, the latest goes back to the period before, exactly as the row said")
+    local ra2 = od.row(a.orderId)
+    local resA = od.refund("instant_slot", a.orderId)
+    local ra3 = od.row(a.orderId)
+    check(ra2.refundable == true and ra2.refundEffect == "remove" and ra2.previousUntil == nil and resA.ok
+        and #vm.getEntitlement("rf9", "instant_slot").entitlement.rentals == 0 and ra3.rentalNo == nil,
+        "a one-period rental is removed by its refund, as the row said, and its rows lose the rental number")
+end
+do
+    local c = od.buy("instant_slot", "rental", 1)
+    ctx.setNow(rent1(vm.getEntitlement("rf9", "instant_slot").entitlement).graceUntil + HOUR)
+    for _ = 1, 10 do
+        advance(1000)
+        fire("OnTickEvenPaused")
+    end
+    local rc = od.row(c.orderId)
+    local bal = L.getBalance("rf9", "survivor").available
+    local resC = od.refund("instant_slot", c.orderId)
+    check(c.ok and #vm.getEntitlement("rf9", "instant_slot").entitlement.rentals == 0 and rc.refundable == true
+        and rc.refundEffect == "money" and rc.rentalNo == nil and resC.ok
+        and L.getBalance("rf9", "survivor").available == bal + rc.amount,
+        "an order of a rental that already ended gives the money back only, as the row said")
+end
+do
+    local d = od.buy("vehicle_slot", "rental", 1)
+    local rd = od.row(d.orderId)
+    local resD = od.refund("vehicle_slot", d.orderId)
+    local e = od.buy("vehicle_slot", "rental", 1)
+    confirmAll()
+    confirmAll()
+    local paidUntil = rent1(vm.getEntitlement("rf9", "vehicle_slot").entitlement).paidUntil
+    local f = od.buy("vehicle_slot", "rental", nil, e.orderId)
+    local re, rf = od.row(e.orderId), od.row(f.orderId)
+    local resF = od.refund("vehicle_slot", f.orderId)
+    local kept = vm.getEntitlement("rf9", "vehicle_slot").entitlement
+    check(rd.refundable == true and rd.refundEffect == "cancel" and rd.instant == false and (rd.durable or {}).status == "pending"
+        and resD.ok and e.ok and f.ok and re.refundable == false and rf.refundEffect == "previous" and rf.previousUntil == paidUntil
+        and resF.ok and #kept.rentals == 1 and rent1(kept).paidUntil == paidUntil and rent1(kept).pendingOrderId == nil,
+        "a rental still waiting for its save is cancelled; a pending renewal goes back to the running period; rows of a saving product carry their save state")
+    local s = vm.getEntitlement("rf9", "vehicle_slot")
+    local o1, o2 = s.orders[1] or {}, s.orders[2] or {}
+    check(o1.orderId == f.orderId and o1.refundable == false and o1.txId ~= nil and o2.orderId == e.orderId
+        and o2.refundable == true and o2.refundEffect == "remove" and o2.rentalNo == 1,
+        "the account snapshot's orders carry the same refund judgement, rental number and payment transaction")
+    -- the saved payment of e refunded before the next save: the row must say the refund waits
+    local resE = od.refund("vehicle_slot", e.orderId)
+    local rowE = od.row(e.orderId)
+    local instantRefunded = nil
+    for _, v in ipairs(od.page({ username = "rf9", productId = "instant_slot" }).orders or {}) do
+        if v.status == "refunded" and instantRefunded == nil then instantRefunded = v end
+    end
+    check(resE.ok and rowE.status == "refunded" and (rowE.durable or {}).status == "confirmed"
+        and type(rowE.refund) == "table" and type(rowE.refund.durable) == "table" and rowE.refund.durable.status ~= "confirmed"
+        and instantRefunded ~= nil and instantRefunded.refund ~= nil and instantRefunded.refund.durable == nil,
+        "a refund carries its own save state apart from the payment's; an instant product's refund carries none")
 end
 
 ctx.setOnline({})

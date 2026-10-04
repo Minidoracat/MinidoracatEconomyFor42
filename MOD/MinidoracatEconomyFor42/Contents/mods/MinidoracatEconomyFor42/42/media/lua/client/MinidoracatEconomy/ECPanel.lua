@@ -146,7 +146,15 @@ local function newFilterBar(panel, label, onChange, hintKey)
     })
 end
 
-local function marketKindText(kind) return getTextOrNull(T .. "Market_Kind_" .. kind) or kind end
+-- A reward refusal as words. A code with no sentence of its own reads as `fallbackKey` (the claim
+-- failure by default), never as the code: that goes to the log.
+local function rewardsErrorText(code, fallbackKey)
+    code = tostring(code)
+    local s = getTextOrNull(T .. "Rewards_Error_" .. code)
+    if s then return s end
+    U.logUnknown("rewards error", code)
+    return getText(T .. (fallbackKey or "Rewards_Error_generic"))
+end
 
 -- The sortable header over a server-sorted table: it reads the page's sort key and whether the
 -- page takes clicks right now; a click is answered by the page (key, or nil for the default).
@@ -316,7 +324,7 @@ function Panel:createChildren()
         function(panel) return panel.marketMode == "browse" and not panel.browseBusy end,
         function(panel, key) panel:onMarketHeader(key) end)
     self:addChild(self.marketHeader)
-    self.historyBar = newFilterBar(self, marketKindText, function(p) p:rebuildMarketHistory() end,
+    self.historyBar = newFilterBar(self, W.marketKindText, function(p) p:rebuildMarketHistory() end,
         "Market_History_SearchHint")
     for _, spec in ipairs({ { "Refresh", Panel.onMarketRefresh }, { "List", Panel.onMarketList },
         { "Prev", Panel.onMarketPage }, { "Next", Panel.onMarketPage } }) do
@@ -380,7 +388,7 @@ function Panel:createChildren()
     self.auctionHistoryList = U.newTable(HistoryCell, historyRowHeight())
     self.auctionHistoryList.onSelect = function(_, item) self:onDetailRow("history", item) end
     self:addChild(self.auctionHistoryList)
-    self.auctionHistoryBar = newFilterBar(self, marketKindText, function(p) p:rebuildAuctionHistory() end)
+    self.auctionHistoryBar = newFilterBar(self, W.marketKindText, function(p) p:rebuildAuctionHistory() end)
     for _, spec in ipairs({ { "Refresh", "Market_Refresh", Panel.onAuctionRefresh },
         { "Create", "Auction_Create", Panel.onAuctionCreate },
         { "Prev", "Market_Prev", Panel.onAuctionPage }, { "Next", "Market_Next", Panel.onAuctionPage } }) do
@@ -1203,14 +1211,12 @@ function Panel:onRewards(kind, args)
                 W.moneyText(args.amount, args.currency), tostring(tonumber(args.rewardIndex) or 1),
                 tostring(tonumber(args.dailyLimit) or 1)) }
         else
-            local key = T .. "Rewards_Error_" .. tostring(args.error)
-            self.message = { text = getTextOrNull(key) or getText(T .. "Rewards_Error_generic", tostring(args.error)), error = true }
+            self.message = { text = rewardsErrorText(args.error), error = true }
         end
         if type(args.state) ~= "table" then C.requestRewards() end
     end
     if kind == "error" then
-        self.message = { text = getTextOrNull(T .. "Rewards_Error_" .. tostring(args.error))
-            or getText(T .. "Rewards_Error_generic", tostring(args.error)), error = true }
+        self.message = { text = rewardsErrorText(args.error), error = true }
     end
     local st = C.rewards
     local short = st and math.max(0, tonumber(st.remainingOnlineMs) or 0) or 0
@@ -1333,7 +1339,7 @@ function Panel:rebuildMail()
         local weight = tonumber(e.weight)
         local name = itemName(e.item)
         local seller = type(e.seller) == "string" and e.seller ~= "" and e.seller or nil
-        local from = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or tostring(e.kind)
+        local from = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or U.unknownText("mail kind", e.kind)
         if seller then from = from .. " - " .. getText(buyFrom, seller) end
         rows[#rows + 1] = {
             id = e.id, item = e.item, qty = qty, name = name, altName = itemBaseName(e.item),
@@ -2213,9 +2219,9 @@ function Panel:rebuildMarketCategories()
     self.marketCatSig = sig
     comboFill(self.marketCatCombo, cats, function(cat)
         -- DisplayCategory names come from the item scripts: vanilla translates them under
-        -- IGUI_ItemCat_<cat> (ISInventoryPane.lua:2533), an unknown one shows the raw name
+        -- IGUI_ItemCat_<cat> (ISInventoryPane.lua:2533), another MOD's own category keeps its name
         if cat == "" then return getText(T .. "Shop_All") end
-        return getTextOrNull("IGUI_ItemCat_" .. cat) or cat
+        return U.itemCategoryText(cat)
     end, self.marketCat or "")
 end
 
@@ -2608,9 +2614,7 @@ function Panel:rewardLines(st)
         end
     end
     if not off and st.canClaim ~= true and st.blockedReason ~= nil then
-        local code = tostring(st.blockedReason)
-        lines[#lines + 1] = getTextOrNull(T .. "Rewards_Error_" .. code)
-            or getText(T .. "Rewards_Blocked_generic", code)
+        lines[#lines + 1] = rewardsErrorText(st.blockedReason, "Rewards_Blocked_generic")
     end
     lines[#lines + 1] = getText(T .. "Rewards_NextDay", stampText(nextReset, self.offsetMin),
         durationText(math.max(0, nextReset - EC.now())))
@@ -2622,7 +2626,9 @@ function Panel:rewardLines(st)
     lines[#lines + 1] = getText(T .. "Rewards_Milestones", tostring(st.seasonNumber or "-"))
     self:seasonDeadlineLines(st, lines)
     if st.survivalError ~= nil then
-        lines[#lines + 1] = getText(T .. "Season_SurvivalFailed", tostring(st.survivalError))
+        local code = tostring(st.survivalError)
+        lines[#lines + 1] = getText(T .. "Season_SurvivalFailed",
+            getTextOrNull(T .. "Rewards_Error_" .. code) or U.unknownText("survival error", code))
         return lines
     end
     if st.survivalKnown == true and type(st.survivalHours) == "number" then
@@ -2668,8 +2674,7 @@ function Panel:updateDetail()
         if st then
             body = table.concat(self:rewardLines(st), "\n")
         elseif C.rewardsError then
-            body = getTextOrNull(T .. "Rewards_Error_" .. tostring(C.rewardsError))
-                or getText(T .. "Rewards_Error_generic", tostring(C.rewardsError))
+            body = rewardsErrorText(C.rewardsError)
         else
             body = getText(T .. "Wallet_Loading")
         end

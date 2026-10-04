@@ -1098,6 +1098,11 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: food state the snapshot 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: dishes with added ingredients are listable (scenario DS: the state check, ingredients/name/raw danger/cookable rebuilt, the buyer's preview, no merge across ingredients, the buyback refuses with prepared_dish)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: independent rentals as contracts (scripts/test_entitlements.lua scenario 10: side by side, renewal of one, terms kept by a consent, per-rental charge, per-rental replay, pruning, count cap and refunds, lowered limit, lapse over the limit)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: source-owned plans and instant products (scripts/test_entitlements.lua): -10 sandbox mirror / admin apply checks; +8 plans overview, editor gone, setPlan refusals, no-op, stale, applied (audit, event, refresh), getPlan / setPlanSource, a sandbox map refused at registration; +13 instant purchase, events and getOrder, rental, renewal (live and past grace), consent at once, unsaved scheduled renewal, cancel off line (blocked and written), refunds, crash rollback, the non-instant control, an ended rental leaves without a save
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the admin order desk (scripts/test_entitlements.lua): a source's name key, the file problem as a translatable table and its refusals, every account's orders paged newest first, same-time order and the row, filters and malformed cursors, refund judgement on each row agreeing with E.refund (permanent, earlier / latest period, one-period rental, pruned rental, pending new rental and pending renewal), the snapshot's order fields
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the companion export's refusal / reservation detail is a code with its facts, never an English sentence, and its audit line keeps that detail (scenario MG-1); a desk order's refund carries its own save state (scripts/test_entitlements.lua scenario 12)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: codes become words on the player pages and in the shared helpers (scenario TX: integration refusals, known codes without their code, unknown ones as the generic word, the player pages' routes, no slot in a fallback sentence)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: reconciliation codes instead of sentences (RA-1..4: the held record's detail code and counts, the remove / approve / restore audit lines as decision codes with their facts; RW-1..4: the page words a detail code in the reader's language, keeps an old stored line as written, words each decision, and turns an unknown code into the generic word; RW-5: the audit detail shows the record, letter, source state, objects present and the approved tokens / removed ids)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: whitelist / catalog refusals and catalog audit lines as codes with facts (FE-1..4: a catalog row's field path, bounds and index, the reload / add audit lines, the whitelist's JSON line and entry in reply, status and audit; FE-4b: a successful reload carries no refusal code; FE-5..7: the client words a failure in the reader's language, keeps an unknown code off screen, words the add / reload audit lines and leaves an older stored line alone)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3043,7 +3048,7 @@ local mod = fakePlayer("mod"); mod.role = "moderator"
 local zed = fakePlayer("zed")
 onlinePlayers = { boss, mod, zed }
 local catalogFile = files["MinidoracatEconomy/catalog.json"]
-check(catalogFile ~= nil and Shop.fileStatus().count == 13 and Shop.fileStatus().error == nil, "first start writes the default catalog.json and loads it")
+check(catalogFile ~= nil and Shop.fileStatus().count == 13 and Shop.fileStatus().errorCode == nil, "first start writes the default catalog.json and loads it")
 local function cmd(who, name, args)
     nowMs = nowMs + 600
     args = args or {}
@@ -3148,14 +3153,56 @@ SandboxVars.MinidoracatEconomy.MailboxPerAccount = nil
 -- reload: broken file keeps the previous catalog, a fixed file replaces it
 files["MinidoracatEconomy/catalog.json"] = { lines = { "{ \"items\": [ { \"id\": \"x\" " }, opens = 0 }
 local bad = cmd(boss, "admin.catalog", { action = "reload" })
-check(bad.ok == false and bad.error == "catalog_invalid" and bad.count == 13 and bad.file.error ~= nil, "a broken catalog.json is rejected and the previous catalog stays")
+check(bad.ok == false and bad.error == "catalog_invalid" and bad.count == 13 and bad.file.errorCode == "catalog_invalid" and bad.file.error == nil
+    and type(bad.detail) == "table" and bad.detail.code == "json" and bad.detail.line == 1 and bad.file.errorDetail.code == "json",
+    "a broken catalog.json is rejected and the previous catalog stays; the reply names the JSON failure and its line as facts")
 files["MinidoracatEconomy/catalog.json"] = { lines = { '{"items":[{"id":"ghost","item":"Base.Nope","price":5}]}' }, opens = 0 }
 local ghost = cmd(boss, "admin.catalog", { action = "reload" })
-check(ghost.ok == false and string.find(ghost.detail, "ghost", 1, true) ~= nil and Shop.fileStatus().count == 13, "an unknown item type names the offending SKU and keeps the previous catalog")
+check(ghost.ok == false and type(ghost.detail) == "table" and ghost.detail.code == "unknown_item" and ghost.detail.id == "ghost"
+    and ghost.detail.field == "item" and ghost.detail.item == "Base.Nope" and ghost.detail.index == 1 and Shop.fileStatus().count == 13,
+    "an unknown item type names the offending SKU and keeps the previous catalog")
 files["MinidoracatEconomy/catalog.json"] = { lines = { '{"items":[{"id":"only","item":"Base.Twine","qty":2,"price":7,"dailyCap":0,"category":"z"}]}' }, opens = 0 }
 local good = cmd(boss, "admin.catalog", { action = "reload" })
 check(good.ok == true and good.count == 1 and good.items[1].id == "only" and good.items[1].remaining == nil and good.revision ~= rev, "a valid file replaces the catalog and bumps the revision")
 check(cmd(mod, "admin.catalog", { action = "reload" }).error == "forbidden" and cmd(mod, "admin.catalog", { action = "list" }).ok == true, "reload needs the write gate, list only the read gate")
+-- FE-1 / FE-2: a refused catalog.json is a code plus facts (field path, bounds, row), never a
+-- sentence; the reload audit line carries the same facts and no composed `after`
+;(function()
+    local function factsOnly(t)
+        for _, v in pairs(t) do
+            if type(v) == "table" and not factsOnly(v) then return false end
+            if type(v) == "string" and not string.match(v, "^[%w_%.%-]*$") then return false end
+        end
+        return true
+    end
+    local path = "MinidoracatEconomy/catalog.json"
+    local goodFile = files[path]
+    local function reloadWith(line)
+        files[path] = { lines = { line }, opens = 0 }
+        return cmd(boss, "admin.catalog", { action = "reload" })
+    end
+    local bid = reloadWith('{"items":[{"id":"q","item":"Base.Twine","prices":{"survivor":{"price":5,"bidPrice":9}}}]}').detail
+    local flat = reloadWith('{"items":[{"id":"f","item":"Base.Twine","price":5,"buyback":true}]}').detail
+    local rowR = reloadWith('{"items":[{"id":"ok1","item":"Base.Twine","price":5},7]}')
+    local row = rowR.detail
+    check(type(bid) == "table" and bid.code == "range" and bid.field == "prices.survivor.bidPrice" and bid.min == 0 and bid.max == 4
+        and bid.id == "q" and bid.index == 1 and factsOnly(bid)
+        and type(flat) == "table" and flat.code == "buyback_needs_bid" and flat.field == "bidPrice" and flat.id == "f" and factsOnly(flat)
+        and type(row) == "table" and row.code == "row_not_object" and row.index == 2 and row.id == nil
+        and rowR.file.errorDetail.code == "row_not_object" and rowR.file.error == nil and Shop.fileStatus().count == 1,
+        "FE-1: a quote out of range names its field path and bounds, a flat legacy row its own field, a non-object row its index; facts only")
+    local failed, loaded = nil, nil
+    for _, e in ipairs(X.auditEntries(10)) do
+        if e.action == "catalog" and e.field == "reload" then
+            if failed == nil and e.ok == false then failed = e end
+            if loaded == nil and e.ok == true then loaded = e end
+        end
+    end
+    check(failed ~= nil and failed.after == nil and failed.errorCode == "catalog_invalid" and failed.errorDetail.code == "row_not_object"
+        and failed.errorDetail.index == 2 and loaded ~= nil and loaded.after == nil and loaded.count == 1,
+        "FE-2: a reload's audit line is ok + count, or the refusal's code and facts; no composed after text")
+    files[path] = goodFile
+end)()
 -- admin.catalog{action="add"}: a new row appended to the file itself
 check(cmd(mod, "admin.catalog", { action = "add", id = "cat_snack", item = "MiniFarm.CatSnack", prices = { survivor = { price = 20 } } }).error == "forbidden"
     and Shop.sku("cat_snack") == nil, "a moderator cannot add a SKU")
@@ -3172,6 +3219,16 @@ check(added.ok == true and added.count == 2 and addedRow ~= nil and addedRow.ite
     and string.find(addText, "MiniFarm.CatSnack", 1, true) ~= nil and added.revision ~= baseRev
     and addedPush ~= nil and addedPush.revision == added.revision,
     "an admin adds a mod item as a new SKU: written into catalog.json with buyback off and pushed to everyone online")
+;(function()
+    local line = nil
+    for _, e in ipairs(X.auditEntries(10)) do
+        if line == nil and e.action == "catalog" and e.field == "add" then line = e end
+    end
+    local q = line and type(line.quotes) == "table" and line.quotes[1] or nil
+    check(line ~= nil and line.target == "cat_snack" and line.after == nil and line.item == "MiniFarm.CatSnack" and line.qty == 2
+        and #line.quotes == 1 and q.currency == "survivor" and q.price == 20 and q.bidPrice == 8,
+        "FE-2b: the audit line of a new SKU carries its item, lot size and every quote as facts, not a composed after text")
+end)()
 zed.inventory.maxWeight = 50
 local snack = cmd(zed, "shop.buy", { id = "cat_snack", revision = added.revision })
 check(snack.ok == true and snack.total == 20 and snack.delivered == true and zed.inventory.count("MiniFarm.CatSnack") == 2
@@ -3382,7 +3439,7 @@ files = {}
 sentCommands = {}
 nowMs = nowMs + 61000
 fire("OnServerStarted")
-check(files["MinidoracatEconomy/whitelist.json"] ~= nil and Codec.status().error == nil and Codec.status().counts.categories >= 20, "first start writes the default whitelist.json")
+check(files["MinidoracatEconomy/whitelist.json"] ~= nil and Codec.status().errorCode == nil and Codec.status().counts.categories >= 20, "first start writes the default whitelist.json")
 local axe = instanceItem("Base.Axe"); axe.condition = 3; axe.repaired = 2
 check(Codec.check(axe) == true, "a tool weapon is whitelisted")
 local bag = instanceItem("Base.Bag_ALICEpack")
@@ -3467,7 +3524,9 @@ local inv = fakeInventory(50)
 check(Codec.detachParts(weapon, inv) == 1 and #weapon.parts == 0 and inv.count("Base.x2Scope") == 1, "weapon parts are detached back into the backpack")
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories": 5}' }, opens = 0 }
 local okL, errL = Codec.load()
-check(okL == false and Codec.status().error ~= nil and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected and the previous whitelist stays")
+check(okL == false and type(errL) == "table" and errL.code == "not_array" and errL.field == "categories"
+    and Codec.status().errorCode == "whitelist_invalid" and Codec.status().errorDetail.code == "not_array" and Codec.status().error == nil
+    and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected as a code with the field it names, and the previous whitelist stays")
 -- 家具不再是固定類別：分類開著就能上架（地圖仍固定：情境 BB-8）
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Furniture","Communications","Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
 check(Codec.load() == true and Codec.check(instanceItem("Base.Mov_Chair")) == true and Codec.check(instanceItem("Base.Saw")) == true,
@@ -3515,6 +3574,49 @@ check(wcmd(boss, { action = "reload" }).ok == true and wcmd(boss, { action = "se
 local wlAudit = 0
 for _, e in ipairs(X.auditEntries(30)) do if e.action == "whitelist" then wlAudit = wlAudit + 1 end end
 check(wlAudit == 8, "every applied edit and the reload are audited once (no-ops and refusals are not)")
+-- FE-3 / FE-4: a refused whitelist.json is a code plus facts (the JSON line, the field and entry),
+-- in the reply, the status and the audit line alike
+;(function()
+    local path = "MinidoracatEconomy/whitelist.json"
+    files[path] = { lines = { "{", '  "categories": ["Tool",', '  "types": [] }' }, opens = 0 }
+    local json = wcmd(boss, { action = "reload" })
+    files[path] = { lines = { '{"categories":["Tool",""],"types":[],"excludeTypes":[]}' }, opens = 0 }
+    local okE, entry = Codec.load()
+    check(json.ok == false and json.error == "whitelist_invalid" and type(json.detail) == "table" and json.detail.code == "json"
+        and json.detail.line == 3 and json.whitelist.errorCode == "whitelist_invalid" and json.whitelist.errorDetail.code == "json"
+        and json.whitelist.error == nil and okE == false and entry.code == "bad_entry" and entry.field == "categories"
+        and entry.entry == 2 and entry.max == 128,
+        "FE-3: a whitelist that is not JSON names the line, a bad entry its field and position; facts only")
+    local failed = nil
+    for _, e in ipairs(X.auditEntries(5)) do
+        if failed == nil and e.action == "whitelist" and e.field == "reload" then failed = e end
+    end
+    check(failed ~= nil and failed.ok == false and failed.after == nil and failed.errorCode == "whitelist_invalid"
+        and failed.errorDetail.code == "json" and failed.errorDetail.line == 3,
+        "FE-4: a refused whitelist reload is audited as ok=false with the refusal's code and facts, no composed after text")
+    -- FE-4b: a reload that worked carries no refusal code in its event or its audit line
+    local seen, emit = {}, X.emit
+    X.emit = function(kind, fields)
+        if kind == "admin.whitelist" or kind == "admin.catalog" then seen[kind] = fields end
+        return emit(kind, fields)
+    end
+    files[path] = { lines = { '{"categories":["Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
+    local wlOk = wcmd(boss, { action = "reload" })
+    nowMs = nowMs + 700
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.catalog", boss, { action = "reload", requestId = "c" .. nowMs })
+    local catOk = lastSent("admin.catalog").args
+    X.emit = emit
+    local wlLine, catLine = nil, nil
+    for _, e in ipairs(X.auditEntries(5)) do
+        if wlLine == nil and e.action == "whitelist" and e.field == "reload" then wlLine = e end
+        if catLine == nil and e.action == "catalog" and e.field == "reload" then catLine = e end
+    end
+    check(wlOk.ok == true and catOk.ok == true and seen["admin.whitelist"] ~= nil and seen["admin.whitelist"].errorCode == nil
+        and seen["admin.catalog"] ~= nil and seen["admin.catalog"].errorCode == nil
+        and wlLine ~= nil and wlLine.ok == true and wlLine.errorCode == nil and wlLine.errorDetail == nil
+        and catLine ~= nil and catLine.ok == true and catLine.errorCode == nil and catLine.errorDetail == nil,
+        "FE-4b: a successful whitelist or catalog reload writes no refusal code into its event or audit line")
+end)()
 -- 卸載 MOD 後留下的 explicit 規則：inherit 不需要 ScriptManager 認得那個 fullType 才能移除
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Tool"],"types":["GoneMod.Relic"],"excludeTypes":["GoneMod.Relic"],"modDataKeys":[]}' }, opens = 0 }
 local orphanLoad = wcmd(boss, { action = "reload" })
@@ -7171,10 +7273,23 @@ check(partial.ok == false and partial.error == "recovery_remove_failed" and part
     and zed.inventory.count("Base.Nails") == 1,
     "a partial removal reports what it actually did and never claims the whole decision succeeded")
 local reopened = heldOf("legacy:" .. nails.mailId)
-check(reopened ~= nil and reopened.reason == "legacy_claim_rolledback"
-    and string.find(tostring(reopened.detail), "1 refused", 1, true) ~= nil,
-    "a partly removed record stays open under its own reason, carrying what the attempt actually did")
+check(reopened ~= nil and reopened.reason == "legacy_claim_rolledback" and reopened.detail == nil
+    and reopened.detailCode == "admin_remove_partial" and reopened.removed == 19 and reopened.stuck == 1,
+    "a partly removed record stays open under its own reason, carrying what the attempt actually did as a code and its counts")
+-- the newest reconciliation audit line about one record (the ring, newest first)
+function recoveryAuditOf(field)
+    for _, e in ipairs(EC.Export.auditEntries(50)) do
+        if e.action == "recovery" and e.field == field then return e end
+    end
+    return nil
+end
 local again = rowOf(cmd(boss, "admin.recovery", { action = "list", username = "zed" }), "legacy:" .. nails.mailId)
+local partialAudit = recoveryAuditOf("legacy:" .. nails.mailId) or {}
+check(again ~= nil and again.detailCode == "admin_remove_partial" and again.removed == 19 and again.stuck == 1
+    and partialAudit.after == "remove" and partialAudit.before == "legacy_claim_rolledback"
+    and partialAudit.removed == 19 and partialAudit.stuck == 1 and partialAudit.sourceState == again.sourceState
+    and type(partialAudit.ids) == "string" and partialAudit.ids ~= "",
+    "RA-1: the page row and the audit line carry codes and counts, never a sentence: remove / held reason / removed / stuck / ids")
 local done = cmd(boss, "admin.recovery", { action = "resolve", username = "zed", key = "legacy:" .. nails.mailId,
     decision = "remove", revision = again.revision, note = "rolled back purchase, reclaiming" })
 check(done.ok == true and done.removed == 1 and zed.inventory.count("Base.Nails") == 0
@@ -7210,6 +7325,10 @@ check(approved.ok == true and approved.approvalToken == expectedToken
     and twineItem.modData[KEY].unit == expectedToken and twineItem.modData[KEY].durable == true
     and twineItem.id == twineId,
     "approve names the object with the deterministic token and never changes its engine id")
+local approveAudit = recoveryAuditOf("legacy:" .. twine.mailId) or {}
+check(approveAudit.after == "approve" and approveAudit.before == "legacy_source_pruned" and approveAudit.qty == 1
+    and approveAudit.refused == 0 and approveAudit.ids == expectedToken and approveAudit.mailId == twine.mailId,
+    "RA-2: an approval is audited as the decision code with the count, the refusals and the named token in fields of their own")
 check(L.getBalance("zed", "survivor").available == cashBefore and #zed.inventory.items == itemsBefore,
     "approve creates no item and pays out no money")
 -- the very same original, resent later under its old stamp, lands back on the same token
@@ -7293,7 +7412,8 @@ local restored = cmd(boss, "admin.recovery", { action = "resolve", username = "z
     acceptUnproven = true, note = "confirmed lost listing, accepted on the player's word, returning to mailbox" })
 check(restored.ok == true and restored.qty == 2 and M.entryOf("zed", restored.mailId) ~= nil
     and M.hasOut("9000:9") == true
-    and string.find(tostring(X.auditEntries(5)[1].after), "player_claim/pending_legacy", 1, true) ~= nil,
+    and X.auditEntries(5)[1].after == "restore" and X.auditEntries(5)[1].proof == "player_claim"
+    and X.auditEntries(5)[1].proofState == "pending_legacy",
     "said out loud, the restore goes back through the mailbox return path, leaves the world a deduplicating receipt, and the audit line records whose word it was")
 local letters = M.unclaimed("zed")
 zed.modData[KEY].pendingOuts["9000:9"] = { itemId = 880001, itemIds = { 880001, 880003 }, qty = 2,
@@ -7457,6 +7577,8 @@ check(cornPair[1].modData[KEY].proto == nil and cornPair[2].modData[KEY].proto =
 local dupHold = heldOf("legacy:" .. corn.mailId)
 check(dupHold ~= nil and dupHold.reason == "legacy_duplicate_locator" and heldCount("legacy:") == 1,
     "the whole letter is held once, with the reason that its objects cannot be told apart")
+check(dupHold ~= nil and dupHold.detailCode == "objects_indistinct" and dupHold.detail == nil,
+    "RA-3: the fact behind the hold is a detail code the admin page words, not an English sentence")
 check(Rec.gen0Group(Rec.scanUnits(zed.inventory), corn.mailId) == "legacy_duplicate_locator",
     "the group check is what refuses it, and it refuses before any stamp or unit array is touched")
 check(cmd(zed, "market.list", { itemIds = { cornPair[1].id }, price = 40 }).error == "recovery_unverified"
@@ -9865,9 +9987,8 @@ check(accepted.ok == true and accepted.mailId ~= nil and M.entryOf("r5-zed", acc
     and #L.receipts("r5-zed") == receiptsBefore and L.getBalance("r5-zed", "survivor").available == 0,
     "an accepted claim hands the goods back through the mailbox and posts nothing at all: no mint, no adjustment, no way around the admin daily cap")
 local auditRow = X.auditEntries(5)[1]
-check(auditRow ~= nil and type(auditRow.after) == "string"
-    and string.find(auditRow.after, "player_claim/journal_missing", 1, true) ~= nil
-    and string.find(auditRow.after, "mail", 1, true) ~= nil,
+check(auditRow ~= nil and auditRow.after == "restore" and auditRow.proof == "player_claim"
+    and auditRow.proofState == "journal_missing" and auditRow.mailId == accepted.mailId,
     "the audit line says whose word this was: an entry taken on the player's claim can never be mistaken later for one the server proved")
 -- (2) 伺服器有原始記錄，但玩家那份自稱的提交點對不上
 local saveB = deepCopy(modDataStore[EC.MODDATA_KEY])
@@ -9894,6 +10015,10 @@ local proved = cmd(boss, "admin.recovery", { action = "resolve", username = "r5-
 local returned = proved.mailId and M.entryOf("r5-ann", proved.mailId) or nil
 check(proved.ok == true and returned ~= nil and returned.item == "Base.Plank" and returned.qty == 1,
     "the goods that come back are the ones the server wrote down: the axe and the five copies the player's own file claims are not what the record says")
+local restoreAudit = recoveryAuditOf("pend:" .. listed.listingId) or {}
+check(restoreAudit.after == "restore" and restoreAudit.proof == "journal" and restoreAudit.mailId == proved.mailId
+    and restoreAudit.qty == 1 and restoreAudit.source ~= "journal" and type(restoreAudit.proofState) == "string",
+    "RA-4: a restore is audited as the decision code, its evidence (proof) and the letter it created, never as one composed line")
 -- 人工重建本身是一筆「現在發生」的新操作：它的提交點必須排在它據以重建的後繼之後，
 -- 絕不能被它預覽的那個 previous 的舊序號取代，否則下一次回滾會挑到錯的一行。
 proofSettle()
@@ -16161,14 +16286,27 @@ mgPoll()
 check(Id.exportStatus().status == "none" and untouched(),
     "with no export file and nothing accepted yet the status stays none: the page never says earlier data stays in effect")
 check(rejected("server_mismatch", { serverName = "another-server" }), "an export for another server name is refused and nothing of it is applied")
+local whyServer = Id.exportStatus().reason
 check(rejected("truncated", { noTrailer = true }), "an export without its trailer line is refused whole: truncated")
+local whyTrailer = Id.exportStatus().reason
 check(rejected("truncated", { count = 9, trailerCount = 9 }), "an export with fewer rows than its count is refused whole: truncated")
+local whyRows = Id.exportStatus().reason
 local dupName = { { 1, "mg-boss", mgT(9) }, { 2, "mg-boss", mgT(1) } }
 check(rejected("malformed", nil, dupName), "a name listed twice refuses the whole export")
+local whyRow = Id.exportStatus().reason
+local rowAudit = nil
+for _, e in ipairs(X.auditEntries()) do
+    if rowAudit == nil and e.action == "IDENTITY_EXPORT_REJECTED" then rowAudit = e end
+end
+check(rowAudit ~= nil and rowAudit.field == "malformed" and type(rowAudit.detail) == "table"
+    and rowAudit.detail.code == "bad_row" and rowAudit.detail.line == 3 and rowAudit.detail.field == "u"
+    and rowAudit.reason == nil,
+    "the audit line of a refused export keeps the code with its line and field, so why it failed survives a later accepted export")
 check(rejected("malformed", nil, { { 1, "mg-boss", "7.6561198E16" }, { 2, "mg-ann", mgT(1) } }),
     "a SteamID text that is not seventeen digits refuses the whole export")
 check(rejected("malformed", nil, { { 1, "mg-boss", mgT(9) }, { 1, "mg-ann", mgT(1) } }), "a repeated whitelist id refuses the whole export")
 check(rejected("malformed", { extra = { "{\"id\":9,\"u\":\"mg-late\",\"s\":\"\"}" } }), "a line after the trailer refuses the whole export")
+local whyAfter = Id.exportStatus().reason
 local rejectedGen = mgGen
 mgPoll(); mgPoll()
 check(mgAudits("IDENTITY_EXPORT_REJECTED") == 7 and mgAudits("IDENTITY_EXPORT_REJECTED", "malformed") == 4
@@ -16182,6 +16320,13 @@ mgPoll()
 getFileReader = realReader
 check(Id.exportStatus().status == "unreadable" and untouched(),
     "an export that exists but cannot be opened is unreadable, never taken for a missing one, and nothing is applied")
+local whyOpen = Id.exportStatus().reason
+check(type(whyServer) == "table" and whyServer.code == "header_field" and whyServer.field == "serverName"
+    and whyTrailer.code == "no_trailer" and whyTrailer.rows == 8
+    and whyRows.code == "rows" and whyRows.rows == 8 and whyRows.count == 9
+    and whyRow.code == "bad_row" and whyRow.line == 3 and whyRow.field == "u"
+    and whyAfter.code == "after_trailer" and type(whyOpen) == "table" and whyOpen.code == "open",
+    "a refused export says why as a code with its facts (field, line, row counts), never as an English sentence")
 -- accepted
 mgExport(ROWS)
 local acceptedGen = mgGen
@@ -16246,6 +16391,7 @@ fire("OnServerStarted")
 check(staleAfterRestart == "stale" and Id.exportStatus().status == "replaced" and #mgRecs() == lines + 1
     and Id.view().bindings["mg-p2"] ~= nil and Id.view().bindings["mg-p2"].reserved == nil,
     "after a restart an older export is stale, and the last accepted generation with other rows is refused whole")
+local whyReplaced = Id.exportStatus().reason
 -- exact mismatch, recorded once
 local rows2 = {}
 for i, r in ipairs(ROWS) do rows2[i] = r end
@@ -16271,6 +16417,10 @@ mgExport(short)
 mgPoll()
 check(Id.exportStatus().status == "reserve_suspect" and Id.view().bindings["mg-cat"] == nil,
     "an export that suddenly lacks more than max(5, 0.5%) of the last one's rows reserves nobody (reserve_suspect)")
+local whyReserved = Id.exportStatus().reason
+check(type(whyReplaced) == "table" and whyReplaced.code == "replaced" and type(whyReserved) == "table"
+    and whyReserved.code == "reserved" and type(whyReserved.skipped) == "number" and type(whyReserved.dropped) == "number",
+    "a replaced export and an import that reserved nobody report a code with their counts, not a sentence")
 for i = 1, 51 do md.firstSeen["mg-k" .. i] = 1 end
 mgExport(ROWS)
 mgPoll()
@@ -19225,7 +19375,7 @@ check(row.remaining ~= nil and row.buybackRemaining ~= nil and row.prices.cat ~=
 local emptied = cmd(boss, "admin.catalog", { action = "remove", ids = { "w", "v" }, reason = "sd" })
 fire("OnServerStarted")
 check(emptied.ok == true and emptied.extra ~= nil and emptied.extra.count == 2 and Shop.fileStatus().count == 0
-    and Shop.fileStatus().error == nil and string.find(fileText(), "bandage", 1, true) == nil
+    and Shop.fileStatus().errorCode == nil and string.find(fileText(), "bandage", 1, true) == nil
     and #cmd(zed, "shop.list").items == 0,
     "SD-13: removing every row leaves an empty catalog, and a restart does not write the default items back")
 Cfg.setOption("ShopMaxItems", nil, "sd-admin")
@@ -19771,6 +19921,272 @@ check(Codec.signature(snap) ~= Codec.signature(Codec.snapshot(other)), "DS-4: di
 local new, why = Codec.isCanonical(dish, "Base.CannedCorn")
 check(new == false and why == "prepared_dish" and Codec.signature(Codec.snapshot(instanceItem("Base.CannedCorn"))) ~= Codec.signature(snap),
     "DS-5: the buyback refuses a dish and says why")
+end)()
+
+-- ===== 情境 TX：玩家端與共用文字函式不把代碼放上畫面 =====
+-- The client helpers every page words a code with (ECWidgets, ECPanelWidgets), loaded against the
+-- real four translation files: a known code reads as its sentence and never with the code beside
+-- it, an unknown one as the translated generic word, the code only in the log.
+io.write("scenario TX: codes become words, never screen text\n")
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client, log = EC.log,
+    ISButton = ISButton, ISPanel = ISPanel }
+local logged = {}
+local function derive(self) return setmetatable({}, { __index = self }) end
+require = function() return true end
+ISButton, ISPanel = { derive = derive }, { derive = derive }
+EC.Client = {}
+EC.log = function(msg) logged[#logged + 1] = tostring(msg) end
+local dicts = {}
+for _, lang in ipairs({ "CH", "CN", "EN", "JP" }) do
+    local f = io.open(MEDIA .. "/shared/Translate/" .. lang .. "/IG_UI.json", "rb")
+    dicts[lang] = EC.jsonDecode(f:read("*a"))
+    f:close()
+end
+local dict = dicts.CH
+getTextOrNull = function(key, ...)
+    local s = dict[key]
+    if s == nil then return nil end
+    local args = { ... }
+    return (string.gsub(s, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end))
+end
+getText = function(key, ...) return getTextOrNull(key, ...) or key end
+local okU = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECWidgets.lua")
+local okW = okU and pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECPanelWidgets.lua")
+local U, W = EC.Client.UI or {}, EC.Client.PanelWidgets or {}
+local T = "IGUI_MinidoracatEconomy_"
+local function say(key) return dict[T .. key] end
+local function call(fn, ...) local ok, v = pcall(fn, ...); return ok and v or nil end
+-- TX-1: an integration's refused transfers (ECIntegration reject) have an admin sentence each; the
+-- ones without an argument reuse the player's wording, the rest have one that needs no amount
+local wrong = {}
+for code, key in pairs({ transfer_disabled = "Transfer_Error_transfer_disabled",
+    currency_not_transferable = "Transfer_Error_currency_not_transferable", self_transfer = "Transfer_Error_self_transfer",
+    unknown_recipient = "Transfer_Error_unknown_recipient", recipient_frozen = "Transfer_Error_recipient_frozen",
+    recipient_cap = "Transfer_Error_recipient_cap", transfer_not_allowed = "Admin_Error_transfer_not_allowed",
+    account_too_new = "Admin_Error_account_too_new", amount_range = "Admin_Error_amount_range",
+    daily_limit = "Admin_Error_daily_limit", data_unreadable = "Admin_Error_data_unreadable",
+    no_player = "Admin_Error_no_player" }) do
+    local s = call(U.adminErrorText, code)
+    if s == nil or s ~= say(key) or string.find(s, "%", 1, true) then wrong[#wrong + 1] = code end
+end
+check(okU and #wrong == 0, "TX-1: every integration refusal and admin code reads as an argument-free sentence (" .. table.concat(wrong, ", ") .. ")")
+-- TX-2: one of this mod's own codes reads as words alone, the raw code not appended; a reason code
+-- another mod registered is that mod's identifier, shown inside a translated frame and logged
+logged = {}
+check(call(U.reasonText, "daily_checkin") == say("Kind_checkin") and call(U.reasonText, "player_transfer") == say("Kind_transfer")
+    and call(U.reasonText, "entitlement_refund") == say("Reason_entitlement_refund")
+    and call(U.reasonText, "rent") == string.gsub(say("Reason_custom"), "%%1", "rent")
+    and string.find(table.concat(logged, "\n"), "rent", 1, true) ~= nil
+    and call(U.accountName, "SYSTEM_MINT") == say("Account_mint")
+    and string.find(call(U.accountName, "MOD:watchcord") or "", "watchcord", 1, true) ~= nil
+    and call(U.marketReasonText, "downtime") == say("Reason_auction_downtime")
+    and call(U.marketReasonText, "sold out of stock") == "sold out of stock",
+    "TX-2: own reasons and system accounts read as words without their code; another mod's reason code is framed; an admin's own reason stays as typed")
+-- TX-3: an unknown code reads as the translated generic word and lands in the log, not on screen
+logged = {}
+local shown = { call(U.adminErrorText, "zz_new_code"), call(U.accountClassName, "zz_new_code"),
+    call(U.accountName, "SYSTEM_ZZ_NEW_CODE") }
+local leaked = false
+for i = 1, 3 do if shown[i] == nil or string.find(string.lower(shown[i]), "zz_new_code", 1, true) then leaked = true end end
+check(not leaked and shown[1] == say("Admin_Error_unknown") and shown[2] == say("Common_Unknown")
+    and shown[3] == say("Account_system")
+    and string.find(table.concat(logged, "\n"), "zz_new_code", 1, true) ~= nil,
+    "TX-3: an unknown error, class or system account is a translated word, the code only in the log")
+-- TX-4: the player's pages route each refusal to its own sentence and never show an unknown code
+local blocked = call(W.marketError, { error = "currency_conflict" })
+local unknownShop, unknownHistory, unknownKind = call(W.shopError, "zz_new_code"), call(W.historyError, "zz_new_code"),
+    call(W.marketKindText, "zz_new_code")
+check(okW and blocked == say("Auction_Error_currency_conflict") and unknownShop == say("Shop_Error_unknown")
+    and unknownHistory == say("History_ReadFailed") and unknownKind == say("Common_Unknown"),
+    "TX-4: a held auction says why in its own words; an unknown shop, history or record kind code is a generic sentence")
+-- TX-5: the generic sentences a refusal falls back to carry no placeholder in any language
+local withArg = {}
+for lang, d in pairs(dicts) do
+    for _, key in ipairs({ "Rewards_Error_generic", "Rewards_Blocked_generic", "Leaderboard_Error_generic",
+        "Transfer_Error_other", "Shop_Error_unknown", "Terminal_Error_unknown", "Terminal_Warning_unknown",
+        "Account_system", "Admin_Error_unknown", "Common_Unknown", "History_ReadFailed" }) do
+        local s = d[T .. key]
+        if s == nil or string.find(s, "%", 1, true) then withArg[#withArg + 1] = lang .. ":" .. key end
+    end
+end
+check(#withArg == 0, "TX-5: no generic fallback sentence has a slot a code could be put into (" .. table.concat(withArg, ", ") .. ")")
+require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
+ISButton, ISPanel = saved.ISButton, saved.ISPanel
+end)()
+
+-- ===== 情境 RW：對帳頁把伺服器的代碼與參數組成各語言的句子 =====
+-- ECAdminRecovery's wording of a held record's detail and of a reconciliation audit line, loaded
+-- against the real translation files: a code with its facts becomes the language's own sentence,
+-- a line an older build stored as English is shown as stored, an unknown code is the translated
+-- generic word with the code only in the log.
+io.write("scenario RW: reconciliation codes are worded by the page\n")
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client, log = EC.log,
+    ISButton = ISButton, ISPanel = ISPanel }
+local logged = {}
+local function derive(self) return setmetatable({}, { __index = self }) end
+require = function() return true end
+ISButton, ISPanel = { derive = derive }, { derive = derive }
+EC.Client = {}
+EC.log = function(msg) logged[#logged + 1] = tostring(msg) end
+local dicts = {}
+for _, lang in ipairs({ "CH", "EN" }) do
+    local f = io.open(MEDIA .. "/shared/Translate/" .. lang .. "/IG_UI.json", "rb")
+    dicts[lang] = EC.jsonDecode(f:read("*a"))
+    f:close()
+end
+local dict = dicts.EN
+getTextOrNull = function(key, ...)
+    local s = dict[key]
+    if s == nil then return nil end
+    local args = { ... }
+    return (string.gsub(s, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end))
+end
+getText = function(key, ...) return getTextOrNull(key, ...) or key end
+local okU = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECWidgets.lua")
+local okR = okU and pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECAdminRecovery.lua")
+local P = EC.Client.AdminRecovery or {}
+local T = "IGUI_MinidoracatEconomy_"
+local function say(key, ...) return getText(T .. key, ...) end
+local function call(fn, ...) local ok, v = pcall(fn, ...); return ok and v or nil end
+local function loggedCode(code)
+    for _, line in ipairs(logged) do if string.find(line, code, 1, true) then return true end end
+    return false
+end
+-- RW-1: a held record's detail code takes its facts in the language's own order
+local superseded = { detailCode = "claim_superseded", claimSeq = 12, seq = 9 }
+local en = call(P.detailText, superseded)
+dict = dicts.CH
+local ch = call(P.detailText, superseded)
+dict = dicts.EN
+check(okR and en == say("Admin_Rec_Detail_claim_superseded", "12", "9") and en ~= nil and string.find(en, "%", 1, true) == nil
+    and ch == dicts.CH[T .. "Admin_Rec_Detail_claim_superseded"]:gsub("%%1", "12"):gsub("%%2", "9")
+    and call(P.detailText, { detailCode = "admin_remove_partial", removed = 19, stuck = 1 }) == say("Admin_Rec_Detail_admin_remove_partial", "19", "1")
+    and call(P.detailText, { detailCode = "letter_ready" }) == say("Admin_Rec_Detail_letter_ready"),
+    "RW-1: a detail code becomes the sentence of the reader's language with the record's own facts in it")
+-- RW-2: prose an older build stored is shown as stored; an unknown code is the generic word, logged
+check(call(P.detailText, { detail = "letter state ready" }) == "letter state ready"
+    and call(P.detailText, { detailCode = "zz_new_detail" }) == say("Common_Unknown") and loggedCode("zz_new_detail")
+    and call(P.detailText, {}) == nil,
+    "RW-2: an old stored detail stays as written, an unknown detail code reads as Unknown and goes to the log")
+-- RW-3: the audit change column of each reconciliation decision
+local held = say("Admin_Audit_Rec_Held", say("Admin_Rec_Reason_legacy_claim_rolledback"))
+check(call(P.auditChangeText, { after = "remove", before = "legacy_claim_rolledback", removed = 19, stuck = 1, qty = 19 })
+        == say("Admin_Audit_Rec_remove", "19", "1") .. "  /  " .. held
+    and call(P.auditChangeText, { after = "approve", before = "legacy_source_pruned", qty = 2, refused = 0 })
+        == say("Admin_Audit_Rec_approve", "2", "0") .. "  /  " .. say("Admin_Audit_Rec_Held", say("Admin_Rec_Reason_legacy_source_pruned"))
+    and call(P.auditChangeText, { after = "restore", before = "journal_missing", proof = "player_claim", proofState = "journal_missing",
+        mailId = "m-7", qty = 3 }) == say("Admin_Audit_Rec_restore", "3", "m-7") .. "  /  "
+        .. say("Admin_Audit_Rec_Held", say("Admin_Rec_Reason_journal_missing")) .. "  /  " .. say("Admin_Rec_Proof_player_claim")
+    and call(P.auditChangeText, { after = "discard", before = "pending_not_in_save" })
+        == say("Admin_Audit_Rec_discard") .. "  /  " .. say("Admin_Audit_Rec_Held", say("Admin_Rec_Reason_pending_not_in_save"))
+    and call(P.auditChangeText, { after = "reclaimed" }) == say("Admin_Audit_Value_reclaimed"),
+    "RW-3: approve, remove, restore, discard and the automatic reclaim each read as a sentence built from their codes and counts")
+-- RW-4: an audit line an older build wrote stays as written; an unknown decision is the generic word
+check(call(P.auditChangeText, { before = "legacy_claim_rolledback/rolledback/20", after = "remove removed=19 stuck=1 ids=1,2" })
+        == "legacy_claim_rolledback/rolledback/20 -> remove removed=19 stuck=1 ids=1,2"
+    and call(P.auditChangeText, { after = "zz_new_decision" }) == say("Common_Unknown") and loggedCode("zz_new_decision")
+    and string.find(call(P.auditChangeText, { after = "remove", before = "zz_new_reason", removed = 1, stuck = 0 }) or "", "zz_new_reason", 1, true) == nil,
+    "RW-4: an old composed audit line is the stored record; an unknown decision or reason code never reaches the screen")
+-- RW-5: the audit detail and its copied text keep what the decision acted on, labelled, the
+-- identifiers verbatim
+local approvedFacts = call(P.auditFactLines, { action = "recovery", field = "legacy:m-3", after = "approve",
+    before = "legacy_source_pruned", sourceState = "pruned", presentQty = 2, mailId = "m-3", ids = "m-3#L11,m-3#L12" }) or {}
+local removedFacts = call(P.auditFactLines, { action = "recovery", field = "legacy:m-4", after = "remove",
+    sourceState = "zz_new_state", ids = "41,42" }) or {}
+local oldFacts = call(P.auditFactLines, { action = "recovery", field = "legacy:m-5", after = "remove removed=1 stuck=0 ids=5" }) or {}
+local function has(list, s) for _, l in ipairs(list) do if l == s then return true end end return false end
+check(#approvedFacts == 5 and has(approvedFacts, say("Admin_Tx_Pair", say("Admin_Rec_Key"), "legacy:m-3"))
+    and has(approvedFacts, say("Admin_Tx_Pair", say("Admin_Rec_Mail"), "m-3"))
+    and has(approvedFacts, say("Admin_Rec_Source_pruned")) and has(approvedFacts, say("Admin_Rec_DPresent", "2"))
+    and has(approvedFacts, say("Admin_Rec_Token", "m-3#L11,m-3#L12"))
+    and has(removedFacts, say("Admin_Tx_Pair", say("Admin_Rec_NativeIds"), "41,42"))
+    and has(removedFacts, say("Common_Unknown")) and not has(removedFacts, "zz_new_state")
+    and #oldFacts == 1 and oldFacts[1] == say("Admin_Tx_Pair", say("Admin_Rec_Key"), "legacy:m-5"),
+    "RW-5: the audit detail lists the record, its letter, source state, objects present and the approved tokens or removed ids, each labelled, the ids as written")
+require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
+ISButton, ISPanel = saved.ISButton, saved.ISPanel
+end)()
+
+-- ===== 情境 FE：白名單／商品目錄的載入錯誤與商品稽核由客戶端組句 =====
+-- ECWidgets' wording of a refused whitelist.json / catalog.json and of a catalog / whitelist audit
+-- line, loaded against the real translation files: a code with its facts becomes the reader's
+-- sentence, an older stored line is left to the caller, an unknown code only reaches the log.
+io.write("scenario FE: file refusals and catalog audit lines are worded by the client\n")
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client, log = EC.log,
+    ISButton = ISButton, ISPanel = ISPanel }
+local logged = {}
+local function derive(self) return setmetatable({}, { __index = self }) end
+require = function() return true end
+ISButton, ISPanel = { derive = derive }, { derive = derive }
+EC.Client = {}
+EC.log = function(msg) logged[#logged + 1] = tostring(msg) end
+local dicts = {}
+for _, lang in ipairs({ "CH", "EN" }) do
+    local f = io.open(MEDIA .. "/shared/Translate/" .. lang .. "/IG_UI.json", "rb")
+    dicts[lang] = EC.jsonDecode(f:read("*a"))
+    f:close()
+end
+local dict = dicts.EN
+getTextOrNull = function(key, ...)
+    local s = dict[key]
+    if s == nil then return nil end
+    local args = { ... }
+    return (string.gsub(s, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end))
+end
+getText = function(key, ...) return getTextOrNull(key, ...) or key end
+local okU = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECWidgets.lua")
+local U = EC.Client.UI or {}
+EC.Client.itemLabel = function(fullType) return "label:" .. fullType end
+local T = "IGUI_MinidoracatEconomy_"
+local function say(key, ...) return getText(T .. key, ...) end
+local function call(fn, ...) local ok, v = pcall(fn, ...); return ok and v or nil end
+local function cur(id) return getText(EC.CURRENCIES[id].nameKey) end
+-- FE-5: each failure becomes the sentence of the reader's language, placed at its row
+local range = { code = "range", field = "prices.survivor.bidPrice", min = 0, max = 4, id = "q", index = 1 }
+local function expectRange()
+    return say("Admin_FileErr", say("Admin_Error_catalog_invalid"),
+        say("Admin_FileErr_AtId", "q", say("Admin_FileErr_range", "prices.survivor.bidPrice", "0", "4")))
+end
+local en, enWant = call(U.fileErrorText, "catalog_invalid", range), expectRange()
+dict = dicts.CH
+local ch, chWant = call(U.fileErrorText, "catalog_invalid", range), expectRange()
+local chEntry = call(U.fileErrorDetail, { code = "bad_entry", field = "categories", entry = 2, max = 128 })
+local chEntryWant = say("Admin_FileErr_bad_entry", "categories", "2", "128")
+dict = dicts.EN
+check(okU and en ~= nil and en == enWant and ch == chWant and en ~= ch and string.find(en .. ch, "%", 1, true) == nil
+    and chEntry == chEntryWant
+    and call(U.fileErrorDetail, { code = "row_not_object", index = 2 }) == say("Admin_FileErr_AtIndex", "2", say("Admin_FileErr_row_not_object"))
+    and call(U.fileErrorDetail, { code = "json", line = 3 }) == say("Admin_FileErr_json_line", "3")
+    and call(U.fileErrorDetail, { code = "json" }) == say("Admin_FileErr_json")
+    and call(U.fileErrorDetail, { code = "arbitrage", field = "prices", id = "a", currency = "survivor", otherId = "b", otherCurrency = "cat" })
+        == say("Admin_FileErr_arbitrage", "a", cur("survivor"), "b", cur("cat")),
+    "FE-5: a file failure reads as the reader's sentence with its field, bounds and row; an arbitrage pair names both currencies")
+-- FE-6: an unknown failure code reads as the refusal alone, the code only in the log
+logged = {}
+check(call(U.fileErrorText, "whitelist_invalid", { code = "zz_new_failure", field = "x" }) == say("Admin_Error_whitelist_invalid")
+    and call(U.fileErrorText, "file_unreadable", nil) == say("Admin_Error_file_unreadable")
+    and string.find(table.concat(logged, "\n"), "zz_new_failure", 1, true) ~= nil,
+    "FE-6: an unknown failure code leaves only the translated refusal on screen and goes to the log")
+-- FE-7: catalog / whitelist audit lines written as facts; older composed lines are left to the caller
+local q1 = say("Admin_Audit_CatalogQuote", cur("survivor"), "20", "8")
+local q2 = say("Admin_Audit_CatalogQuote", cur("cat"), "1,500", "0")
+check(call(U.catalogAuditText, { action = "catalog", field = "add", target = "pack", item = "Base.Twine", qty = 2,
+        quotes = { { currency = "survivor", price = 20, bidPrice = 8 }, { currency = "cat", price = 1500, bidPrice = 0 } } })
+        == say("Admin_Audit_CatalogAdd", "label:Base.Twine", "2", q1 .. say("Admin_Set_ListSep") .. q2)
+    and call(U.catalogAuditText, { action = "catalog", field = "reload", ok = true, count = 13 }) == say("Admin_Shop_Reloaded", "13")
+    and call(U.catalogAuditText, { action = "whitelist", field = "reload", ok = true }) == say("Admin_Wl_Reloaded")
+    and call(U.catalogAuditText, { action = "catalog", field = "reload", ok = false, errorCode = "arbitrage_rejected",
+        errorDetail = { code = "no_price", field = "prices", id = "x" } })
+        == say("Admin_FileErr", say("Admin_Error_arbitrage_rejected"), say("Admin_FileErr_AtId", "x", say("Admin_FileErr_no_price")))
+    and call(U.catalogAuditText, { action = "catalog", field = "add", after = "Base.Axe x1 @survivor:20/8" }) == nil
+    and call(U.catalogAuditText, { action = "whitelist", field = "reload", after = "error: json: x" }) == nil
+    and call(U.catalogAuditText, { action = "catalog", field = "qty", before = 1, after = 2 }) == nil,
+    "FE-7: a new SKU, a reload and a refused reload read as sentences; an older stored line and a field edit are left to the generic change text")
+require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
+ISButton, ISPanel = saved.ISButton, saved.ISPanel
 end)()
 
 io.write("\n")

@@ -61,7 +61,7 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [h2]📅 Seasons and integration plans[/h2]
 [list]
 [*] [b]Seasons[/b]: Admin - Seasons shows current and past seasons. With role-management permission set the length (real days, 0 = manual) or start the next season; balances and characters are kept.
-[*] [b]Integration plans[/b]: each mod sets the price, currency, limits and rental period of its own paid slots (Vehicle Manager: its settings file and in-game settings window); this page shows the current terms, where they were last changed and any settings file error, and looks up entitlements and refunds orders.
+[*] [b]Integration plans[/b]: each mod sets the price, currency, limits and rental period of its own paid slots (Vehicle Manager: its settings file and in-game settings window). Plans shows the current terms, where they were last changed and any settings file error. Accounts & refunds lists every player's slot orders, newest first; an order that can be refunded has its own Refund... button, and the confirmation says how much goes back to whom and what happens to the slots or rental. Click an order to see only that player.
 [/list]
 
 [h2]💾 World saves and companion[/h2]

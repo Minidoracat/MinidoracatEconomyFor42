@@ -44,10 +44,11 @@
 --     online and sends each one the existing recheck. Offline accounts are named as skipped;
 --   * no second record window -- a picked row is spelled out in the session's C.DetailWindow.
 --
--- The copied block keeps ASCII tags for the opaque identifiers (key / mail / op / tx / epoch /
--- seq / native / revision): those are pasted into a ticket or read back to the server, and a
--- localised tag in front of them is noise. Everything a human judges -- the account, the reason,
--- the source state, the save verdict, the item, the quantities, the time -- is translated.
+-- Every word on this page is a translation: the identifiers a host pastes into a ticket or reads
+-- back to the server (key / mail / operation / transaction / epoch / seq / item ids / revision)
+-- are data and printed as they are, but each one carries a translated label, and every code the
+-- server sends (reason, source state, verdict, kind, origin, save status, detail) is worded here.
+-- A code this build does not know reads as the shared "unknown" and is logged once (U.unknownText).
 --
 -- Engine references (snapshot 42.20.4-20260826):
 --   UIElement.java:1069-1092   children are hit-tested back to front, so a row's own buttons take
@@ -97,31 +98,21 @@ local function lineH() return fontH.small + 6 end
 local function chipH() return math.max(24, fontH.small + 10) end
 local function entryH() return math.max(22, fontH.small + 10) end
 
--- Every value the server may put in one of these fields is shown by its own translated line
--- when we have one, and by the raw token when we do not: a reason, a source state or a save
--- verdict this build has never seen is still readable instead of blank.
-local function reasonText(reason)
-    local raw = tostring(reason or "unknown")
-    return getTextOrNull(T .. "Admin_Rec_Reason_" .. raw) or raw
+-- Every value the server may put in one of these fields is shown by its own translated line; a
+-- value this build has never seen reads as the translated "unknown" and is logged, never printed.
+local function enumText(prefix, what, value)
+    local raw = tostring(value or "unknown")
+    return getTextOrNull(T .. prefix .. raw) or U.unknownText(what, raw)
 end
 
-local function sourceText(state)
-    local raw = tostring(state or "unknown")
-    return getTextOrNull(T .. "Admin_Rec_Source_" .. raw) or raw
-end
-
-local function verdictText(verdict)
-    local raw = tostring(verdict or "unknown")
-    return getTextOrNull(T .. "Admin_Rec_Verdict_" .. raw) or raw
-end
-
-local function decisionLabel(id)
-    return getTextOrNull(T .. "Admin_Rec_Do_" .. tostring(id)) or tostring(id)
-end
-
-local function stateLabel(state)
-    return getTextOrNull(T .. "Admin_Rec_State_" .. tostring(state)) or tostring(state)
-end
+local function reasonText(reason) return enumText("Admin_Rec_Reason_", "recovery reason", reason) end
+local function sourceText(state) return enumText("Admin_Rec_Source_", "recovery source state", state) end
+local function verdictText(verdict) return enumText("Admin_Rec_Verdict_", "recovery verdict", verdict) end
+local function decisionLabel(id) return enumText("Admin_Rec_Do_", "recovery decision", id) end
+local function stateLabel(state) return enumText("Admin_Rec_State_", "recovery batch state", state) end
+local function kindText(kind) return enumText("Admin_Rec_Kind_", "recovery kind", kind) end
+local function originText(src) return enumText("Admin_Rec_Origin_", "recovery origin", src) end
+local function durableText(status) return enumText("Admin_Rec_Durable_", "save confirmation status", status) end
 
 -- Where a record's economic content comes from. "journal" is the server's own authoritative
 -- evidence for that operation; "player_claim" is the opposite -- there is no evidence, only what
@@ -130,7 +121,7 @@ end
 -- as a reconciliation the server carried out. nil means the field does not apply to this record.
 local function proofText(source)
     if type(source) ~= "string" or source == "" then return nil end
-    return getTextOrNull(T .. "Admin_Rec_Proof_" .. source) or source
+    return enumText("Admin_Rec_Proof_", "recovery proof", source)
 end
 
 -- Why a record permits nothing, in the server's own words. `rec.actions` is the only truth about
@@ -141,7 +132,106 @@ local function blockedText(code)
     local raw = tostring(code or "")
     if raw == "" then return nil end
     return getTextOrNull(T .. "Admin_Rec_Blocked_" .. raw)
-        or getTextOrNull(T .. "Admin_Rec_Reason_" .. raw) or raw
+        or getTextOrNull(T .. "Admin_Rec_Reason_" .. raw) or U.unknownText("recovery blocked", raw)
+end
+
+-- A refusal of one write: the record's own blocked / reason code when it is one, otherwise an
+-- ordinary admin error (which has its own unknown fallback).
+local function refusalText(code)
+    local raw = tostring(code or "")
+    return getTextOrNull(T .. "Admin_Rec_Blocked_" .. raw) or getTextOrNull(T .. "Admin_Rec_Reason_" .. raw)
+        or U.adminErrorText(code)
+end
+
+local function pair(labelKey, value) return getText(T .. "Admin_Tx_Pair", getText(T .. labelKey), value) end
+
+-- The fact behind a held record's reason. New records carry `detailCode` and the code's own
+-- fields; the template decides the word order. `detail` is prose an older build stored in the
+-- save, shown as it was written (it is never rewritten). nil when the record says nothing more.
+local DETAIL_ARGS = {
+    letter_ambiguous = { "mailId" }, no_placeholder = { "mailId" },
+    claim_lost = { "epoch", "seq" }, claim_superseded = { "claimSeq", "seq" },
+    unit_transferred = { "unitToken" }, admin_remove_partial = { "removed", "stuck" },
+}
+local function detailText(rec)
+    local code = rec.detailCode
+    if type(code) == "string" and code ~= "" then
+        local args = {}
+        for i, field in ipairs(DETAIL_ARGS[code] or {}) do
+            local v = rec[field]
+            args[i] = (type(v) == "string" or type(v) == "number") and tostring(v) or "-"
+        end
+        local key = T .. "Admin_Rec_Detail_" .. code
+        if getTextOrNull(key) == nil then return U.unknownText("recovery detail", code) end
+        if #args == 2 then return getText(key, args[1], args[2]) end
+        if #args == 1 then return getText(key, args[1]) end
+        return getText(key)
+    end
+    if type(rec.detail) == "string" and rec.detail ~= "" then return rec.detail end
+    return nil
+end
+P.detailText = detailText
+
+local function count(v)
+    local n = tonumber(v)
+    return n ~= nil and tostring(math.floor(n)) or "-"
+end
+
+-- The change column of an audit line about a reconciliation decision (action "recovery"). New lines
+-- carry the decision code in `after`, the held reason in `before` and the facts in fields of their
+-- own; a line an older build wrote holds an English sentence there instead, which is the stored
+-- record and is shown as it is. Pieces are complete phrases joined by the page's own separator.
+local function isCode(v) return type(v) == "string" and string.match(v, "^[%w_]+$") ~= nil end
+function P.auditChangeText(e)
+    local after, before = e.after, e.before
+    if not isCode(after) or (before ~= nil and not isCode(before)) then
+        local old = {}
+        if before ~= nil then old[#old + 1] = tostring(before) end
+        if after ~= nil then old[#old + 1] = tostring(after) end
+        return #old > 0 and table.concat(old, " -> ") or nil
+    end
+    local parts = {}
+    if after == "approve" then
+        parts[1] = getText(T .. "Admin_Audit_Rec_approve", count(e.qty), count(e.refused))
+    elseif after == "remove" then
+        parts[1] = getText(T .. "Admin_Audit_Rec_remove", count(e.removed or e.qty), count(e.stuck))
+    elseif after == "restore" and type(e.mailId) == "string" and e.mailId ~= "" then
+        parts[1] = getText(T .. "Admin_Audit_Rec_restore", count(e.qty), e.mailId)
+    elseif after == "restore" or after == "discard" then
+        parts[1] = tr(after == "discard" and "Admin_Audit_Rec_discard" or "Admin_Audit_Rec_restoreVoid")
+    else
+        parts[1] = getTextOrNull(T .. "Admin_Audit_Value_" .. after) or U.unknownText("recovery decision", after)
+    end
+    if before ~= nil then parts[#parts + 1] = getText(T .. "Admin_Audit_Rec_Held", reasonText(before)) end
+    local proof = proofText(e.proof)
+    if proof ~= nil then parts[#parts + 1] = proof end
+    if type(e.proofState) == "string" and e.proofState ~= before then
+        parts[#parts + 1] = getText(T .. "Admin_Rec_ProofState", reasonText(e.proofState))
+    end
+    return table.concat(parts, "  /  ")
+end
+
+-- The facts a reconciliation audit line carries besides its change column, one labelled line each
+-- for the audit detail and its copied text: the record, its letter, the source state and the
+-- objects still present that the decision was taken on, and the exact identifiers it approved
+-- (unit tokens) or removed (engine item ids). The identifiers are data and stay as written.
+function P.auditFactLines(e)
+    local out = {}
+    if type(e) ~= "table" then return out end
+    local function text(v) return (type(v) == "string" and v ~= "") and v or nil end
+    local key, mail, ids = text(e.field), text(e.mailId), text(e.ids)
+    if key then out[#out + 1] = pair("Admin_Rec_Key", key) end
+    if mail then out[#out + 1] = pair("Admin_Rec_Mail", mail) end
+    if text(e.sourceState) and isCode(e.after) then out[#out + 1] = sourceText(e.sourceState) end
+    if tonumber(e.presentQty) and isCode(e.after) then
+        out[#out + 1] = getText(T .. "Admin_Rec_DPresent", count(e.presentQty))
+    end
+    if ids and e.after == "approve" then
+        out[#out + 1] = getText(T .. "Admin_Rec_Token", ids)
+    elseif ids then
+        out[#out + 1] = pair("Admin_Rec_NativeIds", ids)
+    end
+    return out
 end
 
 -- The one diagnostic a malformed record can offer: which part of the evidence is wrong. The
@@ -992,7 +1082,7 @@ function Page:recordResult(item, state, code, result)
     if job == nil or item == nil then return end
     job.counts[state] = (job.counts[state] or 0) + 1
     local line = tostring(item.username) .. "  " .. tostring(item.key or "-") .. "  " .. stateLabel(state)
-    if code ~= nil then line = line .. "  (" .. tostring(code) .. ")" end
+    if code ~= nil then line = line .. "  " .. refusalText(code) end
     if type(result) == "table" then
         for _, key in ipairs({ "removed", "stuck", "refused", "qty" }) do
             if type(result[key]) == "number" then
@@ -1000,7 +1090,7 @@ function Page:recordResult(item, state, code, result)
             end
         end
         if str(result.approvalToken) then line = line .. "  " .. getText(T .. "Admin_Rec_Token", result.approvalToken) end
-        if str(result.mailId) then line = line .. "  mail " .. result.mailId end
+        if str(result.mailId) then line = line .. "  " .. pair("Admin_Rec_Mail", result.mailId) end
     end
     job.lines[#job.lines + 1] = line
 end
@@ -1298,7 +1388,7 @@ function Page:previewLines(rec)
             local id = type(origin) == "table" and (str(origin.nativeId) or str(origin.id)) or str(origin)
             local src = type(origin) == "table" and str(origin.src) or nil
             id = id or tr("Admin_Rec_PreviewMissing")
-            ids[#ids + 1] = src ~= nil and (id .. " (" .. src .. ")") or id
+            ids[#ids + 1] = src ~= nil and getText(T .. "Admin_Rec_OriginItem", id, originText(src)) or id
         end
         out[#out + 1] = getText(T .. "Admin_Rec_PreviewOrigins", table.concat(ids, ", "))
     end
@@ -1426,27 +1516,26 @@ function Page:recordText(rec, user)
     local at = intOf(rec.at)
     if at then lines[#lines + 1] = getText(T .. "Admin_Rec_DAt", stampText(at, self.owner.offsetMin)) end
     lines[#lines + 1] = ""
-    -- ASCII tags from here down: these are the identifiers a host pastes into a ticket or reads
-    -- back to the server, and a localised label in front of them would only be in the way
-    lines[#lines + 1] = "key      " .. tostring(rec.key or "-")
+    -- The identifiers a host pastes into a ticket or reads back to the server: the values are
+    -- data and stay as they are, each behind its translated label
+    lines[#lines + 1] = pair("Admin_Rec_Key", tostring(rec.key or "-"))
     local mail, op, tx, kind = str(rec.mailId), str(rec.opId), str(rec.txId), str(rec.kind)
-    if mail then lines[#lines + 1] = "mail     " .. mail end
-    if op then lines[#lines + 1] = "op       " .. op end
-    if tx then lines[#lines + 1] = "tx       " .. tx end
-    if kind then lines[#lines + 1] = "kind     " .. kind end
+    if mail then lines[#lines + 1] = pair("Admin_Rec_Mail", mail) end
+    if op then lines[#lines + 1] = pair("Admin_Rec_Operation", op) end
+    if tx then lines[#lines + 1] = pair("Admin_Tx_Field_Id", tx) end
+    if kind then lines[#lines + 1] = pair("Admin_Tx_Field_Kind", kindText(kind)) end
     local epoch, seq = str(rec.epoch), intOf(rec.seq)
-    if epoch or seq then
-        lines[#lines + 1] = "epoch    " .. tostring(epoch or "-") .. " / seq " .. tostring(seq or "-")
-    end
+    if epoch then lines[#lines + 1] = pair("Admin_Sys_Epoch", epoch) end
+    if seq then lines[#lines + 1] = pair("Admin_Sys_Seq", tostring(seq)) end
     if type(rec.nativeIds) == "table" and #rec.nativeIds > 0 then
         local ids = {}
         for i, id in ipairs(rec.nativeIds) do ids[i] = tostring(id) end
-        lines[#lines + 1] = "native   " .. table.concat(ids, ", ")
+        lines[#lines + 1] = pair("Admin_Rec_NativeIds", table.concat(ids, ", "))
     end
-    local detail = str(rec.detail)
-    if detail then lines[#lines + 1] = "detail   " .. detail end
+    local detail = detailText(rec)
+    if detail then lines[#lines + 1] = pair("Admin_Rec_Detail", detail) end
     local revision = str(rec.revision)
-    if revision then lines[#lines + 1] = "revision " .. revision end
+    if revision then lines[#lines + 1] = pair("Common_Revision", revision) end
     -- A record with nothing to do is the honest answer to "why can I not fix this": the reason
     -- above says what is missing, and no fallback decision is offered in its place.
     local flags = type(rec.actions) == "table" and rec.actions or nil
@@ -1678,9 +1767,9 @@ function Page:refreshStatus()
             lines[#lines + 1] = getText(T .. "Recovery_WaitingSave", tostring(open), tostring(maximum))
         end
         local seq = intOf(status.durableSeq)
-        lines[#lines + 1] = tr("Admin_Sys_Durable") .. ": "
-            .. (seq ~= nil and amountText(seq) or tr("Admin_Sys_DurableNone"))
-            .. "  (" .. tostring(status.durableStatus or "-") .. ")"
+        local durable = pair("Admin_Sys_Durable", seq ~= nil and amountText(seq) or tr("Admin_Sys_DurableNone"))
+        if str(status.durableStatus) then durable = durable .. "  " .. durableText(status.durableStatus) end
+        lines[#lines + 1] = durable
         if status.durableSource ~= "companion" then lines[#lines + 1] = tr("Recovery_NoWatermark") end
     elseif busy then
         lines[#lines + 1] = tr("Admin_Loading")

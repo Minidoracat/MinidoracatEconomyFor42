@@ -103,11 +103,130 @@ function U.init()
     return ui
 end
 
--- Shared by the admin controller and its transaction page.
+-- Every word on screen comes from the four translation files. A code with no sentence (a newer
+-- server, a value another mod added) is written to the log once and never shown.
+local unknownLogged = {}
+local function logUnknown(what, code)
+    local tag = tostring(what) .. ": " .. tostring(code)
+    if unknownLogged[tag] then return end
+    unknownLogged[tag] = true
+    EC.log("no translation for " .. tag)
+end
+-- A refusal with no sentence of its own reads as its page's generic one; the caller logs the code.
+U.logUnknown = logUnknown
+
+-- An enumerated value (state, kind, origin...) the translation files do not know.
+function U.unknownText(what, code)
+    logUnknown(what, code)
+    return getText(T .. "Common_Unknown")
+end
+
+-- Shared by the admin controller and its transaction page. An integration source's refused
+-- transfers are counted by code alone (ECIntegration reject); the player's transfer sentences that
+-- take no argument read the same to an admin, the ones that quote an amount or a date have an
+-- Admin_Error_* of their own.
+local TRANSFER_ERROR = { transfer_disabled = true, currency_not_transferable = true, self_transfer = true,
+    unknown_recipient = true, recipient_frozen = true, recipient_cap = true }
 function U.adminErrorText(code)
     local key = tostring(code == nil and "unknown" or code)
-    return getTextOrNull(T .. "Admin_Error_" .. key) or getTextOrNull(T .. "Market_Error_" .. key)
-        or getText(T .. "Admin_Error_generic", key)
+    local s = getTextOrNull(T .. "Admin_Error_" .. key) or getTextOrNull(T .. "Market_Error_" .. key)
+        or (TRANSFER_ERROR[key] and getTextOrNull(T .. "Transfer_Error_" .. key))
+    if s then return s end
+    logUnknown("admin error", key)
+    return getText(T .. "Admin_Error_unknown")
+end
+
+-- A market record's reason: the one the server writes itself (an auction cancelled by downtime)
+-- reads as words; anything else is what an admin typed and is shown as written.
+local MARKET_REASON_KEY = { downtime = "Reason_auction_downtime" }
+function U.marketReasonText(reason)
+    local key = MARKET_REASON_KEY[reason]
+    if key then return getText(T .. key) end
+    return reason
+end
+
+-- An actor column names a player, or one of the server's own actors.
+local ACTOR_KEY = { SYSTEM = "Actor_SYSTEM", COMPANION = "Actor_COMPANION" }
+function U.actorText(actor)
+    local key = ACTOR_KEY[actor]
+    if key then return getText(T .. key) end
+    return tostring(actor or "-")
+end
+
+-- A whitelist.json / catalog.json the server refused arrives as a code plus facts (ECCodec
+-- stringSet, ECShop validateSku): every code's sentence names its arguments in this order. JSON
+-- field names, the item id and an unregistered currency id stay as written - they are what the
+-- host goes and finds in the file; the two currencies of an arbitrage pair are named.
+local FILE_ERR_ARGS = {
+    json = {}, unavailable = {}, row_not_object = {}, no_price = {}, duplicate_id = {},
+    json_line = { "line" }, not_array = { "field" }, not_object = { "field" }, bad_scope = { "field" },
+    not_boolean = { "field" }, mixed_prices = { "field" }, buyback_needs_bid = { "field" },
+    no_items = { "field" }, too_many = { "field", "max" }, bad_entry = { "field", "entry", "max" },
+    bad_id = { "field", "max" }, bad_text = { "field", "max" }, unknown_item = { "field", "item" },
+    range = { "field", "min", "max" }, unknown_currency = { "currency" },
+    arbitrage = { "id", "currency", "otherId", "otherCurrency" },
+}
+
+-- The sentence for one failure table, placed at its catalog row (id, else 1-based index) when it
+-- has one; nil (logged) for a code this client does not know.
+function U.fileErrorDetail(d)
+    if type(d) ~= "table" then return nil end
+    local code = d.code == "json" and d.line ~= nil and "json_line" or d.code
+    local names = FILE_ERR_ARGS[code]
+    if names == nil then
+        logUnknown("file error", d.code)
+        return nil
+    end
+    local a = {}
+    for i, name in ipairs(names) do
+        local v = d[name]
+        if code == "arbitrage" and (name == "currency" or name == "otherCurrency") then v = U.currencyName(v) end
+        a[i] = v == nil and "-" or tostring(v)
+    end
+    local key = T .. "Admin_FileErr_" .. code
+    local s
+    if #a == 0 then s = getText(key)
+    elseif #a == 1 then s = getText(key, a[1])
+    elseif #a == 2 then s = getText(key, a[1], a[2])
+    elseif #a == 3 then s = getText(key, a[1], a[2], a[3])
+    else s = getText(key, a[1], a[2], a[3], a[4]) end
+    if code == "arbitrage" then return s end   -- names both rows itself
+    if d.id ~= nil then return getText(T .. "Admin_FileErr_AtId", tostring(d.id), s) end
+    if d.index ~= nil then return getText(T .. "Admin_FileErr_AtIndex", tostring(d.index), s) end
+    return s
+end
+
+-- The refusal code's own sentence, followed by what the file got wrong when the server said.
+function U.fileErrorText(code, detail)
+    local head = U.adminErrorText(code)
+    local tail = U.fileErrorDetail(detail)
+    if tail == nil then return head end
+    return getText(T .. "Admin_FileErr", head, tail)
+end
+
+-- The audit page's change column for a catalog / whitelist line the server wrote as facts
+-- (ECShop.add, ECShop.reload, ECCodec.reload): a new SKU's item, lot size and every quote; a
+-- reload's outcome, or the same refusal the page shows. nil for anything else, including the
+-- older lines that carried a sentence in `after` - those read as they were stored.
+function U.catalogAuditText(e)
+    if type(e) ~= "table" or (e.action ~= "catalog" and e.action ~= "whitelist") then return nil end
+    if e.field == "reload" and type(e.ok) == "boolean" then
+        if not e.ok then return U.fileErrorText(e.errorCode, e.errorDetail) end
+        if e.action == "catalog" then return getText(T .. "Admin_Shop_Reloaded", tostring(tonumber(e.count) or 0)) end
+        return getText(T .. "Admin_Wl_Reloaded")
+    end
+    if e.action == "catalog" and e.field == "add" and type(e.quotes) == "table" then
+        local parts = {}
+        for _, q in ipairs(e.quotes) do
+            if type(q) == "table" then
+                parts[#parts + 1] = getText(T .. "Admin_Audit_CatalogQuote", U.currencyName(q.currency),
+                    U.amountText(q.price), U.amountText(q.bidPrice))
+            end
+        end
+        return getText(T .. "Admin_Audit_CatalogAdd", U.itemName(e.item), tostring(tonumber(e.qty) or 1),
+            #parts > 0 and table.concat(parts, getText(T .. "Admin_Set_ListSep")) or "-")
+    end
+    return nil
 end
 
 function U.currencyDefs()
@@ -481,32 +600,25 @@ end
 --
 -- The ledger's account namespace is flat and its internal accounts are raw keys (SYSTEM_MINT,
 -- MOD:<modId>, EXTERNAL_DISCORD_<currency>). A player account is the username itself and is
--- never translated; everything else reads as words, with the raw key kept wherever an admin
--- reconciles against the event files (withId).
+-- never translated; everything else reads as words and the raw key never reaches the screen
+-- (an integration names itself by its mod ID, which is data).
 local ACCOUNT_KEY = { SYSTEM_MINT = "Account_mint", SYSTEM_BURN = "Account_burn", SYSTEM_ADJUST = "Account_adjust" }
 local MOD_PREFIX_LEN = #"MOD:"
 local DISCORD_PREFIX_LEN = #"EXTERNAL_DISCORD_"
 
-function U.accountName(account, withId)
+function U.accountName(account)
     if type(account) ~= "string" or account == "" then return "-" end
     local cls = EC.accountClass(account)
     if cls == "player" then return account end
-    local name
     local key = ACCOUNT_KEY[account]
-    if key then
-        name = getText(T .. key)
-    elseif cls == "mod" then
-        name = getText(T .. "Account_mod", string.sub(account, MOD_PREFIX_LEN + 1))
-    elseif cls == "discord" then
-        name = getText(T .. "Account_discord", C.currencyName(string.sub(account, DISCORD_PREFIX_LEN + 1)))
-    else
-        -- an unmapped SYSTEM_/EXTERNAL_ account: say it is one and show which
-        name = getText(T .. "Account_system", account)
+    if key then return getText(T .. key) end
+    if cls == "mod" then return getText(T .. "Account_mod", string.sub(account, MOD_PREFIX_LEN + 1)) end
+    if cls == "discord" then
+        return getText(T .. "Account_discord", C.currencyName(string.sub(account, DISCORD_PREFIX_LEN + 1)))
     end
-    if withId and not string.find(name, account, 1, true) then
-        name = name .. " (" .. account .. ")"
-    end
-    return name
+    -- an unmapped SYSTEM_/EXTERNAL_ account
+    logUnknown("account", account)
+    return getText(T .. "Account_system")
 end
 
 -- One short word per account class (EC.ACCOUNT_CLASSES); nil / "all" is the "every account"
@@ -515,22 +627,24 @@ function U.accountClassName(cls)
     if type(cls) ~= "string" or cls == "" or cls == "all" then
         return getText(T .. "Admin_Tx_Class_all")
     end
-    return getTextOrNull(T .. "Admin_Tx_Class_" .. cls) or cls
+    return getTextOrNull(T .. "Admin_Tx_Class_" .. cls) or U.unknownText("account class", cls)
 end
 
 -- Reason of a transaction. Free text the caller wrote (an admin's adjustment reason, a mod's own
--- wording) is shown exactly as written; a bare code we know reads as words with the code kept
--- beside it, so a search over the raw code still matches what the eye sees. Codes without a
--- known label stay unchanged, including custom integration codes. nil when neither is supplied.
-local REASON_KEY = { daily_checkin = "Kind_checkin", survival_milestone = "Kind_milestone" }
+-- wording) is shown exactly as written; one of this mod's own codes reads as words. Any other code
+-- is one an integration registered (ECIntegration registerSource): another mod's identifier, not
+-- text this mod can translate, so it is shown inside a translated frame (and logged once).
+-- nil when neither is supplied.
+local REASON_KEY = { daily_checkin = "Kind_checkin", survival_milestone = "Kind_milestone",
+    player_transfer = "Kind_transfer" }
 
 function U.reasonText(code, written)
     if type(written) == "string" and written ~= "" then return written end
     if type(code) ~= "string" or code == "" then return nil end
-    local name = getTextOrNull(T .. (REASON_KEY[code] or ("Kind_" .. code)))
-        or getTextOrNull(T .. "Reason_" .. code)
-    if not name then return code end
-    return name .. " (" .. code .. ")"
+    local name = getTextOrNull(T .. (REASON_KEY[code] or ("Kind_" .. code))) or getTextOrNull(T .. "Reason_" .. code)
+    if name then return name end
+    logUnknown("reason", code)
+    return getText(T .. "Reason_custom", code)
 end
 
 -- The kinds whose SYSTEM_BURN posting is a charge on one party, and the word for it: a transfer's

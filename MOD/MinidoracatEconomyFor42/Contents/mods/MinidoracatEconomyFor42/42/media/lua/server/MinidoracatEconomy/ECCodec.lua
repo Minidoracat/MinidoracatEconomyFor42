@@ -123,13 +123,17 @@ local function hashOf(text)
     return EC.hashHex(EC.hashUpdate(EC.hashInit(), text))
 end
 
--- Array of short strings -> set + de-duplicated ordered list; nil, message when malformed.
+-- Array of short strings -> set + de-duplicated ordered list; nil, failure when malformed. A
+-- failure is a code plus the facts the panel words it from (ECWidgets U.fileErrorText): the
+-- server never sends a sentence.
 local function stringSet(list, field)
     if list == nil then return {}, {} end
-    if type(list) ~= "table" then return nil, field .. " must be an array" end
+    if type(list) ~= "table" then return nil, { code = "not_array", field = field } end
     local set, ordered = {}, {}
     for i, v in ipairs(list) do
-        if type(v) ~= "string" or v == "" or #v > 128 or string.find(v, "%c") then return nil, field .. "[" .. i .. "] must be a short string" end
+        if type(v) ~= "string" or v == "" or #v > 128 or string.find(v, "%c") then
+            return nil, { code = "bad_entry", field = field, entry = i, max = 128 }
+        end
         if not set[v] then
             set[v] = true
             ordered[#ordered + 1] = v
@@ -138,29 +142,36 @@ local function stringSet(list, field)
     return set, ordered
 end
 
+-- The decoder says "<what> at <pos> near '...'": the line is what a host can go and look at.
+local function jsonFailure(text, err)
+    local at = string.match(tostring(err), " at (%d+) near ")
+    local pos = at and tonumber(at)
+    if not pos then return { code = "json" } end
+    local _, breaks = string.gsub(string.sub(text, 1, pos - 1), "\n", "")
+    return { code = "json", line = breaks + 1 }
+end
+
+local function reject(failure, why)
+    wl.error = failure
+    EC.log("whitelist.json rejected: " .. tostring(why or EC.jsonEncode(failure)))
+    return false, failure
+end
+
+-- Returns ok, failure ({ code, ... } - see stringSet; also json and unavailable).
 function Codec.load()
     local text = readFile()
     if text == nil then
-        if not writeDoc(Codec.DEFAULT) then
-            wl.error = "whitelist file unavailable"
-            return false, wl.error
-        end
+        if not writeDoc(Codec.DEFAULT) then return reject({ code = "unavailable" }) end
         text = readFile() or ""
     end
     local doc, err = EC.jsonDecode(text)
     if doc == nil or type(doc) ~= "table" then
-        wl.error = "json: " .. tostring(err or "not an object")
-        EC.log("whitelist.json rejected: " .. tostring(wl.error))
-        return false, wl.error
+        return reject(jsonFailure(text, err), "json: " .. tostring(err or "not an object"))
     end
     local parsed, lists, counts = {}, {}, {}
     for _, field in ipairs(Codec.FIELDS) do
         local set, ordered = stringSet(doc[field], field)
-        if set == nil then
-            wl.error = ordered
-            EC.log("whitelist.json rejected: " .. tostring(ordered))
-            return false, ordered
-        end
+        if set == nil then return reject(ordered) end
         parsed[field], lists[field], counts[field] = set, ordered, #ordered
     end
     wl.categories, wl.types, wl.excludeTypes = parsed.categories, parsed.types, parsed.excludeTypes
@@ -173,8 +184,10 @@ function Codec.load()
 end
 
 -- withLists adds the four arrays (the admin page edits from them); admin.system only wants counts.
+-- A refused file is errorCode + errorDetail, the same pair the catalog's file status carries.
 function Codec.status(withLists)
-    local s = { loadedAt = wl.loadedAt, error = wl.error, counts = wl.counts, path = Codec.FILE }
+    local s = { loadedAt = wl.loadedAt, counts = wl.counts, path = Codec.FILE,
+        errorCode = wl.error and "whitelist_invalid" or nil, errorDetail = wl.error }
     if withLists then
         for _, field in ipairs(Codec.FIELDS) do
             local copy = {}
@@ -241,7 +254,7 @@ function Codec.update(args, actor)
     if not writeDoc(lists) then return false, "file_write_failed" end
     local ok, err = Codec.load()   -- re-read what was written: hash, counts and a sanity parse
     if not ok then
-        EC.log("whitelist.json unreadable after the panel wrote it: " .. tostring(err))
+        EC.log("whitelist.json unreadable after the panel wrote it: " .. EC.jsonEncode(err))
         return false, "file_write_failed"
     end
     X.emit("admin.whitelist", { target = target, field = field, before = before, after = after, actor = actor })
@@ -249,10 +262,15 @@ function Codec.update(args, actor)
     return true
 end
 
+-- The audit says what happened as facts: ok, and for a refusal the same errorCode/errorDetail
+-- pair the status carries, so the panel words both the same way.
 function Codec.reload(actor)
     local ok, err = Codec.load()
-    X.emit("admin.whitelist", { field = "reload", after = ok and wl.counts.categories or nil, error = err, actor = actor })
-    X.audit({ action = "whitelist", target = "file", field = "reload", after = ok and "ok" or ("error: " .. tostring(err)), admin = actor })
+    local code = not ok and "whitelist_invalid" or nil
+    X.emit("admin.whitelist", { field = "reload", after = ok and wl.counts.categories or nil,
+        errorCode = code, errorDetail = err, actor = actor })
+    X.audit({ action = "whitelist", target = "file", field = "reload", ok = ok,
+        errorCode = code, errorDetail = err, admin = actor })
     return ok, err
 end
 
@@ -1136,7 +1154,7 @@ end
 
 function Codec.init(root)
     local ok, err = Codec.load()
-    EC.log("whitelist: " .. (ok and (tostring(wl.counts.categories) .. " categories, " .. tostring(wl.counts.types) .. " types") or ("error " .. tostring(err))))
+    EC.log("whitelist: " .. (ok and (tostring(wl.counts.categories) .. " categories, " .. tostring(wl.counts.types) .. " types") or ("error " .. EC.jsonEncode(err))))
 end
 
 S.Codec = Codec

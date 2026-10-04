@@ -6,33 +6,42 @@
 --       transport functions are the controller's own and are always called as self.send(...),
 --       self.isPending(...), self.newRequestId() -- never with ":". The page owns no Events hook
 --       and no timer: the controller calls tick(now) while this tab is on screen.
+--   C.AdminEntitlements.sourceName(src)
+--       a source's display name: its registered translation key, else its { CH, EN } display
+--       name, else its mod id. The sources page uses the same one.
 --
--- One command, admin.entitlements, three actions, one slot (the controller's): at most one of
+-- One command, admin.entitlements, four actions, one slot (the controller's): at most one of
 -- them is open at a time and a reply is matched against exactly that request.
 --   plans     every registered source product:
---             { sourceMod, productId, nameKey, loaded, instant, plan, lastChange, source }
+--             { sourceMod, productId, nameKey, loaded, instant, plan, lastChange, source,
+--               sourceNameKey?, sourceName? }
+--   orders    { before? } -> one page of every account's orders, newest first, { orders, more }
 --   account   { username } -> every entitlement snapshot of that exact account
 --   refund    { username, sourceMod, productId, orderId, reason }
 --
 -- Two sections, switched by the page's own tabs:
---   plans     the product list on the left, a read-only overview of the picked product on the
---             right: its current terms, where they were last changed, and the source's settings
---             file with the problem it last reported. The terms belong to the source mod (its
---             settings file or its own in-game settings); this page never writes them.
---   accounts  an exact account read: every product it holds with each of its rentals, the recent
---             orders of the picked one (each rental order names its rental, scheduler renewals are
---             marked) and the full record. A refund goes through a confirm step with a reason.
---             Admins can read a player's auto-renew choices but never change them.
--- A refund is a two step affair: Review builds the summary of exactly what will be sent and locks
--- it; Confirm sends that, once. A timeout is reported as an unknown outcome and never re-sent.
+--   plans     the product list on the left; on the right the picked product's terms as two cards
+--             (buying slots outright, renting them), a warning box when the source reported a
+--             settings file problem / the plan is provisional / the source is not loaded, and a
+--             footer with the last change and the settings file. The terms belong to the source
+--             mod (its settings file or its own in-game settings); this page never writes them.
+--   accounts  without an account filter: every order of every account, newest first, a page at
+--             a time ("show earlier" asks for the next one). A row's own button refunds it; the
+--             row itself (click or Enter) filters the page to that player. With a filter: that
+--             account's slots, each rental on a line with the real reason its auto-renew is
+--             paused, and the orders of the picked product.
+-- A refund goes through the framework dialog with a required reason and is sent once; a timeout
+-- is reported as an unknown outcome and never re-sent. Instant products never show a save state.
 --
--- Controls are the MinidoracatUI rev 7 modern primitives (Tabs, Button, TextField); the lists are
--- the shared VirtualList tables and the long read-only texts the shared reader.
+-- Every word on screen is a translation key; numbers, times, account names, the settings file
+-- path and the file's own keys (which the source passes as data) are shown as they are.
 
 require "ISUI/ISPanel"
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
 end
+require "MinidoracatEconomy/ECRowActions"
+require "MinidoracatEconomy/ECDetailWindow"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -50,6 +59,9 @@ local amountText, card = U.amountText, U.card
 local COMMAND = "admin.entitlements"
 local REASON_MAX = 1000
 local ACCOUNT_MAX = 64
+local DAY_MS, HOUR_MS = 86400000, 3600000
+local CARD_MIN_W = 240
+local DIALOG_W = 480
 
 local function tr(key) return getText(T .. key) end
 local function lineH() return fontH.small + 6 end
@@ -59,6 +71,7 @@ local function titleH() return math.max(CARD_TITLE_H, fontH.medium + 10) end
 local function trim(s) return string.match(tostring(s or ""), "^%s*(.-)%s*$") end
 local function keyOf(sourceMod, productId) return tostring(sourceMod) .. "\1" .. tostring(productId) end
 local function Ent() return C.Entitlements end
+local function pair(a, b) return getText(T .. "Ent_Pair", a, b) end
 
 -- Kahlua strings count UTF-16 units, standard Lua counts bytes: the reason bound is in characters.
 local WIDE_STRINGS = pcall(string.char, 19981)
@@ -74,17 +87,30 @@ end
 
 local function controls()
     local ui = U.framework
+    if ui ~= nil and ui.Dialog == nil then pcall(require, "MinidoracatUI/Widgets/Window") end
     if ui ~= nil and (ui.API_REVISION or 0) >= 7 and ui.CAPABILITIES and ui.CAPABILITIES.controls == true
-        and ui.Button and ui.TextField and ui.Tabs then
+        and ui.Button and ui.TextField and ui.Tabs and ui.Checkbox and ui.Dialog then
         return ui
     end
     return nil
 end
 
--- ---------- values ----------
+-- ---------- words (pure: shared with the tests) ----------
+
+local function num(v)
+    local n = tonumber(v)
+    return n ~= nil and tostring(n) or "-"
+end
 
 local function boolText(v) return tr(v == true and "Ent_On" or "Ent_Off") end
-local function yesNo(v) return tr(v == true and "Ent_Yes" or "Ent_No") end
+
+local function moneyText(amount, currency)
+    local n = tonumber(amount)
+    local s = n ~= nil and amountText(n) or "-"
+    if type(currency) == "string" and currency ~= "" then s = s .. " " .. U.currencyName(currency) end
+    return s
+end
+P.moneyText = moneyText
 
 local function orderIdOf(o)
     if type(o) ~= "table" then return nil end
@@ -92,28 +118,157 @@ local function orderIdOf(o)
     return id ~= nil and tostring(id) or nil
 end
 
--- Orders are paid | refunded (paid = true) or proven unpaid: unsubmitted | declined | rolledback
--- (paid = false, final). Only a paid order is offered; the server re-checks every refund (only
--- the latest order of a product or of one rental may be refunded -- refund_not_latest -- and it
--- says so if not).
-local function refundable(o)
-    if type(o) ~= "table" or orderIdOf(o) == nil then return false end
-    if o.refundable ~= nil then return o.refundable == true end
-    return o.status == "paid" and o.paid ~= false
-end
-
--- A rental is shown by its place in the server's list (creation order); nil once it is gone.
-local function rentalIndex(ent, id)
-    if id == nil or type(ent) ~= "table" or type(ent.rentals) ~= "table" then return nil end
-    for i, r in ipairs(ent.rentals) do
-        if type(r) == "table" and r.id == id then return i end
+-- The language option cannot change without a restart, so it is read once; getOptionLanguageName
+-- is absent on old builds.
+local langCode = nil
+local function gameLanguage()
+    if langCode then return langCode end
+    langCode = "EN"
+    if type(getCore) == "function" then
+        local ok, name = pcall(function() return getCore():getOptionLanguageName() end)
+        if ok and type(name) == "string" and name ~= "" then langCode = name end
     end
-    return nil
+    return langCode
 end
 
-local function rentalTag(ent, id)
-    local i = rentalIndex(ent, id)
-    return i ~= nil and getText(T .. "Ent_RentalNo", tostring(i)) or getText(T .. "Ent_RentalGone")
+function P.sourceName(src)
+    if type(src) ~= "table" then return "-" end
+    local key = src.sourceNameKey
+    local named = type(key) == "string" and key ~= "" and getTextOrNull(key) or nil
+    if named ~= nil then return named end
+    local names = src.sourceName or src.displayName
+    if type(names) == "table" then
+        local lang = gameLanguage()
+        local pick = (lang == "CH" or lang == "CN") and names.CH or names.EN
+        if type(pick) ~= "string" or pick == "" then pick = names.EN or names.CH end
+        if type(pick) == "string" and pick ~= "" then return pick end
+    end
+    return tostring(src.modId or src.sourceMod or "-")
+end
+
+-- What an order bought: "buy outright", a new rental, a renewal or a scheduler renewal, and how
+-- many slots. A rental the account no longer holds is named as removed.
+function P.contentText(o)
+    local q = num(o.quantity)
+    if o.kind == "permanent" then return getText(T .. "Ent_Content_Permanent", q) end
+    local which = (o.auto == true and "Auto") or ((o.renewal == true or o.kind == "renewal") and "Renewal") or "New"
+    local n = tonumber(o.rentalNo)
+    if n == nil then return getText(T .. "Ent_Content_" .. which .. "Gone", q) end
+    return getText(T .. "Ent_Content_" .. which, tostring(n), q)
+end
+
+-- Paid / refunded; a product that waits for the world save says so while it waits -- for a refund
+-- that is the refund's own save, not the payment's. An instant product takes effect in the paying
+-- commit and never shows a save state.
+function P.statusText(o, instant)
+    local s = Ent().orderStatusText(o.status)
+    if instant ~= true then
+        local d = o.durable
+        if o.status == "refunded" then d = type(o.refund) == "table" and o.refund.durable or nil end
+        local saved = type(d) == "table" and d.status or nil
+        if saved ~= nil and saved ~= "confirmed" then s = getText(T .. "Ent_StatusUnsaved", s) end
+    end
+    return s
+end
+
+-- One label for a rental's auto-renew, naming the one reason it is paused: the agreed terms no
+-- longer match the plan's rent / currency / period, the account rents more than the limit, the
+-- plan stopped renting, the plan does not allow auto-renew, or the server holds it.
+function P.autoTag(r, plan, ent)
+    local state = r.autoRenewState or (r.autoRenew == true and "on" or "off")
+    if state == "on" or state == "pending_on" then return tr("Ent_AutoTag_on"), "textMuted" end
+    if state == "off" or state == "pending_off" then return tr("Ent_AutoTag_off"), "textMuted" end
+    if state == "paused_system" then return tr("Ent_AutoTag_system"), "warn" end
+    local reason = "paused"
+    if type(plan) == "table" then
+        local a = r.autoTerms
+        if type(a) == "table" and (tonumber(a.price) ~= tonumber(plan.rentalPrice)
+            or a.currency ~= plan.rentalCurrency or tonumber(a.days) ~= tonumber(plan.rentalDays)) then
+            reason = "terms"
+        elseif type(ent) == "table" and (tonumber(ent.rentalCommitted) or 0) > (tonumber(plan.rentalLimit) or 0) then
+            reason = "limit"
+        elseif plan.rentalEnabled ~= true then
+            reason = "stopped"
+        elseif plan.autoRenewAllowed ~= true then
+            reason = "disallowed"
+        end
+    end
+    return tr("Ent_AutoTag_" .. reason), "warn"
+end
+
+-- Whole days while a day or more is left, hours below that.
+function P.remainingText(ms)
+    ms = math.max(0, tonumber(ms) or 0)
+    if ms >= DAY_MS then return getText(T .. "Ent_Days", tostring(math.floor(ms / DAY_MS))) end
+    return getText(T .. "Ent_Hours", tostring(math.max(1, math.ceil(ms / HOUR_MS))))
+end
+
+-- "#n, k slots, <state>": active with its end and what is left, in grace with the grace end,
+-- expired, or (a product that waits for the save) a new rental not confirmed yet.
+function P.rentalLine(i, r, now, offsetMin)
+    local n, q = tostring(i), num(r.quantity)
+    local state, paid = r.state, tonumber(r.paidUntil)
+    if state == "grace" then
+        return getText(T .. "Ent_RentalLine_grace", n, q, U.stampText(tonumber(r.graceUntil), offsetMin))
+    end
+    if state == "expired" then return getText(T .. "Ent_RentalLine_expired", n, q) end
+    if state == "pending" or paid == nil then return getText(T .. "Ent_RentalLine_pending", n, q) end
+    return getText(T .. "Ent_RentalLine_active", n, q, U.stampText(paid, offsetMin), P.remainingText(paid - now))
+end
+
+-- Every rental of one account entry, one full line each with its auto-renew label: what the
+-- shared detail window shows when the page has no room for all of them.
+function P.rentalsText(entry, now, offsetMin)
+    local ent = type(entry) == "table" and type(entry.entitlement) == "table" and entry.entitlement or {}
+    local lines = {}
+    for i, r in ipairs(type(ent.rentals) == "table" and ent.rentals or {}) do
+        if type(r) == "table" then
+            lines[#lines + 1] = getText(T .. "Ent_Pair", P.rentalLine(i, r, now, offsetMin), (P.autoTag(r, entry.plan, ent)))
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
+-- The settings file problem a source reported ({ key, field?, ref? }): its own sentence when this
+-- client has the source's translations, else Economy's general one with the file key.
+function P.problemText(problem)
+    if type(problem) ~= "table" then return nil end
+    local ref = type(problem.ref) == "string" and problem.ref ~= "" and problem.ref or nil
+    local label = (type(problem.field) == "string" and getTextOrNull(problem.field)) or ref or ""
+    local detail = type(problem.key) == "string" and getTextOrNull(problem.key, label, ref or "") or nil
+    if detail == nil then
+        detail = ref ~= nil and getText(T .. "Ent_FileProblemGeneric", ref) or tr("Ent_FileProblemPlain")
+    end
+    return getText(T .. "Ent_FileProblem", detail)
+end
+
+-- What the refund dialog says above its reason box. `content` is the row's own content text.
+function P.refundLines(o, username, content, offsetMin)
+    local lines = {}
+    lines[#lines + 1] = getText(T .. "Ent_RefundLine", moneyText(o.amount, o.currency), tostring(username))
+    lines[#lines + 1] = pair(content, U.stampText(tonumber(o.at), offsetMin))
+    local effect, n = o.refundEffect, o.rentalNo ~= nil and tostring(o.rentalNo) or "-"
+    if effect == "units" then
+        lines[#lines + 1] = getText(T .. "Ent_Effect_units", num(o.quantity))
+    elseif effect == "cancel" then
+        lines[#lines + 1] = tr("Ent_Effect_cancel")
+    elseif effect == "previous" then
+        lines[#lines + 1] = getText(T .. "Ent_Effect_previous", n, U.stampText(tonumber(o.previousUntil), offsetMin))
+    elseif effect == "remove" then
+        lines[#lines + 1] = getText(T .. "Ent_Effect_remove", n)
+    elseif effect == "money" then
+        lines[#lines + 1] = tr("Ent_Effect_money")
+    end
+    if o.kind ~= "permanent" and effect ~= "money" then lines[#lines + 1] = tr("Ent_EffectAutoOff") end
+    lines[#lines + 1] = tr("Ent_NoUndo")
+    return lines
+end
+
+local function reasonError(reason)
+    if reason == "" then return tr("Ent_ReasonMissing") end
+    if string.find(reason, "%c") then return tr("Admin_Error_reason_invalid") end
+    if charCount(reason) > REASON_MAX then return tr("Admin_Error_reason_too_long") end
+    return nil
 end
 
 local function wrapInto(lines, s, width, token, maxLines)
@@ -124,8 +279,7 @@ end
 
 -- ---------- cells ----------
 
--- Two lines per row, each with an optional right-aligned figure. Texts are fitted once per width
--- and entry (bind resets the entry), never per frame.
+-- Product list: two lines per row. Texts are fitted once per width and entry, never per frame.
 local LineCell = ISPanel:derive("MinidoracatEconomyAdminEntCell")
 
 function LineCell:render()
@@ -134,20 +288,45 @@ function LineCell:render()
     local lit = U.framework.Table.rowBackground(self)
     local w, lh = self.width, lineH()
     if self.fitW ~= w or self.fitE ~= e then
-        local cap = math.floor(w * 0.45)
-        self.r1 = e.right1 and fitText(e.right1, cap) or nil
-        self.r2 = e.right2 and fitText(e.right2, cap) or nil
-        local rw1 = self.r1 and textWidth(self.r1) + PAD or 0
-        local rw2 = self.r2 and textWidth(self.r2) + PAD or 0
-        self.t1 = fitText(e.line1 or "", math.max(0, w - PAD * 2 - rw1))
-        self.t2 = fitText(e.line2 or "", math.max(0, w - PAD * 2 - rw2))
+        self.t1 = fitText(e.line1 or "", math.max(0, w - PAD * 2))
+        self.t2 = fitText(e.line2 or "", math.max(0, w - PAD * 2))
         self.fitW, self.fitE = w, e
     end
-    text(self, self.t1, PAD, 6, e.token1 or "text")
-    if self.r1 then textRight(self, self.r1, w - PAD, 6, e.rightToken1 or "accent") end
-    local second = lit and "text" or (e.token2 or "textMuted")
-    text(self, self.t2, PAD, 6 + lh, second)
-    if self.r2 then textRight(self, self.r2, w - PAD, 6 + lh, second) end
+    text(self, self.t1, PAD, 6, "text")
+    text(self, self.t2, PAD, 6 + lh, lit and "text" or (e.token2 or "textMuted"))
+end
+
+-- Order table: the columns (list.cols) and every fitted string are set by Page:rebuildOrderRows,
+-- the refund button is a real ECRowActions button (only on a row the server says can be refunded).
+local OrderCell = ISPanel:derive("MinidoracatEconomyAdminEntOrderCell")
+
+function OrderCell:render()
+    local e = self.entry
+    if not e or not e.fit then return end
+    local lit = U.framework.Table.rowBackground(self)
+    local list = self.list
+    local cols = list.cols
+    local ty = list.showIds and 4 or math.floor((self.height - fontH.small) / 2)
+    for i = 1, #cols do
+        local col, s = cols[i], e.fit[i]
+        if col and s then
+            local token = e.tokens[i]
+            if lit and (token == "textMuted" or token == "textFaint") then token = "text" end
+            if col.right then textRight(self, s, col.x + col.w - PAD, ty, token)
+            else text(self, s, col.x, ty, token) end
+        end
+    end
+    if list.showIds and e.idsFit then
+        text(self, e.idsFit, list.contentX, ty + lineH(), lit and "text" or "textMuted")
+    end
+    local R = C.RowActions
+    R.begin(self)
+    if e.refundable then
+        local chipH = math.min(ctrlH(), self.height - 4)
+        R.put(self, "refund", list.refundLabel, list.actionX, math.floor((self.height - chipH) / 2),
+            list.actionW, chipH, list.refundEnabled == true)
+    end
+    R.finish(self)
 end
 
 -- ---------- the page ----------
@@ -199,7 +378,6 @@ function Page:createChildren()
         if item then self:selectPlan(item.sourceMod, item.productId) end
     end
     self:addChild(self.planList)
-    self.planBox = U.newReader(self, 300, 200)
 
     -- accounts section
     self.accountField = UI.TextField.new({ x = 0, y = 0, width = 220, height = ch, theme = theme,
@@ -207,23 +385,23 @@ function Page:createChildren()
     self.accountField._entry.onCommandEntered = function() self:onLookup() end
     self:addChild(self.accountField)
     self.lookupButton = self:makeButton("Ent_Lookup", "normal", Page.onLookup)
-    self.entryList = U.newTable(LineCell, rowH2())
-    self.entryList.onSelect = function(_, _, index) self:selectEntry(index) end
-    self:addChild(self.entryList)
-    self.orderList = U.newTable(LineCell, rowH2())
-    self.orderList.onSelect = function(_, _, index) self:selectOrder(index) end
+    self.allButton = self:makeButton("Ent_All", "normal", Page.onAll)
+    self.orderList = U.newTable(OrderCell, ch + 6)
+    self.orderList.onSelect = function(_, item) self:onOrderRow(item) end
+    self.orderList.onRowAction = function(_, item, id) if id == "refund" then self:openRefund(item) end end
+    self.orderList.refundLabel = tr("Ent_RefundRow")
     self:addChild(self.orderList)
-    self.detailBox = U.newReader(self, 300, 200)
-    self.refundButton = self:makeButton("Ent_RefundButton", "danger", Page.onRefundReview)
-
-    -- the confirm step (refunds)
-    self.summaryBox = U.newReader(self, 300, 200)
-    self.reasonField = UI.TextField.new({ x = 0, y = 0, width = 300, height = ch, theme = theme,
-        maxLength = REASON_MAX, placeholder = tr("Ent_Reason") })
-    self:addChild(self.reasonField)
-    self.confirmButton = self:makeButton("Ent_Confirm_Refund", "danger", Page.onConfirm)
-    self.backButton = self:makeButton("Ent_Back", "normal", Page.onBack)
-    self.reviewButtons = { self.confirmButton, self.backButton }
+    self.moreButton = self:makeButton("Ent_More", "normal", Page.onMore)
+    self.rentalsButton = self:makeButton("Ent_More", "normal", Page.onAllRentals)
+    local idsLabel = tr("Ent_ShowIds")
+    self.idsToggle = UI.Checkbox.new({ x = 0, y = 0, width = 36 + 8 + textWidth(idsLabel) + 4, height = ch,
+        label = idsLabel, theme = theme, target = self,
+        onChange = function(page, checked) page:setShowIds(checked) end })
+    self.idsToggle.forceClick = function(box)
+        if box._enabled ~= false then box:setChecked(not box.checked) end
+    end
+    self:addChild(self.idsToggle)
+    self.productChips = {}
 
     self:layout()
 end
@@ -262,29 +440,35 @@ end
 
 function Page:unfocusAll()
     if self.broken then return end
-    for _, f in ipairs({ self.accountField, self.reasonField }) do
-        if f:isFocused() then f._entry:unfocus() end
-    end
+    if self.accountField:isFocused() then self.accountField._entry:unfocus() end
+end
+
+function Page:closeDialog()
+    local d = self.dialog
+    self.dialog = nil
+    if d ~= nil and U.framework and U.framework.Dialog then U.framework.Dialog.close(d, false) end
+end
+
+function Page:stamp(ms)
+    if type(ms) ~= "number" then return "-" end
+    return U.stampText(ms, self.owner.offsetMin)
 end
 
 -- ---------- sections and selection ----------
 
 function Page:setSection(id)
     if self.broken or (id ~= "plans" and id ~= "accounts") then return end
-    if self.view == "review" then
-        self.tabs:setSelected(self.section, true)
-        return
-    end
     self.section = id
     self.tabs:setSelected(id, true)
     self:unfocusAll()
     if id == "plans" and self.plans == nil then self.plansWanted = true end
+    if id == "accounts" and self.accountUser == nil and self.orders == nil then self.ordersWanted = true end
     self:layout()
     self:invalidateKeyboard()
 end
 
 function Page:selectPlan(sourceMod, productId)
-    if self.broken or self.view ~= "list" then return false end
+    if self.broken then return false end
     self:unfocusAll()
     self.selKey = keyOf(sourceMod, productId)
     self:rebuildPlanRows()
@@ -295,7 +479,6 @@ end
 -- Another page (or a consumer's admin button) asked for one product's plan.
 function Page:showPlan(sourceMod, productId)
     if self.broken then return end
-    if self.view == "review" and not self:writeInFlight() then self:onBack() end
     self.section = "plans"
     self.tabs:setSelected("plans", true)
     if type(sourceMod) == "string" and type(productId) == "string" then
@@ -306,59 +489,6 @@ function Page:showPlan(sourceMod, productId)
         end
     end
     self.plansWanted = true
-    self:layout()
-end
-
--- ---------- the confirm step ----------
-
-function Page:openReview()
-    self.view = "review"
-    self.reviewError = nil
-    self:unfocusAll()
-    self.reasonField:setText("")
-    self:layout()
-    self:invalidateKeyboard()
-end
-
-function Page:closeReview()
-    self.view = "list"
-    self.review, self.reviewError = nil, nil
-    self:unfocusAll()
-    self:invalidateKeyboard()
-end
-
-function Page:onBack()
-    if self.view ~= "review" or self:writeInFlight() then return end
-    self:closeReview()
-    self:layout()
-end
-
-local function reasonError(reason)
-    if reason == "" then return tr("Ent_ReasonMissing") end
-    if string.find(reason, "%c") then return tr("Admin_Error_reason_invalid") end
-    if charCount(reason) > REASON_MAX then return tr("Admin_Error_reason_too_long") end
-    return nil
-end
-
-function Page:onConfirm()
-    local r = self.review
-    if self.view ~= "review" or r == nil or self:writeInFlight() then return end
-    if not self.owner:writeAllowed() then
-        self.reviewError = tr("Ent_ReadOnly")
-        self:layout()
-        return
-    end
-    local reason = trim(self.reasonField:getText())
-    local bad = reasonError(reason)
-    if bad ~= nil then
-        self.reviewError = bad
-        self:layout()
-        return
-    end
-    local args = { action = "refund", username = r.username, sourceMod = r.sourceMod, productId = r.productId,
-        orderId = r.orderId, reason = reason }
-    local ok, why = self:sendAction(args, { action = "refund", username = r.username, orderId = r.orderId, review = r })
-    self.reviewError = not ok and self:errorText(why) or nil
     self:layout()
 end
 
@@ -383,14 +513,17 @@ function Page:requestPlans()
     return false
 end
 
--- The controller cancelled a cooldown-held write before sending it: this is known, not a timeout.
-function Page:onCancelled(requestId)
-    local req = self.sent
-    if req == nil or req.requestId ~= requestId or req.answered then return end
-    req.answered = true
-    if self.review == req.review then self:closeReview() end
-    self:say(tr("Ent_ReadOnly"), true)
-    self:layout()
+-- The whole list from the top, or (append) the next page after the last row shown: the cursor is
+-- that row's time and order id, the server's own sort keys.
+function Page:requestOrders()
+    local args, rows = { action = "orders" }, self.orders and self.orders.rows
+    local last = self.ordersAppend and rows and rows[#rows] or nil
+    if last ~= nil then args.before = { at = last.at, id = tostring(last.orderId) } end
+    if self:sendAction(args, { action = "orders", append = last ~= nil }) then
+        self.ordersWanted, self.ordersAppend, self.ordersTimeout = false, false, false
+        return true
+    end
+    return false
 end
 
 function Page:requestAccount()
@@ -406,6 +539,15 @@ function Page:requestAccount()
     return false
 end
 
+-- The controller cancelled a cooldown-held write before sending it: this is known, not a timeout.
+function Page:onCancelled(requestId)
+    local req = self.sent
+    if req == nil or req.requestId ~= requestId or req.answered then return end
+    req.answered = true
+    self:say(tr("Ent_ReadOnly"), true)
+    self:layout()
+end
+
 -- Does this reply still belong to the request this page has open? Asked by the controller before
 -- it frees the shared slot, and answered without touching a field.
 function Page:matchesReply(args)
@@ -417,13 +559,20 @@ function Page:onReply(args)
     local req = self.sent
     if not self:matchesReply(args) then return end
     req.answered = true
-    if type(args.plans) == "table" then self:adoptPlans(args.plans) end
     if req.action == "plans" then
+        if type(args.plans) == "table" then self:adoptPlans(args.plans) end
         if args.ok == false then
             self.plansError = args.error or "unknown"
             self:say(getText(T .. "Ent_PlansError", self:errorText(args.error)), true)
         else
             self.plansError = nil
+        end
+    elseif req.action == "orders" then
+        if args.ok == false then
+            self.ordersError = args.error or "unknown"
+            self:say(getText(T .. "Ent_OrdersError", self:errorText(args.error)), true)
+        else
+            self:adoptOrders(args, req.append)
         end
     elseif req.action == "account" then
         if args.ok == false then
@@ -436,28 +585,12 @@ function Page:onReply(args)
         self:onRefundReply(args, req)
     end
     self:rebuildPlanRows()
-    self:rebuildAccountRows()
+    self:rebuildOrderRows()
     self:layout()
 end
 
-function Page:onRefundReply(args, req)
-    if type(args.entries) == "table" then self:adoptAccount(req.username, args.entries) end
-    if args.ok == true then
-        if type(args.entries) ~= "table" then self.accountWanted = true end
-        if self.review == req.review then self:closeReview() end
-        local e = self:selectedAccountEntry()
-        local ent = e and type(e.entitlement) == "table" and e.entitlement or nil
-        local durable = ent and type(ent.durable) == "table" and Ent().durableText(ent.durable.status) or "-"
-        self:say(getText(T .. (args.duplicate and "Ent_RefundDuplicate" or "Ent_Refunded"), tostring(req.orderId), durable))
-        self:invalidateKeyboard()
-    else
-        self.reviewError = self:errorText(args.error)
-        self:say(self.reviewError, true)
-    end
-end
-
 -- A request whose answer never came. A read is owed again on the next refresh; a refund has an
--- unknown outcome and is never re-sent: the admin checks the account again.
+-- unknown outcome and is never re-sent: the admin reads the list again.
 function Page:onTimeout()
     local req = self.sent
     if req == nil or req.answered then return end
@@ -465,15 +598,16 @@ function Page:onTimeout()
     if req.action == "plans" then
         self.plansTimeout = true
         self:say(tr("Ent_PlansTimeout"), true)
+    elseif req.action == "orders" then
+        self.ordersTimeout = true
+        self:say(tr("Ent_OrdersTimeout"), true)
     elseif req.action == "account" then
         self.accountTimeout = true
         self:say(tr("Ent_AccountTimeout"), true)
     elseif req.action == "refund" then
-        if self.review == req.review then self:closeReview() end
         self:say(tr("Ent_RefundTimeout"), true)
     end
     self:unfocusAll()
-    self:rebuildPlanRows()
     self:layout()
     self:invalidateKeyboard()
 end
@@ -487,8 +621,7 @@ function Page:adoptPlans(list)
         end
     end
     self.plans = out
-    self.plansTimeout = false
-    self.updatedAt = EC.now()
+    self.plansTimeout, self.updatedAt = false, EC.now()
     local want = self.pendingSelect
     if want ~= nil then
         self.pendingSelect = nil
@@ -502,23 +635,89 @@ function Page:adoptPlans(list)
     end
 end
 
+function Page:adoptOrders(args, append)
+    local rows, seen = {}, {}
+    local function add(r)
+        local key = keyOf(r.sourceMod, r.orderId)
+        if not seen[key] then
+            seen[key] = true
+            rows[#rows + 1] = r
+        end
+    end
+    if append and self.orders ~= nil then
+        for _, r in ipairs(self.orders.rows) do add(r) end
+    end
+    for _, r in ipairs(type(args.orders) == "table" and args.orders or {}) do
+        if type(r) == "table" and type(r.username) == "string" and type(r.sourceMod) == "string"
+            and type(r.productId) == "string" and r.orderId ~= nil then
+            add(r)
+        end
+    end
+    self.orders = { rows = rows, more = args.more == true }
+    self.ordersError, self.ordersTimeout, self.updatedAt = nil, false, EC.now()
+end
+
 -- ---------- accounts ----------
 
-function Page:onLookup()
-    if self.broken or self.view ~= "list" then return end
-    local user = trim(self.accountField:getText())
-    if user == "" then
-        self:say(tr("Ent_AccountHint"), true)
-        return
-    end
+function Page:filterUser(user, productKey)
+    self:unfocusAll()
     if user ~= self.accountUser then
-        self.account, self.entrySel, self.entryKey, self.orderSel, self.orderKey = nil, nil, nil, nil, nil
-        self.accountError = nil
+        self.account, self.entrySel, self.accountError = nil, nil, nil
+        self.entryKey = productKey
+    elseif productKey ~= nil then
+        self.entryKey = productKey
     end
     self.accountUser = user
     self.accountWanted = true
+    self.accountField:setText(user)
     self:tick(EC.now())
-    self:rebuildAccountRows()
+    self:rebuildOrderRows()
+    self:layout()
+    self:invalidateKeyboard()
+    self:closeRentals()
+end
+
+function Page:onLookup()
+    if self.broken then return end
+    local user = trim(self.accountField:getText())
+    if user == "" then
+        self:onAll()
+        return
+    end
+    self:filterUser(user, nil)
+end
+
+-- Back to every account's orders, read again from the top.
+function Page:onAll()
+    if self.broken then return end
+    self:unfocusAll()
+    self.accountUser, self.account, self.entrySel, self.entryKey = nil, nil, nil, nil
+    self.accountError, self.accountTimeout, self.accountWanted = nil, false, false
+    self.accountField:setText("")
+    self.ordersWanted, self.ordersAppend = true, false
+    self:tick(EC.now())
+    self:rebuildOrderRows()
+    self:layout()
+    self:invalidateKeyboard()
+    self:closeRentals()
+end
+
+function Page:onMore()
+    if self.broken or self.accountUser ~= nil or self.orders == nil or not self.orders.more then return end
+    self.ordersWanted, self.ordersAppend = true, true
+    self:tick(EC.now())
+    self:layout()
+end
+
+-- A row of every account's orders filters the page to that player (and that product).
+function Page:onOrderRow(item)
+    if item == nil or self.accountUser ~= nil then return end
+    self:filterUser(item.username, keyOf(item.sourceMod, item.productId))
+end
+
+function Page:setShowIds(on)
+    self.showIds = on == true
+    self:rebuildOrderRows()
     self:layout()
 end
 
@@ -530,8 +729,8 @@ function Page:adoptAccount(username, entries)
             list[#list + 1] = e
         end
     end
-    self.account = { username = username, entries = list, at = EC.now() }
-    self.accountError, self.accountTimeout = nil, false
+    self.account = { username = username, entries = list }
+    self.accountError, self.accountTimeout, self.updatedAt = nil, false, EC.now()
     self.entrySel = nil
     for i, e in ipairs(list) do
         if keyOf(e.sourceMod, e.productId) == self.entryKey then self.entrySel = i end
@@ -539,11 +738,7 @@ function Page:adoptAccount(username, entries)
     if self.entrySel == nil and list[1] ~= nil then self.entrySel = 1 end
     local e = self.entrySel and list[self.entrySel] or nil
     self.entryKey = e and keyOf(e.sourceMod, e.productId) or nil
-    self.orderSel = nil
-    for i, o in ipairs(self:selectedOrders()) do
-        if orderIdOf(o) == self.orderKey then self.orderSel = i end
-    end
-    if self.orderSel == nil then self.orderKey = nil end
+    self:refreshRentals()
 end
 
 function Page:selectedAccountEntry()
@@ -552,259 +747,117 @@ function Page:selectedAccountEntry()
     return acc.entries[self.entrySel]
 end
 
-function Page:selectedOrders()
-    local e = self:selectedAccountEntry()
-    return e ~= nil and type(e.orders) == "table" and e.orders or {}
-end
-
-function Page:selectedOrder()
-    if self.orderSel == nil then return nil end
-    return self:selectedOrders()[self.orderSel]
-end
-
 function Page:selectEntry(index)
     local acc = self.account
-    if acc == nil or type(index) ~= "number" or acc.entries[index] == nil or self.view ~= "list" then return false end
+    if acc == nil or type(index) ~= "number" or acc.entries[index] == nil then return false end
     local e = acc.entries[index]
     self.entrySel, self.entryKey = index, keyOf(e.sourceMod, e.productId)
-    self.orderSel, self.orderKey = nil, nil
-    self:rebuildAccountRows()
+    self:rebuildOrderRows()
     self:layout()
+    self:invalidateKeyboard()
+    self:closeRentals()
     return true
 end
 
-function Page:selectOrder(index)
-    local o = type(index) == "number" and self:selectedOrders()[index] or nil
-    if o == nil or self.view ~= "list" then return false end
-    self.orderSel, self.orderKey = index, orderIdOf(o)
-    self:rebuildAccountRows()
-    self:layout()
-    return true
+-- ---------- every rental, in the shared detail window ----------
+
+function Page:rentalsKey()
+    return "entrentals:" .. tostring(self.accountUser) .. "\1" .. tostring(self.entryKey)
 end
 
-function Page:onRefundReview()
-    if self.view ~= "list" then return end
-    local e, o = self:selectedAccountEntry(), self:selectedOrder()
+function Page:rentalsContent()
+    local entry = self:selectedAccountEntry()
+    if entry == nil then return nil end
+    return getText(T .. "Ent_Pair", self.account.username, Ent().productName(entry)),
+        P.rentalsText(entry, EC.now(), self.owner.offsetMin)
+end
+
+function Page:onAllRentals()
+    local D = C.DetailWindow
+    local title, body = self:rentalsContent()
+    if D == nil or title == nil then return end
+    D.open(self, self:rentalsKey(), title, body)
+end
+
+-- a fresh account read keeps an open list current; the window never outlives its account
+function Page:refreshRentals()
+    local D = C.DetailWindow
+    local title, body = self:rentalsContent()
+    if D ~= nil and title ~= nil then D.update(self, self:rentalsKey(), title, body) end
+end
+
+function Page:closeRentals()
+    local D = C.DetailWindow
+    if D ~= nil then D.close(self) end
+end
+
+-- ---------- refunds ----------
+
+-- The refund of one order row: the framework dialog says what goes back to whom and what happens
+-- to the slots, and takes the reason. A blank reason sends nothing and asks again.
+function Page:openRefund(row, problem)
+    if self.broken or row == nil or not row.refundable then return end
     if not self.owner:writeAllowed() then
         self:say(tr("Ent_ReadOnly"), true)
         return
     end
-    if e == nil or not refundable(o) then
-        self:say(tr("Ent_RefundPick"), true)
+    local o = row.order
+    local lines = P.refundLines(o, row.username, row.content, self.owner.offsetMin)
+    if problem ~= nil then table.insert(lines, 1, problem) end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = tr("Ent_Reason")
+    local width = DIALOG_W
+    if type(getCore) == "function" then width = math.min(DIALOG_W, getCore():getScreenWidth() - 40) end
+    local dialog
+    dialog = U.framework.Dialog.show({ title = tr("Ent_RefundTitle"), text = table.concat(lines, "\n"),
+        theme = U.theme, width = width, input = { placeholder = tr("Ent_ReasonHint") },
+        confirmText = getText(T .. "Ent_RefundConfirm", moneyText(o.amount, o.currency)),
+        cancelText = tr("Ent_Cancel"), danger = true,
+        onResult = function(ok, value) self:onRefundResult(dialog, row, ok, value) end })
+    self.dialog = dialog
+    self:updateEnabled()
+end
+
+function Page:onRefundResult(dialog, row, ok, value)
+    if self.dialog == dialog then self.dialog = nil end
+    if not ok or self.broken then
+        self:updateEnabled()
         return
     end
-    self.review = { kind = "refund", username = self.account.username, sourceMod = e.sourceMod,
-        productId = e.productId, orderId = orderIdOf(o), text = self:refundSummary(self.account.username, e, o) }
-    self:openReview()
+    local reason = trim(value)
+    local bad = reasonError(reason)
+    if bad ~= nil then
+        self:openRefund(row, bad)
+        return
+    end
+    if not self.owner:writeAllowed() then
+        self:say(tr("Ent_ReadOnly"), true)
+        return
+    end
+    local o = row.order
+    local args = { action = "refund", username = row.username, sourceMod = row.sourceMod, productId = row.productId,
+        orderId = orderIdOf(o), reason = reason }
+    local sent, why = self:sendAction(args, { action = "refund", username = row.username, orderId = args.orderId,
+        amount = moneyText(o.amount, o.currency) })
+    if sent then self:say(tr("Ent_RefundSending")) else self:say(self:errorText(why), true) end
+    self:layout()
 end
 
--- ---------- texts (data changes only) ----------
-
-local function num(v)
-    local n = tonumber(v)
-    return n ~= nil and tostring(n) or "-"
-end
-
-local function money(v)
-    local n = tonumber(v)
-    return n ~= nil and amountText(n) or "-"
-end
-
--- A rental keeps the terms it was signed under and its consent the terms agreed to; either may
--- differ from today's plan (only price, currency and period decide whether a consent may charge).
-local function termsDiffer(t, plan, withGrace)
-    if type(plan) ~= "table" then return false end
-    return tonumber(t.price) ~= tonumber(plan.rentalPrice) or t.currency ~= plan.rentalCurrency
-        or tonumber(t.days) ~= tonumber(plan.rentalDays)
-        or (withGrace and t.graceHours ~= nil and tonumber(t.graceHours) ~= tonumber(plan.graceHours))
-end
-
-function Page:stamp(ms)
-    if type(ms) ~= "number" then return "-" end
-    return U.stampText(ms, self.owner.offsetMin)
-end
-
-function Page:detailLine(out, key, value, indent)
-    out[#out + 1] = (indent or "") .. getText(T .. "Ent_D_Line", tr("Ent_D_" .. key), tostring(value))
-end
-
--- One rental, its state, dates and terms indented under a "#n" head (n = creation order).
-function Page:rentalLines(out, i, r, plan)
-    local E, sub = Ent(), "    "
-    out[#out + 1] = "  " .. getText(T .. "Ent_RentalHead", tostring(i), num(r.quantity), E.stateText(r.state))
-    if r.paidUntil ~= nil then self:detailLine(out, "PaidUntil", self:stamp(r.paidUntil), sub) end
-    if r.graceUntil ~= nil then self:detailLine(out, "GraceUntil", self:stamp(r.graceUntil), sub) end
-    local t = type(r.terms) == "table" and r.terms or nil
-    if t ~= nil then
-        self:detailLine(out, "RentTerms", getText(T .. "Ent_RentTermsValue", money(t.price), num(r.quantity),
-            money(t.amount), t.currency and U.currencyName(t.currency) or "-")
-            .. "  " .. getText(T .. "Ent_TermsPeriod", num(t.days), num(t.graceHours))
-            .. (termsDiffer(t, plan, true) and ("  " .. tr("Ent_TermsDiffer")) or ""), sub)
+-- Answered: the view on screen is read again (the account's snapshot comes with the reply).
+function Page:onRefundReply(args, req)
+    if args.ok ~= true then
+        self:say(self:errorText(args.error), true)
+        return
     end
-    self:detailLine(out, "AutoRenew", E.autoRenewText(r.autoRenewState or (r.autoRenew == true and "on" or "off")), sub)
-    local a = type(r.autoTerms) == "table" and r.autoTerms or nil
-    if a ~= nil then
-        self:detailLine(out, "AutoTerms", getText(T .. "Ent_AutoTermsValue", money(a.price),
-            a.currency and U.currencyName(a.currency) or "-", num(a.days))
-            .. (termsDiffer(a, plan, false) and ("  " .. tr("Ent_TermsDiffer")) or ""), sub)
+    if self.accountUser == nil then
+        self.ordersWanted, self.ordersAppend = true, false
+    elseif req.username == self.accountUser and type(args.entries) == "table" then
+        self:adoptAccount(req.username, args.entries)
+    else
+        self.accountWanted = true
     end
-    if r.termsRevision ~= nil then self:detailLine(out, "Terms", num(r.termsRevision), sub) end
-    if r.pendingOrderId ~= nil then
-        self:detailLine(out, "Pending", tostring(r.pendingOrderId)
-            .. (r.autoPending == true and ("  " .. tr("Ent_AutoOrder")) or ""), sub)
-    end
-    self:detailLine(out, "RentalId", tostring(r.id or "-"), sub)
-end
-
-function Page:entryLines(out, e)
-    local E = Ent()
-    local ent = type(e.entitlement) == "table" and e.entitlement or {}
-    self:detailLine(out, "Product", E.productName(e) .. " (" .. e.sourceMod .. " / " .. e.productId .. ")")
-    self:detailLine(out, "State", E.stateText(ent.state))
-    self:detailLine(out, "Usable", num(ent.usable))
-    self:detailLine(out, "Permanent", num(ent.permanent))
-    self:detailLine(out, "Rental", num(ent.rental))
-    if (tonumber(ent.pendingQuantity) or 0) > 0 or ent.pendingOrderId ~= nil then
-        self:detailLine(out, "Pending", num(ent.pendingQuantity) .. "  " .. tostring(ent.pendingOrderId or ""))
-    end
-    local rentals = type(ent.rentals) == "table" and ent.rentals or {}
-    self:detailLine(out, "Rentals", getText(T .. "Ent_RentalsCount", tostring(#rentals), num(ent.rentalsMax),
-        num(ent.rentalCommitted)))
-    for i, r in ipairs(rentals) do
-        if type(r) == "table" then self:rentalLines(out, i, r, e.plan) end
-    end
-    self:detailLine(out, "LastOrder", tostring(ent.lastOrderId or "-"))
-    local dur = type(ent.durable) == "table" and ent.durable or {}
-    local seqText = dur.seq ~= nil and ("  (" .. tostring(dur.source or "-") .. " #" .. tostring(dur.seq) .. ")") or ""
-    self:detailLine(out, "Durable", E.durableText(dur.status) .. seqText)
-    local wait = E.waitText(ent.wait)
-    if wait then self:detailLine(out, "Durable", wait) end
-    if ent.notice ~= nil then
-        local rental = type(ent.notice) == "table" and ent.notice.rental or nil
-        self:detailLine(out, "Notice", E.noticeText(ent.notice) .. (rental ~= nil and ("  " .. rentalTag(ent, rental)) or ""))
-    end
-    self:detailLine(out, "Plan", num(type(e.plan) == "table" and e.plan.revision or nil))
-    self:detailLine(out, "Available", tr(e.available == true and "Ent_Yes" or "Ent_No"))
-    if type(e.balances) == "table" then
-        for id, b in pairs(e.balances) do
-            if type(b) == "table" then
-                self:detailLine(out, "Balance", amountText(b.available) .. " " .. U.currencyName(id))
-            end
-        end
-    end
-    out[#out + 1] = tr("Ent_AutoRenewNote")
-end
-
-local ORDER_FIELDS = {
-    { key = "kind", label = "Kind" }, { key = "quantity", label = "Quantity" },
-    { key = "status", label = "Status" }, { key = "at", label = "At", stamp = true },
-    { key = "createdAt", label = "At", stamp = true }, { key = "paidUntil", label = "PaidUntil", stamp = true },
-    { key = "refundedAt", label = "RefundedAt", stamp = true }, { key = "txId", label = "Tx" },
-    { key = "refundTxId", label = "RefundTx" }, { key = "termsRevision", label = "Terms" },
-    { key = "error", label = "Error" },
-}
-local ORDER_KNOWN = { orderId = true, id = true, amount = true, currency = true, refundable = true,
-    durable = true, paid = true, final = true, rental = true, auto = true }
-for _, f in ipairs(ORDER_FIELDS) do ORDER_KNOWN[f.key] = true end
-
--- ent: the entitlement the order belongs to, so a rental order can name its rental's place.
-function Page:orderLines(out, o, ent)
-    local E = Ent()
-    self:detailLine(out, "Order", orderIdOf(o) or "-")
-    if o.rental ~= nil then
-        self:detailLine(out, "RentalOf", rentalTag(ent, o.rental) .. "  (" .. tostring(o.rental) .. ")"
-            .. (o.auto == true and ("  " .. tr("Ent_AutoOrder")) or ""))
-    end
-    if o.amount ~= nil then
-        self:detailLine(out, "Amount", amountText(o.amount) .. " " .. (o.currency and U.currencyName(o.currency) or ""))
-    end
-    for _, f in ipairs(ORDER_FIELDS) do
-        local v = o[f.key]
-        if v ~= nil then
-            if f.stamp then v = self:stamp(tonumber(v))
-            elseif f.key == "kind" then v = E.kindText(v)
-            elseif f.key == "status" then v = E.orderStatusText(v)
-            elseif f.key == "error" then v = E.errorText(v) end
-            self:detailLine(out, f.label, v)
-        end
-    end
-    if type(o.durable) == "table" then self:detailLine(out, "Durable", E.durableText(o.durable.status))
-    elseif o.durable ~= nil then self:detailLine(out, "Durable", E.durableText(o.durable)) end
-    self:detailLine(out, "Refundable", tr(refundable(o) and "Ent_Yes" or "Ent_No"))
-    -- whatever else the server wrote for this order stays readable, in a stable order
-    local extra = {}
-    for k, v in pairs(o) do
-        local kind = type(v)
-        if not ORDER_KNOWN[k] and (kind == "string" or kind == "number" or kind == "boolean") then
-            extra[#extra + 1] = tostring(k) .. ": " .. tostring(v)
-        end
-    end
-    EC.sortSafe(extra, function(a, b) return a < b end)
-    for _, s in ipairs(extra) do out[#out + 1] = s end
-end
-
-local function priceText(amount, currency)
-    return money(amount) .. " " .. (type(currency) == "string" and U.currencyName(currency) or "-")
-end
-
--- What the overview warns about above the terms, worst first: when the card runs out of room the
--- plain lines at the end give way first.
-function Page:overviewNotices(entry, width)
-    local lines = {}
-    local problem = type(entry.source) == "table" and entry.source.problem or nil
-    if type(problem) == "string" and problem ~= "" then
-        wrapInto(lines, getText(T .. "Ent_FileProblem", problem), width, "warn", 4)
-    end
-    if entry.plan.provisional == true then wrapInto(lines, tr("Ent_Provisional"), width, "warn", 3) end
-    if entry.loaded == false then wrapInto(lines, tr("Ent_NotLoaded"), width, "warn", 3) end
-    wrapInto(lines, getText(T .. "Ent_Ids", entry.sourceMod, entry.productId, num(entry.plan.revision)), width, "textMuted", 2)
-    wrapInto(lines, tr("Ent_ManagedBy"), width, "textMuted", 3)
-    return lines
-end
-
--- The current terms, the last change and the source's settings file, for the reader.
-function Page:overviewText(entry)
-    local plan, out, sub = entry.plan, {}, "  "
-    self:detailLine(out, "Instant", tr(entry.instant == true and "Ent_Instant_Yes" or "Ent_Instant_No"))
-    out[#out + 1] = ""
-    out[#out + 1] = tr("Ent_Group_permanent")
-    self:detailLine(out, "Open", yesNo(plan.permanentEnabled), sub)
-    self:detailLine(out, "UnitPrice", priceText(plan.permanentPrice, plan.permanentCurrency), sub)
-    self:detailLine(out, "Limit", getText(T .. "Ent_Slots", num(plan.permanentLimit)), sub)
-    out[#out + 1] = ""
-    out[#out + 1] = tr("Ent_Group_rental")
-    self:detailLine(out, "Open", yesNo(plan.rentalEnabled), sub)
-    self:detailLine(out, "PeriodPrice", priceText(plan.rentalPrice, plan.rentalCurrency), sub)
-    self:detailLine(out, "PeriodDays", getText(T .. "Ent_Days", num(plan.rentalDays)), sub)
-    self:detailLine(out, "RentalLimit", getText(T .. "Ent_Slots", num(plan.rentalLimit)), sub)
-    self:detailLine(out, "Grace", getText(T .. "Ent_Hours", num(plan.graceHours)), sub)
-    self:detailLine(out, "Reminder", getText(T .. "Ent_Hours", num(plan.reminderHours)), sub)
-    self:detailLine(out, "AutoRenewAllowed", yesNo(plan.autoRenewAllowed), sub)
-    out[#out + 1] = ""
-    out[#out + 1] = tr("Ent_LastChangeHead")
-    local c = type(entry.lastChange) == "table" and entry.lastChange or {}
-    self:detailLine(out, "At", self:stamp(tonumber(c.at)), sub)
-    self:detailLine(out, "Actor", tostring(c.actor or "-"), sub)
-    self:detailLine(out, "Origin", c.origin == nil and "-"
-        or (getTextOrNull(T .. "Ent_Origin_" .. tostring(c.origin)) or tostring(c.origin)), sub)
-    if type(c.reason) == "string" and c.reason ~= "" then self:detailLine(out, "Reason", c.reason, sub) end
-    out[#out + 1] = ""
-    local file = type(entry.source) == "table" and entry.source.file or nil
-    self:detailLine(out, "File", (type(file) == "string" and file ~= "") and file or tr("Ent_NoFile"))
-    return table.concat(out, "\n")
-end
-
-function Page:refundSummary(username, e, o)
-    local out = {}
-    out[#out + 1] = getText(T .. "Ent_Review_Account", username)
-    out[#out + 1] = getText(T .. "Ent_Review_Product", Ent().productName(e), e.sourceMod, e.productId)
-    out[#out + 1] = ""
-    self:orderLines(out, o, e.entitlement)
-    out[#out + 1] = ""
-    out[#out + 1] = "- " .. tr("Ent_Review_RefundEffect")
-    if o.rental ~= nil then out[#out + 1] = "- " .. tr("Ent_Review_RefundRental") end
-    out[#out + 1] = "- " .. tr("Ent_Review_NoUndo")
-    return table.concat(out, "\n")
+    self:say(args.duplicate and tr("Ent_RefundDuplicate") or getText(T .. "Ent_RefundDone", req.amount, req.username))
+    self:invalidateKeyboard()
 end
 
 -- ---------- rows (data changes only) ----------
@@ -814,60 +867,128 @@ function Page:rebuildPlanRows()
     local items, sel = {}, nil
     for i, e in ipairs(self.plans or {}) do
         local key = keyOf(e.sourceMod, e.productId)
-        local problem = type(e.source) == "table" and type(e.source.problem) == "string" and e.source.problem ~= ""
+        local problem = type(e.source) == "table" and type(e.source.problem) == "table"
         items[i] = { sourceMod = e.sourceMod, productId = e.productId, line1 = Ent().productName(e),
-            line2 = e.sourceMod .. " / " .. e.productId,
-            right2 = getText(T .. "Ent_SaleShort", boolText(e.plan.permanentEnabled == true), boolText(e.plan.rentalEnabled == true)),
+            line2 = getText(T .. "Ent_PlanRowLine", P.sourceName(e), boolText(e.plan.permanentEnabled == true),
+                boolText(e.plan.rentalEnabled == true)),
             token2 = (e.loaded == false or problem or e.plan.provisional == true) and "warn" or nil }
         if key == self.selKey then sel = i end
     end
     self.planList:setItems(items)
     self.planList:setSelectedIndex(sel)
-    local entry = self:selectedEntry()
-    self.planText = entry ~= nil and self:overviewText(entry) or nil
 end
 
-function Page:rebuildAccountRows()
-    if self.broken then return end
-    local E = Ent()
-    local items = {}
-    for i, e in ipairs(self.account and self.account.entries or {}) do
-        local ent = type(e.entitlement) == "table" and e.entitlement or {}
-        items[i] = { line1 = E.productName(e), right1 = E.stateText(ent.state),
-            rightToken1 = (ent.state == "active" and "positive") or ((ent.state == "grace" or ent.state == "expired") and "warn") or "textMuted",
-            line2 = getText(T .. "Ent_EntryLine", num(ent.usable), num(ent.permanent), num(ent.rental)),
-            right2 = type(ent.rentals) == "table" and #ent.rentals > 0
-                and getText(T .. "Ent_RentalsShort", tostring(#ent.rentals)) or nil }
+-- The orders the accounts section shows: every account's (newest first, as the server sent them)
+-- or the filtered account's picked product (sorted the same way here).
+function Page:orderSource()
+    if self.accountUser == nil then
+        local out, products, count = {}, {}, 0
+        for _, r in ipairs(self.orders and self.orders.rows or {}) do
+            local key = keyOf(r.sourceMod, r.productId)
+            if not products[key] then products[key], count = true, count + 1 end
+            out[#out + 1] = { order = r, username = r.username, sourceMod = r.sourceMod, productId = r.productId,
+                instant = r.instant == true, product = r }
+        end
+        return out, count > 1
     end
-    self.entryList:setItems(items)
-    self.entryList:setSelectedIndex(self.entrySel)
-    local e, o = self:selectedAccountEntry(), self:selectedOrder()
-    local selEnt = e ~= nil and e.entitlement or nil
-    local orders = {}
-    for i, row in ipairs(self:selectedOrders()) do
-        if type(row) == "table" then
-            local line2 = E.kindText(row.kind) .. "  " .. E.orderStatusText(row.status)
-            if row.rental ~= nil then line2 = line2 .. "  " .. rentalTag(selEnt, row.rental) end
-            if row.auto == true then line2 = line2 .. "  " .. tr("Ent_AutoOrder") end
-            orders[i] = { line1 = orderIdOf(row) or "?",
-                right1 = row.amount ~= nil and (amountText(row.amount) .. " " .. (row.currency and U.currencyName(row.currency) or "")) or nil,
-                rightToken1 = "text",
-                line2 = line2,
-                right2 = self:stamp(tonumber(row.at or row.createdAt)),
-                token2 = refundable(row) and nil or "textFaint" }
-        else
-            orders[i] = { line1 = "?" }
+    local e = self:selectedAccountEntry()
+    local out = {}
+    if e == nil then return out, false end
+    for _, o in ipairs(type(e.orders) == "table" and e.orders or {}) do
+        if type(o) == "table" then
+            out[#out + 1] = { order = o, username = self.accountUser, sourceMod = e.sourceMod, productId = e.productId,
+                instant = e.instant == true, product = e }
         end
     end
-    self.orderList:setItems(orders)
-    self.orderList:setSelectedIndex(self.orderSel)
-    local out = {}
-    if e ~= nil then self:entryLines(out, e) end
-    if o ~= nil then
-        out[#out + 1] = ""
-        self:orderLines(out, o, selEnt)
+    EC.sortSafe(out, function(a, b)
+        local ta, tb = tonumber(a.order.at) or 0, tonumber(b.order.at) or 0
+        if ta ~= tb then return ta > tb end
+        return tostring(orderIdOf(a.order)) > tostring(orderIdOf(b.order))
+    end)
+    return out, false
+end
+
+local function idsText(o)
+    local id = orderIdOf(o) or "-"
+    local s = o.txId ~= nil and getText(T .. "Ent_IdsLine", id, tostring(o.txId)) or getText(T .. "Ent_IdsOrder", id)
+    local refundTx = type(o.refund) == "table" and o.refund.txId or nil
+    if refundTx ~= nil then s = pair(s, getText(T .. "Ent_IdsRefund", tostring(refundTx))) end
+    return s
+end
+
+-- Builds the rows, then the columns from what they hold, then fits every string once.
+function Page:rebuildOrderRows()
+    if self.broken then return end
+    local list = self.orderList
+    local source, multi = self:orderSource()
+    local withPlayer = self.accountUser == nil
+    local rows = {}
+    local wPlayer, wAmount, wStatus = textWidth(tr("Ent_Col_Player")), textWidth(tr("Ent_Col_Amount")),
+        textWidth(tr("Ent_Col_Status"))
+    -- digits are proportional in the CN/JP fonts: "0000-00-00 00:00" can be narrower than a real stamp
+    local wTime = math.max(textWidth(U.STAMP_SAMPLE), textWidth(tr("Ent_Col_Time")))
+    for i, s in ipairs(source) do
+        local o = s.order
+        local content = P.contentText(o)
+        if multi then content = pair(Ent().productName(s.product), content) end
+        local status = P.statusText(o, s.instant)
+        local cells = { self:stamp(tonumber(o.at)) }
+        wTime = math.max(wTime, textWidth(cells[1]))
+        if withPlayer then cells[#cells + 1] = s.username end
+        cells[#cells + 1] = content
+        cells[#cells + 1] = moneyText(o.amount, o.currency)
+        cells[#cells + 1] = status
+        local tokens = { "textMuted" }
+        if withPlayer then tokens[#tokens + 1] = "text" end
+        tokens[#tokens + 1] = "text"
+        tokens[#tokens + 1] = "text"
+        tokens[#tokens + 1] = o.status == "paid" and "text" or "textMuted"
+        rows[i] = { order = o, username = s.username, sourceMod = s.sourceMod, productId = s.productId,
+            instant = s.instant, content = content, cells = cells, tokens = tokens, ids = idsText(o),
+            refundable = o.refundable == true and o.status == "paid" }
+        if withPlayer then wPlayer = math.max(wPlayer, textWidth(s.username)) end
+        wAmount = math.max(wAmount, textWidth(cells[#cells - 1]))
+        wStatus = math.max(wStatus, textWidth(status))
     end
-    self.detailText = table.concat(out, "\n")
+    -- columns: time | player? | content (the rest) | amount (right) | status | the refund button
+    local width = list.width - 10
+    local timeW = wTime + PAD
+    local actionW = textWidth(list.refundLabel) + 20
+    local playerW = withPlayer and math.min(math.floor(width * 0.2), wPlayer + PAD) or 0
+    local amountW, statusW = wAmount + PAD * 2, math.min(math.floor(width * 0.25), wStatus + PAD)
+    local contentW = math.max(40, width - PAD - timeW - playerW - amountW - statusW - actionW - PAD)
+    local cols, x = {}, PAD
+    local function col(w, right, title)
+        cols[#cols + 1] = { x = x, w = w, right = right, title = title }
+        x = x + w
+    end
+    col(timeW, false, tr("Ent_Col_Time"))
+    if withPlayer then col(playerW, false, tr("Ent_Col_Player")) end
+    list.contentX = x
+    col(contentW, false, tr("Ent_Col_Content"))
+    col(amountW, true, tr("Ent_Col_Amount"))
+    col(statusW, false, tr("Ent_Col_Status"))
+    list.actionX, list.actionW = x, actionW
+    list.cols, list.showIds = cols, self.showIds == true
+    for _, r in ipairs(rows) do
+        r.fit = {}
+        for i, c in ipairs(cols) do r.fit[i] = fitText(r.cells[i], math.max(0, c.w - PAD)) end
+        r.idsFit = fitText(r.ids, math.max(0, width - list.contentX - actionW - PAD))
+    end
+    self.orderRows = rows
+    self.orderRowsW = list.width
+    local rowH = self.showIds and rowH2() or ctrlH() + 6
+    if list.rowHeight ~= rowH then
+        list.rowHeight = rowH
+        list:resize(list.width, list.height)
+    end
+    local sel = list:getSelectedItem()
+    list:setItems(rows)
+    local keep = nil
+    for i, r in ipairs(rows) do
+        if sel ~= nil and r.order == sel.order then keep = i end
+    end
+    list:setSelectedIndex(keep)
 end
 
 -- ---------- geometry ----------
@@ -903,30 +1024,21 @@ function Page:layout()
     local w, h = self.width, self.height
     local g = {}
     self.g = g
-    local review = self.view == "review"
-    local plans = not review and self.section == "plans"
-    local accounts = not review and self.section == "accounts"
-    show(self.tabs, not review)
-    g.topH = review and 0 or (self.tabs.height + 6)
+    local plans = self.section == "plans"
+    local accounts = not plans
+    g.topH = self.tabs.height + 6
     g.statusX = self.tabs.width + PAD
     g.statusY = math.floor((self.tabs.height - fontH.small) / 2)
 
     show(self.planList, plans)
-    show(self.planBox, plans and self:selectedEntry() ~= nil)
-    show(self.accountField, accounts)
-    show(self.lookupButton, accounts)
-    show(self.entryList, accounts)
-    show(self.orderList, accounts)
-    show(self.detailBox, accounts)
-    show(self.refundButton, accounts)
-    show(self.summaryBox, review)
-    show(self.reasonField, review)
-    show(self.confirmButton, review)
-    show(self.backButton, review)
-
-    if review then self:layoutReview(g, w, h)
-    elseif plans then self:layoutPlans(g, w, h)
-    else self:layoutAccounts(g, w, h) end
+    for _, el in ipairs({ self.accountField, self.lookupButton }) do show(el, accounts) end
+    if plans then
+        for _, el in ipairs({ self.allButton, self.orderList, self.moreButton, self.idsToggle, self.rentalsButton }) do show(el, false) end
+        for _, b in ipairs(self.productChips) do show(b, false) end
+        self:layoutPlans(g, w, h)
+    else
+        self:layoutAccounts(g, w, h)
+    end
     self:updateEnabled()
 end
 
@@ -938,9 +1050,9 @@ function Page:layoutPlans(g, w, h)
     if w < 640 then
         lx, ly, lw = 0, top, w
         lh2 = math.max(th + rowH2() * 2 + 4, math.floor(bodyH * 0.3))
-        ex, ey, ew, eh = 0, top + lh2 + 6, w, math.max(ctrlH() * 3, bodyH - lh2 - 6)
+        ex, ey, ew, eh = 0, top + lh2 + PAD, w, math.max(ctrlH() * 3, bodyH - lh2 - PAD)
     else
-        lw = math.max(200, math.min(320, math.floor(w * 0.3)))
+        lw = math.max(200, math.min(300, math.floor(w * 0.28)))
         lx, ly, lh2 = 0, top, bodyH
         ex, ey, ew, eh = lw + PAD, top, w - lw - PAD, bodyH
     end
@@ -956,77 +1068,169 @@ function Page:layoutPlans(g, w, h)
         wrapInto(g.listEmpty, msg, lw - PAD * 2, self.plansError and "errorText" or "textMuted", 6)
     end
     g.listEmptyY = ly + th + PAD
-    g.edCard = { x = ex, y = ey, w = ew, h = eh }
+    g.ops = {}
     self:layoutOverview(g, ex, ey, ew, eh)
 end
 
-function Page:layoutOverview(g, ex, ey, ew, eh)
-    local lh = lineH()
-    local x, iw = ex + PAD, math.max(80, ew - PAD * 2)
-    local entry = self:selectedEntry()
-    g.edX, g.edLines, g.edLinesY, g.edTitle = x, {}, ey + PAD, nil
-    if entry == nil then
-        if self.plans ~= nil and #self.plans > 0 then wrapInto(g.edLines, tr("Ent_PickProduct"), iw, "textMuted", 3) end
-        return
-    end
-    local y = ey + PAD
-    g.edTitle = fitText(Ent().productName(entry), iw, UIFont.Medium)
-    g.edTitleY = y
-    y = y + fontH.medium + 4
-    local bottom = ey + eh - PAD
-    -- the notices give way before the terms do: three lines of terms always stay
-    local lines = self:overviewNotices(entry, iw)
-    local maxLines = math.max(1, math.floor((bottom - lh * 3 - y) / lh))
-    while #lines > maxLines do table.remove(lines) end
-    g.edLines, g.edLinesY = lines, y
-    y = y + #lines * lh + 4
-    self.planBox:setX(x)
-    self.planBox:setY(y)
-    self.planBox:setWidth(iw)
-    self.planBox:setHeight(math.max(lh * 2, bottom - y))
-    U.setWrappedText(self.planBox, self.planText or "", iw)
+local function opText(ops, s, x, y, token, font)
+    ops[#ops + 1] = { kind = "text", s = s, x = x, y = y, token = token, font = font }
 end
 
-function Page:layoutReview(g, w, h)
-    local lh, ch = lineH(), ctrlH()
-    local r = self.review
-    g.rvTitle = fitText(tr("Ent_Review_TitleRefund"), w, UIFont.Medium)
-    local y = fontH.medium + 8
-    self.confirmButton.ecShow, self.backButton.ecShow = true, true
-    local barH = self:flowButtons(self.reviewButtons, 0, w, nil)
-    local barY = h - barH
-    self:flowButtons(self.reviewButtons, 0, w, barY)
-    local lines = {}
-    if self.reviewError ~= nil then wrapInto(lines, self.reviewError, w, "errorText", 3)
-    elseif self:writeInFlight() then wrapInto(lines, tr("Ent_Sending"), w, "textMuted", 2)
-    elseif not self.owner:writeAllowed() then wrapInto(lines, tr("Ent_ReadOnly"), w, "warn", 2) end
-    g.rvLines = lines
-    g.rvLinesY = barY - 4 - #lines * lh
-    local fieldY = g.rvLinesY - 4 - ch
-    g.rvReason = fitText(tr("Ent_Reason"), w)
-    g.rvReasonY = fieldY - lh
-    self.reasonField:setX(0)
-    self.reasonField:setY(fieldY)
-    setFieldWidth(self.reasonField, math.min(w, 720))
-    self.summaryBox:setX(0)
-    self.summaryBox:setY(y)
-    self.summaryBox:setWidth(w)
-    self.summaryBox:setHeight(math.max(lh * 2, g.rvReasonY - 6 - y))
-    U.setWrappedText(self.summaryBox, r.text, w)
+local function opChip(ops, s, x, y, token)
+    local w, h = textWidth(s) + 16, fontH.small + 4
+    ops[#ops + 1] = { kind = "chip", s = s, x = x, y = y, w = w, h = h, token = token }
+    return w, h
+end
+
+-- One terms card: its title with the open / closed chip on the right, then label / value rows.
+-- Returns the card op (its height may be raised to match a neighbour) and its height.
+local function opCard(ops, x, y, w, title, open, rows)
+    local th, lh = titleH(), lineH()
+    local h = th + PAD + #rows * lh + PAD - 6
+    local chip = tr(open and "Ent_Open" or "Ent_Closed")
+    local cw = textWidth(chip) + 16
+    local cardOp = { kind = "card", x = x, y = y, w = w, h = h, title = fitText(title, w - PAD * 3 - cw, UIFont.Medium) }
+    ops[#ops + 1] = cardOp
+    opChip(ops, chip, x + w - PAD - cw, y + math.floor((th - fontH.small - 4) / 2), open and "positive" or "textMuted")
+    local labelW = 0
+    for _, r in ipairs(rows) do labelW = math.max(labelW, textWidth(r[1])) end
+    labelW = math.min(labelW, math.floor((w - PAD * 2) * 0.5))
+    local vx = x + PAD + labelW + 14
+    local ry = y + th + PAD - 3
+    for _, r in ipairs(rows) do
+        opText(ops, fitText(r[1], labelW), x + PAD, ry, "textMuted")
+        opText(ops, fitText(r[2], math.max(0, x + w - PAD - vx)), vx, ry, "text")
+        ry = ry + lh
+    end
+    return cardOp, h
+end
+
+-- The picked product, drawn from ops built here (data or geometry changes only, never per frame).
+function Page:layoutOverview(g, ex, ey, ew, eh)
+    local ops, lh = g.ops, lineH()
+    local x, iw = ex, math.max(80, ew)
+    local entry = self:selectedEntry()
+    if entry == nil then
+        if self.plans ~= nil and #self.plans > 0 then
+            local lines = {}
+            wrapInto(lines, tr("Ent_PickProduct"), iw, "textMuted", 3)
+            for i, l in ipairs(lines) do opText(ops, l.s, x, ey + (i - 1) * lh, l.token) end
+        end
+        return
+    end
+    local plan, y = entry.plan, ey
+    -- title, the "takes effect on payment" chip, and who sets these terms
+    local title = fitText(Ent().productName(entry), iw, UIFont.Medium)
+    opText(ops, title, x, y, "text", UIFont.Medium)
+    local cx = x + textWidth(title, UIFont.Medium) + PAD
+    local cy = y + math.floor((fontH.medium - fontH.small - 4) / 2)
+    if entry.instant == true then
+        local cw = opChip(ops, tr("Ent_InstantChip"), cx, cy, "positive")
+        cx = cx + cw + PAD
+    end
+    local managed = tr("Ent_ManagedBy")
+    if cx + textWidth(managed) <= x + iw then
+        opText(ops, managed, cx, cy + 2, "textMuted")
+        y = y + fontH.medium + PAD
+    else
+        y = y + fontH.medium + 4
+        opText(ops, fitText(managed, iw), x, y, "textMuted")
+        y = y + lh + 6
+    end
+    -- the warning box: settings file problem, provisional plan, source not loaded
+    local warn = {}
+    local problem = P.problemText(type(entry.source) == "table" and entry.source.problem or nil)
+    if problem ~= nil then wrapInto(warn, problem, iw - PAD * 2, "warn", 4) end
+    if plan.provisional == true then wrapInto(warn, tr("Ent_Provisional"), iw - PAD * 2, "warn", 3) end
+    if entry.loaded == false then wrapInto(warn, tr("Ent_NotLoaded"), iw - PAD * 2, "warn", 3) end
+    if #warn > 0 then
+        local bh = #warn * lh + 8
+        ops[#ops + 1] = { kind = "box", x = x, y = y, w = iw, h = bh, token = "warn" }
+        for i, l in ipairs(warn) do opText(ops, l.s, x + PAD, y + 4 + (i - 1) * lh, l.token) end
+        y = y + bh + PAD
+    end
+    -- the two terms cards, side by side when both fit
+    local permanent = {
+        { tr("Ent_L_UnitPrice"), moneyText(plan.permanentPrice, plan.permanentCurrency) },
+        { tr("Ent_L_Limit"), getText(T .. "Ent_Units", num(plan.permanentLimit)) },
+    }
+    local rental = {
+        { tr("Ent_L_UnitPrice"), getText(T .. "Ent_PerPeriod", moneyText(plan.rentalPrice, plan.rentalCurrency), num(plan.rentalDays)) },
+        { tr("Ent_L_RentalLimit"), getText(T .. "Ent_Units", num(plan.rentalLimit)) },
+        { tr("Ent_L_GraceReminder"), getText(T .. "Ent_GraceReminder", num(plan.graceHours), num(plan.reminderHours)) },
+        { tr("Ent_L_AutoRenew"), tr(plan.autoRenewAllowed == true and "Ent_Allowed" or "Ent_NotAllowed") },
+    }
+    if iw >= CARD_MIN_W * 2 + PAD then
+        local cw = math.floor((iw - PAD) / 2)
+        local c1, h1 = opCard(ops, x, y, cw, tr("Ent_CardPermanent"), plan.permanentEnabled == true, permanent)
+        local c2, h2 = opCard(ops, x + cw + PAD, y, iw - cw - PAD, tr("Ent_CardRental"), plan.rentalEnabled == true, rental)
+        -- both cards share the taller one's height
+        c1.h, c2.h = math.max(h1, h2), math.max(h1, h2)
+        y = y + math.max(h1, h2) + PAD
+    else
+        local _, h1 = opCard(ops, x, y, iw, tr("Ent_CardPermanent"), plan.permanentEnabled == true, permanent)
+        y = y + h1 + PAD
+        local _, h2 = opCard(ops, x, y, iw, tr("Ent_CardRental"), plan.rentalEnabled == true, rental)
+        y = y + h2 + PAD
+    end
+    -- footer: the last change and the settings file
+    local foot = {}
+    for _, s in ipairs(self:planFooter(entry)) do wrapInto(foot, s, iw, "textMuted", 2) end
+    if #foot > 0 then
+        ops[#ops + 1] = { kind = "rule", x = x, y = y, w = iw }
+        y = y + 6
+        for i, l in ipairs(foot) do
+            if y + i * lh <= ey + eh then opText(ops, l.s, x, y + (i - 1) * lh, l.token) end
+        end
+    end
+end
+
+-- "Last changed <time>, <where> [, <admin>] [, reason: ...]" and "Settings file <path>". The
+-- account is shown only for a change made in a source's in-game settings (anything else names a
+-- process, not a person).
+function Page:planFooter(entry)
+    local out = {}
+    local c = entry.lastChange
+    if type(c) == "table" and tonumber(c.at) ~= nil then
+        local s = getText(T .. "Ent_FootChanged", self:stamp(tonumber(c.at)))
+        s = pair(s, getTextOrNull(T .. "Ent_Origin_" .. tostring(c.origin)) or tr("Ent_Origin_other"))
+        if c.origin == "admin" and type(c.actor) == "string" and c.actor ~= "" then s = pair(s, c.actor) end
+        if type(c.reason) == "string" and c.reason ~= "" then s = pair(s, getText(T .. "Ent_FootReason", c.reason)) end
+        out[#out + 1] = s
+    end
+    local file = type(entry.source) == "table" and entry.source.file or nil
+    if type(file) == "string" and file ~= "" then out[#out + 1] = getText(T .. "Ent_FootFile", file) end
+    return out
 end
 
 function Page:accountNote()
-    if self.accountUser == nil then return tr("Ent_AccountHint"), "textMuted" end
+    if self.accountUser == nil then
+        if self.ordersTimeout then return tr("Ent_OrdersTimeout"), "errorText" end
+        if self.ordersError ~= nil then return getText(T .. "Ent_OrdersError", self:errorText(self.ordersError)), "errorText" end
+        return nil
+    end
     if self.accountTimeout then return tr("Ent_AccountTimeout"), "errorText" end
     if self.accountError ~= nil then return getText(T .. "Ent_AccountError", self:errorText(self.accountError)), "errorText" end
     if self.account == nil then return tr("Admin_Loading"), "textMuted" end
     if #self.account.entries == 0 then return getText(T .. "Ent_AccountEmpty", self.account.username), "textMuted" end
-    return getText(T .. "Ent_AccountFor", self.account.username), "text"
+    return nil
+end
+
+function Page:productChip(i)
+    local b = self.productChips[i]
+    if b == nil then
+        b = controls().Button.new({ x = 0, y = 0, width = 80, height = ctrlH(), title = "", style = "normal",
+            theme = U.theme, target = self, onClick = function(page) page:selectEntry(i) end })
+        self:addChild(b)
+        self.productChips[i] = b
+    end
+    return b
 end
 
 function Page:layoutAccounts(g, w, h)
-    local lh, ch, th = lineH(), ctrlH(), titleH()
+    local lh, ch = lineH(), ctrlH()
     local top = g.topH
+    -- the filter row
     local label = tr("Ent_Account")
     local labelW = math.min(textWidth(label), math.floor(w * 0.3))
     g.accLabel, g.accLabelY = fitText(label, labelW), top + math.floor((ch - fontH.small) / 2)
@@ -1036,51 +1240,120 @@ function Page:layoutAccounts(g, w, h)
     self.accountField:setY(top)
     setFieldWidth(self.accountField, fw)
     self.lookupButton.ecShow = true
-    self:flowButtons({ self.lookupButton }, fx + fw + 6, math.max(60, w - fx - fw - 6), top)
-    local noteX = self.lookupButton.x + self.lookupButton.width + PAD
+    self.allButton.ecShow = self.accountUser ~= nil
+    self:flowButtons({ self.lookupButton, self.allButton }, fx + fw + 6, math.max(60, w - fx - fw - 6), top)
+    local last = self.allButton.ecShow and self.allButton or self.lookupButton
+    local noteX = last.x + last.width + PAD
     local note, token = self:accountNote()
-    local y0 = top + ch + 6
-    if w - noteX < 160 then
-        noteX = 0
-        g.accNoteY = y0
-        y0 = y0 + lh + 4
-    else
-        g.accNoteY = g.accLabelY
+    local y = top + ch + PAD
+    g.accNote = nil
+    if note ~= nil then
+        if w - noteX < 160 then
+            g.accNoteX, g.accNoteY = 0, y
+            y = y + lh + 4
+        else
+            g.accNoteX, g.accNoteY = noteX, g.accLabelY
+        end
+        g.accNote, g.accNoteToken = fitText(note, w - g.accNoteX), token
     end
-    g.accNote, g.accNoteX, g.accNoteToken = fitText(note, w - noteX), noteX, token
-    self.refundButton.ecShow = true
-    local barH = self:flowButtons({ self.refundButton }, 0, w, nil)
-    local barY = h - barH
-    self:flowButtons({ self.refundButton }, 0, w, barY)
-    local bodyH = math.max(th * 3, barY - 6 - y0)
-    local ec, oc, dc
-    if w >= 700 then
-        local lw = math.floor(w * 0.4)
-        local rx, rw = lw + PAD, w - lw - PAD
-        local oh = math.floor(bodyH * 0.45)
-        ec = { x = 0, y = y0, w = lw, h = bodyH }
-        oc = { x = rx, y = y0, w = rw, h = oh }
-        dc = { x = rx, y = y0 + oh + 6, w = rw, h = bodyH - oh - 6 }
-    else
-        local eh, oh = math.floor(bodyH * 0.32), math.floor(bodyH * 0.28)
-        ec = { x = 0, y = y0, w = w, h = eh }
-        oc = { x = 0, y = y0 + eh + 6, w = w, h = oh }
-        dc = { x = 0, y = y0 + eh + oh + 12, w = w, h = bodyH - eh - oh - 12 }
+    -- the footer: who may switch auto-renew (filtered), show earlier (all), the ids toggle
+    local footY = h - ch
+    g.foot = {}
+    if self.accountUser ~= nil then g.foot[#g.foot + 1] = { s = tr("Ent_AutoRenewOwner"), token = "textMuted" } end
+    if not self.owner:writeAllowed() then g.foot[#g.foot + 1] = { s = tr("Ent_ReadOnly"), token = "warn" } end
+    local idsW = self.idsToggle.width
+    show(self.idsToggle, true)
+    self.idsToggle:setX(math.max(0, w - idsW))
+    self.idsToggle:setY(footY)
+    self.idsToggle:setChecked(self.showIds == true, true)
+    local more = self.accountUser == nil and self.orders ~= nil and self.orders.more == true
+    self.moreButton.ecShow = more
+    self:flowButtons({ self.moreButton }, 0, math.max(60, w - idsW - PAD), footY)
+    local footTextX = more and (self.moreButton.width + PAD) or 0
+    g.footX, g.footY = footTextX, footY + math.floor((ch - fontH.small) / 2)
+    local footRoom = math.max(0, w - idsW - PAD - footTextX)
+    local parts = nil
+    for _, f in ipairs(g.foot) do parts = parts and pair(parts, f.s) or f.s end
+    g.footText = parts and fitText(parts, footRoom) or nil
+    g.footToken = (#g.foot > 0 and g.foot[#g.foot].token == "warn") and "warn" or "textMuted"
+    local bodyBottom = footY - PAD
+
+    -- the filtered account's head: title, product chips, summary, rentals
+    g.head, g.rentals = {}, {}
+    local entry = self.accountUser ~= nil and self:selectedAccountEntry() or nil
+    local chips = {}
+    self.rentalsButton.ecShow = false
+    if entry ~= nil then
+        local acc = self.account
+        opText(g.head, fitText(getText(T .. "Ent_Pair", acc.username, Ent().productName(entry)), w, UIFont.Medium), 0, y, "text", UIFont.Medium)
+        y = y + fontH.medium + 6
+        if #acc.entries > 1 then
+            for i, e in ipairs(acc.entries) do
+                local b = self:productChip(i)
+                local name = Ent().productName(e)
+                b.ecFull, b.ecShow = name, true
+                b:setStyle(i == self.entrySel and "primary" or "normal")
+                chips[#chips + 1] = b
+            end
+            y = y + self:flowButtons(chips, 0, w, y) + 6
+        end
+        local ent = type(entry.entitlement) == "table" and entry.entitlement or {}
+        local rentals = type(ent.rentals) == "table" and ent.rentals or {}
+        opText(g.head, fitText(getText(T .. "Ent_Summary", num(ent.usable), num(ent.permanent), num(ent.rental),
+            tostring(#rentals)), w), 0, y, "textMuted")
+        y = y + lh + 6
+        if #rentals > 0 then
+            opText(g.head, tr("Ent_RentalsHead"), 0, y, "text")
+            y = y + lh
+            local room = math.max(1, math.floor((bodyBottom - y) * 0.4 / lh))
+            local shown = #rentals <= room and #rentals or math.max(1, room - 1)
+            local now = EC.now()
+            for i = 1, shown do
+                local r = rentals[i]
+                if type(r) == "table" then
+                    local tag, tagToken = P.autoTag(r, entry.plan, ent)
+                    local tagFit = fitText(tag, math.floor(w * 0.45))
+                    local tagW = textWidth(tagFit)
+                    opText(g.head, fitText(P.rentalLine(i, r, now, self.owner.offsetMin), w - tagW - PAD * 2), PAD, y, "text")
+                    g.head[#g.head + 1] = { kind = "textRight", s = tagFit, x = w - PAD, y = y, token = tagToken }
+                    y = y + lh
+                end
+            end
+            if shown < #rentals then
+                -- the rest opens in the shared detail window: every rental, in full
+                self.rentalsButton.ecFull = getText(T .. "Ent_MoreRentals", tostring(#rentals))
+                self.rentalsButton.ecShow = true
+                y = y + self:flowButtons({ self.rentalsButton }, PAD, math.max(60, w - PAD * 2), y) + 4
+            end
+            y = y + 6
+        end
+        opText(g.head, tr("Ent_OrdersHead"), 0, y, "text")
+        y = y + lh
     end
-    ec.title = fitText(tr("Ent_Entries"), ec.w - PAD * 2, UIFont.Medium)
-    oc.title = fitText(tr("Ent_Orders"), oc.w - PAD * 2, UIFont.Medium)
-    dc.title = fitText(tr("Ent_Details"), dc.w - PAD * 2, UIFont.Medium)
-    g.cards = { ec, oc, dc }
-    U.placeList(self.entryList, true, ec.x + 1, ec.y + th + 1, ec.w - 2, math.max(lh, ec.h - th - 2))
-    U.placeList(self.orderList, true, oc.x + 1, oc.y + th + 1, oc.w - 2, math.max(lh, oc.h - th - 2))
-    self.detailBox:setX(dc.x + 1)
-    self.detailBox:setY(dc.y + th + 1)
-    self.detailBox:setWidth(math.max(40, dc.w - 2))
-    self.detailBox:setHeight(math.max(lh, dc.h - th - 2))
-    U.setWrappedText(self.detailBox, self.detailText or "", self.detailBox.width)
-    g.ordersEmpty = nil
-    if self:selectedAccountEntry() ~= nil and #self:selectedOrders() == 0 then
-        g.ordersEmpty = fitText(tr("Ent_NoOrders"), oc.w - PAD * 2)
+    if not self.rentalsButton.ecShow then show(self.rentalsButton, false) end
+    for i, b in ipairs(self.productChips) do
+        if chips[i] ~= b then b.ecShow = false; show(b, false) end
+    end
+
+    -- the order table (with its column titles) fills what is left
+    local tableOn = self.accountUser == nil or entry ~= nil
+    local listY = y + lh + 2
+    local listH = math.max(lh, bodyBottom - listY)
+    U.placeList(self.orderList, tableOn, 0, listY, w, listH)
+    if tableOn and self.orderRowsW ~= self.orderList.width then self:rebuildOrderRows() end
+    g.header, g.headerY = {}, y
+    g.empty = nil
+    if tableOn then
+        for _, c in ipairs(self.orderList.cols or {}) do
+            g.header[#g.header + 1] = { s = fitText(c.title, math.max(0, c.w - PAD)), x = c.right and (c.x + c.w - PAD) or c.x, right = c.right }
+        end
+        if #(self.orderRows or {}) == 0 then
+            local msg
+            if self.accountUser ~= nil then msg = tr("Ent_NoOrders")
+            elseif self.orders == nil then msg = (self.ordersError == nil and not self.ordersTimeout) and tr("Admin_Loading") or nil
+            else msg = tr("Ent_NoOrdersAll") end
+            if msg ~= nil then g.empty = { s = fitText(msg, w - PAD * 2), y = listY + PAD } end
+        end
     end
 end
 
@@ -1090,18 +1363,16 @@ function Page:updateEnabled()
     if self.broken then return end
     local read = self.owner:readAllowed()
     local write = read and self.owner:writeAllowed()
-    local modal = self.owner.dialog ~= nil
+    local modal = self.owner.dialog ~= nil or self.dialog ~= nil
     local pending = self.isPending(COMMAND)
-    local listView = self.view == "list"
-    local inFlight = self:writeInFlight()
-    self.reasonOn = write and not modal and self.view == "review" and not inFlight
-    self.reasonField:setEnabled(self.reasonOn)
-    self.confirmButton:setEnabled(self.reasonOn and not pending)
-    self.backButton:setEnabled(self.view == "review" and not inFlight)
-    self.accountField:setEnabled(read and not modal and listView)
-    self.lookupButton:setEnabled(read and not modal and listView and not pending)
-    self.refundButton:setEnabled(write and not modal and listView and not pending and refundable(self:selectedOrder()))
-    self.tabs.enable = listView and not modal
+    self.accountField:setEnabled(read and not modal)
+    self.lookupButton:setEnabled(read and not modal and not pending)
+    self.allButton:setEnabled(read and not modal)
+    self.moreButton:setEnabled(read and not modal and not pending)
+    self.idsToggle:setEnabled(not modal)
+    for _, b in ipairs(self.productChips) do b:setEnabled(not modal) end
+    self.orderList.refundEnabled = write and not modal and not pending
+    self.tabs.enable = not modal
 end
 
 -- ---------- keyboard (ECKeyboard walks these; the page owns no key dispatch) ----------
@@ -1109,44 +1380,69 @@ end
 function Page:keyboardTargets()
     if self.broken or not self:getIsVisible() then return {} end
     local out = {}
-    if self.view == "review" then
-        out[#out + 1] = { kind = "scroll", control = self.summaryBox, label = tr("Ent_Kb_Summary") }
-        if self.reasonOn then
-            out[#out + 1] = { kind = "entry", control = self.reasonField._entry, label = tr("Ent_Reason") }
-        end
-        out[#out + 1] = { kind = "group", controls = self.reviewButtons, label = tr("Ent_Kb_Actions") }
-        return out
-    end
     out[#out + 1] = { kind = "button", control = self.tabs, label = tr("Ent_Kb_Sections") }
-    if self.section == "accounts" then
-        out[#out + 1] = { kind = "entry", control = self.accountField._entry, label = tr("Ent_Account") }
-        out[#out + 1] = { kind = "button", control = self.lookupButton, label = tr("Ent_Lookup") }
-        out[#out + 1] = { kind = "list", control = self.entryList, label = tr("Ent_Kb_Entries") }
-        out[#out + 1] = { kind = "list", control = self.orderList, label = tr("Ent_Kb_Orders") }
-        out[#out + 1] = { kind = "scroll", control = self.detailBox, label = tr("Ent_Kb_Summary") }
-        out[#out + 1] = { kind = "button", control = self.refundButton, label = self.refundButton.ecFull }
+    if self.section ~= "accounts" then
+        out[#out + 1] = { kind = "list", control = self.planList, label = tr("Ent_Kb_Plans") }
         return out
     end
-    out[#out + 1] = { kind = "list", control = self.planList, label = tr("Ent_Kb_Plans") }
-    if self.planBox:getIsVisible() then
-        out[#out + 1] = { kind = "scroll", control = self.planBox, label = tr("Ent_Kb_Terms") }
+    out[#out + 1] = { kind = "entry", control = self.accountField._entry, label = tr("Ent_Account") }
+    out[#out + 1] = { kind = "button", control = self.lookupButton, label = tr("Ent_Lookup") }
+    if self.allButton:getIsVisible() then
+        out[#out + 1] = { kind = "button", control = self.allButton, label = tr("Ent_All") }
     end
+    local chips = {}
+    for _, b in ipairs(self.productChips) do
+        if b:getIsVisible() then chips[#chips + 1] = b end
+    end
+    if #chips > 0 then out[#out + 1] = { kind = "group", controls = chips, label = tr("Ent_Kb_Products") } end
+    if self.rentalsButton:getIsVisible() then
+        out[#out + 1] = { kind = "button", control = self.rentalsButton, label = self.rentalsButton.ecFull }
+    end
+    if self.orderList:getIsVisible() then
+        out[#out + 1] = { kind = "list", control = self.orderList,
+            label = tr(self.accountUser == nil and "Ent_Kb_OrdersAll" or "Ent_Kb_Orders") }
+        local actions = C.RowActions.targets(self.orderList)
+        if #actions > 0 then out[#out + 1] = { kind = "group", controls = actions, label = tr("Ent_Kb_RowActions") } end
+    end
+    if self.moreButton:getIsVisible() then
+        out[#out + 1] = { kind = "button", control = self.moreButton, label = tr("Ent_More") }
+    end
+    out[#out + 1] = { kind = "button", control = self.idsToggle, label = tr("Ent_ShowIds") }
     return out
 end
 
--- The confirm step owns the page while it is up: the navigation stays out of the ring and the
--- controller refuses a tab switch, exactly like its own write dialog.
+-- The refund dialog is the framework's own modal root; while it is up the controller refuses a
+-- tab switch.
 function Page:isModal()
-    return not self.broken and self.view == "review"
+    return not self.broken and self.dialog ~= nil
 end
 
 function Page:onEscape()
-    if self.broken or self.view ~= "review" then return false end
-    self:onBack()
-    return true
+    return false
 end
 
 -- ---------- drawing ----------
+
+local function drawOps(el, ops)
+    for i = 1, #ops do
+        local o = ops[i]
+        local kind = o.kind
+        if kind == "text" then
+            text(el, o.s, o.x, o.y, o.token, o.font)
+        elseif kind == "textRight" then
+            textRight(el, o.s, o.x, o.y, o.token)
+        elseif kind == "chip" then
+            U.border(el, o.x, o.y, o.w, o.h, o.token)
+            text(el, o.s, o.x + 8, o.y + 2, o.token)
+        elseif kind == "box" then
+            U.border(el, o.x, o.y, o.w, o.h, o.token)
+        elseif kind == "card" then
+            card(el, o.x, o.y, o.w, o.h, o.title, titleH())
+        elseif kind == "rule" then
+            U.fill(el, o.x, o.y, o.w, 1, "border", "rect")
+        end
+    end
+end
 
 function Page:prerender()
     if self.broken then
@@ -1156,30 +1452,23 @@ function Page:prerender()
     local g = self.g
     if g == nil then return end
     local lh = lineH()
-    if self.view ~= "review" and self.isPending(COMMAND) then
-        text(self, self.busyText, g.statusX, g.statusY, "textMuted")
-    end
-    if self.view == "review" then
-        text(self, g.rvTitle, 0, 0, "text", UIFont.Medium)
-        text(self, g.rvReason, 0, g.rvReasonY, "text")
-        for i, l in ipairs(g.rvLines) do text(self, l.s, 0, g.rvLinesY + (i - 1) * lh, l.token) end
-    elseif self.section == "plans" then
+    if self.isPending(COMMAND) then text(self, self.busyText, g.statusX, g.statusY, "textMuted") end
+    if self.section == "plans" then
         local c = g.listCard
         card(self, c.x, c.y, c.w, c.h, c.title, titleH())
         for i, l in ipairs(g.listEmpty) do text(self, l.s, c.x + PAD, g.listEmptyY + (i - 1) * lh, l.token) end
-        c = g.edCard
-        card(self, c.x, c.y, c.w, c.h)
-        if g.edTitle then text(self, g.edTitle, g.edX, g.edTitleY, "text", UIFont.Medium) end
-        for i, l in ipairs(g.edLines) do text(self, l.s, g.edX, g.edLinesY + (i - 1) * lh, l.token) end
-    else
-        text(self, g.accLabel, 0, g.accLabelY, "text")
-        text(self, g.accNote, g.accNoteX, g.accNoteY, g.accNoteToken)
-        for _, c in ipairs(g.cards) do card(self, c.x, c.y, c.w, c.h, c.title, titleH()) end
-        if g.ordersEmpty then
-            local c = g.cards[2]
-            text(self, g.ordersEmpty, c.x + PAD, c.y + titleH() + PAD, "textMuted")
-        end
+        drawOps(self, g.ops)
+        return
     end
+    text(self, g.accLabel, 0, g.accLabelY, "text")
+    if g.accNote then text(self, g.accNote, g.accNoteX, g.accNoteY, g.accNoteToken) end
+    drawOps(self, g.head)
+    for _, hdr in ipairs(g.header) do
+        if hdr.right then textRight(self, hdr.s, hdr.x, g.headerY, "textMuted")
+        else text(self, hdr.s, hdr.x, g.headerY, "textMuted") end
+    end
+    if g.empty then text(self, g.empty.s, PAD, g.empty.y, "textMuted") end
+    if g.footText then text(self, g.footText, g.footX, g.footY, g.footToken) end
 end
 
 function Page:render() end
@@ -1193,10 +1482,15 @@ function Page:resize(width, height)
     self:layout()
 end
 
--- Hiding keeps every snapshot; it only takes the keyboard out of the text boxes.
+-- Hiding keeps every snapshot; it takes the keyboard out of the text box and drops an open refund
+-- dialog (nothing was sent from it).
 function Page:setVisible(visible)
     ISPanel.setVisible(self, visible)
-    if not visible then self:unfocusAll() end
+    if not visible then
+        self:unfocusAll()
+        self:closeDialog()
+        self:closeRentals()
+    end
 end
 
 -- A refresh re-reads the section on screen; the read goes out on the next tick the shared slot
@@ -1204,17 +1498,26 @@ end
 function Page:refresh()
     if self.broken then return end
     if self.section == "accounts" then
-        if self.accountUser ~= nil then self.accountWanted = true end
+        if self.accountUser ~= nil then self.accountWanted = true
+        else self.ordersWanted, self.ordersAppend = true, false end
     else
         self.plansWanted = true
     end
     self:tick(EC.now())
 end
 
+-- The section on screen asks first.
 function Page:tick(now)
     if self.broken or not self.owner:readAllowed() or self.isPending(COMMAND) then return end
-    if self.plansWanted then self:requestPlans()
-    elseif self.accountWanted then self:requestAccount() end
+    if self.section == "accounts" then
+        if self.accountWanted then self:requestAccount()
+        elseif self.ordersWanted then self:requestOrders()
+        elseif self.plansWanted then self:requestPlans() end
+    else
+        if self.plansWanted then self:requestPlans()
+        elseif self.accountWanted then self:requestAccount()
+        elseif self.ordersWanted then self:requestOrders() end
+    end
 end
 
 -- The permission collapse: everything this page learned goes, and nothing is asked for again
@@ -1222,17 +1525,18 @@ end
 function Page:clear()
     if self.broken then return end
     self:unfocusAll()
+    self:closeDialog()
+    self:closeRentals()
     self.plans, self.plansError, self.plansTimeout, self.updatedAt = nil, nil, false, nil
-    self.sent, self.review, self.reviewError, self.view = nil, nil, nil, "list"
+    self.orders, self.ordersError, self.ordersTimeout, self.ordersAppend = nil, nil, false, false
+    self.sent = nil
     self.account, self.accountUser, self.accountError, self.accountTimeout = nil, nil, nil, false
-    self.entrySel, self.entryKey, self.orderSel, self.orderKey = nil, nil, nil, nil
-    self.plansWanted, self.accountWanted = false, false
+    self.entrySel, self.entryKey = nil, nil
+    self.plansWanted, self.accountWanted, self.ordersWanted = false, false, false
     self.selKey, self.pendingSelect, self.message = nil, nil, nil
-    self.detailText, self.planText = nil, nil
     self.accountField:setText("")
-    self.reasonField:setText("")
     self.planList:setItems({})
-    self.entryList:setItems({})
+    self.orderRows = nil
     self.orderList:setItems({})
     self:layout()
 end
@@ -1250,7 +1554,6 @@ function P.create(owner, send, isPending, newRequestId)
     o.owner = owner
     o.send, o.isPending, o.newRequestId = send, isPending, newRequestId
     o.section = "plans"
-    o.view = "list"
     o.plansWanted = true
     o:initialise()
     o:instantiate()
