@@ -1097,6 +1097,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: buyback food states and 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: food state the snapshot dropped (scenario SK: eaten and stale relief against food sickness, every scaled state, matched at the listed age, a canned jar's shelf life and its preview, spices and their cap)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: dishes with added ingredients are listable (scenario DS: the state check, ingredients/name/raw danger/cookable rebuilt, the buyer's preview, no merge across ingredients, the buyback refuses with prepared_dish)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: independent rentals as contracts (scripts/test_entitlements.lua scenario 10: side by side, renewal of one, terms kept by a consent, per-rental charge, per-rental replay, pruning, count cap and refunds, lowered limit, lapse over the limit)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: source-owned plans and instant products (scripts/test_entitlements.lua): -10 sandbox mirror / admin apply checks; +8 plans overview, editor gone, setPlan refusals, no-op, stale, applied (audit, event, refresh), getPlan / setPlanSource, a sandbox map refused at registration; +13 instant purchase, events and getOrder, rental, renewal (live and past grace), consent at once, unsaved scheduled renewal, cancel off line (blocked and written), refunds, crash rollback, the non-instant control, an ended rental leaves without a save
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16114,8 +16115,6 @@ function mgWorld()
     files, sentCommands, onlinePlayers = {}, {}, {}
     nowMs = nowMs + 61000
     steamModeActive = true
-    -- scripts/test_entitlements.lua clears its own getServerName fake when it is done
-    getServerName = function() return serverNameFake end
     SandboxVars.MinidoracatEconomy.IdentityAutoMerge = nil
     -- the merge scenarios let aliases use the economy as their own accounts before they merge:
     -- with the one-account policy on (the default) an unmerged alias is refused at login instead

@@ -33,12 +33,6 @@
 --     the same revision answering an older request) never overwrites a newer one.
 --   * entitlement.changed is owner-only: an envelope is adopted like a reply; a public "refresh"
 --     signal (no entitlement in it) only makes the products this client already holds re-read.
---   * entitlement.sandbox is server-authoritative: registered options are set and projected into
---     SandboxVars (toLua); nothing is ever sent back, so the sync cannot loop.
---
--- Engine references (snapshot 42.20.4-20260826):
---   getSandboxOptions()      LuaManager.java:5806-5812
---   SandboxOptions.getOptionByName / set / toLua   SandboxOptions.java:565-583, 279-285
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -287,34 +281,6 @@ C.handlers["entitlement.changed"] = function(args)
     end
 end
 
-local function setOption(options, name, value)
-    options:set(name, value)
-end
-
-local function projectOptions(options)
-    options:toLua()
-end
-
-C.handlers["entitlement.sandbox"] = function(args)
-    local values = type(args) == "table" and args.values or nil
-    if type(values) ~= "table" or type(getSandboxOptions) ~= "function" then return end
-    local options = getSandboxOptions()
-    if options == nil then return end
-    local changed = false
-    for name, value in pairs(values) do
-        local kind = type(value)
-        if type(name) == "string" and (kind == "number" or kind == "boolean" or kind == "string")
-            and options:getOptionByName(name) ~= nil then
-            local ok, err = pcall(setOption, options, name, value)
-            if ok then changed = true else EC.log("sandbox sync " .. name .. " failed: " .. tostring(err)) end
-        end
-    end
-    if changed then
-        local ok, err = pcall(projectOptions, options)
-        if not ok then EC.log("sandbox sync toLua failed: " .. tostring(err)) end
-    end
-end
-
 -- ---------- public API ----------
 
 function E.requestState(sourceMod, productId, cb)
@@ -414,7 +380,8 @@ end
 
 -- One reading of an entitlement.order reply for every consumer, so no window decides on its own
 -- what an unknown purchase came to:
---   "paid" / "refunded"  known, and its save is confirmed
+--   "paid" / "refunded"  known, and its save is confirmed -- or an instant product (reply.instant),
+--                        which takes effect in the paying commit and has no save to wait for
 --   "processing"         known paid / refunded, save not confirmed yet: still locked
 --   "not_paid"           known, proven unpaid (unsubmitted | declined | rolledback, final)
 --   "unknown"            everything else -- known = false (a quote still active, an order past
@@ -427,7 +394,7 @@ function E.orderOutcome(reply)
     if o.paid == false and o.final == true then return "not_paid" end
     if o.status ~= "paid" and o.status ~= "refunded" then return "unknown" end
     local durable = type(o.durable) == "table" and o.durable.status or nil
-    if durable ~= "confirmed" then return "processing" end
+    if durable ~= "confirmed" and reply.instant ~= true then return "processing" end
     return o.status
 end
 

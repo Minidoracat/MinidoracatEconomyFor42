@@ -5,33 +5,19 @@
 --     rentalEnabled, rentalCurrency, rentalPrice, rentalLimit, rentalDays,
 --     graceHours, reminderHours, autoRenewAllowed }
 -- Global ModData is the financial truth: md.entitlements.plans[modId][productId] =
---   { revision, values, nameKey, lastChange = { actor, origin, at, reason?, requestId?, revision },
---     applies = { { requestId, fp, revision, admin, at, changed }, ... newest first, <= 8 } }
+--   { revision, values, nameKey, provisional?, lastChange = { actor, origin, at, reason?, revision } }
 -- Any change of any field is revision + 1. A quote carries the revision it was priced at and a
--- purchase refuses another one; an auto-renew consent names the revision it agreed to and pauses
--- once the plan moves on (ECEntitlements). Existing paid periods keep their own frozen terms.
+-- purchase refuses another one; an auto-renew consent records the money terms it agreed to and
+-- pauses while the plan offers other ones (ECEntitlements). Existing paid periods keep their own
+-- frozen terms.
 --
--- Sandbox mirror (contract FINAL 9). A product that maps its fields to sandbox options must also
--- map `revision` to an integer option of its own (VM: PaidSlotPlanRevision) that only Economy
--- writes. The sandbox file is saved at once (SandboxOptions.saveServerLuaFile, a plain FileWriter,
--- SandboxOptions.java:683-685 / 862-870) while ModData waits for the world save, so the revision
--- decides direction (S = sandbox revision, G = plan revision), at start and every POLL_MS:
---   S >  G            the sandbox is newer (ModData lost an applied change in a crash, or the
---                     host edited the file and raised the revision): adopt it as revision S
---   S == G, same      in step
---   S == G, different an edit made through the vanilla sandbox UI or the file: accept it as
---                     revision G + 1, write the new revision back, audit it
---   S <  G            a stale whole-table copy (the vanilla UI sends every option it copied
---                     when it opened, GameServer.java:1694-1708): a conflict. It is never
---                     imported; the plan is written back over it and the conflict is reported
--- A write sets the mapped options and the revision, projects them (toLua) and saves the server
--- sandbox file; only a save that returned true counts. A failed save leaves the product dirty and
--- is retried on every poll; online clients hear entitlement.sandbox only after a successful save
--- (the server has no vanilla Lua broadcast for sandbox options).
--- Options that are there but invalid when a product is first seen are never replaced by the
--- defaults: the plan row is provisional (defaults nobody can buy under, `plan.provisional`), the
--- status says invalid with the field, and the first valid options - or an admin apply - become the
--- real plan.
+-- The plan belongs to its source: the product's mod decides it (its own settings file or admin
+-- window) and hands it over whole through setPlan. Economy validates and stores it; it has no editor
+-- and no sandbox mirror of its own. `defaults` only create the row the first time this ModData sees
+-- the product; a row an older version saved that no longer validates is provisional (defaults
+-- nobody can buy under) until a setPlan replaces it.
+-- setPlanSource keeps, in memory only, where the source reads its plan from and what is wrong with
+-- it, for the admin overview.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Integration then
     require "MinidoracatEconomy/ECIntegration"
@@ -49,11 +35,11 @@ local P = EC.EntitlementPlans
 
 P.PRODUCT_ID_MAX = 32
 P.NAME_KEY_MAX = 96
-P.OPTION_NAME_MAX = 128
-P.REVISION_MAX = 2147483647
-P.POLL_MS = 1000
-P.APPLIES_KEEP = 8
 P.REASON_KEEP = 64
+P.ACTOR_MAX = 64
+P.SOURCE_FILE_MAX = 160
+P.SOURCE_PROBLEM_MAX = 200
+P.ORIGINS = { file = true, admin = true, source = true }
 P.REQUIRED_REASONS = { "entitlement_purchase", "entitlement_renewal", "entitlement_refund" }
 
 P.FIELDS = {
@@ -74,9 +60,8 @@ local FIELD = {}
 for _, f in ipairs(P.FIELDS) do FIELD[f.key] = f end
 
 local md = nil          -- md.entitlements
-local products = {}     -- modId -> productId -> { modId, id, nameKey, defaults, sandbox, validatePurchase }
-local status = {}       -- modId \1 productId -> { state, error?, field?, at?, dirty?, conflict? }
-local lastPoll = 0
+local products = {}     -- modId -> productId -> { modId, id, nameKey, defaults, instant, validatePurchase }
+local sources = {}      -- modId \1 productId -> { file?, problem?, at } (setPlanSource, this process only)
 
 local function isInt(v)
     return type(v) == "number" and v == math.floor(v) and v > -1e15 and v < 1e15
@@ -84,16 +69,6 @@ end
 
 local function keyOf(modId, productId)
     return modId .. "\1" .. productId
-end
-
-local function statusOf(modId, productId)
-    local k = keyOf(modId, productId)
-    local st = status[k]
-    if not st then
-        st = { state = "unmapped" }
-        status[k] = st
-    end
-    return st
 end
 
 local function sourceCurrencies(modId)
@@ -140,11 +115,6 @@ local function changedFields(before, after)
     return out
 end
 
-local function validOptionName(name)
-    return type(name) == "string" and #name <= P.OPTION_NAME_MAX and string.find(name, "%c") == nil
-        and string.match(name, "^[^%.]+%..+$") ~= nil
-end
-
 -- ---------- registry ----------
 
 function P.product(modId, productId)
@@ -165,167 +135,18 @@ function P.copy(row)
     return out
 end
 
--- ---------- sandbox access ----------
-
-local function sandboxOptions()
-    if type(getSandboxOptions) ~= "function" then return nil end
-    local ok, opts = pcall(getSandboxOptions)
-    if ok and opts ~= nil then return opts end
-    return nil
+local function lastChangeOf(row)
+    local lc = row.lastChange or {}
+    return { actor = lc.actor, origin = lc.origin, at = lc.at, reason = lc.reason, revision = lc.revision }
 end
 
-local function optionExists(opts, name)
-    local ok, opt = pcall(function() return opts:getOptionByName(name) end)
-    return ok and opt ~= nil
+local function sourceOf(modId, productId)
+    local s = sources[keyOf(modId, productId)]
+    return s and { file = s.file, problem = s.problem, at = s.at } or nil
 end
 
--- SandboxVars.<Page>.<Option> is what toLua projects (SandboxOptions.java:279-285) and what the
--- vanilla packet handler refreshes; reading it never touches the Java objects.
-local function readVar(name)
-    local page, short = string.match(name, "^([^%.]+)%.(.+)$")
-    local vars = page and SandboxVars and SandboxVars[page]
-    if type(vars) ~= "table" then return nil end
-    return vars[short]
-end
-
--- The mapped options as the server sees them now, on top of `base` for unmapped fields:
--- values, revision - or nil, state, field when the mirror cannot be read.
-local function readSandbox(spec, base)
-    local opts = sandboxOptions()
-    if not opts then return nil, "unavailable" end
-    local values, revision = {}, nil
-    for k, v in pairs(base) do values[k] = v end
-    for field, name in pairs(spec.sandbox) do
-        local v = nil
-        if optionExists(opts, name) then v = readVar(name) end
-        if v == nil then return nil, "missing_option", field end
-        if field == "revision" then revision = v else values[field] = v end
-    end
-    if not isInt(revision) or revision < 0 or revision > P.REVISION_MAX then return nil, "invalid", "revision" end
-    return values, revision
-end
-
-local function setOptions(opts, map, values, revision)
-    for field, name in pairs(map) do
-        if field == "revision" then opts:set(name, revision) else opts:set(name, values[field]) end
-    end
-    opts:toLua()
-    return opts:saveServerLuaFile(getServerName())
-end
-
--- Mirror (values, revision) into the product's options and the server sandbox file; true only
--- when the save itself returned true. Successful saves are announced to every online client.
-local function writeSandbox(spec, values, revision)
-    local st = statusOf(spec.modId, spec.id)
-    local opts = sandboxOptions()
-    local ok, saved = false, nil
-    if opts then ok, saved = pcall(setOptions, opts, spec.sandbox, values, revision) end
-    st.at = EC.now()
-    if not ok or saved ~= true then
-        st.state, st.dirty = "write_failed", true
-        st.error = not opts and "unavailable" or (ok and "save_failed" or "save_error")
-        EC.log("entitlement plan " .. spec.modId .. "/" .. spec.id .. " sandbox write failed: "
-            .. tostring(st.error) .. (ok and "" or (" " .. tostring(saved))))
-        return false, st.error
-    end
-    st.state, st.dirty, st.error, st.field = "synced", nil, nil, nil
-    local out = {}
-    for field, name in pairs(spec.sandbox) do
-        if field == "revision" then out[name] = revision else out[name] = values[field] end
-    end
-    S.broadcast("entitlement.sandbox", { values = out })
-    return true
-end
-
--- The mirror as a reply states it: ok only for a mapped product that is synced and clean; a
--- product without a mirror has nothing to sync.
-local function sandboxReply(spec)
-    if spec.sandbox == nil then return { ok = true, skipped = "unmapped" } end
-    local st = statusOf(spec.modId, spec.id)
-    if st.state == "synced" and not st.dirty then return { ok = true } end
-    return { ok = false, error = st.error or st.state, state = st.state, field = st.field }
-end
-
--- ---------- changes ----------
-
--- The one place a plan changes: new values and revision, who and why, an event and one audit
--- record per changed field, then the public refresh signal (ECEntitlements sets P.onChanged).
-local function publish(spec, row, values, revision, actor, origin, reason, requestId)
-    local before = row.values
-    local changed = changedFields(before, values)
-    local now = EC.now()
-    row.values, row.revision, row.provisional = values, revision, nil
-    row.lastChange = { actor = actor, origin = origin, at = now, revision = revision, requestId = requestId,
-        reason = type(reason) == "string" and string.sub(reason, 1, P.REASON_KEEP) or nil }
-    local target = spec.modId .. "/" .. spec.id
-    X.emit("entitlement.plan", { sourceMod = spec.modId, productId = spec.id, revision = revision,
-        actor = actor, origin = origin, fields = changed })
-    if before ~= nil then
-        for _, field in ipairs(changed) do
-            X.audit({ action = "entitlement.plan", target = target, field = field, before = before[field],
-                after = values[field], revision = revision, admin = actor, origin = origin, reason = reason })
-        end
-    end
-    if P.onChanged then P.onChanged(spec.modId, spec.id) end
-    return changed
-end
-
--- Bring one product's plan and its sandbox mirror into step (rules in the header).
-local function sync(spec, row)
-    local st = statusOf(spec.modId, spec.id)
-    if spec.sandbox == nil then
-        st.state = "unmapped"
-        return
-    end
-    local values, revision, field = readSandbox(spec, row.values)
-    if values == nil then
-        st.state, st.field, st.at = revision, field, EC.now()
-        return
-    end
-    local clean, _, bad = P.validate(values, sourceCurrencies(spec.modId))
-    if row.provisional then
-        -- no plan was adopted from these options yet: take them whole once they are valid, never write
-        -- the defaults over them
-        if not clean then
-            st.state, st.field, st.at = "invalid", bad, EC.now()
-            return
-        end
-        publish(spec, row, clean, math.max(revision, row.revision) + 1, "vanilla_sandbox", "sandbox", "sandbox options repaired")
-        writeSandbox(spec, row.values, row.revision)
-        return
-    end
-    if revision > row.revision then
-        if not clean then
-            st.state, st.field, st.at = "invalid", bad, EC.now()
-            return
-        end
-        publish(spec, row, clean, revision, "vanilla_sandbox", "sandbox", "sandbox revision is newer than the plan")
-        st.state, st.field, st.dirty = "synced", nil, nil
-        return
-    end
-    if revision == row.revision then
-        if clean and sameValues(clean, row.values) then
-            if st.dirty then writeSandbox(spec, row.values, row.revision) else st.state, st.field = "synced", nil end
-            return
-        end
-        if not clean then
-            st.state, st.field, st.at = "invalid", bad, EC.now()
-            return
-        end
-        publish(spec, row, clean, row.revision + 1, "vanilla_sandbox", "sandbox", "sandbox options edited")
-        writeSandbox(spec, row.values, row.revision)
-        return
-    end
-    -- a stale whole-table copy: report it and put the plan back
-    st.conflict = { at = EC.now(), sandboxRevision = revision, planRevision = row.revision }
-    X.emit("entitlement.sandbox_conflict", { sourceMod = spec.modId, productId = spec.id,
-        sandboxRevision = revision, planRevision = row.revision })
-    writeSandbox(spec, row.values, row.revision)
-end
-
--- First sight of a product in this ModData, or a (re)registration: create the plan row from the
--- sandbox when it can be read and is valid, otherwise from the defaults - provisional when the
--- options are there but invalid - then keep in step.
+-- First sight of a product in this ModData creates its plan row from the defaults; a known row
+-- keeps its plan, provisional when an older version saved fields that no longer validate.
 function P.reconcile(modId, productId)
     local spec = P.product(modId, productId)
     if not spec or not md then return end
@@ -336,43 +157,21 @@ function P.reconcile(modId, productId)
     end
     local row = bySource[productId]
     if row == nil then
-        local values, revision, provisional, readState, readField = nil, 0, nil, nil, nil
-        local read, rev = nil, nil
-        if spec.sandbox then
-            read, rev, readField = readSandbox(spec, spec.defaults)
-            if read then
-                values, readState, readField = P.validate(read, sourceCurrencies(modId))
-                revision = rev
-                if not values then provisional, readState = true, "invalid" end
-            else
-                readState = rev
-            end
-        end
-        row = { revision = revision + 1, values = values or spec.defaults, nameKey = spec.nameKey, applies = {},
-            provisional = provisional }
-        row.lastChange = { actor = "system", origin = values and "sandbox" or "defaults", at = EC.now(), revision = row.revision }
+        row = { revision = 1, values = spec.defaults, nameKey = spec.nameKey }
+        row.lastChange = { actor = "system", origin = "defaults", at = EC.now(), revision = 1 }
         bySource[productId] = row
-        X.emit("entitlement.plan", { sourceMod = modId, productId = productId, revision = row.revision,
-            actor = "system", origin = row.lastChange.origin, created = true, provisional = provisional })
-        if values then
-            writeSandbox(spec, row.values, row.revision)
-        elseif spec.sandbox then
-            local st = statusOf(modId, productId)
-            st.state, st.field, st.at = readState, readField, EC.now()
-        end
+        X.emit("entitlement.plan", { sourceMod = modId, productId = productId, revision = 1,
+            actor = "system", origin = "defaults", created = true })
         return
     end
     row.nameKey = spec.nameKey
-    row.applies = row.applies or {}
-    -- a plan an older version saved (other fields) is not a plan anybody can buy under: provisional
-    -- defaults until valid sandbox options or an admin apply replace it (sync below)
+    row.applies = nil           -- receipts of the removed admin editor
     if not P.validate(row.values, nil) then row.values, row.provisional = spec.defaults, true end
-    sync(spec, row)
 end
 
--- spec = { id, nameKey, defaults = <plan without revision>, sandbox = { field = option, ...,
--- revision = option }?, validatePurchase? }. Callable before ModData is ready; the plan row is
--- then created by P.init. Re-registering a product replaces its runtime spec.
+-- spec = { id, nameKey, defaults = <plan without revision>, instant?, validatePurchase? }. Callable
+-- before ModData is ready; the plan row is then created by P.init. Re-registering a product
+-- replaces its runtime spec. `instant`: payments take effect in the paying commit (ECEntitlements).
 function P.register(modId, spec)
     local src = G.source(modId)
     if not src then return { ok = false, error = "unknown_source" } end
@@ -393,17 +192,10 @@ function P.register(modId, spec)
     end
     local defaults, _, field = P.validate(spec.defaults, src.currencies)
     if not defaults then return { ok = false, error = "invalid_args", field = "defaults." .. tostring(field) } end
-    local map = nil
-    if spec.sandbox ~= nil then
-        if type(spec.sandbox) ~= "table" then return { ok = false, error = "invalid_args", field = "sandbox" } end
-        map = {}
-        for k, name in pairs(spec.sandbox) do
-            if (k ~= "revision" and FIELD[k] == nil) or not validOptionName(name) then
-                return { ok = false, error = "invalid_args", field = "sandbox." .. string.sub(tostring(k), 1, 32) }
-            end
-            map[k] = name
-        end
-        if map.revision == nil then return { ok = false, error = "invalid_args", field = "sandbox.revision" } end
+    -- the sandbox mirror is gone: a source that still asks for it must not believe it got one
+    if spec.sandbox ~= nil then return { ok = false, error = "invalid_args", field = "sandbox" } end
+    if spec.instant ~= nil and type(spec.instant) ~= "boolean" then
+        return { ok = false, error = "invalid_args", field = "instant" }
     end
     if spec.validatePurchase ~= nil and type(spec.validatePurchase) ~= "function" then
         return { ok = false, error = "invalid_args", field = "validatePurchase" }
@@ -413,86 +205,107 @@ function P.register(modId, spec)
         bySource = {}
         products[modId] = bySource
     end
-    bySource[id] = { modId = modId, id = id, nameKey = nameKey, defaults = defaults, sandbox = map,
+    bySource[id] = { modId = modId, id = id, nameKey = nameKey, defaults = defaults, instant = spec.instant == true,
         validatePurchase = spec.validatePurchase }
     if md then P.reconcile(modId, id) end
     EC.log("entitlement product registered: " .. modId .. "/" .. id)
     return { ok = true, product = { sourceMod = modId, id = id, nameKey = nameKey } }
 end
 
--- ---------- admin ----------
+-- ---------- the source's plan ----------
 
-local function applyEntry(row, requestId)
-    for _, e in ipairs(row.applies or {}) do
-        if e.requestId == requestId then return e end
+-- opts = { actor?, origin?, reason?, expectedRevision? } -> actor, origin, reason, expectedRevision,
+-- or nil, field.
+local function planOpts(opts)
+    if opts == nil then opts = {} end
+    if type(opts) ~= "table" then return nil, "opts" end
+    local actor = opts.actor == nil and "source" or opts.actor
+    if type(actor) ~= "string" or actor == "" or #actor > P.ACTOR_MAX or string.find(actor, "%c") then return nil, "actor" end
+    local origin = opts.origin == nil and "source" or opts.origin
+    if not P.ORIGINS[origin] then return nil, "origin" end
+    local reason = opts.reason
+    if reason ~= nil then
+        -- the admin reason ceiling (ECAdmin.REASON_MAX characters, up to 3 bytes each)
+        if type(reason) ~= "string" or #reason > EC.Admin.REASON_MAX * 3 then return nil, "reason" end
+        reason = string.gsub(reason, "%c", " ")
     end
-    return nil
+    local expected = opts.expectedRevision
+    if expected ~= nil and not isInt(expected) then return nil, "expectedRevision" end
+    return actor, origin, reason, expected
 end
 
--- The Economy admin page's whole-plan write. Idempotent per requestId: the same request with the
--- same content answers the recorded outcome (no second revision, no second audit); only applied
--- writes are recorded, so a refused one is judged again when it is resent.
-function P.apply(modId, productId, expectedRevision, values, actor, reason, requestId)
+-- The source hands over its whole plan. The same content (with a real plan in place) is a no-op
+-- that ignores expectedRevision, so a resend is idempotent by itself; a change needs the revision it
+-- was based on when one is given. Effects on contracts follow from the plan alone: consents pause
+-- and resume by their recorded terms, rentals over a lowered limit by rentalLimit.
+function P.set(modId, productId, values, opts)
+    if not md then return { ok = false, error = "not_ready" } end
     local row = P.row(modId, productId)
     if not row then return { ok = false, error = "unknown_product" } end
-    local spec = P.product(modId, productId)
-    if not spec then return { ok = false, error = "product_unavailable" } end
-    local fp = EC.jsonEncode({ modId, productId, expectedRevision, values })
-    local prior = applyEntry(row, requestId)
-    if prior then
-        if prior.fp ~= fp then return { ok = false, error = "request_conflict" } end
-        return { ok = true, updated = true, duplicate = true, revision = prior.revision, changed = prior.changed,
-            sandbox = sandboxReply(spec) }
-    end
-    sync(spec, row)       -- a sandbox edit nobody polled yet moves the revision first
-    if not isInt(expectedRevision) or expectedRevision ~= row.revision then return { ok = false, error = "stale_revision" } end
+    local actor, origin, reason, expected = planOpts(opts)
+    if not actor then return { ok = false, error = "invalid_args", field = origin } end
     local clean, err, field = P.validate(values, sourceCurrencies(modId))
     if not clean then return { ok = false, error = err, field = field } end
     if not row.provisional and sameValues(clean, row.values) then
-        return { ok = true, updated = false, changed = {}, revision = row.revision, sandbox = sandboxReply(spec) }
+        return { ok = true, updated = false, revision = row.revision, changed = {} }
     end
-    local changed = publish(spec, row, clean, row.revision + 1, actor, "admin", reason, requestId)
-    local applies = { { requestId = requestId, fp = fp, revision = row.revision, admin = actor, at = EC.now(), changed = changed } }
-    for i = 1, math.min(#row.applies, P.APPLIES_KEEP - 1) do applies[#applies + 1] = row.applies[i] end
-    row.applies = applies
-    if spec.sandbox then writeSandbox(spec, row.values, row.revision) end
-    return { ok = true, updated = true, changed = changed, revision = row.revision, sandbox = sandboxReply(spec) }
+    if expected ~= nil and expected ~= row.revision then return { ok = false, error = "stale_revision" } end
+    local before = row.values
+    local changed = changedFields(before, clean)
+    local revision = row.revision + 1
+    row.values, row.revision, row.provisional = clean, revision, nil
+    row.lastChange = { actor = actor, origin = origin, at = EC.now(), revision = revision,
+        reason = reason and string.sub(reason, 1, P.REASON_KEEP) or nil }
+    local target = modId .. "/" .. productId
+    X.emit("entitlement.plan", { sourceMod = modId, productId = productId, revision = revision,
+        actor = actor, origin = origin, fields = changed })
+    for _, f in ipairs(changed) do
+        X.audit({ action = "entitlement.plan", target = target, field = f, before = before[f],
+            after = clean[f], revision = revision, admin = actor, origin = origin, reason = reason })
+    end
+    if P.onChanged then P.onChanged(modId, productId) end
+    return { ok = true, updated = true, revision = revision, changed = changed }
 end
 
-function P.sandboxStatus(modId, productId)
-    local spec = P.product(modId, productId)
-    local st = status[keyOf(modId, productId)]
-    local out = { state = spec == nil and "unavailable" or (st and st.state or "unmapped") }
-    if st then
-        out.error, out.field, out.at, out.dirty = st.error, st.field, st.at, st.dirty
-        if st.conflict then
-            out.conflict = { at = st.conflict.at, sandboxRevision = st.conflict.sandboxRevision, planRevision = st.conflict.planRevision }
-        end
-    end
-    if spec and spec.sandbox then
-        out.mapped = {}
-        for k, v in pairs(spec.sandbox) do out.mapped[k] = v end
-    end
-    return out
+function P.get(modId, productId)
+    if not md then return { ok = false, error = "not_ready" } end
+    local row = P.row(modId, productId)
+    if not row then return { ok = false, error = "unknown_product" } end
+    return { ok = true, plan = P.copy(row), lastChange = lastChangeOf(row), source = sourceOf(modId, productId) }
 end
 
--- Every plan this ModData knows (loaded this session or not), for the admin page.
+local function sourceText(v, max)
+    if v == nil then return true, nil end
+    if type(v) ~= "string" then return false end
+    v = string.gsub(v, "%c", "")
+    if #v > max then return false end
+    return true, v
+end
+
+-- info = { file?, problem? } (problem nil = no error). Memory only, for the admin overview.
+function P.setSource(modId, productId, info)
+    if not P.product(modId, productId) then return { ok = false, error = "unknown_product" } end
+    if info ~= nil and type(info) ~= "table" then return { ok = false, error = "invalid_args" } end
+    info = info or {}
+    local okFile, file = sourceText(info.file, P.SOURCE_FILE_MAX)
+    if not okFile then return { ok = false, error = "invalid_args", field = "file" } end
+    local okProblem, problem = sourceText(info.problem, P.SOURCE_PROBLEM_MAX)
+    if not okProblem then return { ok = false, error = "invalid_args", field = "problem" } end
+    sources[keyOf(modId, productId)] = { file = file, problem = problem, at = EC.now() }
+    return { ok = true }
+end
+
+-- Every plan this ModData knows (loaded this session or not), for the admin overview.
 function P.list()
     local out = {}
     if not md then return out end
     for modId, bySource in pairs(md.plans) do
         for productId, row in pairs(bySource) do
-            local applies = {}
-            for _, e in ipairs(row.applies or {}) do
-                applies[#applies + 1] = { requestId = e.requestId, revision = e.revision, admin = e.admin, at = e.at }
-            end
-            local lc = row.lastChange or {}
+            local spec = P.product(modId, productId)
             out[#out + 1] = {
                 sourceMod = modId, productId = productId, nameKey = row.nameKey,
-                loaded = P.product(modId, productId) ~= nil, plan = P.copy(row),
-                sandboxStatus = P.sandboxStatus(modId, productId), applies = applies,
-                lastChange = { actor = lc.actor, origin = lc.origin, at = lc.at, reason = lc.reason,
-                    requestId = lc.requestId, revision = lc.revision },
+                loaded = spec ~= nil, instant = spec ~= nil and spec.instant, plan = P.copy(row),
+                lastChange = lastChangeOf(row), source = sourceOf(modId, productId),
             }
         end
     end
@@ -503,23 +316,9 @@ function P.list()
     return out
 end
 
--- Every registered product with a plan row, in step with its sandbox mirror (rate limited).
-function P.poll(now)
-    if not md or now - lastPoll < P.POLL_MS then return end
-    lastPoll = now
-    for modId, bySource in pairs(products) do
-        for productId, spec in pairs(bySource) do
-            local row = P.row(modId, productId)
-            if row then sync(spec, row) end
-        end
-    end
-end
-
 function P.init(ent)
     md = ent
     md.plans = md.plans or {}
-    status = {}
-    lastPoll = 0
     for modId, bySource in pairs(products) do
         for productId in pairs(bySource) do P.reconcile(modId, productId) end
     end

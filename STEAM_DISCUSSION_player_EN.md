@@ -108,7 +108,7 @@ Supporting mods (Vehicle Manager first) can sell permanent or rented extra slots
 [*] [b]Can I use radio voice as private chat?[/b] No; nearby or lower-floor devices may hear it.
 [*] [b]Why can't I find older records?[/b] Search covers loaded records only (latest 20 statement entries, up to 200 per month or market lookup).
 [*] [b]My trade was refused: source could not be confirmed.[/b] The message lists the items and the next step (something you can do, a world save to wait for, or an admin case with your Player ID).
-[*] [b]I paid for a slot but it is not active yet.[/b] A rental starts once the payment is confirmed as saved; a timeout only re-checks the order, never charges again.
+[*] [b]I paid for a slot but it is not active yet.[/b] Vehicle Manager slots work as soon as you pay. Other mods may wait for a save: their rentals start once the payment is confirmed as saved. A timeout only re-checks the order, never charges again.
 [/list]
 
 [h2]💬 How to report[/h2]

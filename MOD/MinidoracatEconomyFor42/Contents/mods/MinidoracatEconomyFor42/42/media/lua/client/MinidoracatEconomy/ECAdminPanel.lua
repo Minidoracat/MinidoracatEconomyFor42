@@ -2114,8 +2114,8 @@ function Admin:createChildren()
     self.seasonsPage = C.AdminSeasons.create(self, isPending)
     self:addChild(self.seasonsPage)
 
-    -- The integration plan page (ECAdminEntitlements): the prices and terms consumer mods sell
-    -- through Economy, and the account entitlement / refund desk. It sends admin.entitlements
+    -- The integration plan page (ECAdminEntitlements): a read-only overview of the terms consumer
+    -- mods sell through Economy, and the account entitlement / refund desk. It sends admin.entitlements
     -- through this controller's slot and owns everything else, like the money page.
     self.entitlementsPage = C.AdminEntitlements.create(self, send, isPending, newRequestId)
     self:addChild(self.entitlementsPage)
@@ -4327,8 +4327,8 @@ function Admin:showTransactions(group, filters)
     end)
 end
 
--- A consumer mod's admin shortcut (EC.v1.Client.openAdminPlans): the plan page on that product.
--- The price and terms live on that page only; the consumer never copies them.
+-- A consumer mod's admin shortcut (EC.v1.Client.openAdminPlans): the plan overview on that product.
+-- The terms themselves are the consumer's own (its settings file or in-game settings).
 function Admin:showIntegrationPlan(sourceMod, productId)
     self:requestClose(function()
         self.entitlementsPage:showPlan(sourceMod, productId)
@@ -7751,8 +7751,7 @@ function Admin:prerender()
         self:updateEnabled()
     end
     local entitlement = deferred["admin.entitlements"]
-    if entitlement and (entitlement.args.action == "apply" or entitlement.args.action == "refund")
-        and not self:writeAllowed() then
+    if entitlement and entitlement.args.action == "refund" and not self:writeAllowed() then
         deferred["admin.entitlements"], pendingAt["admin.entitlements"] = nil, nil
         self.entitlementsPage:onCancelled(entitlement.args.requestId)
     end

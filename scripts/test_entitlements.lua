@@ -1,11 +1,10 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+87 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+98 here).
 
-Native boundaries faked here (and only these): getSandboxOptions / getServerName (the sandbox object
-the engine hands the server), and the companion's durable.json marker. Money, ModData, journal file
-and commands all go through the real modules.
+Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
+journal file, events and commands all go through the real modules.
 ]]
 
 local ctx = ...
@@ -19,43 +18,7 @@ local function advance(ms) ctx.setNow(ctx.now() + ms) end
 
 io.write("scenario E1: generic entitlements (API rev 2)\n")
 
--- ---------- fake sandbox options (SandboxOptions.set / toLua / saveServerLuaFile) ----------
-local registered, javaValues = {}, {}
-local saveResult, saves = true, 0
-local function split(name) return string.match(name, "^([^%.]+)%.(.+)$") end
-local function vanillaSet(name, v)          -- what the vanilla packet handler leaves behind: Java value + SandboxVars
-    javaValues[name] = v
-    local page, key = split(name)
-    SandboxVars[page] = SandboxVars[page] or {}
-    SandboxVars[page][key] = v
-end
-local fakeOptions = {
-    getOptionByName = function(_, name) return registered[name] and { name = name } or nil end,
-    set = function(_, name, v)
-        if not registered[name] or v == nil then error("IllegalArgumentException: " .. tostring(name)) end
-        javaValues[name] = v
-    end,
-    toLua = function()
-        for name, v in pairs(javaValues) do
-            local page, key = split(name)
-            SandboxVars[page] = SandboxVars[page] or {}
-            SandboxVars[page][key] = v
-        end
-    end,
-    saveServerLuaFile = function(_, server)
-        saves = saves + 1
-        if saveResult == "throw" then error("java.io.IOException") end
-        return saveResult
-    end,
-}
-getSandboxOptions = function() return fakeOptions end
-getServerName = function() return "servertest" end
-
-local MAP = { permanentEnabled = "TestVM.PermEnabled", permanentCurrency = "TestVM.PermCurrency",
-    permanentPrice = "TestVM.PermPrice", permanentLimit = "TestVM.PermLimit", rentalEnabled = "TestVM.RentEnabled",
-    rentalCurrency = "TestVM.RentCurrency", rentalPrice = "TestVM.RentPrice", rentalLimit = "TestVM.RentLimit",
-    rentalDays = "TestVM.RentDays", graceHours = "TestVM.Grace", reminderHours = "TestVM.Reminder",
-    autoRenewAllowed = "TestVM.AutoAllowed", revision = "TestVM.PlanRevision" }
+-- ---------- plan defaults ----------
 local DEFAULTS = { permanentEnabled = true, permanentCurrency = "survivor", permanentPrice = 1000, permanentLimit = 3,
     rentalEnabled = true, rentalCurrency = "survivor", rentalPrice = 250, rentalLimit = 3, rentalDays = 7,
     graceHours = 24, reminderHours = 24, autoRenewAllowed = true }
@@ -64,10 +27,6 @@ local function defaults(over)
     for k, v in pairs(DEFAULTS) do t[k] = v end
     for k, v in pairs(over or {}) do t[k] = v end
     return t
-end
-for field, name in pairs(MAP) do
-    registered[name] = true
-    vanillaSet(name, field == "revision" and 0 or DEFAULTS[field])
 end
 
 -- ---------- helpers ----------
@@ -96,9 +55,9 @@ local function with(extra)
     for k, v in pairs(extra) do t[k] = v end
     return t
 end
-local function planRowIn(list)
+local function planRowIn(list, productId)
     for _, p in ipairs(list or {}) do
-        if p.sourceMod == "TestVM" and p.productId == "vehicle_slot" then return p end
+        if p.sourceMod == "TestVM" and p.productId == (productId or "vehicle_slot") then return p end
     end
     return nil
 end
@@ -109,6 +68,17 @@ local function planValues(over)
     return t
 end
 local function rent1(e) return (e and e.rentals and e.rentals[1]) or {} end   -- the first rental (view or row)
+local function eventsOf(kind)                 -- the events file, after a tick flushed the export queue
+    advance(1000)
+    fire("OnTickEvenPaused")
+    local out = {}
+    for _, f in pairs(ctx.files()) do
+        for _, line in ipairs(f.lines or {}) do
+            if string.find(line, '"type":"' .. kind .. '"', 1, true) then out[#out + 1] = EC.jsonDecode(line) end
+        end
+    end
+    return out
+end
 
 -- ---------- a fresh world, two sources with the same product id ----------
 ctx.store()[EC.MODDATA_KEY] = nil
@@ -118,8 +88,8 @@ advance(61000)
 fire("OnServerStarted")
 
 check(V.API_REVISION >= 2 and V.CAPABILITIES.entitlements == true and V.CAPABILITIES.subscriptions == true
-    and V.CAPABILITIES.rentals == true and V.CAPABILITIES.post == true,
-    "the facade is at least rev 2 with entitlements and independent rentals; the rev 1 capabilities are unchanged")
+    and V.CAPABILITIES.rentals == true and V.CAPABILITIES.setPlan == true and V.CAPABILITIES.post == true,
+    "the facade is at least rev 2 with entitlements, independent rentals and source-owned plans; the rev 1 capabilities are unchanged")
 
 local REASONS = { "entitlement_purchase", "entitlement_renewal", "entitlement_refund" }
 local vm = V.registerSource({ modId = "TestVM", currencies = { "survivor", "cat" }, reasonCodes = REASONS })
@@ -127,13 +97,16 @@ local safe = V.registerSource({ modId = "TestSafe", currencies = { "survivor" },
 local bare = V.registerSource({ modId = "TestBare", currencies = { "survivor" }, reasonCodes = { "other" } })
 check(bare.registerProduct({ id = "slot", nameKey = "K", defaults = defaults() }).field == "reasonCodes.entitlement_purchase",
     "a source that did not declare the entitlement reason codes cannot register a product")
-local noRevision = {}
-for k, v in pairs(MAP) do if k ~= "revision" then noRevision[k] = v end end
-check(vm.registerProduct({ id = "slot", nameKey = "K", defaults = defaults(), sandbox = noRevision }).field == "sandbox.revision"
-    and vm.registerProduct({ id = "Bad-Id", nameKey = "K", defaults = defaults() }).field == "id"
+check(vm.registerProduct({ id = "Bad-Id", nameKey = "K", defaults = defaults() }).field == "id"
     and vm.registerProduct({ id = "slot", nameKey = "K", defaults = defaults({ permanentPrice = 0 }) }).field == "defaults.permanentPrice"
     and vm.registerProduct({ id = "slot", nameKey = "K", defaults = defaults({ permanentCurrency = "gold" }) }).ok == false,
-    "registration refuses a mirror without a revision option, bad ids and invalid defaults")
+    "registration refuses bad ids and invalid defaults")
+local withSandbox = vm.registerProduct({ id = "slot", nameKey = "K", defaults = defaults(),
+    sandbox = { permanentPrice = "TestVM.PermPrice", revision = "TestVM.PlanRevision" } })
+check(withSandbox.ok == false and withSandbox.error == "invalid_args" and withSandbox.field == "sandbox"
+    and vm.registerProduct({ id = "slot", nameKey = "K", defaults = defaults(), instant = "yes" }).field == "instant"
+    and P.product("TestVM", "slot") == nil,
+    "the sandbox mirror is gone: a product that asks for one is refused, so is a non-boolean instant")
 
 local gate = { calls = 0 }
 local function validate(username, productId, kind, qty, projected)
@@ -147,11 +120,12 @@ local function validate(username, productId, kind, qty, projected)
     if gate.refuse then return false, gate.refuse end
     return true
 end
-local reg = vm.registerProduct({ id = "vehicle_slot", nameKey = "IGUI_Test_Slot", defaults = defaults(), sandbox = MAP,
+local reg = vm.registerProduct({ id = "vehicle_slot", nameKey = "IGUI_Test_Slot", defaults = defaults(),
     validatePurchase = validate })
 local reg2 = safe.registerProduct({ id = "vehicle_slot", nameKey = "IGUI_Test_Safe", defaults = defaults({ permanentLimit = 5 }) })
-check(reg.ok and reg2.ok and P.row("TestVM", "vehicle_slot").revision == 1 and SandboxVars.TestVM.PlanRevision == 1 and saves >= 1,
-    "the first plan comes from the sandbox as revision 1, and that revision is written back and saved")
+check(reg.ok and reg2.ok and P.row("TestVM", "vehicle_slot").revision == 1
+    and P.row("TestVM", "vehicle_slot").lastChange.origin == "defaults",
+    "the first plan of a product comes from its defaults as revision 1")
 
 local ann, bob, boss = fakePlayer("ann"), fakePlayer("bob"), fakePlayer("boss")
 boss.role = "admin"
@@ -418,76 +392,75 @@ local staleCancel = vm.setAutoRenew("ann", "vehicle_slot", false, oldRev - 1, s1
 check(staleCancel.error == "stale_revision" and rent1(vm.getEntitlement("ann", "vehicle_slot").entitlement).autoRenew == true,
     "a cancel naming a revision older than the current consent cannot switch it off")
 
--- ---------- admin plans: apply, idempotency, conflicts, sandbox mirror ----------
-local plans = cmd(boss, "admin.entitlements", { action = "plans" })
-local row = planRowIn(plans.plans)
-local qOld = vm.quote("ann", "vehicle_slot", "permanent", 1)
-local applyArgs = { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot", expectedRevision = row.plan.revision,
-    values = planValues({ rentalPrice = 300 }), reason = "raise rent", requestId = "apply-1" }
-local ap = cmd(boss, "admin.entitlements", applyArgs)
-check(ap.ok and ap.updated and ap.revision == row.plan.revision + 1 and SandboxVars.TestVM.RentPrice == 300
-    and SandboxVars.TestVM.PlanRevision == ap.revision and ap.sandbox.ok == true,
-    "an admin apply raises the revision and mirrors it into the saved sandbox")
-check(rent1(vm.getEntitlement("ann", "vehicle_slot").entitlement).autoRenewState == "paused_terms"
-    and vm.purchase("ann", qOld.quote.id).error == "stale_terms",
-    "a rent change pauses the consent given for the old rent and makes old quotes stale")
-local ap2 = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-    expectedRevision = row.plan.revision, values = applyArgs.values, reason = "raise rent", requestId = "apply-1" })
-local conflict = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-    expectedRevision = row.plan.revision, values = planValues({ rentalPrice = 301 }), reason = "raise rent", requestId = "apply-1" })
-check(ap2.ok and ap2.duplicate == true and ap2.revision == ap.revision and P.row("TestVM", "vehicle_slot").revision == ap.revision
-    and conflict.error == "request_conflict",
-    "the same apply resent answers its first outcome; a different body under that id is a conflict")
-local staleApply = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-    expectedRevision = row.plan.revision, values = planValues({ rentalPrice = 310 }), reason = "late", requestId = "apply-2" })
-local joe = fakePlayer("joe")
-local forbidden = cmd(joe, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-    expectedRevision = ap.revision, values = planValues(), reason = "mine", requestId = "apply-3" })
-check(staleApply.error == "stale_revision" and forbidden.error == "forbidden" and forbidden.requestId == "apply-3"
-    and P.row("TestVM", "vehicle_slot").revision == ap.revision,
-    "an apply against an older revision or without the write role changes nothing")
-local extra = planValues()
-extra.bogus = 1
-local unknownField = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-    expectedRevision = ap.revision, values = extra, reason = "r", requestId = "apply-4" })
-check(unknownField.error == "unknown_fields" and P.row("TestVM", "vehicle_slot").revision == ap.revision,
-    "unknown plan fields are refused")
-saveResult = false
-local failedSave = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-    expectedRevision = ap.revision, values = planValues({ rentalPrice = 320 }), reason = "r", requestId = "apply-5" })
-local failedRow = planRowIn(failedSave.plans) or { sandboxStatus = {} }
-check(failedSave.ok and failedSave.sandbox.ok == false and failedSave.sandbox.error == "save_failed"
-    and failedRow.sandboxStatus.state == "write_failed" and failedRow.sandboxStatus.dirty == true,
-    "a sandbox save that fails is reported, never claimed as synced")
-saveResult = true
-advance(1000)
-fire("OnTickEvenPaused")
-local mirror = lastSent("entitlement.sandbox")
-check(P.sandboxStatus("TestVM", "vehicle_slot").state == "synced" and mirror ~= nil
-    and mirror.args.values["TestVM.RentPrice"] == 320,
-    "the failed mirror is retried and clients hear it only after a successful save")
-local r0 = P.row("TestVM", "vehicle_slot").revision
-vanillaSet("TestVM.PermPrice", 1200)
-advance(1000)
-fire("OnTickEvenPaused")
-local edited = P.row("TestVM", "vehicle_slot")
-check(edited.revision == r0 + 1 and edited.values.permanentPrice == 1200 and SandboxVars.TestVM.PlanRevision == r0 + 1
-    and edited.lastChange.origin == "sandbox",
-    "a vanilla sandbox edit at the synced revision becomes the next revision")
-vanillaSet("TestVM.PlanRevision", r0)
-vanillaSet("TestVM.PermPrice", 1000)
-advance(1000)
-fire("OnTickEvenPaused")
-check(P.row("TestVM", "vehicle_slot").values.permanentPrice == 1200 and SandboxVars.TestVM.PermPrice == 1200
-    and SandboxVars.TestVM.PlanRevision == r0 + 1 and P.sandboxStatus("TestVM", "vehicle_slot").conflict ~= nil,
-    "a stale whole-table copy is a conflict: the plan is written back, never imported")
-local savedPlan = proofSnapshot()
-local cur = P.row("TestVM", "vehicle_slot")
-local ap3 = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-    expectedRevision = cur.revision, values = planValues({ permanentPrice = 1500 }), reason = "r", requestId = "apply-6" })
-proofRestartFrom(savedPlan)
-check(ap3.ok and P.row("TestVM", "vehicle_slot").values.permanentPrice == 1500 and P.row("TestVM", "vehicle_slot").revision == ap3.revision,
-    "an applied change the world save lost comes back from the newer sandbox revision")
+-- ---------- the source's plan: setPlan / getPlan / setPlanSource, read-only overview ----------
+do
+    local plans = cmd(boss, "admin.entitlements", { action = "plans" })
+    local row = planRowIn(plans.plans)
+    check(plans.ok and row ~= nil and row.loaded == true and row.instant == false
+        and row.plan.revision == P.row("TestVM", "vehicle_slot").revision and row.lastChange.origin == "defaults"
+        and row.source == nil and row.sandboxStatus == nil and row.applies == nil and plans.journal ~= nil,
+        "the plans overview lists each product with its plan, last change and source state, and no sandbox status")
+    local r0 = row.plan.revision
+    local gone = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
+        expectedRevision = r0, values = planValues({ rentalPrice = 300 }), reason = "old editor" })
+    local forbidden = cmd(fakePlayer("joe"), "admin.entitlements", { action = "plans", requestId = "plans-joe" })
+    check(gone.ok == false and gone.error == "invalid_args" and P.row("TestVM", "vehicle_slot").revision == r0
+        and forbidden.error == "forbidden" and forbidden.plans == nil and forbidden.requestId == "plans-joe",
+        "the admin plan editor is gone: apply changes nothing, and a refused plans read carries no data")
+    local zero = vm.setPlan("vehicle_slot", planValues({ rentalPrice = 0 }))
+    local extra = planValues()
+    extra.bogus = 1
+    local unknownField = vm.setPlan("vehicle_slot", extra)
+    local foreign = safe.setPlan("vehicle_slot", planValues({ permanentCurrency = "cat" }))
+    local badOrigin = vm.setPlan("vehicle_slot", planValues({ rentalPrice = 300 }), { origin = "sandbox" })
+    local longActor = vm.setPlan("vehicle_slot", planValues({ rentalPrice = 300 }), { actor = string.rep("a", 65) })
+    check(zero.error == "invalid_plan" and zero.field == "rentalPrice" and unknownField.error == "unknown_fields"
+        and unknownField.field == "bogus" and foreign.error == "invalid_plan" and foreign.field == "permanentCurrency"
+        and badOrigin.error == "invalid_args" and badOrigin.field == "origin" and longActor.field == "actor"
+        and vm.setPlan("nope", planValues()).error == "unknown_product" and P.row("TestVM", "vehicle_slot").revision == r0,
+        "setPlan refuses invalid values with the field, a currency the source did not register, bad options and unknown products")
+    local auditBefore = (EC.Export.auditEntries(1)[1] or {}).key
+    local same = vm.setPlan("vehicle_slot", planValues(), { expectedRevision = r0 - 7 })
+    check(same.ok and same.updated == false and same.revision == r0 and #same.changed == 0
+        and P.row("TestVM", "vehicle_slot").revision == r0 and (EC.Export.auditEntries(1)[1] or {}).key == auditBefore,
+        "the same plan again is a no-op whatever expectedRevision says: no revision, no audit")
+    local stale = vm.setPlan("vehicle_slot", planValues({ rentalPrice = 300 }), { expectedRevision = r0 - 1 })
+    check(stale.ok == false and stale.error == "stale_revision" and P.row("TestVM", "vehicle_slot").values.rentalPrice ~= 300,
+        "a change based on an older revision is refused")
+    local qOld = vm.quote("ann", "vehicle_slot", "permanent", 1)
+    local set1 = vm.setPlan("vehicle_slot", planValues({ rentalPrice = 300 }), { expectedRevision = r0, origin = "admin",
+        actor = "boss", reason = "raise rent\n" .. string.rep("x", 80) })
+    local lc = P.row("TestVM", "vehicle_slot").lastChange
+    local audit = EC.Export.auditEntries(1)[1] or {}
+    local push = lastSent("entitlement.changed")
+    local announced = false
+    for _, ev in ipairs(eventsOf("entitlement.plan")) do
+        if ev.sourceMod == "TestVM" and ev.revision == r0 + 1 and ev.origin == "admin" then announced = true end
+    end
+    check(set1.ok and set1.updated and set1.revision == r0 + 1 and #set1.changed == 1 and set1.changed[1] == "rentalPrice"
+        and lc.actor == "boss" and lc.origin == "admin" and lc.revision == r0 + 1 and #lc.reason == 64
+        and string.find(lc.reason, "%c") == nil and audit.action == "entitlement.plan" and audit.field == "rentalPrice"
+        and audit.after == 300 and audit.admin == "boss" and audit.origin == "admin" and announced
+        and push ~= nil and push.args.productId == "vehicle_slot" and push.args.entitlement == nil,
+        "a changed plan is the next revision with who, where and why, an audit per field, an event and the public refresh signal")
+    check(rent1(vm.getEntitlement("ann", "vehicle_slot").entitlement).autoRenewState == "paused_terms"
+        and vm.purchase("ann", qOld.quote.id).error == "stale_terms",
+        "a rent change pauses the consent given for the old rent and makes old quotes stale")
+    local longFile = vm.setPlanSource("vehicle_slot", { file = string.rep("f", 161) })
+    local longProblem = vm.setPlanSource("vehicle_slot", { problem = string.rep("p", 201) })
+    local noSource = vm.setPlanSource("nope", { file = "x" })
+    local okSource = vm.setPlanSource("vehicle_slot", { file = "Lua/TestVM/paid-slots.json", problem = "rent.price\tbad" })
+    local gp = vm.getPlan("vehicle_slot")
+    local overview = planRowIn(cmd(boss, "admin.entitlements", { action = "plans" }).plans) or {}
+    local cleared = vm.setPlanSource("vehicle_slot", { file = "Lua/TestVM/paid-slots.json" })
+    check(longFile.error == "invalid_args" and longFile.field == "file" and longProblem.field == "problem"
+        and noSource.error == "unknown_product" and okSource.ok and gp.ok and gp.plan.revision == r0 + 1
+        and gp.plan.rentalPrice == 300 and gp.lastChange.origin == "admin" and gp.lastChange.revision == r0 + 1
+        and gp.source.file == "Lua/TestVM/paid-slots.json" and gp.source.problem == "rent.pricebad"
+        and (overview.source or {}).problem == "rent.pricebad" and cleared.ok and vm.getPlan("vehicle_slot").source.problem == nil
+        and vm.getPlan("nope").error == "unknown_product",
+        "getPlan returns the plan, its last change and the source's file state; setPlanSource keeps its limits, strips control characters, clears and refuses unknown products")
+end
 
 -- ---------- refunds ----------
 local annR = L.getBalance("ann", "survivor").available
@@ -551,11 +524,11 @@ local function renter(name, funds)             -- a confirmed active lease under
     confirmAll()                               -- the consent is saved
     return vm.getEntitlement(name, "vehicle_slot")
 end
-local function offLinesOf(name)
+local function offLinesOf(name, kind)
     local n = 0
     for _, line in ipairs((ctx.files()[E.JOURNAL_FILE] or { lines = {} }).lines) do
         local rec = EC.jsonDecode(line)
-        if type(rec) == "table" and rec.k == "off" and rec.acct == name then n = n + 1 end
+        if type(rec) == "table" and rec.k == (kind or "off") and rec.acct == name then n = n + 1 end
     end
     return n
 end
@@ -716,58 +689,33 @@ do
         "the unpaid proofs are a bounded ring: past it an old quote reads unknown, never unpaid")
 end
 
--- 8. options that exist but are invalid at first sight are never replaced by the defaults
+-- 8. a plan an older version saved that no longer validates is provisional until setPlan replaces it
 do
-    registered["TestVM.BadPrice"], registered["TestVM.BadRevision"] = true, true
-    vanillaSet("TestVM.BadPrice", 0)
-    vanillaSet("TestVM.BadRevision", 4)
-    local badReg = vm.registerProduct({ id = "bad_plan", nameKey = "K", defaults = defaults(),
-        sandbox = { permanentPrice = "TestVM.BadPrice", revision = "TestVM.BadRevision" } })
-    local badSt = P.sandboxStatus("TestVM", "bad_plan")
+    S.modData().entitlements.plans.TestVM.bad_plan = { revision = 4, values = defaults({ permanentPrice = 0 }),
+        nameKey = "K", applies = { { requestId = "old-apply" } } }
+    local badReg = vm.registerProduct({ id = "bad_plan", nameKey = "K", defaults = defaults() })
+    local badRow = P.row("TestVM", "bad_plan")
     local badSnap = vm.getEntitlement("go1", "bad_plan")
-    check(badReg.ok and SandboxVars.TestVM.BadPrice == 0 and SandboxVars.TestVM.BadRevision == 4 and badSt.state == "invalid"
-        and badSt.field == "permanentPrice" and badSnap.plan.provisional == true and badSnap.available == false
+    check(badReg.ok and badRow.provisional == true and badRow.revision == 4 and badRow.applies == nil
+        and badSnap.plan.provisional == true and badSnap.available == false
         and vm.quote("go1", "bad_plan", "permanent", 1).error == "product_unavailable",
-        "invalid sandbox options at first sight are kept for repair: the plan is provisional and sells nothing")
-    vanillaSet("TestVM.BadPrice", 700)
-    advance(1000)
-    fire("OnTickEvenPaused")                   -- the host repaired the option
-    local badFixed = P.row("TestVM", "bad_plan")
-    check(badFixed.provisional == nil and badFixed.values.permanentPrice == 700
-        and SandboxVars.TestVM.BadRevision == badFixed.revision and P.sandboxStatus("TestVM", "bad_plan").state == "synced"
+        "an old plan that no longer validates is provisional and sells nothing; its old apply receipts are dropped")
+    local fixed = vm.setPlan("bad_plan", defaults(), { expectedRevision = 4 })
+    check(fixed.ok and fixed.updated == true and fixed.revision == 5 and P.row("TestVM", "bad_plan").provisional == nil
         and vm.getEntitlement("go1", "bad_plan").available == true,
-        "the repaired options become the plan, and its revision is written back")
+        "setPlan replaces a provisional plan, even with the very values it shows")
 end
 
--- 6. an unchanged apply reports the mirror as it really is
+-- 5. an entitlement refund uses the one admin reason rule
 do
-    saveResult = false
-    local failedApply = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-        expectedRevision = P.row("TestVM", "vehicle_slot").revision, values = planValues({ rentalPrice = rentPrice + 10 }),
-        reason = "raise rent again", requestId = "apply-n1" })
-    local noop = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-        expectedRevision = failedApply.revision, values = planValues(), reason = "same again", requestId = "apply-n2" })
-    saveResult = true
-    check(failedApply.ok and failedApply.sandbox.ok == false and noop.ok and noop.updated == false
-        and noop.revision == failedApply.revision and noop.sandbox.ok == false and noop.sandbox.error == "save_failed",
-        "an unchanged apply after a failed mirror reports the failure again, with no new revision")
-end
-
--- 5. entitlement admin writes use the one admin reason rule
-do
-    local rev5 = P.row("TestVM", "vehicle_slot").revision
     local paid = E.peek("TestVM", "go1", "vehicle_slot").orders[1]
-    local blankReason = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-        expectedRevision = rev5, values = planValues({ rentalPrice = rentPrice + 20 }),
-        reason = string.rep("\227\128\128", 3), requestId = "apply-r1" })
+    local blankReason = cmd(boss, "admin.entitlements", { action = "refund", username = "go1", sourceMod = "TestVM",
+        productId = "vehicle_slot", orderId = paid.id, reason = string.rep("\227\128\128", 3) })
     local longReason = cmd(boss, "admin.entitlements", { action = "refund", username = "go1", sourceMod = "TestVM",
         productId = "vehicle_slot", orderId = paid.id, reason = string.rep("a", EC.Admin.REASON_MAX + 1) })
-    local cjkReason = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-        expectedRevision = rev5, values = planValues({ rentalPrice = rentPrice + 20 }),
-        reason = string.rep("\228\184\173", EC.Admin.REASON_MAX), requestId = "apply-r2" })
-    check(blankReason.error == "reason_blank" and longReason.error == "reason_too_long" and cjkReason.ok and cjkReason.updated
+    check(blankReason.error == "reason_blank" and longReason.error == "reason_too_long"
         and E.peek("TestVM", "go1", "vehicle_slot").orders[1].st == "paid",
-        "entitlement admin writes share the admin reason rule: ideographic blanks and 1001 characters are refused, 1000 CJK pass")
+        "an entitlement refund shares the admin reason rule: ideographic blanks and 1001 characters are refused")
 end
 
 -- 10. independent rentals (2026-10-04): every rental is a contract with its own units, period,
@@ -820,17 +768,16 @@ do
     local onA = vm.setAutoRenew("mx1", "vehicle_slot", true, sc.entitlement.revision, sc.plan.revision, mx.ra.id)
     confirmAll()                               -- the consent is saved
     mx.onA = noRental.error == "invalid_args" and onA.ok
-    local function applyPlan(over, id)
-        return cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-            expectedRevision = P.row("TestVM", "vehicle_slot").revision, values = planValues(over),
-            reason = "contract terms", requestId = id })
+    local function applyPlan(over)
+        return vm.setPlan("vehicle_slot", planValues(over), { expectedRevision = P.row("TestVM", "vehicle_slot").revision,
+            origin = "admin", actor = "boss", reason = "contract terms" })
     end
     local function stateA() return (mx.ent().rentals[1] or {}).autoRenewState end
-    local other = applyPlan({ permanentPrice = P.row("TestVM", "vehicle_slot").values.permanentPrice + 1 }, "apply-mx-perm")
+    local other = applyPlan({ permanentPrice = P.row("TestVM", "vehicle_slot").values.permanentPrice + 1 })
     local afterOther = stateA()
-    local rent = applyPlan({ rentalPrice = mx.price + 5 }, "apply-mx-rent")
+    local rent = applyPlan({ rentalPrice = mx.price + 5 })
     local afterRent = stateA()
-    local back = applyPlan({ rentalPrice = mx.price }, "apply-mx-back")
+    local back = applyPlan({ rentalPrice = mx.price })
     check(other.ok and rent.ok and back.ok and afterOther == "on" and afterRent == "paused_terms" and stateA() == "on",
         "a consent keeps the terms it was given for: another plan edit leaves it on, a rent change pauses it, the agreed rent back resumes it")
 end
@@ -895,9 +842,8 @@ do
     local d = mx.buy(2)
     confirmAll()
     confirmAll()
-    local applied = cmd(boss, "admin.entitlements", { action = "apply", sourceMod = "TestVM", productId = "vehicle_slot",
-        expectedRevision = P.row("TestVM", "vehicle_slot").revision, values = planValues({ rentalLimit = 2 }),
-        reason = "fewer rentals", requestId = "apply-mx1" })
+    local applied = vm.setPlan("vehicle_slot", planValues({ rentalLimit = 2 }),
+        { expectedRevision = P.row("TestVM", "vehicle_slot").revision, reason = "fewer rentals" })
     local s = mx.ent()
     local dv = s.rentals[2] or {}
     mx.d = dv.id
@@ -924,6 +870,155 @@ do
         "over the limit a due rental is never charged: at the end of its grace its consent lapses and it ends, and the rest renew again")
 end
 
-getSandboxOptions, getServerName = nil, nil
-SandboxVars.TestVM = nil
+-- 11. instant products (2026-10-04): a payment takes effect in its own commit, with nothing to wait
+-- for; only a cancel still writes its off line. Shared state in `ix` (locals budget, see above).
+local ix = {}
+do
+    local reg = vm.registerProduct({ id = "instant_slot", nameKey = "K", defaults = defaults(), instant = true })
+    L.credit("in1", "survivor", 20000, "SYSTEM_MINT", { requestId = "ent-fix-in1", reasonCode = "t" })
+    ix.ent = function() return vm.getEntitlement("in1", "instant_slot") end
+    ix.buy = function(kind, qty, rental)
+        local q = vm.quote("in1", "instant_slot", kind, qty, rental)
+        if not q.ok then return q end
+        return vm.purchase("in1", q.quote.id)
+    end
+    local bal = L.getBalance("in1", "survivor").available
+    local p = ix.buy("permanent", 2)
+    local s = p.snapshot or {}
+    local e = s.entitlement or { durable = {} }
+    local row = E.peek("TestVM", "in1", "instant_slot") or { orders = {} }
+    check(reg.ok and p.ok and s.instant == true and e.usable == 2 and e.permanent == 2 and e.pendingQuantity == 0
+        and e.state == "active" and e.durable.status == "confirmed" and e.wait == nil and e.pendingOrderId == nil
+        and row.pp == nil and (row.orders[1] or {}).activatedAt == ctx.now()
+        and L.getBalance("in1", "survivor").available == bal - 2000,
+        "an instant purchase is usable in the paying commit: no pending units, no wait, no pp")
+    ix.perm = p.orderId
+end
+do
+    local o = vm.getOrder("in1", "instant_slot", ix.perm)
+    local seen = {}
+    for _, kind in ipairs({ "entitlement.order", "entitlement.activated" }) do
+        for _, ev in ipairs(eventsOf(kind)) do
+            if ev.orderId == ix.perm then seen[kind] = true end
+        end
+    end
+    local overview = cmd(boss, "admin.entitlements", { action = "plans" })
+    check(o.ok and o.known and o.instant == true and o.order.status == "paid" and o.order.activatedAt ~= nil
+        and vm.getOrder("ann", "vehicle_slot", o.order.orderId).instant == nil
+        and seen["entitlement.order"] and seen["entitlement.activated"]
+        and (planRowIn(overview.plans, "instant_slot") or {}).instant == true,
+        "an instant order announces its payment and its activation, and getOrder and the overview say it is instant")
+end
+do
+    local t = ctx.now()
+    local r = ix.buy("rental", 1)
+    local e = (r.snapshot or {}).entitlement or { durable = {} }
+    local rv = rent1(e)
+    ix.rental = r.orderId
+    check(r.ok and rv.state == "active" and rv.paidUntil == t + 7 * DAY and rv.pendingOrderId == nil and e.usable == 3
+        and e.rental == 1 and e.pendingQuantity == 0 and e.durable.status == "confirmed" and offLinesOf("in1", "act") == 0
+        and (rv.terms or {}).price == 250,
+        "an instant rental starts at the payment, with no act line in the journal")
+end
+do
+    advance(DAY)
+    local before = rent1(ix.ent().entitlement).paidUntil
+    local r = ix.buy("rental", nil, ix.rental)
+    local rv = rent1(ix.ent().entitlement)
+    check(r.ok and rv.paidUntil == before + 7 * DAY and rv.state == "active" and ix.ent().entitlement.rental == 1,
+        "an instant renewal continues from paidUntil at once")
+    ctx.setNow(rv.graceUntil + HOUR)          -- past grace
+    local t = ctx.now()
+    local late = ix.buy("rental", nil, ix.rental)
+    check(late.ok and rent1(ix.ent().entitlement).paidUntil == t + 7 * DAY and rent1(ix.ent().entitlement).state == "active",
+        "an instant renewal past grace starts again at the payment")
+end
+do
+    local s = ix.ent()
+    local on = vm.setAutoRenew("in1", "instant_slot", true, s.entitlement.revision, s.plan.revision, ix.rental)
+    local e = (on.snapshot or {}).entitlement or { durable = {} }
+    check(on.ok and rent1(e).autoRenewState == "on" and e.durable.status == "confirmed",
+        "an instant product's consent is on at once")
+    local bal = L.getBalance("in1", "survivor").available
+    ix.due = rent1(e).paidUntil
+    ctx.setNow(ix.due + 1000)
+    fire("OnTickEvenPaused")
+    local after = rent1(ix.ent().entitlement)
+    check(bal - L.getBalance("in1", "survivor").available == 250 and after.paidUntil == ix.due + 7 * DAY
+        and after.state == "active" and after.autoRenewState == "on" and offLinesOf("in1", "act") == 0,
+        "the scheduler renews under the unsaved consent and the period continues at once")
+end
+do
+    local s = ix.ent()
+    ctx.writerDeny()[E.JOURNAL_FILE] = true
+    local denied = vm.setAutoRenew("in1", "instant_slot", false, s.entitlement.revision, s.plan.revision, ix.rental)
+    ctx.writerDeny()[E.JOURNAL_FILE] = nil
+    local deniedState = rent1((denied.snapshot or {}).entitlement).autoRenewState
+    advance(61000)
+    fire("OnTickEvenPaused")                   -- the journal works again: the owed off line is written
+    check(denied.error == "journal_unavailable" and deniedState == "pending_off" and offLinesOf("in1") == 1
+        and rent1(ix.ent().entitlement).autoRenewState == "off",
+        "an instant cancel stays pending_off while its off line cannot be written, and is off once it is")
+    s = ix.ent()
+    vm.setAutoRenew("in1", "instant_slot", true, s.entitlement.revision, s.plan.revision, ix.rental)
+    s = ix.ent()
+    local off = vm.setAutoRenew("in1", "instant_slot", false, s.entitlement.revision, s.plan.revision, ix.rental)
+    check(off.ok and rent1((off.snapshot or {}).entitlement).autoRenewState == "off" and offLinesOf("in1") == 2,
+        "an instant cancel writes its off line and is off at once")
+end
+do
+    local last = E.peek("TestVM", "in1", "instant_slot").rentals[1].lease.last
+    local back = vm.refund("in1", "instant_slot", last, { reason = "latest period" })
+    local e1 = ix.ent().entitlement
+    local r2 = ix.buy("rental", 1)
+    local mid = ix.ent().entitlement.usable
+    local gone = vm.refund("in1", "instant_slot", r2.orderId, { reason = "never wanted" })
+    local e2 = ix.ent().entitlement
+    check(back.ok and rent1(e1).paidUntil == ix.due and e1.durable.status == "confirmed" and r2.ok and gone.ok
+        and mid == e2.usable + 1 and #e2.rentals == 1 and e2.durable.status == "confirmed",
+        "an instant refund takes effect at once: the latest period goes back to the one before, a one-period rental goes")
+end
+do
+    local saved = proofSnapshot()
+    local bal = L.getBalance("in1", "survivor").available
+    local p = ix.buy("permanent", 1)
+    local usable = ix.ent().entitlement.usable
+    proofRestartFrom(saved)
+    check(p.ok and usable == ix.ent().entitlement.usable + 1 and L.getBalance("in1", "survivor").available == bal,
+        "a crash before the save takes an instant purchase back together with its money")
+end
+do
+    L.credit("in2", "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-fix-in2", reasonCode = "t" })
+    local plain = vm.purchase("in2", vm.quote("in2", "vehicle_slot", "permanent", 1).quote.id)
+    local s = plain.snapshot or {}
+    local e = s.entitlement or { durable = {} }
+    check(plain.ok and s.instant == nil and e.usable == 0 and e.pendingQuantity == 1 and e.durable.status == "pending"
+        and E.peek("TestVM", "in2", "vehicle_slot").pp ~= nil and vm.getOrder("in2", "vehicle_slot", plain.orderId).instant == nil,
+        "the same purchase of a product that is not instant still waits for its save")
+end
+do
+    -- the non-instant twin: a confirmed rental under a saved consent, cancelled after the last save
+    vm.purchase("in2", vm.quote("in2", "vehicle_slot", "rental").quote.id)
+    confirmAll()                               -- the payment is saved: the period starts
+    confirmAll()
+    local s = vm.getEntitlement("in2", "vehicle_slot")
+    local twin = rent1(s.entitlement).id
+    vm.setAutoRenew("in2", "vehicle_slot", true, s.entitlement.revision, s.plan.revision, twin)
+    confirmAll()                               -- the consent is saved; nothing after this is
+    advance(61000)                             -- past in1's consent cooldown
+    local si = ix.ent()
+    vm.setAutoRenew("in1", "instant_slot", true, si.entitlement.revision, si.plan.revision, ix.rental)
+    si = ix.ent()
+    local instOff = vm.setAutoRenew("in1", "instant_slot", false, si.entitlement.revision, si.plan.revision, ix.rental)
+    s = vm.getEntitlement("in2", "vehicle_slot")
+    local twinOff = vm.setAutoRenew("in2", "vehicle_slot", false, s.entitlement.revision, s.plan.revision, twin)
+    local graceEnd = math.max(rent1(s.entitlement).graceUntil or 0, rent1(ix.ent().entitlement).graceUntil or 0)
+    ctx.setNow(graceEnd + HOUR)                -- both past grace, neither cancel saved
+    fire("OnTickEvenPaused")
+    local kept = vm.getEntitlement("in2", "vehicle_slot").entitlement
+    check(instOff.ok and twinOff.ok and #ix.ent().entitlement.rentals == 0 and #kept.rentals == 1
+        and rent1(kept).autoRenewState == "pending_off",
+        "past grace an instant rental whose cancel is journaled leaves the list without a save; a non-instant one waits for the save")
+end
+
 ctx.setOnline({})

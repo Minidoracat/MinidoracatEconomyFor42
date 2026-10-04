@@ -50,6 +50,14 @@
 -- back to "now" - while every confirmed entitlement stays usable. The file is only ever emptied as
 -- a whole, when no line is needed any more.
 --
+-- Instant products (registerProduct{ instant = true }) skip that wait: the payment takes effect in
+-- its own commit - permanent units straight into perm (no pp), a rental period from the payment time
+-- (a renewal continues from paidUntil, past grace from the payment time, like activate) with no `act`
+-- line - and an auto-renew consent counts at once, so the scheduler charges it unsaved. Money,
+-- units and consent all sit in the same ModData, so a crash rolls them back together. Only a cancel
+-- still writes its `off` line (a crash must not bring a cancelled consent back). Their orders, refunds
+-- and consents never make the snapshot pending; pp / pend an older save left still settle as above.
+--
 -- Scheduler: OnTickEvenPaused (fires on an empty dedicated server, AGENTS.md API table), one step
 -- per STEP_MS, at most ROWS_PER_STEP rows with rentals per step. Expiry and grace are computed from the clock
 -- on every read; the scheduler only sends notices, activates, and charges consented renewals: the
@@ -249,11 +257,14 @@ local function sameTerms(auto, plan)
     return auto.price == plan.rentalPrice and auto.cur == plan.rentalCurrency and auto.D == plan.rentalDays * E.DAY_MS
 end
 
-local function hasPending(row, w)
+-- `instant`: the product's orders, refunds and consents take effect when committed; only pp / pend
+-- an older save left can still be pending.
+local function hasPending(row, w, instant)
     if pendingPermanent(row, w) > 0 then return true end
     for _, r in ipairs(row.rentals or {}) do
-        if r.pend or (r.auto and verdict(r.auto, w) ~= "confirmed") then return true end
+        if r.pend or (not instant and r.auto and verdict(r.auto, w) ~= "confirmed") then return true end
     end
+    if instant then return false end
     for _, o in ipairs(row.orders or {}) do
         if verdict(o, w) ~= "confirmed" then return true end
         if o.rf and verdict(o.rf, w) ~= "confirmed" then return true end
@@ -371,17 +382,23 @@ end
 
 -- ---------- activation ----------
 
--- Start (or continue) the paid period of rental `r`'s pending payment at `at`. Only called with the
--- payment proven saved and `at` already in the journal (or read from it).
-local function activate(ref, row, r, at)
-    local pend, lease = r.pend, r.lease
+-- The period payment `pend` buys for a rental whose lease is `lease`, starting at `at`: a lease
+-- still live (or in grace) continues from its paidUntil, anything else starts at `at`.
+local function nextLeaseOf(pend, lease, at)
     local continuing = lease ~= nil and at < lease.paidUntil + lease.G
-    local nextLease = {
+    return {
         price = pend.price, D = pend.D, G = pend.G, R = pend.R, cur = pend.cur, amt = pend.amt, tr = pend.tr,
         start = continuing and lease.start or at,
         paidUntil = (continuing and lease.paidUntil or at) + pend.D,
         cycle = (lease and lease.cycle or 0) + 1, last = pend.o, phase = "active",
-    }
+    }, continuing
+end
+
+-- Start (or continue) the paid period of rental `r`'s pending payment at `at`. Only called with the
+-- payment proven saved and `at` already in the journal (or read from it).
+local function activate(ref, row, r, at)
+    local pend, lease = r.pend, r.lease
+    local nextLease, continuing = nextLeaseOf(pend, lease, at)
     local orders = {}
     for i, o in ipairs(row.orders) do
         if o.id == pend.o then
@@ -546,11 +563,12 @@ local function rentalState(r, plan, now, blocked, over)
     return state
 end
 
-local function autoStateOf(r, planRow, w, blocked, over)
+-- `owed`: an instant product's cancel whose `off` line is not in the journal yet.
+local function autoStateOf(r, planRow, w, blocked, over, instant, owed)
     local auto = r.auto
     if auto == nil then return "off" end
-    local proven = verdict(auto, w) == "confirmed"
-    if not auto.on then return proven and "off" or "pending_off" end
+    local proven = instant or verdict(auto, w) == "confirmed"
+    if not auto.on then return (proven and not owed) and "off" or "pending_off" end
     if blocked then return "paused_system" end
     local plan = planRow.values
     if not sameTerms(auto, plan) or not plan.rentalEnabled or not plan.autoRenewAllowed or over then
@@ -561,12 +579,13 @@ end
 
 -- What the contract says: the terms of the period it runs (or is paid for), and the money terms its
 -- auto-renew consent was given for.
-local function rentalView(r, planRow, now, w, blocked, over)
+local function rentalView(r, planRow, now, w, blocked, over, ref, instant)
     local lease, pend, auto = r.lease, r.pend, r.auto
     local t = lease or pend
+    local owed = instant and offOwed[rentalKey(ref, r.id)] == true
     return { id = r.id, quantity = r.q, state = rentalState(r, planRow.values, now, blocked, over),
         paidUntil = lease and lease.paidUntil or nil, graceUntil = lease and (lease.paidUntil + lease.G) or nil,
-        autoRenew = auto ~= nil and auto.on == true, autoRenewState = autoStateOf(r, planRow, w, blocked, over),
+        autoRenew = auto ~= nil and auto.on == true, autoRenewState = autoStateOf(r, planRow, w, blocked, over, instant, owed),
         termsRevision = t and t.tr or nil,
         terms = t and { price = t.price, amount = t.amt, currency = t.cur, days = t.D / E.DAY_MS,
             graceHours = t.G / E.HOUR_MS } or nil,
@@ -575,7 +594,7 @@ local function rentalView(r, planRow, now, w, blocked, over)
         pendingOrderId = pend and pend.o or nil, autoPending = (pend and pend.auto) or nil }
 end
 
-local function entitlementView(row, planRow, now, ds, blocked)
+local function entitlementView(row, planRow, now, ds, blocked, ref, instant)
     local w = ds.seq
     local out = { revision = 0, permanent = 0, rental = 0, usable = 0, state = "none", pendingQuantity = 0,
         rentalCommitted = 0, rentalsMax = E.RENTALS_MAX, rentals = {},
@@ -593,7 +612,7 @@ local function entitlementView(row, planRow, now, ds, blocked)
         elseif r.pend then
             pendRent = pendRent + r.q
         end
-        out.rentals[i] = rentalView(r, planRow, now, w, blocked, over)
+        out.rentals[i] = rentalView(r, planRow, now, w, blocked, over, ref, instant)
     end
     out.revision, out.permanent, out.rental, out.usable = row.rev or 0, perm, rental, perm + rental
     out.rentalCommitted, out.pendingQuantity = held, pendPerm + pendRent
@@ -603,14 +622,15 @@ local function entitlementView(row, planRow, now, ds, blocked)
         out.state = "pending"
     end
     -- the newest payment the player started that is not proven saved: a renewal the scheduler
-    -- charged is the server's own, never something the player has to look up
+    -- charged is the server's own, never something the player has to look up; an instant product's
+    -- payment has nothing to wait for
     for _, o in ipairs(row.orders or {}) do
         if out.lastOrderId == nil then out.lastOrderId = o.id end
-        if out.pendingOrderId == nil and o.st == "paid" and not o.auto and verdict(o, w) ~= "confirmed" then
+        if not instant and out.pendingOrderId == nil and o.st == "paid" and not o.auto and verdict(o, w) ~= "confirmed" then
             out.pendingOrderId = o.id
         end
     end
-    if hasPending(row, w) then
+    if hasPending(row, w, instant) then
         out.durable.status = "pending"
         out.wait = waitInfo(ds)
     end
@@ -627,14 +647,17 @@ local function snapshot(modId, username, productId)
     local planRow = P.row(modId, productId)
     if not planRow then return nil end
     local spec = P.product(modId, productId)
+    local instant = spec ~= nil and spec.instant
     local blocked = systemBlock(modId, spec)
     local plan = planRow.values
     local now, ds = EC.now(), S.durableStatus()
     local row = rowOf(modId, username, productId)
     local env = { ok = true, sourceMod = modId, productId = productId, nameKey = planRow.nameKey,
+        instant = instant or nil,
         available = spec ~= nil and blocked ~= "source_disabled" and blocked ~= "unloaded" and not planRow.provisional
             and (plan.permanentEnabled or plan.rentalEnabled),
-        plan = P.copy(planRow), entitlement = entitlementView(row, planRow, now, ds, blocked),
+        plan = P.copy(planRow),
+        entitlement = entitlementView(row, planRow, now, ds, blocked, { m = modId, u = username, p = productId }, instant),
         balances = balancesOf(username, plan), orders = {} }
     for _, o in ipairs(row and row.orders or {}) do env.orders[#env.orders + 1] = orderView(o, ds.seq, ds) end
     return env
@@ -763,23 +786,31 @@ local function findOrder(modId, username, orderId)
 end
 
 -- `row` and `terms` must have been read after every callback; nothing below calls out.
+-- An instant product's payment takes effect right here (header); any other waits for its save.
 local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
-    local modId, productId = spec.modId, spec.id
+    local modId, productId, instant = spec.modId, spec.id, spec.instant
+    local now = EC.now()
     local bySource = rowsOf(modId)
     local user = bySource[username] and copyTable(bySource[username]) or {}
     local nextRow = nextRowOf(row)
     local auto = reasonCode == "entitlement_renewal" or nil
     local order = { id = orderId, kind = terms.kind, q = terms.q, amt = terms.amt, cur = terms.cur,
-        tr = planRow.revision, renewal = terms.renewal or nil, st = "paid", auto = auto }
+        tr = planRow.revision, renewal = terms.renewal or nil, st = "paid", auto = auto,
+        activatedAt = instant and now or nil }
     table.insert(nextRow.orders, 1, order)
     while #nextRow.orders > E.ORDERS_KEEP do table.remove(nextRow.orders) end
     local stamps = { order }
+    local lease, continuing = nil, nil
+    nextRow.notice = nil
     if terms.kind == "permanent" then
-        local w = S.durableStatus().seq
-        local carry = row and pendingPermanent(row, w) or 0
-        local pp = { q = carry + terms.q, o = orderId }
-        nextRow.pp, nextRow.perm = pp, nextRow.perm + terms.q
-        stamps[2] = pp
+        nextRow.perm = nextRow.perm + terms.q
+        if not instant then
+            local w = S.durableStatus().seq
+            local carry = row and pendingPermanent(row, w) or 0
+            local pp = { q = carry + terms.q, o = orderId }
+            nextRow.pp = pp
+            stamps[2] = pp
+        end
     else
         local plan = planRow.values
         local pend = { o = orderId, q = terms.q, price = plan.rentalPrice, D = plan.rentalDays * E.DAY_MS,
@@ -795,11 +826,16 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
             r = { id = orderId, q = terms.q }
             nextRow.rentals[#nextRow.rentals + 1] = r
         end
-        r.pend = pend
         order.rental = r.id
-        stamps[2] = pend
+        if instant then
+            lease, continuing = nextLeaseOf(pend, r.lease, now)
+            order.prev, r.lease = r.lease, lease
+            nextRow.notice = { code = continuing and "renewed" or "activated", at = now, rental = r.id }
+        else
+            r.pend = pend
+            stamps[2] = pend
+        end
     end
-    nextRow.notice = nil
     user[productId] = nextRow
     local res = G.entitlementPost({
         modId = modId, requestId = orderId, reasonCode = reasonCode,
@@ -816,10 +852,17 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
         if not found then return fail("state_mismatch") end
         return { ok = true, duplicate = true, orderId = orderId, txId = found.tx }
     end
-    wait({ m = modId, u = username, p = productId })
+    local ref = { m = modId, u = username, p = productId }
+    wait(ref)
+    if lease then trackLease(ref) end
     X.emit("entitlement.order", { sourceMod = modId, username = username, productId = productId, orderId = orderId,
         kind = terms.kind, quantity = terms.q, amount = terms.amt, currency = terms.cur, txId = res.txId,
         termsRevision = planRow.revision, renewal = terms.renewal or nil, rental = order.rental })
+    if instant then
+        X.emit("entitlement.activated", { sourceMod = modId, username = username, productId = productId, orderId = orderId,
+            kind = terms.kind, rental = order.rental, at = now, paidUntil = lease and lease.paidUntil or nil,
+            continuing = continuing })
+    end
     changed(modId, username, productId)
     return { ok = true, orderId = orderId, txId = res.txId, duplicate = false }
 end
@@ -945,38 +988,40 @@ end
 -- Known with a status (paid / refunded) only for orders in the row's ring; known as proven not paid
 -- only with evidence for this very row (FINAL 10): a quote this process issued for it and closed
 -- unpaid (the bounded ring). Anything else - another row's order, a quote past the ring, a live
--- quote, or a missing order across a restart - is unknown.
+-- quote, or a missing order across a restart - is unknown. An instant product's reply says so
+-- (`instant`): its paid / refunded orders took effect when committed, there is no save to wait for.
 function E.getOrder(modId, username, productId, orderId)
     if not ent then return fail("not_ready") end
     if not validMod(modId) or not validUser(username) or not validProduct(productId) or not validId(orderId) then
         return fail("invalid_args")
     end
     if not P.row(modId, productId) then return fail("unknown_product") end
+    local spec = P.product(modId, productId)
+    local instant = (spec ~= nil and spec.instant) or nil
+    local function reply(res)
+        res.instant = instant
+        return withSnapshot(res, modId, username, productId)
+    end
     local ds = S.durableStatus()
     local row = rowOf(modId, username, productId)
     for _, o in ipairs(row and row.orders or {}) do
         if o.id == orderId then
-            return withSnapshot({ ok = true, known = true, order = orderView(o, ds.seq, ds) }, modId, username, productId)
+            return reply({ ok = true, known = true, order = orderView(o, ds.seq, ds) })
         end
     end
     local k = rowKey(modId, username, productId)
     local unknown = { orderId = orderId, durable = { status = "unknown", source = ds.source, seq = ds.seq } }
     local q = quotes[orderId]
     if q and q.key == k and EC.now() <= q.expiresAt then
-        return withSnapshot({ ok = true, known = false, quoteState = "active", order = unknown }, modId, username, productId)
+        return reply({ ok = true, known = false, quoteState = "active", order = unknown })
     end
-    local proof = nil
     local c = closed[orderId]
     if c and c.key == k then
         -- a quote this process issued for this very source/account/product and closed unpaid
-        proof = { status = c.error and "declined" or "unsubmitted", error = c.error, durable = "confirmed" }
+        return reply({ ok = true, known = true, order = { orderId = orderId, status = c.error and "declined" or "unsubmitted",
+            paid = false, final = true, error = c.error, durable = { status = "confirmed", source = ds.source, seq = ds.seq } } })
     end
-    if proof then
-        return withSnapshot({ ok = true, known = true, order = { orderId = orderId, status = proof.status, paid = false,
-            final = true, error = proof.error, durable = { status = proof.durable, source = ds.source, seq = ds.seq } } },
-            modId, username, productId)
-    end
-    return withSnapshot({ ok = true, known = false, order = unknown }, modId, username, productId)
+    return reply({ ok = true, known = false, order = unknown })
 end
 
 -- ---------- auto-renew consent ----------
@@ -1158,13 +1203,17 @@ function E.refund(modId, username, productId, orderId, opts)
     return withSnapshot({ ok = true, orderId = orderId, txId = res.txId, duplicate = false }, modId, username, productId)
 end
 
--- ---------- registration (bound to a source by the handle) ----------
+-- ---------- registration and the source's plan (bound to a source by the handle) ----------
 
 function E.registerProduct(modId, spec)
     local res = P.register(modId, spec)
     if res.ok and ent then rowsOf(modId) end
     return res
 end
+
+-- The plan belongs to the source (ECEntitlementPlans): setPlan(productId, values, opts),
+-- getPlan(productId), setPlanSource(productId, { file?, problem? }).
+E.setPlan, E.getPlan, E.setPlanSource = P.set, P.get, P.setSource
 
 function E.onEntitlementChanged(modId, fn)
     if type(fn) ~= "function" then return fail("invalid_args") end
@@ -1188,16 +1237,16 @@ local function lapse(ref, row, r, err, now)
     row.notice = { code = "renewal_failed", at = now, error = err, rental = r.id }
 end
 
--- A rental due now under a saved consent to the money terms the plan offers now, with no payment
--- pending.
-local function consented(r, planRow, now, w)
+-- A rental due now under a consent to the money terms the plan offers now, with no payment pending.
+-- The consent must be proven saved, except for an instant product (header).
+local function consented(r, planRow, now, w, instant)
     local auto, lease, plan = r.auto, r.lease, planRow.values
     return auto ~= nil and auto.on == true and r.pend == nil and lease ~= nil and now >= lease.paidUntil
-        and verdict(auto, w) == "confirmed" and sameTerms(auto, plan) and plan.rentalEnabled
+        and (instant or verdict(auto, w) == "confirmed") and sameTerms(auto, plan) and plan.rentalEnabled
         and plan.autoRenewAllowed
 end
 
--- One consented renewal attempt for a rental that is due (auto on and proven, no pending payment).
+-- One consented renewal attempt for a rental that is due (auto on, no pending payment).
 local function tryRenew(ref, row, r, now, w)
     local id = r.id
     local k = rentalKey(ref, id)
@@ -1208,7 +1257,7 @@ local function tryRenew(ref, row, r, now, w)
         return
     end
     -- paused_terms: the snapshot says so; nothing is charged on terms nobody agreed to
-    if not consented(r, planRow, now, w) then return end
+    if not consented(r, planRow, now, w, spec.instant) then return end
     local rev, auto = row.rev, r.auto
     local terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w, id)
     if terms then
@@ -1220,7 +1269,7 @@ local function tryRenew(ref, row, r, now, w)
             r = rentalOf(row, id)
             w = S.durableStatus().seq
             if not row or not r or row.rev ~= rev or r.auto ~= auto or not planRow or systemBlock(ref.m, spec)
-                or not consented(r, planRow, now, w) then
+                or not consented(r, planRow, now, w, spec.instant) then
                 return
             end
             terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w, id)
@@ -1255,11 +1304,13 @@ local function tryRenew(ref, row, r, now, w)
 end
 
 -- A rental that ended for good: past grace, nothing paid on the way, no consent that could still
--- charge it (off and proven saved, no off line owed). Nothing is left to show or to renew.
-local function ended(ref, r, now, w)
+-- charge it (off and proven saved, no off line owed). Nothing is left to show or to renew. An
+-- instant product's off consent needs no save: its off line is in the journal, so a crash brings the
+-- rental back with the line that switches it off again, and it ends again.
+local function ended(ref, r, now, w, instant)
     if r.pend or leaseLive(r.lease, now) then return false end
     local auto = r.auto
-    if auto and (auto.on or verdict(auto, w) ~= "confirmed") then return false end
+    if auto and (auto.on or (not instant and verdict(auto, w) ~= "confirmed")) then return false end
     return not offOwed[rentalKey(ref, r.id)]
 end
 
@@ -1268,6 +1319,8 @@ end
 local function visitLease(ref, now, w)
     local row = rowOf(ref.m, ref.u, ref.p)
     if not row or not row.rentals or #row.rentals == 0 then return false end
+    local spec = P.product(ref.m, ref.p)
+    local instant = spec ~= nil and spec.instant
     -- a renewal replaces the row: walk the ids and read the row again for each
     local ids = {}
     for i, r in ipairs(row.rentals) do ids[i] = r.id end
@@ -1296,7 +1349,7 @@ local function visitLease(ref, now, w)
                 changed(ref.m, ref.u, ref.p)
             end
             local auto = r.auto
-            if auto and auto.on and not r.pend and now >= lease.paidUntil and verdict(auto, w) == "confirmed" then
+            if auto and auto.on and not r.pend and now >= lease.paidUntil and (instant or verdict(auto, w) == "confirmed") then
                 tryRenew(ref, row, r, now, w)
             end
         end
@@ -1304,7 +1357,7 @@ local function visitLease(ref, now, w)
     row = rowOf(ref.m, ref.u, ref.p)
     local kept = {}
     for _, r in ipairs(row.rentals) do
-        if not ended(ref, r, now, w) then kept[#kept + 1] = r end
+        if not ended(ref, r, now, w, instant) then kept[#kept + 1] = r end
     end
     if #kept ~= #row.rentals then
         -- no money, no units, nothing any quote priced (a renewal of it fails as rental_unknown): no
@@ -1352,7 +1405,6 @@ function E.onTick()
         settleWaiting(now, w)
     end
     if journal.state == "ok" and journal.lines > 0 and w ~= nil and w >= journal.needSeq then truncateJournal() end
-    P.poll(now)
     local expired = {}
     for _, q in pairs(quotes) do
         if now > q.expiresAt then expired[#expired + 1] = q end
@@ -1473,16 +1525,6 @@ local function accountEntries(username, modId, productId)
     return entries
 end
 
-local function adminApply(player, args)
-    local bad, reason = A.reasonError(args.reason)
-    if bad then return fail(bad) end
-    local requestId = requestIdOf(args)
-    if not requestId or not validMod(args.sourceMod) or not validProduct(args.productId) then return fail("invalid_args") end
-    local res = P.apply(args.sourceMod, args.productId, args.expectedRevision, args.values, S.principal(player), reason, requestId)
-    if res.ok then res.sourceMod, res.productId = args.sourceMod, args.productId end
-    return res
-end
-
 local function adminAccount(args)
     if not validUser(args.username) then return fail("invalid_args") end
     local modId = validMod(args.sourceMod) and args.sourceMod or nil
@@ -1504,11 +1546,12 @@ local function adminRefund(player, args)
     return res
 end
 
--- admin.entitlements {action = "plans" | "account" (read) | "apply" | "refund" (write), ...}.
--- There is no action that consents to auto-renew for a player.
+-- admin.entitlements {action = "plans" | "account" (read) | "refund" (write), ...}. Plans are read
+-- only here: the source owns them (setPlan). There is no action that consents to auto-renew for a
+-- player.
 S.handlers["admin.entitlements"] = function(player, args)
     local action = args.action
-    local write = action == "apply" or action == "refund"
+    local write = action == "refund"
     local allowed = write and A.isAdmin(player) or (not write and A.canRead(player))
     if not allowed then
         EC.log("admin command admin.entitlements refused for " .. S.claimedName(player) .. " role=" .. A.roleName(player))
@@ -1518,8 +1561,6 @@ S.handlers["admin.entitlements"] = function(player, args)
     local res
     if action == "plans" then
         res = { ok = true }
-    elseif action == "apply" then
-        res = adminApply(player, args)
     elseif action == "account" then
         res = adminAccount(args)
     elseif action == "refund" then
@@ -1529,7 +1570,7 @@ S.handlers["admin.entitlements"] = function(player, args)
     end
     res.action, res.requestId = action, requestIdOf(args)
     res.perms = { read = true, write = A.isAdmin(player) }
-    if action == "plans" or action == "apply" then
+    if action == "plans" then
         res.plans = P.list()
         res.journal = E.journalStatus()
     end
@@ -1549,13 +1590,15 @@ S.onInit(E.init)
 Events.OnTickEvenPaused.Add(E.onTick)
 
 -- The facade grows to rev 2 only now that the entitlement half is loaded; `rentals` marks the
--- independent-rentals model (a row holds any number of rentals, see the header).
+-- independent-rentals model (a row holds any number of rentals, see the header); `setPlan` marks
+-- source-owned plans (setPlan / getPlan / setPlanSource), instant products and no sandbox mirror.
 G.API_REVISION = 2
 if EC.v1 then
     EC.v1.API_REVISION = 2
     EC.v1.CAPABILITIES.entitlements = true
     EC.v1.CAPABILITIES.subscriptions = true
     EC.v1.CAPABILITIES.rentals = true
+    EC.v1.CAPABILITIES.setPlan = true
 end
 
 return E

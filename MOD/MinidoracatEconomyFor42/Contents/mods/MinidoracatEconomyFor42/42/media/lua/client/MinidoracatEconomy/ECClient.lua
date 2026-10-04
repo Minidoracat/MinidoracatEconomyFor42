@@ -1230,8 +1230,8 @@ EC.v1.Client = {
     getWallet = function() return C.wallet end,
     onWalletChanged = C.onWallet,
     Entitlements = C.Entitlements,
-    -- Opens the Economy admin window on the integration plan page (the price and terms live
-    -- there only). false when this player may not read the admin pages.
+    -- Opens the Economy admin window on the integration plan page (a read-only overview; the
+    -- terms are the source mod's own). false when this player may not read the admin pages.
     openAdminPlans = function(sourceMod, productId)
         local AW = C.AdminWindow
         if AW == nil or AW.openPlans == nil then return false end

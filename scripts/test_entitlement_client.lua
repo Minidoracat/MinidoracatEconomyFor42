@@ -8,8 +8,9 @@ What it pins is what a consumer mod (VehicleManager) relies on: one request in f
 command and the server's 500 ms window respected, every caller's callback kept, stale replies
 never overwriting a newer snapshot, a timeout reported as unknown without a re-send (keeping the
 quote / order identity), a late answer updating the cache without a second callback, public
-refresh signals, the server-driven sandbox sync, the one shared reading of an order lookup, rental
-ids checked locally and carried on quote / auto-renew, and the admin page's rentals view.
+refresh signals, the one shared reading of an order lookup (instant products included), rental
+ids checked locally and carried on quote / auto-renew, and the admin page's read-only plan
+overview, refund transport and rentals view.
 ]]
 
 local MEDIA = os.getenv("EC_LUA_ROOT") or "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
@@ -37,16 +38,6 @@ function getText(key, a, b) return key .. (a and ("|" .. tostring(a)) or "") .. 
 function getTextOrNull(key)
     if string.find(key, "Ent_State_active", 1, true) then return "Active" end
     return nil
-end
-
-local sandboxSet, sandboxProjected = {}, 0
-local registered = { ["MinidoracatVehicleManager.RentalPrice"] = true }
-function getSandboxOptions()
-    return {
-        getOptionByName = function(_, name) return registered[name] and {} or nil end,
-        set = function(_, name, value) sandboxSet[name] = value end,
-        toLua = function() sandboxProjected = sandboxProjected + 1 end,
-    }
 end
 
 Events = {
@@ -203,22 +194,20 @@ end)()
     check(E.getState(SRC, PROD).entitlement.revision == 7, "a signal is not a snapshot")
 end)()
 
--- ---------- sandbox sync: registered options only, projected once, nothing sent back ----------
-;(function()
-    local count = #sent
-    reply("entitlement.sandbox", { values = { ["MinidoracatVehicleManager.RentalPrice"] = 300, ["Unknown.Option"] = 1 } })
-    check(sandboxSet["MinidoracatVehicleManager.RentalPrice"] == 300, "registered option set")
-    check(sandboxSet["Unknown.Option"] == nil, "unregistered option ignored")
-    check(sandboxProjected == 1, "SandboxVars projected once")
-    check(#sent == count, "sandbox sync sends nothing back")
-end)()
-
 -- ---------- the one reading of an order lookup ----------
 ;(function()
     local paid = { status = "paid", paid = true, durable = { status = "confirmed" } }
     check(E.orderOutcome({ ok = true, known = true, order = paid }) == "paid", "confirmed paid order")
     check(E.orderOutcome({ ok = true, known = true, order = { status = "paid", paid = true,
         durable = { status = "pending" } } }) == "processing", "paid but unsaved stays locked")
+    check(E.orderOutcome({ ok = true, known = true, instant = true, order = { status = "paid", paid = true,
+        durable = { status = "pending" } } }) == "paid", "an instant paid order is paid without a save")
+    check(E.orderOutcome({ ok = true, known = true, instant = true, order = { status = "refunded", paid = true } })
+        == "refunded", "an instant refund is refunded without a save")
+    check(E.orderOutcome({ ok = true, known = true, instant = true, order = { status = "declined", paid = false,
+        final = true } }) == "not_paid", "instant does not turn a proven unpaid order into paid")
+    check(E.orderOutcome({ ok = true, known = true, order = { status = "paid", paid = true, instant = true,
+        durable = { status = "pending" } } }) == "processing", "only the reply's instant flag skips the save wait")
     check(E.orderOutcome({ ok = true, known = true, order = { status = "declined", paid = false, final = true,
         durable = { status = "confirmed" } } }) == "not_paid", "proven unpaid")
     check(E.orderOutcome({ ok = true, known = false, quoteState = "active",
@@ -314,7 +303,7 @@ end)()
     package.loaded["ISUI/ISPanel"] = true
     C.UI = { PAD = 8, T = "IGUI_MinidoracatEconomy_", CARD_TITLE_H = 28,
         fontH = { small = 16, medium = 20 }, amountText = tostring, currencyName = C.currencyName,
-        stampText = function(ms) return "t" .. tostring(ms) end }
+        stampText = function(ms) return "t" .. tostring(ms) end, wrapText = function(s) return { s } end }
     MinidoracatEconomy.sortSafe = function(list, lt) table.sort(list, lt) end
     dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminEntitlements.lua")
     local Page = classes.MinidoracatEconomyAdminEntPage
@@ -326,24 +315,27 @@ end)()
             setTitle = noop, setStyle = noop,
             setText = function(self, value) self.value = value end,
             getText = function(self) return self.value or "" end,
+            getIsVisible = function() return true end,
         }
     end
-    local function planEntry(revision, price, applies)
-        return { sourceMod = SRC, productId = PROD, applies = applies or {},
-            plan = { revision = revision, permanentEnabled = true, permanentCurrency = "survivor",
-                permanentPrice = price, permanentLimit = 10, rentalEnabled = false, rentalCurrency = "survivor",
-                rentalPrice = 250, rentalLimit = 5, rentalDays = 7, graceHours = 24, reminderHours = 24,
-                autoRenewAllowed = true } }
+    local function planEntry(extra)
+        local e = { sourceMod = SRC, productId = PROD, loaded = true, instant = true,
+            plan = { revision = 3, permanentEnabled = true, permanentCurrency = "survivor",
+                permanentPrice = 1000, permanentLimit = 10, rentalEnabled = false, rentalCurrency = "survivor",
+                rentalPrice = 250, rentalLimit = 5, rentalDays = 7, graceHours = 24, reminderHours = 12,
+                autoRenewAllowed = true },
+            lastChange = { actor = "admin1", origin = "file", at = 1234, reason = "Price update", revision = 3 },
+            source = { file = "Lua/MinidoracatVehicleManager/srv/paid-slots.json" } }
+        for k, v in pairs(extra or {}) do e[k] = v end
+        return e
     end
     local function page()
         local ioState = { sent = {}, pending = false, write = true }
         local p = setmetatable({
             owner = { readAllowed = function() return true end, writeAllowed = function() return ioState.write end },
-            drafts = {}, pendingApplies = {}, plans = { planEntry(1, 1000) }, section = "plans", view = "list",
-            selKey = SRC .. "\1" .. PROD, form = { scrollOffset = 0 }, fieldControls = {},
-            chips = { permanentCurrency = { survivor = control() }, rentalCurrency = { survivor = control() } },
-            tabs = {}, layout = noop, syncControls = noop, unfocusAll = noop, invalidateKeyboard = noop,
-            rebuildPlanRows = noop, rebuildAccountRows = noop,
+            plans = { planEntry() }, section = "plans", view = "list", selKey = SRC .. "\1" .. PROD,
+            tabs = {}, layout = noop, unfocusAll = noop, invalidateKeyboard = noop,
+            rebuildPlanRows = noop, rebuildAccountRows = noop, getIsVisible = function() return true end,
             isPending = function() return ioState.pending end,
             newRequestId = function() return "admin-" .. (#ioState.sent + 1) end,
             send = function(command, args)
@@ -352,125 +344,89 @@ end)()
                 return true
             end,
         }, Page)
-        for _, name in ipairs({ "reviewButton", "discardButton", "recheckButton", "reasonField", "confirmButton",
-            "backButton", "accountField", "lookupButton", "refundButton" }) do p[name] = control() end
-        for _, name in ipairs({ "permanentEnabled", "permanentPrice", "permanentLimit", "rentalEnabled",
-            "rentalPrice", "rentalLimit", "rentalDays", "graceHours", "reminderHours", "autoRenewAllowed" }) do
-            p.fieldControls[name] = control()
-        end
+        for _, name in ipairs({ "planList", "planBox", "reasonField", "confirmButton", "backButton", "accountField",
+            "lookupButton", "refundButton" }) do p[name] = control() end
         return p, ioState
-    end
-    local function apply(p)
-        p:setDraftValue("permanentPrice", "1200")
-        p:onReview()
-        p.reasonField:setText("Update plan")
-        p:onConfirm()
-        return p.sent
-    end
-    local function timeout(p, ioState)
-        ioState.pending = false
-        p:onTimeout()
     end
     local function receive(p, ioState, args)
         if p:matchesReply(args) then ioState.pending = false end
         p:onReply(args)
     end
+    local function refund(p)
+        p.account = { username = "bob", entries = { { sourceMod = SRC, productId = PROD,
+            entitlement = {}, orders = { { orderId = "1:5", kind = "permanent", status = "paid" } } } } }
+        p.accountUser, p.entrySel, p.orderSel = "bob", 1, 1
+        p:onRefundReview()
+        p.reasonField:setText("Refund test")
+        p:onConfirm()
+        return p.sent
+    end
 
+    -- the plan overview: read-only, every term with its unit, the last change and the settings file
     local p, ioState = page()
-    p:updateEnabled()
-    check(p.fieldControls.permanentPrice.enabled and p.fieldControls.permanentEnabled.enabled
-        and p.chips.permanentCurrency.survivor.enabled and p.chips.rentalCurrency.survivor.enabled,
-        "typed fields and both currency chip groups enable without phantom currency entries")
-    ioState.write = false
-    p:updateEnabled()
-    check(not p.fieldControls.permanentPrice.enabled and not p.chips.permanentCurrency.survivor.enabled,
-        "permission loss disables both typed fields and currency chips")
+    check(Page.onReview == nil and Page.setDraftValue == nil and Page.onApplyReply == nil and Page.onRecheck == nil,
+        "the plan page has no editor, apply or re-check left")
+    local text = p:overviewText(p.plans[1])
+    check(string.find(text, "Ent_D_Instant|IGUI_MinidoracatEconomy_Ent_Instant_Yes", 1, true) ~= nil
+        and string.find(text, "Ent_D_UnitPrice|1000 cur:survivor", 1, true) ~= nil
+        and string.find(text, "Ent_D_Limit|IGUI_MinidoracatEconomy_Ent_Slots|10", 1, true) ~= nil
+        and string.find(text, "Ent_D_PeriodPrice|250 cur:survivor", 1, true) ~= nil
+        and string.find(text, "Ent_D_PeriodDays|IGUI_MinidoracatEconomy_Ent_Days|7", 1, true) ~= nil
+        and string.find(text, "Ent_D_RentalLimit|IGUI_MinidoracatEconomy_Ent_Slots|5", 1, true) ~= nil
+        and string.find(text, "Ent_D_Reminder|IGUI_MinidoracatEconomy_Ent_Hours|12", 1, true) ~= nil
+        and string.find(text, "Ent_D_AutoRenewAllowed|IGUI_MinidoracatEconomy_Ent_Yes", 1, true) ~= nil,
+        "overview lists both sales with price, currency, limits, period and renewal terms")
+    check(string.find(text, "Ent_D_At|t1234", 1, true) ~= nil and string.find(text, "Ent_D_Actor|admin1", 1, true) ~= nil
+        and string.find(text, "Ent_D_Origin|file", 1, true) ~= nil
+        and string.find(text, "Ent_D_Reason|Price update", 1, true) ~= nil
+        and string.find(text, "Ent_D_File|Lua/MinidoracatVehicleManager/srv/paid-slots.json", 1, true) ~= nil,
+        "overview names when, who, from where and why the terms last changed, and the settings file")
+    local notices = p:overviewNotices(p.plans[1], 400)
+    check(#notices == 2 and notices[1].token == "textMuted" and notices[2].s == "IGUI_MinidoracatEconomy_Ent_ManagedBy",
+        "a healthy product shows no warning, only its ids and who manages the terms")
+    local broken = planEntry({ loaded = false, instant = false, source = { problem = "rent.price: invalid_plan" } })
+    broken.plan.provisional, broken.lastChange = true, nil
+    notices = p:overviewNotices(broken, 400)
+    check(#notices == 5 and notices[1].s == "IGUI_MinidoracatEconomy_Ent_FileProblem|rent.price: invalid_plan"
+        and notices[1].token == "warn" and notices[2].s == "IGUI_MinidoracatEconomy_Ent_Provisional"
+        and notices[3].s == "IGUI_MinidoracatEconomy_Ent_NotLoaded" and notices[3].token == "warn",
+        "a settings file problem, a provisional plan and an unloaded source are warned about, worst first")
+    text = p:overviewText(broken)
+    check(string.find(text, "Ent_Instant_No", 1, true) ~= nil and string.find(text, "Ent_NoFile", 1, true) ~= nil
+        and string.find(text, "Ent_D_Reason", 1, true) == nil and string.find(text, "Ent_D_Actor|-", 1, true) ~= nil,
+        "a non-instant product without a file or change record says so instead of inventing one")
+    p.section = "plans"
+    local targets = p:keyboardTargets()
+    check(#targets == 3 and targets[1].control == p.tabs and targets[2].control == p.planList
+        and targets[3].control == p.planBox and targets[3].kind == "scroll",
+        "the plan section's keyboard ring is the tabs, the product list and the terms reader only")
+    receive(p, ioState, { ok = true, plans = { planEntry({ instant = false }) } })
+    check(p.plans[1].instant == true, "a plans reply without the open requestId is ignored")
 
+    -- refunds: one send, a timeout never re-sends, a late answer cannot take the next read's slot
     p, ioState = page()
-    local req = apply(p)
-    receive(p, ioState, { ok = true, plans = { planEntry(2, 1200) } })
-    check(not req.answered and ioState.pending and p:draft() ~= nil and p.plans[1].plan.revision == 1,
-        "reply without requestId cannot release or complete an admin write")
-    timeout(p, ioState)
+    local req = refund(p)
+    local args = ioState.sent[1] and ioState.sent[1].args or {}
+    check(req ~= nil and req.action == "refund" and args.action == "refund" and args.username == "bob"
+        and args.orderId == "1:5" and args.reason == "Refund test", "a confirmed refund sends exactly the reviewed order")
+    receive(p, ioState, { ok = true })
+    check(not req.answered and ioState.pending, "a reply without requestId cannot complete a refund")
+    ioState.pending = false
+    p:onTimeout()
     local count = #ioState.sent
-    p:onReview()
     p:onConfirm()
-    check(p.view == "list" and #ioState.sent == count and p.pendingApplies[p.selKey] == req,
-        "unknown apply retains its context and cannot be reviewed or confirmed again")
-    p:onDiscard()
-    p:setDraftValue("permanentPrice", "1300")
-    local replacement = p:draft()
-    p:onReview()
-    check(p.view == "list" and p:reviewBlockKey() == "Ent_Draft_Unknown",
-        "discarding and recreating a draft cannot erase an unknown apply")
-    receive(p, ioState, { ok = true, requestId = req.requestId, plans = { planEntry(2, 1200) } })
-    check(p:draft() == replacement and replacement.values.permanentPrice == "1300",
-        "late apply success cannot delete a replacement draft")
-
-    p, ioState = page()
-    req = apply(p)
-    timeout(p, ioState)
-    local edited = p:draft()
-    p:setDraftValue("permanentPrice", "1400")
-    receive(p, ioState, { ok = true, requestId = req.requestId, plans = { planEntry(2, 1200) } })
-    check(p:draft() == edited and edited.values.permanentPrice == "1400",
-        "late success cannot delete edits made to the original draft after timeout")
-
-    p, ioState = page()
-    req = apply(p)
-    timeout(p, ioState)
-    p:onRecheck()
-    check(ioState.sent[#ioState.sent].args.action == "plans" and p.pendingApplies[p.selKey] == req
-        and p:draft().unknown, "Re-check reads the server without clearing unknown from cached plans")
+    check(req.timedOut and p.view == "list" and #ioState.sent == count, "a refund timeout closes the review and sends nothing again")
+    p.plansWanted = true
+    p:tick(0)
     local readId = p.sent.requestId
-    receive(p, ioState, { ok = true, requestId = req.requestId, plans = { planEntry(99, 9999) } })
-    check(ioState.pending and p.sent.requestId == readId and p.plans[1].plan.revision == 1,
-        "late write reply cannot consume the new read slot or replace its snapshot")
-    receive(p, ioState, { ok = true, requestId = readId, plans = { planEntry(2, 1500) } })
-    check(p.pendingApplies[p.selKey] == req and p:draft().unknown and p:draft().revision == 1,
-        "another revision without the original apply receipt cannot resolve unknown")
-    p:onRecheck()
-    receive(p, ioState, { ok = true, requestId = p.sent.requestId,
-        plans = { planEntry(2, 1200, { { requestId = req.requestId, revision = 2 } }) } })
-    check(p.pendingApplies[p.selKey] == nil and not p:draft().unknown and p:draft().revision == 2
-        and #p:draft().changed == 0, "fresh matching apply receipt reconciles against server-authoritative plan")
-
+    receive(p, ioState, { ok = true, requestId = req.requestId, entries = {} })
+    check(ioState.pending and p.sent.action == "plans" and p.sent.requestId == readId and not p.sent.answered,
+        "a late refund reply cannot consume the new read slot")
     p, ioState = page()
-    req = apply(p)
-    timeout(p, ioState)
-    p:onRecheck()
-    receive(p, ioState, { ok = true, requestId = p.sent.requestId, plans = { planEntry(1, 1000) } })
-    check(p.pendingApplies[p.selKey] == nil and p:reviewBlockKey() == nil,
-        "fresh unchanged revision and explicit empty apply history proves the write was not applied")
-
-    p, ioState = page()
-    req = apply(p)
-    local draft = p:draft()
+    req = refund(p)
     ioState.pending, ioState.write = false, false
     p:onCancelled(req.requestId)
-    check(req.answered and not req.timedOut and p.pendingApplies[p.selKey] == nil and p:draft() == draft
-        and not draft.unknown and p.view == "list", "cancelled unsent write retains draft without inventing unknown outcome")
-
-    -- lowering rentalLimit reviews the over-limit rule; raising it does not
-    p, ioState = page()
-    p:setDraftValue("rentalLimit", "3")
-    p:onReview()
-    check(p.review ~= nil and p.review.values.rentalLimit == 3
-        and string.find(p.review.text, "Ent_Review_EffectRentalLimit", 1, true) ~= nil,
-        "lowering rentalLimit sends it and reviews the over-limit rule")
-    p, ioState = page()
-    p:setDraftValue("rentalLimit", "9")
-    p:onReview()
-    check(p.review ~= nil and string.find(p.review.text, "Ent_Review_EffectRentalLimit", 1, true) == nil,
-        "raising rentalLimit carries no over-limit warning")
-    check(string.find(p.review.text, "Ent_Review_EffectConsentsKept", 1, true) ~= nil,
-        "a rentalLimit edit says agreed auto-renew keeps running")
-    p, ioState = page()
-    p:setDraftValue("rentalPrice", "300")
-    p:onReview()
-    check(p.review ~= nil and string.find(p.review.text, "Ent_Review_EffectConsents", 1, true) ~= nil
-        and string.find(p.review.text, "Ent_Review_EffectConsentsKept", 1, true) == nil,
-        "a rent change says consents agreed to other terms pause")
+    check(req.answered and not req.timedOut and p.view == "list", "a cancelled unsent refund closes without an unknown outcome")
 
     -- account view: every rental by creation order with its own terms; orders name their rental
     -- and mark scheduler renewals
