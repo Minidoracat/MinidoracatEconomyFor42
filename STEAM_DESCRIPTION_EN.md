@@ -13,7 +13,7 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 
 [h2]🚀 Quick start[/h2]
 [olist]
-[*] Open the [b]Economy Center[/b] with the "[" key or the floating button; away from a terminal you can only browse, and the top bar points to the nearest one
+[*] Open the [b]Economy Center[/b] with the "[" key or the coin icon in the family toolbar; away from a terminal you can only browse, and the top bar points to the nearest one
 [*] Walk up to a map ATM or an admin-built terminal and right-click [b]Use economy terminal[/b] to trade
 [*] Claim your daily online reward on the Rewards page to start earning Survivor Coins
 [*] Buy and sell in the shop, market or auctions, and collect purchases from your Mailbox

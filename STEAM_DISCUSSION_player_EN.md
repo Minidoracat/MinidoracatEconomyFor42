@@ -8,7 +8,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 
 [h2]🚀 Quick start[/h2]
 [olist]
-[*] Open the [b]Economy Center[/b] with the "[" key (rebindable in Key Bindings) or the floating button
+[*] Open the [b]Economy Center[/b] with the "[" key (rebindable in Key Bindings) or the coin icon in the family toolbar; the icon shows a count when your Mailbox has items to claim
 [*] Away from a terminal you can only browse; the top bar points to the nearest terminal or ATM, and [b]Guide me[/b] shows the way. To trade, list or claim items, walk up to a map ATM or an admin-built terminal and right-click [b]Use economy terminal[/b]
 [*] Claim your daily online reward on the Rewards page to start earning Survivor Coins
 [*] Buy and sell in the shop, market or auctions; items arrive in your Mailbox and can be claimed at any terminal
@@ -36,7 +36,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]Map ATMs[/b]: vanilla floor and wall ATMs work within 2 tiles on the same floor, no registration needed (the server can turn this off).
 [*] [b]Custom terminals[/b] (machine, catgirl or supported cabinets) are registered by an admin as an ATM or a trade station; only trade stations have the market radio.
 [*] [b]One shared market[/b]: list at station A, someone buys at station B, you collect at station C.
-[*] [b]Guide me[/b]: away from terminals the top bar shows the nearest terminal or ATM's direction and distance; Guide me shows a golden arrow that stops on arrival (or press Stop). Without remote opening, the hotkey or floating button points the arrow instead.
+[*] [b]Guide me[/b]: away from terminals the top bar shows the nearest terminal or ATM's direction and distance; Guide me shows a golden arrow that stops on arrival (or press Stop). Without remote opening, the hotkey or toolbar icon points the arrow instead.
 [*] [b]On the map[/b]: the server remembers map ATMs in areas it has loaded. With MiniMap, the minimap and world map show terminals and known ATMs; without it, the target is circled on the vanilla maps.
 [*] [b]Protection[/b]: machine and catgirl terminals cannot be destroyed; players cannot remove registered cabinets or supported map ATMs.
 [/list]
