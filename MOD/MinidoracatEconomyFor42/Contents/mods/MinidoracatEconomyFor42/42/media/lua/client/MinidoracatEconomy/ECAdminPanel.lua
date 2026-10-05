@@ -8281,17 +8281,6 @@ function Admin:rewardDayStart(key)
     return U.framework.Date.dayStart(y .. "-" .. m .. "-" .. d, math.floor(tz * 60 + 0.5) - hour * 60)
 end
 
--- A y-axis tick: 1234 -> "1.2k", 5000 -> "5k".
-function P.shortAmount(n)
-    local a = math.abs(tonumber(n) or 0)
-    local s
-    if a >= 1000000 then s = string.format("%.1fM", a / 1000000)
-    elseif a >= 1000 then s = string.format("%.1fk", a / 1000)
-    else s = tostring(math.floor(a + 0.5)) end
-    s = string.gsub(s, "%.0([kM])", "%1")
-    return ((tonumber(n) or 0) < 0 and "-" or "") .. s
-end
-
 -- Rebuilt when admin.system lands, when the currency chip changes and when the data goes away;
 -- never per frame. Everything the card paints (chart data, captions, the three figures and their
 -- sparklines) is made here.
@@ -8346,7 +8335,7 @@ function Admin:buildWeek(keys, src)
         down = { { label = tr("Dash7_Burn"), color = 1, values = burn } },
         net = net, hatch = hatch,
         caption = function(i) return captions[i] end,
-        format = P.shortAmount,
+        format = Ch.compact,
     })
     self.week = { keys = keys, minis = {
         { label = tr("Dash7_Issued"), value = "+" .. amountText(sumMint), token = "positive", spark = Ch.spark(mint), rgb = Ch.IN[1] },

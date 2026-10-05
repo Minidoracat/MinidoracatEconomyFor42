@@ -85,6 +85,27 @@ end
 
 local function defaultFormat(n) return U.amountText(n) end
 
+-- A short amount for axis ticks and bin labels: "950", "2.5k", "15k", "1.2M". With the tick
+-- `step` the decimals follow it, so two ticks never read alike (13,500 and 14,000 with
+-- whole-k rounding both came out "14k"); a step finer than 0.01k / 0.01M gets the full amount.
+-- Without a step: one decimal below 10k (10M), none above.
+function Ch.compact(n, step)
+    n = tonumber(n) or 0
+    local a = abs(n)
+    if a < 1000 then return string.format("%.0f", n) end
+    local unit, suffix = 1000, "k"
+    if a >= 1000000 then unit, suffix = 1000000, "M" end
+    local d
+    if step == nil then d = a >= unit * 10 and 0 or 1
+    elseif step % unit == 0 then d = 0
+    elseif step % (unit / 10) == 0 then d = 1
+    elseif step % (unit / 100) == 0 then d = 2
+    else return U.amountText(n) end
+    local s = string.format("%." .. d .. "f", a / unit)
+    if d > 0 then s = string.gsub(string.gsub(s, "0+$", ""), "%.$", "") end
+    return (n < 0 and "-" or "") .. s .. suffix
+end
+
 local function newChart(class, x, y, w, h)
     local o = ISPanel:new(x, y, w, h)
     setmetatable(o, class)
@@ -121,7 +142,7 @@ local function setTicks(o, from, to, step, top, hi, scale, format)
     local count = floor((to - from) / step + 0.5)
     for k = 0, count do
         local v = from + k * step
-        local s = tostring(format(v))
+        local s = tostring(format(v, step))
         n = n + 1
         o.tkV[n] = v
         o.tkY[n] = round(top + (hi - v) * scale)

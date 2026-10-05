@@ -63,18 +63,8 @@ local function largeH() return getTextManager():getFontHeight(UIFont.Large) end
 
 -- ----- numbers and days -----
 
--- "5k" / "2.5k" / "1.2M": axis ticks and bin labels, where a full amount does not fit.
-local function compactText(n)
-    n = tonumber(n) or 0
-    local a = math.abs(n)
-    local s
-    if a >= 1000000 then s = string.format("%.1fM", a / 1000000)
-    elseif a >= 10000 then s = string.format("%.0fk", a / 1000)
-    elseif a >= 1000 then s = string.format("%.1fk", a / 1000)
-    else s = string.format("%.0f", a) end
-    s = string.gsub(s, "%.0([kM])", "%1")
-    return (n < 0 and "-" or "") .. s
-end
+-- "5k" / "2.5k" / "1.2M": axis ticks (decimals from the tick step) and bin labels
+local compactText = C.Charts.compact
 
 local function round(x) return math.floor(x + 0.5) end
 
