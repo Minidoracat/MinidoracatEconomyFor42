@@ -18,7 +18,15 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [/olist]
 
 [h2]🧭 Overview[/h2]
-Needs attention lists only what has a problem (assets to reconcile, identity conflicts and new alerts, save confirmation, ledgers, shop catalog, whitelist, held listings and auctions, conservation gaps), each with a button to the page that fixes it; otherwise it reads "Nothing needs attention right now". The sidebar has six groups, and Reconciliation and Identity show red counts. Currencies at a glance lists each currency's holdings, reserves, today's issuance, conservation gap and holders; the Full supply table has the rest.
+Needs attention lists only what has a problem (assets to reconcile, identity conflicts and new alerts, save confirmation, ledgers, shop catalog, whitelist, held listings and auctions, conservation gaps), each with a button to the page that fixes it; otherwise it reads "Nothing needs attention right now". The sidebar has six groups, and Reconciliation and Identity show red counts. Last 7 days charts daily issuance (check-ins, milestones, buyback, other) and removal with a net line, plus the 7-day totals; it covers system issuance only (not integrations, Discord deposits or admin adjustments). Click a day for that day's transactions, or Full report for Reports. Currencies at a glance lists each currency's holdings, reserves, today's issuance, conservation gap and holders; the Full supply table has the rest.
+
+[h2]📊 Reports and transactions[/h2]
+[list]
+[*] [b]Reports[/b] (Money and audit - Reports, read-only roles included): pick 7 days, 30 days, this season or a custom range (up to 60 days, counted in reward days) and a currency. Inflow, outflow, net change, player trade volume and active traders come first, each with a trend and a comparison with the previous period of the same length; then daily inflow and outflow by source with a net line, money supply, wealth distribution, totals by source, top items (trades, value, median per piece, price range, 14-day trend) and shop sales (shares sold, revenue, days sold out, buyback cap used). Clicking a bar, a source or an item opens the matching transactions.
+[*] [b]Where the numbers come from[/b]: the daily figures share the existing daily record (kept 60 days, anonymous numbers only). The breakdown by type starts with 0.10.0, so earlier days show only issuance and removal totals; today and incomplete days are hatched. Top items, prices and active traders come from the last 30 days of event files, worked out about 3 minutes after the server starts and every 6 hours after, or on Regenerate (at most once a minute). They live in memory and are rebuilt after a restart.
+[*] [b]Players' market price[/b]: the 30-day price players see when listing only reads that result; nothing a player does makes the server recount.
+[*] [b]Transactions[/b]: the totals row covers every matching record (not just the 200 listed, rolled-back ones excluded); amounts are coloured and signed by direction, and the second line reads "payer -> payee · fee or tax". The record card lists every posting with balances before and after, with shortcuts to one account's or one item's transactions. Admin record cards open with Technical info expanded.
+[/list]
 
 [h2]⚙️ Server settings[/h2]
 [list]

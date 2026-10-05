@@ -19,7 +19,8 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]Wallet[/h3]
 [list]
 [*] [b]Two currencies[/b]: Survivor Coin and Cat Coin show available and reserved amounts; the server can rename them and change icons.
-[*] [b]Statement[/b]: one filter row (period, keyword, type, custom dates); click Time or Amount to sort. Fees and sales tax follow the note.
+[*] [b]Statement[/b]: one filter row (period, keyword, type, custom dates); click Time or Amount to sort. Fees and sales tax follow the note, and market and auction trades name the item ("Flashlight x1 · seller"). Click any line for its card: item, amount (green in, red out), time and balance after; the transaction ID sits under Technical info.
+[*] [b]Balance details and This month[/b]: Balance details can be read and copied in full, with This month (income and spending by type) below. It counts the statement lines already loaded, on the available balance: a bid hold counts as spending, its refund as income.
 [*] [b]Player ID[/b]: your login account (not your character name) sits at the bottom of the navigation rail, red while unverified; click it to copy it for an admin. Merged logins of one Steam account show "main account (login ...)" and share one wallet.
 [/list]
 
@@ -54,7 +55,8 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]Drag items in[/b]: drag an item from your bag, a container or the floor onto the market, auction or shop page of the Economy Center to open the listing, auction or sell window with that item already picked. While you drag, the window says what will happen or why it cannot take the item. Items outside the top level of your main inventory are moved there first with the vanilla action.
 [*] [b]Item right-click "Economy"[/b]: "List on the market", "Start an auction", and "Sell to the shop" for items the shop buys back. Unavailable entries are greyed out and explain why on hover.
 [*] [b]Heavy items[/b] such as generators can be listed, auctioned or sold while held in both hands; a standing generator's right-click menu has the same entries and picks it up with the vanilla action first.
-[*] Rows show the item's key state (condition, blade head, sharpness, ammo, charge, freshness, clothing holes…); details show the full state at listing time.
+[*] Rows show the item's key state (condition, blade head, sharpness, ammo, charge, freshness, clothing holes…); click a row for its card, with condition and sharpness as bars and the Buy or Cancel listing button on the card.
+[*] [b]Market price[/b]: when you list or start an auction, the price step shows how many sold in the last 30 days, the median per piece and the lowest to highest price. The server works this out about 3 minutes after it starts and every 6 hours after; until then it reads "Market price data is being prepared" and asks again by itself.
 [*] The seller pays the sales tax; listing fees are not refunded; unsold listings return to your mailbox.
 [*] One search box finds items and suggests sellers (a removable "Seller: name" filter). Tax and fee sit beside the title; Rules has the full text.
 [/list]
@@ -63,6 +65,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [list]
 [*] Choose a starting price and duration (6-72 hours by default).
 [*] Bids reserve funds and being outbid releases them. The winner gets the items, the seller gets the price after tax, and unsold items return. Every auction has a bid history; My auctions and My bids are listed separately.
+[*] Click an auction for its card: whether you lead, time left, the next minimum bid and what you hold, with the Bid (or Raise) and History buttons on the card.
 [/list]
 
 [h3]Mailbox[/h3]
@@ -90,7 +93,8 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 
 [h3]Interface and controls[/h3]
 [list]
-[*] Clicking a row only opens a floating detail view; it never buys, cancels or bids. Full rules sit under each page's Rules button.
+[*] Clicking a row opens a floating card (movable, copyable, as tall as its content); the row itself never buys, cancels or bids, so use the buttons on the row or the card. Item codes and IDs sit under Technical info at the bottom of the card.
+[*] Full rules sit under each page's Rules button, one short heading and one line per rule.
 [*] Keyboard (Tab, arrows, Enter, Esc) and controller (A, B, LB/RB) work on every page.
 [/list]
 

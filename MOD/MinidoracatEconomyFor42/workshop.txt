@@ -32,6 +32,7 @@ description=[*] [b]Guide to the nearest terminal[/b]: direction and distance, a 
 description=[*] [b]Mailbox[/b]: purchases, wins and returns arrive here and survive your character's death
 description=[*] [b]Rewards and seasons[/b]: daily online rewards, survival milestones, holdings and survival leaderboards
 description=[*] [b]Market radio[/b]: tune a radio to a trade station's market broadcast (server option)
+description=[*] [b]Admin reports[/b]: inflow and outflow, money supply, top items and shop sales on one page
 description=[*] [b]Paid slots for other mods[/b]: buy or rent extra slots in supporting mods with economy currency
 description=[/list]
 description=📖 [b]Feature details and FAQ:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095779/]Economy Player Guide[/url]

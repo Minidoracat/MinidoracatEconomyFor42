@@ -29,6 +29,7 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 [*] [b]Mailbox[/b]: purchases, wins and returns arrive here and survive your character's death
 [*] [b]Rewards and seasons[/b]: daily online rewards, survival milestones, holdings and survival leaderboards
 [*] [b]Market radio[/b]: tune a radio to a trade station's market broadcast (server option)
+[*] [b]Admin reports[/b]: inflow and outflow, money supply, top items and shop sales on one page
 [*] [b]Paid slots for other mods[/b]: buy or rent extra slots in supporting mods with economy currency
 [/list]
 📖 [b]Feature details and FAQ:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095779/]Economy Player Guide[/url]
