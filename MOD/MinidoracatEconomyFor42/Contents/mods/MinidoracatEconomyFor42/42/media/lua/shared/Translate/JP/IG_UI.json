@@ -1801,6 +1801,7 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_claimedCount": "当日の受け取り済み回数",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_dailyLimit": "1 日に受け取れる回数",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_intervalMinutes": "受け取り間隔（分）",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_season": "シーズン番号",
   "IGUI_MinidoracatEconomy_Admin_Tx_Field_Category": "カテゴリ",
   "IGUI_MinidoracatEconomy_Admin_Cmd_accounts": "口座一覧",
   "IGUI_MinidoracatEconomy_Admin_Cmd_currency": "通貨設定",

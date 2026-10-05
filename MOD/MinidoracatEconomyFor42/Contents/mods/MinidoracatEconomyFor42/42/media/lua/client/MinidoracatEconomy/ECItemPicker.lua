@@ -77,11 +77,17 @@ function P.universe()
         return universe
     end
     local uni = { items = {}, byType = {}, cats = {} }
+    -- every window resolves the framework before it is built, but the item menu builds none: an
+    -- administrator's first right-click of the session gets here with nothing resolved, so this
+    -- asks itself (U.init answers the same facade every time). Without a framework there is
+    -- nothing to scan, and that empty answer is not cached either.
+    local ui = U.init()
+    if ui == nil then return uni end
     -- the framework's records are shared with every consumer and read-only: this mod builds its
     -- own on top (the English fields and the listing policy are Economy's, not the scan's). The
     -- category is the server whitelist's own (EC.itemCategory): the framework writes "Item" for a
     -- MOD script that sets no DisplayCategory, where vanilla and the server go by the item class.
-    for _, src in ipairs(U.framework.ItemPicker.universe().items) do
+    for _, src in ipairs(ui.ItemPicker.universe().items) do
         local category = EC.itemCategory(src.script) or src.category
         local record = {
             fullType = src.fullType, name = src.name, category = category, script = src.script,

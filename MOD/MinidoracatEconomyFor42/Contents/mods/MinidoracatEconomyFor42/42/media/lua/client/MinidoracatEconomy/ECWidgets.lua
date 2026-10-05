@@ -2,8 +2,10 @@
 -- ECAdminPanel): theme tokens, paint helpers over MinidoracatUIFor42 v1 (Theme/Skin), number/time
 -- formatting, the skinned Button (chip / primary) and table cells for VirtualList.
 --
--- U.init() resolves the framework once per session (called by ECPanel before any window exists);
--- every helper reads U.theme / U.Skin / U.fontH at call time, so files may alias them at load.
+-- U.init() resolves the framework once per session: every window calls it before it is built, and
+-- C.ItemPicker.universe calls it for the item menu, which builds no window (anything else reached
+-- before a window must do the same rather than read U.framework). Every helper reads U.theme /
+-- U.Skin / U.fontH at call time, so files may alias them at load.
 --
 -- Engine references (snapshot 42.20.4-20260826):
 --   getHourMinute()   LuaManager.java:8996-8998 -> getHourMinuteJava :1569-1576 (Calendar local zone)

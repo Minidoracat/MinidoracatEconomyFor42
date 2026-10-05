@@ -146,7 +146,10 @@ local function stepReader()
             job.pos = pos + 1
             if phase == "open" and char == "{" then
                 job.phase = "first"
-            elseif (phase == "first" or phase == "after") and char == "}" then
+            elseif (phase == "first" or phase == "after" or phase == "key") and char == "}" then
+                -- "key" is a comma before the closing brace: the engine's own translation reader
+                -- accepts it (org.json, lenient outside dev builds: Translator.tryFillMapFromFile,
+                -- JSONObject.java:96-103) and MOD dictionaries ship it
                 job.phase = "closed"
             elseif (phase == "first" or phase == "key") and char == '"' then
                 job.key, job.pos = quoted(job.line, pos)

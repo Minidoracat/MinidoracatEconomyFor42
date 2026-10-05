@@ -1110,6 +1110,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText cuts Chinese / 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the admin overview's counts on admin.system (scenario 51: equal to the reconciliation summary, none on a refusal; FS: identity counts equal the identity page's status)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText never starts a line with closing punctuation (TX-1c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the family toolbar (scenario DK: one Dock entry and no button of our own, badge and mail status, open state / click / MP-only, the FloatButton fallback without the capability or on a refused register)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the item menu before any window and MOD name files with a trailing comma (scenario IM: a player's menu has no admin entry, no framework raises nothing and disables the admin entries, an administrator's first right-click offers both; IN: a comma before the closing brace reads in full, a doubled comma stays that MOD's gap)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20527,6 +20528,135 @@ check(old and old.docked == false and oldRegs == 1 and oldButtons == 1 and old.i
 require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
 isClient, getTexture, getCore, ISLayoutManager, MinidoracatUI = saved.isClient, saved.getTexture, saved.getCore, saved.layout, saved.ui
 Events = saved.events
+end)()
+
+-- IM / IN: the item menu before any window, and MOD name files with a comma before the closing
+-- brace. Every window calls U.init (which resolves the UI framework) before it is built; the item
+-- menu builds none, so an administrator whose first action of the session is a right-click on an
+-- item reaches C.ItemPicker.universe with nothing resolved yet. That right-click also starts the
+-- English index, which reads each activated MOD's EN ItemName.json as the engine's own translation
+-- reader does (org.json, lenient outside dev builds): a comma before the closing brace is accepted.
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client, log = EC.log,
+    ISButton = ISButton, ISPanel = ISPanel, events = Events, ui = MinidoracatUI, isClient = isClient,
+    getSpecificPlayer = getSpecificPlayer, ISContextMenu = ISContextMenu, invMenu = ISInventoryPaneContextMenu,
+    getModFileReader = getModFileReader, listFiles = listFilesInModDirectory, activated = getActivatedMods,
+    getTextManager = getTextManager, UIFont = UIFont }
+local handlers = {}
+Events = setmetatable({}, { __index = function(_, name)
+    return { Add = function(fn) handlers[name] = handlers[name] or {}; table.insert(handlers[name], fn) end,
+        Remove = function(fn)
+            local list = handlers[name] or {}
+            for i = #list, 1, -1 do if list[i] == fn then table.remove(list, i) end end
+        end }
+end })
+local function derive(self) return setmetatable({}, { __index = self }) end
+require = function() return true end
+ISButton, ISPanel = { derive = derive }, { derive = derive }
+EC.log = function() end
+getTextOrNull = function() return nil end
+getText = function(key) return key end
+isClient = function() return true end
+getSpecificPlayer = function() return {} end
+getTextManager = function() return { getFontHeight = function() return 16 end } end
+UIFont = { Small = 1, Medium = 2 }
+-- the files: the shipped index, a MOD whose last entry keeps its comma (the engine reads it), a MOD
+-- with a doubled comma (the engine refuses that too)
+local files = {
+    [EC.MOD_ID .. "|media/MinidoracatEconomy_item_names_en.json"] = { "{", '"Base.Axe": "Axe"', "}" },
+    ["TrailingComma|media/lua/shared/Translate/EN/ItemName.json"] =
+        { "{", '\t"Base.TableSawMagazine": "TableSaw Magazine",', '\t"Base.AgedMotor": "Aged Motor",', "}" },
+    ["DoubledComma|media/lua/shared/Translate/EN/ItemName.json"] = { "{", '"Base.Hammer": "Hammer",,', "}" },
+}
+getModFileReader = function(modId, path)
+    local lines, i = files[modId .. "|" .. path], 0
+    if lines == nil then return nil end
+    return { readLine = function() i = i + 1; return lines[i] end, close = function() end }
+end
+listFilesInModDirectory = function(modId, dir)
+    local n = files[modId .. "|" .. dir .. "/ItemName.json"] and 1 or 0
+    return { size = function() return n end, get = function() return "ItemName.json" end }
+end
+local active = { EC.MOD_ID, "TrailingComma", "DoubledComma" }
+getActivatedMods = function()
+    return { size = function() return #active end, get = function(_, i) return active[i + 1] end }
+end
+local function newMenu()
+    local m = { options = {} }
+    function m:addOption(name) local o = { name = name }; self.options[#self.options + 1] = o; return o end
+    function m:addSubMenu(option, sub) option.subMenu = sub end
+    return m
+end
+ISContextMenu = { getNew = function() return newMenu() end }
+ISInventoryPaneContextMenu = { addToolTip = function() return { setVisible = function() end } end }
+local admin = true
+EC.Client = {
+    session = {}, nearTerminal = function() return true end,
+    ItemRoute = { items = function(items) return items end, blocked = function() return nil end, move = function() return nil end },
+    PanelWidgets = { shopError = function(c) return c end, marketError = function(r) return r.error end,
+        buybackRow = function() return nil end },
+    AdminPanel = { canRead = function() return admin end, canWrite = function() return admin end },
+}
+MinidoracatUI = nil
+local loaded = true
+for _, f in ipairs({ "ECWidgets", "ECItemNames", "ECItemPicker", "ECItemMenu" }) do
+    loaded = loaded and pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/" .. f .. ".lua")
+end
+local menuFn = (handlers.OnFillInventoryObjectContextMenu or {})[1]
+local item = { getFullType = function() return "Base.Axe" end }
+-- one right-click on the axe: whether the handler finished, and the Economy submenu's options
+local function rightClick()
+    local context = newMenu()
+    local ok = menuFn ~= nil and pcall(menuFn, 0, context, { item })
+    local out = {}
+    for _, o in ipairs(context.options) do
+        if o.name == "IGUI_MinidoracatEconomy_Menu_Group" and o.subMenu then
+            for _, s in ipairs(o.subMenu.options) do out[(string.gsub(s.name, "IGUI_MinidoracatEconomy_", ""))] = s end
+        end
+    end
+    return ok, out
+end
+admin = false
+local okP, player = rightClick()
+check(loaded and okP and player.Menu_List ~= nil and player.Menu_AddSku == nil and player.Menu_AddRule == nil,
+    "IM-1: a player's item menu has the trade entries and no admin entry")
+admin = true
+local okN, none = rightClick()
+check(okN and none.Menu_AddSku ~= nil and none.Menu_AddSku.notAvailable == true and none.Menu_AddRule.notAvailable == true,
+    "IM-2: without the UI framework an administrator's right-click raises nothing and the admin entries are disabled")
+local caps = {}
+for _, cap in ipairs({ "theme", "skin", "virtualList", "focus", "controls", "datePicker", "table", "filterBar",
+    "itemPicker", "autocomplete" }) do caps[cap] = true end
+local axe = { getDisplayCategory = function() return "Tool" end, isItemType = function() return false end }
+MinidoracatUI = { v1 = { API_MAJOR = 1, API_REVISION = 11, CAPABILITIES = caps, Skin = {},
+    Theme = { create = function() return {} end },
+    ItemPicker = { universe = function()
+        return { items = { { fullType = "Base.Axe", name = "Axe", category = "Item", script = axe } } }
+    end } } }
+local okA, entries = rightClick()
+check(okA and entries.Menu_AddSku ~= nil and not entries.Menu_AddSku.notAvailable and entries.Menu_AddRule ~= nil
+    and not entries.Menu_AddRule.notAvailable,
+    "IM-3: an administrator's first right-click of the session, before any window, offers both admin entries")
+-- the right-clicks started the English index: let it read every source
+local Names = EC.Client.ItemNames or { status = function() return "missing" end, english = function() end }
+for _ = 1, 50 do
+    if Names.status() ~= "loading" then break end
+    for _, fn in ipairs(handlers.OnTick or {}) do fn() end
+end
+local state, _, gaps = Names.status()
+local gapOf = {}
+for _, g in ipairs(gaps or {}) do gapOf[g.modId] = g.reason end
+check(gaps ~= nil and gapOf.TrailingComma == nil and Names.english("Base.TableSawMagazine") == "TableSaw Magazine"
+    and Names.english("Base.AgedMotor") == "Aged Motor",
+    "IN-1: a MOD names file with a comma before the closing brace is read in full")
+check(state == "partial" and gapOf.DoubledComma == "names_read_failed" and #gaps == 1
+    and Names.english("Base.Hammer") == "Hammer",
+    "IN-2: a doubled comma is still a gap for that MOD alone, and the names read before it stay")
+require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
+ISButton, ISPanel, Events, MinidoracatUI, isClient = saved.ISButton, saved.ISPanel, saved.events, saved.ui, saved.isClient
+getSpecificPlayer, ISContextMenu, ISInventoryPaneContextMenu = saved.getSpecificPlayer, saved.ISContextMenu, saved.invMenu
+getModFileReader, listFilesInModDirectory, getActivatedMods = saved.getModFileReader, saved.listFiles, saved.activated
+getTextManager, UIFont = saved.getTextManager, saved.UIFont
 end)()
 
 io.write("\n")

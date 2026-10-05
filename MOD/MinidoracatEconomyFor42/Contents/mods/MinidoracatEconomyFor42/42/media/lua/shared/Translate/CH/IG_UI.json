@@ -1801,6 +1801,7 @@
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_claimedCount": "當日已領次數",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_dailyLimit": "每日領取次數上限",
   "IGUI_MinidoracatEconomy_Admin_Audit_Field_intervalMinutes": "領取間隔分鐘",
+  "IGUI_MinidoracatEconomy_Admin_Audit_Field_season": "賽季編號",
   "IGUI_MinidoracatEconomy_Admin_Tx_Field_Category": "分類",
   "IGUI_MinidoracatEconomy_Admin_Cmd_accounts": "帳戶列表",
   "IGUI_MinidoracatEconomy_Admin_Cmd_currency": "貨幣設定",
