@@ -19,8 +19,9 @@
 --   admin.audit   {limit,actor,fromMs,toMs,       read   filtered ModData audit ring, newest first
 --                  requestId}
 --   admin.system  {}                              read   seq/epoch, sizes, heartbeat, paths, supply,
---                                                        7/30-day issuance, top holders, and the
---                                                        overview's counts (attention, A.attention)
+--                                                        7/30-day issuance (+ the last 7 days one
+--                                                        by one), top holders, and the overview's
+--                                                        counts (attention, A.attention)
 --   admin.transactions {query,matchMode,itemTypes,  read   server-wide money view: one committed
 --                       account,item,group,               transaction per row from the daily events
 --                       accountClass,currency,            files (tx.committed only, <= 62 days per
@@ -178,6 +179,8 @@ local function gate(player, command, write, requestId, context)
     end
     return allowed
 end
+-- The same gate for an admin command another server file registers (ECReports' admin.report).
+A.gate = gate
 
 -- ---------- helpers ----------
 
@@ -806,6 +809,8 @@ function A.system(write, manage)
         paths = p, pathsResolved = p ~= nil,
         supply = supplyView,
         issued = { today = St.issued(1, ms), week = St.issued(7, ms), month = St.issued(30, ms) },
+        -- the overview's "last 7 days" card: the same counters one reward day at a time
+        issuedDaily = St.issuedDaily(7, ms),
         at = supplyAt,
         perms = { read = true, write = write == true, manage = manage == true },
         sandbox = Cfg.options(),
@@ -2683,7 +2688,7 @@ end
 local function txSummary(rec)
     if not txHeader(rec) then return nil end
     local payload = type(rec.payload) == "table" and rec.payload or {}
-    local accounts, seen, amounts, count = {}, {}, {}, 0
+    local accounts, seen, amounts, count, net = {}, {}, {}, 0, {}
     local postings = rec.postings
     if type(postings) ~= "table" or #postings == 0 or #postings > A.TX_POSTINGS_MAX then
         error("invalid transaction postings: " .. rec.txId)
@@ -2695,6 +2700,7 @@ local function txSummary(rec)
             error("invalid transaction posting: " .. rec.txId)
         end
         count = count + 1
+        net[p.account] = (net[p.account] or 0) + p.amount
         if not seen[p.account] then
             seen[p.account] = true
             accounts[#accounts + 1] = p.account
@@ -2702,6 +2708,16 @@ local function txSummary(rec)
         -- Sum the positive side separately for each currency, including reserve movements.
         if p.amount > 0 then amounts[p.currency] = (amounts[p.currency] or 0) + p.amount end
     end
+    -- The first player account that paid (net < 0) and the first that was paid (net > 0), in
+    -- posting order; a bucket move of one wallet nets to 0 and names nobody.
+    local payer, payee = nil, nil
+    for _, account in ipairs(accounts) do
+        if EC.accountClass(account) == "player" then
+            if not payer and net[account] < 0 then payer = account end
+            if not payee and net[account] > 0 then payee = account end
+        end
+    end
+    local flow, fee = St.flows(rec)
     return {
         txId = rec.txId,
         epoch = type(rec.epoch) == "string" and rec.epoch or nil,
@@ -2718,6 +2734,7 @@ local function txSummary(rec)
         sku = type(payload.sku) == "string" and payload.sku or nil,
         sourceMod = type(payload.sourceMod) == "string" and payload.sourceMod or nil,
         accounts = accounts, amounts = amounts, postingCount = count,
+        flow = flow, payer = payer, payee = payee, fee = fee,
         rolledBack = rec.rolledBack == true,
     }
 end
@@ -2790,6 +2807,10 @@ end
 -- reports; `accountClass` narrows which transactions are listed, never which accounts a listed
 -- transaction reports. Every criterion is echoed back (also on failure) so a late reply cannot
 -- be read as the current one.
+-- `summary` = { n, byCurrency = { [cur] = { i, o, t } }, byGroup = { [group] = n } } is added up
+-- over *every* match of the window that was not rolled back (St.flows), not just the 200 rows the
+-- reply carries - the same pass, no second read. On a broken read the reply is read_failed and
+-- the partial summary means nothing.
 S.handlers["admin.transactions"] = function(player, args)
     -- the requestId rides along on the refusal too: a page that matches replies by id must not
     -- be left waiting when a role change turns its next query into a forbidden one
@@ -2882,6 +2903,8 @@ S.handlers["admin.transactions"] = function(player, args)
 
     local group = extra.group
     local exact = extra.matchMode == "exact"
+    local summary = { n = 0, byCurrency = {}, byGroup = {} }
+    extra.summary = summary
     W.tail(player, "admin.transactions", W.eventPaths(EC.now(), from, to), extra, function(rec)
         local out = txSummary(rec)
         if not out then return nil end
@@ -2893,6 +2916,18 @@ S.handlers["admin.transactions"] = function(player, args)
         if accountClass and not txHasClass(out.accounts, accountClass) then return nil end
         if currency and out.amounts[currency] == nil then return nil end
         if (query or itemTypes) and not txKeyword(rec, out, query, exact, itemTypes) then return nil end
+        if not out.rolledBack then
+            summary.n = summary.n + 1
+            summary.byGroup[out.group] = (summary.byGroup[out.group] or 0) + 1
+            for cur, f in pairs(out.flow) do
+                local s = summary.byCurrency[cur]
+                if not s then
+                    s = { i = 0, o = 0, t = 0 }
+                    summary.byCurrency[cur] = s
+                end
+                s.i, s.o, s.t = s.i + f.i, s.o + f.o, s.t + f.t
+            end
+        end
         return out
     end, true)
 end

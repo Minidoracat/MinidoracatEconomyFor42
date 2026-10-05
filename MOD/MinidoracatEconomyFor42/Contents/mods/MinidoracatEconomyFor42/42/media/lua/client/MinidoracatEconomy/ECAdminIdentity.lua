@@ -686,20 +686,39 @@ end
 
 -- The help window: the policy and merge mode in full sentences with their sandbox options, what
 -- to change for several accounts per person, how names are bound before an import, the terms.
-function Page:helpText()
+function Page:helpParts()
     local multi, merge = optionLabel("IdentityMultiAccount"), optionLabel("IdentityAutoMerge")
     local s = self.status
-    local parts = {}
+    local policy, mergeMode
     if s ~= nil then
-        parts[#parts + 1] = getText(T .. (s.multiAccount == true and "Admin_Id_PolicyMulti" or "Admin_Id_PolicyOne"), multi)
+        policy = getText(T .. (s.multiAccount == true and "Admin_Id_PolicyMulti" or "Admin_Id_PolicyOne"), multi)
         if type(s.merge) == "table" then
-            parts[#parts + 1] = getText(T .. (s.merge.enabled == true and "Admin_Id_MergeOn" or "Admin_Id_MergeOff"), merge)
+            mergeMode = getText(T .. (s.merge.enabled == true and "Admin_Id_MergeOn" or "Admin_Id_MergeOff"), merge)
         end
     end
-    parts[#parts + 1] = getText(T .. "Admin_Id_MultiHint", multi, merge)
+    return policy, mergeMode, getText(T .. "Admin_Id_MultiHint", multi, merge)
+end
+
+function Page:helpText()
+    local policy, mergeMode, hint = self:helpParts()
+    local parts = {}
+    if policy ~= nil then parts[#parts + 1] = policy end
+    if mergeMode ~= nil then parts[#parts + 1] = mergeMode end
+    parts[#parts + 1] = hint
     parts[#parts + 1] = tr("Admin_Id_HelpBinding")
     parts[#parts + 1] = tr("Admin_Id_HelpTerms")
     return table.concat(parts, "\n\n")
+end
+
+function Page:helpCard()
+    local policy, mergeMode, hint = self:helpParts()
+    local sections = {}
+    if policy ~= nil then sections[#sections + 1] = { title = tr("Admin_Id_Col_Policy"), lines = { { text = policy } } } end
+    if mergeMode ~= nil then sections[#sections + 1] = { title = tr("Admin_Id_Col_Merge"), lines = { { text = mergeMode } } } end
+    sections[#sections + 1] = { title = tr("PCard_Id_Multi"), lines = { { text = hint } } }
+    sections[#sections + 1] = { title = tr("PCard_Id_Binding"), lines = { { text = tr("Admin_Id_HelpBinding") } } }
+    sections[#sections + 1] = { title = tr("PCard_Id_Terms"), lines = { { text = tr("Admin_Id_HelpTerms") } } }
+    return { source = tr("Admin_Id_HelpTitle"), sourceIcon = "document", sections = sections, techOpen = true }
 end
 
 function Page:onHelp()
@@ -708,7 +727,7 @@ function Page:onHelp()
     else
         -- the shared window leaves the row it showed: a later reply must not touch it as a record
         self.selectedName = nil
-        D.open(self, HELP_KEY, tr("Admin_Id_HelpTitle"), self:helpText())
+        D.open(self, HELP_KEY, tr("Admin_Id_HelpTitle"), self:helpText(), nil, self:helpCard())
     end
     self:invalidateKeyboard()
 end
@@ -733,35 +752,25 @@ local function mergeText(rec)
     return codeText("Admin_Id_Merge_", state)
 end
 
--- One login spelled out for the detail window: its Steam account's logins, what the policy and
--- the merge plan make of it, and the plan's time. Every reason in full, none cut.
-function Page:detailText(rec)
-    local lines = {}
-    local none = tr("Admin_Id_BoundNone")
-    local account = rec.account or none
-    lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Account", account)
-    local group = type(rec.group) == "table" and rec.group or {}
-    local count = tonumber(rec.logins) or #group
-    lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Logins", tostring(count))
-    for _, name in ipairs(group) do
-        lines[#lines + 1] = "  " .. (name == rec.account and getText(T .. "Admin_Id_Detail_Primary", name) or tostring(name))
-    end
-    if count > #group then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#group), tostring(count)) end
-    lines[#lines + 1] = ""
+-- What the policy and the merge plan make of one login, as full sentences: the detail text and
+-- the detail card both read these.
+function Page:policySentence(rec, account)
     local multiOption = optionLabel("IdentityMultiAccount")
     if rec.policy == "blocked" then
-        lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Policy_blocked", multiOption, account)
+        return getText(T .. "Admin_Id_Detail_Policy_blocked", multiOption, account)
     elseif rec.policy == "allowed" then
-        lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Policy_allowed", multiOption)
+        return getText(T .. "Admin_Id_Detail_Policy_allowed", multiOption)
     elseif rec.policy == "merged" then
-        lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Policy_merged", account)
+        return getText(T .. "Admin_Id_Detail_Policy_merged", account)
     elseif rec.policy == "primary" then
-        lines[#lines + 1] = tr("Admin_Id_Detail_Policy_primary")
-    else
-        lines[#lines + 1] = tr("Admin_Id_Detail_Policy_none")
+        return tr("Admin_Id_Detail_Policy_primary")
     end
-    lines[#lines + 1] = ""
-    local target = rec.into or rec.account or none
+    return tr("Admin_Id_Detail_Policy_none")
+end
+
+function Page:mergeSentences(rec)
+    local lines = {}
+    local target = rec.into or rec.account or tr("Admin_Id_BoundNone")
     local why = {}
     for i, code in ipairs(type(rec.why) == "table" and rec.why or {}) do why[i] = codeText("Admin_Id_Why_", code) end
     local whyText = table.concat(why, tr("Admin_Id_Sep"))
@@ -779,13 +788,75 @@ function Page:detailText(rec)
         lines[#lines + 1] = tr("Admin_Id_Detail_Merge_none")
     end
     if rec.into ~= nil then lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Into", tostring(rec.into)) end
-    local merging = self.status ~= nil and type(self.status.merge) == "table" and self.status.merge.enabled == true
-    if (rec.merge == "ready" or rec.merge == "blocked") and not merging then
+    if (rec.merge == "ready" or rec.merge == "blocked") and not self:merging() then
         lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Preview", optionLabel("IdentityAutoMerge"))
     end
+    return lines
+end
+
+function Page:merging()
+    return self.status ~= nil and type(self.status.merge) == "table" and self.status.merge.enabled == true
+end
+
+function Page:planAtText()
     local planAt = self.logins and self.logins.planAt or nil
-    if planAt ~= nil then lines[#lines + 1] = getText(T .. "Admin_Id_MergePlanAt", self:stamp(planAt)) end
+    if planAt == nil then return nil end
+    return getText(T .. "Admin_Id_MergePlanAt", self:stamp(planAt))
+end
+
+-- One login spelled out for the detail window: its Steam account's logins, what the policy and
+-- the merge plan make of it, and the plan's time. Every reason in full, none cut.
+function Page:detailText(rec)
+    local lines = {}
+    local account = rec.account or tr("Admin_Id_BoundNone")
+    lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Account", account)
+    local group = type(rec.group) == "table" and rec.group or {}
+    local count = tonumber(rec.logins) or #group
+    lines[#lines + 1] = getText(T .. "Admin_Id_Detail_Logins", tostring(count))
+    for _, name in ipairs(group) do
+        lines[#lines + 1] = "  " .. (name == rec.account and getText(T .. "Admin_Id_Detail_Primary", name) or tostring(name))
+    end
+    if count > #group then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#group), tostring(count)) end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = self:policySentence(rec, account)
+    lines[#lines + 1] = ""
+    for _, line in ipairs(self:mergeSentences(rec)) do lines[#lines + 1] = line end
+    local planAt = self:planAtText()
+    if planAt ~= nil then lines[#lines + 1] = planAt end
     return table.concat(lines, "\n")
+end
+
+-- The same login as a detail card: the main account and the Steam account's logins as rows, the
+-- two states as chips, and the policy and merge sentences as sections.
+function Page:detailCard(rec)
+    local account = rec.account or tr("Admin_Id_BoundNone")
+    local group = type(rec.group) == "table" and rec.group or {}
+    local count = tonumber(rec.logins) or #group
+    local names = {}
+    for i, name in ipairs(group) do
+        names[i] = name == rec.account and getText(T .. "Admin_Id_Detail_Primary", name) or tostring(name)
+    end
+    local mergeTitle = tr(self:merging() and "Admin_Id_Col_Merge" or "Admin_Id_Col_MergePreview")
+    local mergeLines = {}
+    for i, line in ipairs(self:mergeSentences(rec)) do mergeLines[i] = { text = line } end
+    return {
+        sourceIcon = "lock", iconKey = "users", name = tostring(rec.name),
+        chips = {
+            { label = tr("Admin_Id_Col_Policy"), value = policyText(rec.policy), token = POLICY_TOKENS[rec.policy] or "text" },
+            { label = mergeTitle, value = mergeText(rec), token = MERGE_TOKENS[rec.merge] or "text" },
+        },
+        rows = {
+            { label = tr("Admin_Id_Col_Account"), value = account },
+            { label = tr("Admin_Id_Col_Login"), value = #names > 0 and table.concat(names, tr("Admin_Id_Sep")) or tostring(count),
+                note = count > #group and getText(T .. "Admin_Id_Truncated", tostring(#group), tostring(count)) or nil },
+        },
+        sections = {
+            { title = tr("Admin_Id_Col_Policy"), lines = { { text = self:policySentence(rec, account) } } },
+            { title = mergeTitle, lines = mergeLines },
+        },
+        note = self:planAtText(),
+        techOpen = true,
+    }
 end
 
 local function detailKey(name) return "identity:" .. tostring(name) end
@@ -793,7 +864,8 @@ local function detailKey(name) return "identity:" .. tostring(name) end
 function Page:onRow(item)
     if item == nil or not self.owner:readAllowed() then return end
     self.selectedName = item.id
-    D.open(self, detailKey(item.id), getText(T .. "Admin_Id_Detail_Title", item.id), self:detailText(item.rec))
+    D.open(self, detailKey(item.id), getText(T .. "Admin_Id_Detail_Title", item.id), self:detailText(item.rec),
+        nil, self:detailCard(item.rec))
 end
 
 -- The merge column's title says whether merging is on: off, every state in it is a preview.
@@ -841,7 +913,7 @@ function Page:rebuildRows()
             D.close(self)
         else
             D.update(self, detailKey(self.selectedName), getText(T .. "Admin_Id_Detail_Title", self.selectedName),
-                self:detailText(rows[selected].rec))
+                self:detailText(rows[selected].rec), self:detailCard(rows[selected].rec))
         end
     end
 end
@@ -850,7 +922,7 @@ function Page:rebuild()
     U.setWrappedText(self.reader, self:overviewText(), self.reader.width)
     U.setButtonTitle(self.rebindButton, getText(T .. "Admin_Id_Rebind", tostring(#self:conflicts())))
     self:rebuildRows()
-    if D.isOpen(self, HELP_KEY) then D.update(self, HELP_KEY, tr("Admin_Id_HelpTitle"), self:helpText()) end
+    if D.isOpen(self, HELP_KEY) then D.update(self, HELP_KEY, tr("Admin_Id_HelpTitle"), self:helpText(), self:helpCard()) end
 end
 
 -- What the list area says when it has no row to show, as exactly one state.

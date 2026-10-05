@@ -65,17 +65,9 @@ local LAYOUT_NAME = "MinidoracatEconomyAdminWindow"
 local MIN_WIDTH, MIN_HEIGHT = 1000, 560
 local Nav = C.Navigation
 
--- The strip's glyphs, by the sub tab's own `internal` (ECAdminPanel.TABS). A page with no entry
--- here simply has no icon; the strip stays readable either way. "Seasons" wears the rotation
--- glyph on purpose: the framework ships neither a calendar nor a clock, and a season tab is
--- about the turn from one period to the next rather than about a date.
-local ADMIN_ICONS = {
-    Player = "users", Recovery = "layers", Dashboard = "gauge", Currencies = "coins", Sources = "plug",
-    IntegrationPlans = "sliders",
-    Shop = "shop", Whitelist = "shieldCheck", Identity = "lock", Listings = "tag", Auctions = "auction",
-    Transactions = "transactions", Audit = "clipboardCheck", System = "server",
-    Settings = "settings", Seasons = "reload",
-}
+-- The strip's glyphs, by the sub tab's own `internal`: ECAdminPanel owns the map (P.TAB_ICONS),
+-- because its detail cards wear the same glyph as the page they came from.
+local ADMIN_ICONS = C.AdminPanel.TAB_ICONS
 local PAD, T = U.PAD, U.T
 local fontH = U.fontH
 local color, fill, text, textWidth = U.color, U.fill, U.text, U.textWidth

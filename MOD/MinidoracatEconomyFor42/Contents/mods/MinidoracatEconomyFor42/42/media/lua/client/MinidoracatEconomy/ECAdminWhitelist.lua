@@ -341,17 +341,33 @@ end
 -- detail window: it scrolls, CopyAll takes the whole block and closing it gives nothing up,
 -- because every row of the list is still on screen behind it. Pressing the chip again while the
 -- window is up closes it, so the one chip is the whole switch.
+function Page:noteDetail()
+    return self.readError or (self.timedOut and tr("Admin_Wl_Timeout")) or self:fileStatusText()
+end
+
 function Page:noteText()
-    local detail = self.readError or (self.timedOut and tr("Admin_Wl_Timeout")) or self:fileStatusText()
-    return detail .. "\n\n" .. tr("Admin_Wl_Note") .. "\n\n" .. tr("Admin_Wl_Fixed")
+    return self:noteDetail() .. "\n\n" .. tr("Admin_Wl_Note") .. "\n\n" .. tr("Admin_Wl_Fixed")
         .. "\n\n" .. tr("Admin_Wl_PickerNote") .. "\n\n" .. tr("Admin_Wl_KeyHint")
+end
+
+function Page:noteCard()
+    return {
+        source = tr("Admin_Wl_Info"), sourceIcon = "shieldCheck",
+        sections = {
+            { title = tr("PCard_Wl_File"), lines = { { text = self:noteDetail() }, { text = tr("Admin_Wl_Note") } } },
+            { title = tr("PCard_Wl_Never"), lines = { { mark = "no", text = tr("Admin_Wl_Fixed") } } },
+            { title = tr("PCard_Wl_HowTo"), lines = { { text = tr("Admin_Wl_PickerNote") },
+                { text = tr("Admin_Wl_KeyHint") } } },
+        },
+        techOpen = true,
+    }
 end
 
 function Page:onNote()
     if Detail.isOpen(self, "whitelist:info") then
         Detail.close(self)
     else
-        Detail.open(self, "whitelist:info", tr("Admin_Wl_Info"), self:noteText())
+        Detail.open(self, "whitelist:info", tr("Admin_Wl_Info"), self:noteText(), nil, self:noteCard())
     end
     self:layout()
     self:invalidateKeyboard()

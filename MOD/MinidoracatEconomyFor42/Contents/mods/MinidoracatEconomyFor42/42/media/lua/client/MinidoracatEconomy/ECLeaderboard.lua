@@ -273,17 +273,92 @@ function Page:infoKey()
     return "leaderboard:" .. self.kind .. ":" .. (self.kind == "survival" and self.season or self.currency)
 end
 
+-- The full text, for the card's copy button: every fact of the card in reading order.
 function Page:infoText()
     local note = self:noteText()
     if self.error and self.snapshot and self.kind == "survival" then
-        note = note .. "\n\n" .. self:survivalNote(self.snapshot)
+        note = note .. "\n\n" .. self:seasonNote(self.snapshot)
     end
     return note
 end
 
+-- The same facts as a card: the player's own standing first, the season's (or the read's) facts
+-- as rows, a refusal and the board's caveats as sections. Built on open and on layout, never per
+-- frame.
+function Page:infoCard()
+    local survival = self.kind == "survival"
+    local snap = self.snapshot
+    local card = { sourceIcon = "chart", name = kindLabel(self.kind), rows = {}, chips = {}, sections = {} }
+    if survival then
+        card.iconKey = "users"
+        card.sub = seasonLabel(snap and type(snap.selectedSeason) == "table" and snap.selectedSeason or nil)
+    else
+        card.coin = self.currency
+        card.sub = currencyLabel(self.currency)
+    end
+    if self.error ~= nil then
+        local lines = { { mark = "no", text = self:errorNote() } }
+        if snap then lines[2] = { text = getText(T .. "History_Stale") } end
+        card.sections[1] = { title = getText(T .. (snap and "Leaderboard_Stale" or "LbCard_Problem")), lines = lines }
+    end
+    if snap == nil then
+        if self.error == nil then
+            card.text = getText(T .. (C.leaderboardBusy() and "Wallet_Loading" or "Leaderboard_Empty"))
+        end
+        return card
+    end
+    local rows, chips = card.rows, card.chips
+    local _, line, token = self:selfLine(snap)
+    rows[1] = { label = getText(T .. "LbCard_MyRank"), value = line, token = token }
+    local notes = {}
+    if survival then
+        self:seasonFacts(snap.selectedSeason, rows, chips)
+        notes[1] = { text = getText(T .. "Leaderboard_SurvivalNote") }
+    elseif snap.showAmounts ~= true then
+        chips[1] = { label = getText(T .. "Leaderboard_PillOthers"), value = getText(T .. "Leaderboard_PillHidden") }
+        notes[1] = { text = getText(T .. "Leaderboard_AmountsHidden") }
+    end
+    if tonumber(snap.at) then
+        rows[#rows + 1] = { label = getText(T .. "LbCard_At"),
+            value = U.stampText(tonumber(snap.at), self.panel.offsetMin) }
+        notes[#notes + 1] = { text = getText(T .. "LbCard_AtNote") }
+    end
+    if #notes > 0 then
+        card.sections[#card.sections + 1] = { title = getText(T .. "LbCard_Notes"), lines = notes }
+    end
+    return card
+end
+
+-- The season of a survival board as chips (open or closed, records missing) and rows (start,
+-- end or how it ends, accounts recorded); a reply about no season says only that.
+function Page:seasonFacts(meta, rows, chips)
+    if type(meta) ~= "table" then
+        rows[#rows + 1] = { label = getText(T .. "Season_Select"), value = getText(T .. "Season_Empty") }
+        return
+    end
+    local off = self.panel.offsetMin
+    local closed = tonumber(meta.endedAt)
+    chips[#chips + 1] = { label = getText(T .. (closed ~= nil and "Season_Status_Closed" or "Season_Status_Current")),
+        token = closed ~= nil and "textMuted" or "positive", dot = true }
+    if self:recordGap(meta) then chips[#chips + 1] = { label = getText(T .. "Season_Partial"), token = "warn", dot = true } end
+    local started = tonumber(meta.startedAt)
+    if started ~= nil then
+        rows[#rows + 1] = { label = getText(T .. "Season_StartAt"), value = U.stampText(started, off) }
+    end
+    local ends = tonumber(meta.endsAt)
+    if closed ~= nil then
+        rows[#rows + 1] = { label = getText(T .. "Season_ClosedAt"), value = U.stampText(closed, off) }
+    else
+        rows[#rows + 1] = { label = getText(T .. "Season_EndAt"),
+            value = ends ~= nil and U.stampText(ends, off) or getText(T .. "Season_Manual") }
+    end
+    local ranked = tonumber(meta.participants)
+    if ranked ~= nil then rows[#rows + 1] = { label = getText(T .. "LbCard_Participants"), value = amountText(ranked) } end
+end
+
 function Page:onInfo()
     self:closeCombos()
-    C.DetailWindow.open(self.panel, self:infoKey(), self:title(), self:infoText())
+    C.DetailWindow.open(self.panel, self:infoKey(), self:title(), self:infoText(), nil, self:infoCard())
 end
 
 -- The page the player's own line is on. The server sends it; nothing here computes a rank.
@@ -538,7 +613,7 @@ function Page:layout(x, y, w, h)
         px = px + b.width + 6
     end
     if C.DetailWindow.isOpen(self.panel, self:infoKey()) then
-        C.DetailWindow.update(self.panel, self:infoKey(), self:title(), self:infoText())
+        C.DetailWindow.update(self.panel, self:infoKey(), self:title(), self:infoText(), self:infoCard())
     end
 end
 
@@ -546,6 +621,17 @@ end
 
 function Page:title()
     return getText(T .. (self.kind == "survival" and "Leaderboard_SurvivalTitle" or "Leaderboard_Title"))
+end
+
+-- The first season (made when the mod was installed or migrated) is always marked partial: it
+-- only knows survival from that moment on, which is normal. Only a later season that is partial
+-- (its rotation could not re-anchor someone online) has records actually missing.
+function Page:recordGap(meta)
+    if meta.partial ~= true then return false end
+    for _, other in ipairs((self.seasonState and self.seasonState.seasons) or {}) do
+        if (tonumber(other.number) or 0) < (tonumber(meta.number) or 0) then return true end
+    end
+    return false
 end
 
 -- Which season the board on screen is, exactly as the server labelled it: its number, whether it
@@ -560,14 +646,7 @@ function Page:seasonNote(snap)
     local closed = tonumber(meta.endedAt)
     local parts = { seasonLabel(meta),
         getText(T .. (closed ~= nil and "Season_Status_Closed" or "Season_Status_Current")) }
-    -- The first season (made when the mod was installed or migrated) is always marked partial: it
-    -- only knows survival from that moment on, which is normal. Only a later season that is
-    -- partial (its rotation could not re-anchor someone online) has records actually missing.
-    local olderSeason = false
-    for _, other in ipairs((self.seasonState and self.seasonState.seasons) or {}) do
-        if (tonumber(other.number) or 0) < (tonumber(meta.number) or 0) then olderSeason = true; break end
-    end
-    if meta.partial == true and olderSeason then parts[#parts + 1] = getText(T .. "Season_Partial") end
+    if self:recordGap(meta) then parts[#parts + 1] = getText(T .. "Season_Partial") end
     local started = tonumber(meta.startedAt)
     if started ~= nil then
         parts[#parts + 1] = getText(T .. "Detail_Line", getText(T .. "Season_StartAt"), U.stampText(started, off))
@@ -616,17 +695,23 @@ function Page:selfLine(snap)
     return nil, getText(T .. "Leaderboard_SelfNone", amountText(amount), currencyLabel(snap.currency)), "text"
 end
 
+-- The refusal of the last read, in words; a code with no sentence of its own is logged.
+function Page:errorNote()
+    local note = getTextOrNull(T .. "Leaderboard_Error_" .. self.error)
+    if not note then
+        U.logUnknown("leaderboard error", self.error)
+        note = getText(T .. "Leaderboard_Error_generic")
+    end
+    return note
+end
+
 -- What the page is, most urgent first: a refusal (the board underneath stays, marked), the first
 -- read of all, then the player's own standing, the public rule in force, the season and the
 -- exact moment of the server's own read. The page shows the first two in its note band and the
 -- rest as the card and the pills; the detail window carries all of it, uncut.
 function Page:noteText()
     if self.error ~= nil then
-        local note = getTextOrNull(T .. "Leaderboard_Error_" .. self.error)
-        if not note then
-            U.logUnknown("leaderboard error", self.error)
-            note = getText(T .. "Leaderboard_Error_generic")
-        end
+        local note = self:errorNote()
         if self.snapshot then
             note = getText(T .. "Leaderboard_Stale") .. "\n" .. note .. "\n" .. getText(T .. "History_Stale")
         end

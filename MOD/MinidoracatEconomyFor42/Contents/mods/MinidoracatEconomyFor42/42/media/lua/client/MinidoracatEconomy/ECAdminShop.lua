@@ -1645,7 +1645,7 @@ end
 function Page:onShowDetail()
     local key = self:detailKey()
     if key == nil or self.detailText == nil then return end
-    Detail.open(self, key, self:detailWindowTitle(), self.detailText)
+    Detail.open(self, key, self:detailWindowTitle(), self.detailText, nil, self.detailCard)
 end
 
 -- The window follows what the editor holds: a typed cap, a marked batch column, a catalog push
@@ -1655,7 +1655,7 @@ end
 function Page:refreshDetailWindow()
     local key = self:detailKey()
     if key ~= nil and Detail.isOpen(self, key) then
-        Detail.update(self, key, self:detailWindowTitle(), self.detailText)
+        Detail.update(self, key, self:detailWindowTitle(), self.detailText, self.detailCard)
         return
     end
     Detail.close(self)
@@ -2325,12 +2325,15 @@ function Page:buildDetailText()
     end
     local d = self.draft
     if d == nil then
-        self.detailText = nil
+        self.detailText, self.detailCard = nil, nil
         self:refreshDetailWindow()
         return
     end
     local qty = math.max(1, parseCount(trimText(entryText(self.qtyEntry))) or 1)
     local cap = parseCount(trimText(entryText(self.capEntry)))
+    local master = self:masterState()
+    local masterText = getText(T .. "Admin_Shop_Master", master == nil and tr("Admin_Loading")
+        or tr(master and "Admin_Shop_StateOn" or "Admin_Shop_StateOff"))
     local lines = {
         tr("Admin_Shop_Id") .. ": " .. tostring(d.id),
         getText(T .. "Admin_Shop_DetailName", itemName(d.item)),
@@ -2340,13 +2343,22 @@ function Page:buildDetailText()
         getText(T .. "Admin_Shop_DetailCategory", categoryText(d.category)),
         capText(cap, qty) .. "  /  " .. scopeDailyText(d.dailyCapScope),
         self:resetNote(d.dailyCapScope),
+        -- the master switch, once: the per-currency lines below are the caps and the room the
+        -- server reported, never a verdict the switch alone decides
+        masterText,
     }
-    -- the master switch, once: the per-currency lines below are the caps and the room the server
-    -- reported, never a verdict the switch alone decides
-    local master = self:masterState()
-    lines[#lines + 1] = getText(T .. "Admin_Shop_Master", master == nil and tr("Admin_Loading")
-        or tr(master and "Admin_Shop_StateOn" or "Admin_Shop_StateOff"))
-    if master == false then lines[#lines + 1] = tr("Shop_BuybackPaused") end
+    -- the card says the same things: the facts as rows, the switch as a chip, the rules as text
+    local rows = {
+        { label = tr("PCard_Shop_Qty"), value = tostring(qty) },
+        { label = tr("PCard_Shop_Category"), value = categoryText(d.category) },
+        { label = tr("PCard_Shop_Cap"), value = capText(cap, qty), note = scopeDailyText(d.dailyCapScope) },
+        { label = tr("PCard_Shop_Reset"), value = self:resetNote(d.dailyCapScope) },
+    }
+    local paras = {}
+    if master == false then
+        lines[#lines + 1] = tr("Shop_BuybackPaused")
+        paras[#paras + 1] = tr("Shop_BuybackPaused")
+    end
     -- the quote table, currency by currency, exactly as the form holds it right now
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
         local ctl = self.quotes[cur]
@@ -2354,12 +2366,15 @@ function Page:buildDetailText()
         local q = d.quotes[cur]
         if price == "" then
             lines[#lines + 1] = getText(T .. "Admin_Shop_IdentQuoteNone", currencyName(cur))
+            rows[#rows + 1] = { label = currencyName(cur), coin = cur, value = tr("Admin_Shop_QuoteNone"), token = "textFaint" }
         else
             local bid = trimText(entryText(ctl.bidEntry))
+            local sellState = tr(q.enabled == true and "Admin_Shop_QuoteSellOn" or "Admin_Shop_QuoteSellOff")
+            local buyState = tr(q.buyback == true and "Admin_Shop_QuoteBuyOn" or "Admin_Shop_QuoteBuyOff")
             lines[#lines + 1] = getText(T .. "Admin_Shop_DetailQuote", currencyName(cur), price,
-                tr(q.enabled == true and "Admin_Shop_QuoteSellOn" or "Admin_Shop_QuoteSellOff"),
-                bid == "" and "0" or bid,
-                tr(q.buyback == true and "Admin_Shop_QuoteBuyOn" or "Admin_Shop_QuoteBuyOff"))
+                sellState, bid == "" and "0" or bid, buyState)
+            rows[#rows + 1] = { label = currencyName(cur), coin = cur,
+                value = getText(T .. "PCard_Shop_Quote", price, sellState, bid == "" and "0" or bid, buyState) }
         end
         -- the configured caps and what is left of them today, as they came: two separate facts,
         -- "-" while no snapshot carried one
@@ -2370,6 +2385,11 @@ function Page:buildDetailText()
             amountOr(info.accountRemaining), amountOr(info.serverRemaining))
         local why = master == true and self:currencyStatusNote(cur, info) or nil
         if why ~= nil then lines[#lines + 1] = why end
+        rows[#rows + 1] = { label = tr("PCard_Shop_RoomCap"), coin = cur,
+            value = getText(T .. "PCard_Shop_AcctServer", amountOr(info.accountCap), amountOr(info.serverCap)) }
+        rows[#rows + 1] = { label = tr("PCard_Shop_RoomLeft"), coin = cur,
+            value = getText(T .. "PCard_Shop_AcctServer", amountOr(info.accountRemaining), amountOr(info.serverRemaining)),
+            note = why, token = why ~= nil and "warn" or nil }
     end
     -- What the server itself reported: how much of the count in force is left, and how much of
     -- it is already spent. nil remaining means the snapshot carried none (an unlimited SKU): no
@@ -2377,19 +2397,38 @@ function Page:buildDetailText()
     local sku = not d.isNew and self:sku(d.id) or nil
     local remaining = sku and tonumber(sku.remaining) or nil
     if remaining ~= nil then
-        lines[#lines + 1] = getText(T .. "Admin_Shop_CapRemaining", tostring(math.floor(remaining)),
+        local left = getText(T .. "Admin_Shop_CapRemaining", tostring(math.floor(remaining)),
             tostring(math.floor(remaining) * qty), scopeDailyText(sku.dailyCapScope),
             amountOr(sku.used))
+        lines[#lines + 1] = left
+        rows[#rows + 1] = { label = tr("PCard_Shop_Remaining"), value = left }
     end
     local skuRoom = sku and tonumber(sku.buybackRemaining) or nil
     if skuRoom ~= nil then
-        lines[#lines + 1] = getText(T .. "Admin_Shop_BuybackRoomSku", tostring(math.floor(skuRoom)))
+        local room = getText(T .. "Admin_Shop_BuybackRoomSku", tostring(math.floor(skuRoom)))
+        lines[#lines + 1] = room
+        rows[#rows + 1] = { label = tr("PCard_Shop_SkuRoom"), value = room }
     end
     -- the rules and the long explanations, whole: the form stopped repeating them beside every
     -- box, it did not drop them
     lines[#lines + 1] = ""
-    self:appendRuleText(lines)
+    local rules = {}
+    self:appendRuleText(rules)
+    for _, line in ipairs(rules) do lines[#lines + 1] = line end
+    paras[#paras + 1] = table.concat(rules, "\n\n")
     self.detailText = table.concat(lines, "\n")
+    local original = itemOriginal(d.item)
+    self.detailCard = {
+        source = tr("Admin_Shop_Detail"), sourceIcon = "shop", item = d.item,
+        name = d.item ~= nil and itemName(d.item) or tr("Admin_Shop_NewTitle"),
+        sub = d.isNew and (original ~= nil and getText(T .. "Ent_Pair", original, tr("Admin_Shop_NewTitle"))
+            or tr("Admin_Shop_NewTitle")) or original,
+        chips = { { value = masterText, token = master == nil and "textFaint" or (master and "text" or "warn"), dot = true } },
+        rows = rows, text = table.concat(paras, "\n\n"),
+        tech = { { label = tr("Admin_Shop_Id"), value = tostring(d.id) },
+            { label = tr("Detail_ItemCode"), value = tostring(d.item) } },
+        techOpen = true,
+    }
     self:appendMessageText()
     self:refreshDetailWindow()
 end
@@ -2408,40 +2447,70 @@ function Page:appendMessageText()
     local g = self.g
     if g ~= nil and g.warnActive == true then parts[#parts + 1] = tr("Admin_Shop_MasterWarn") end
     if #parts == 0 then return end
-    self.detailText = self.detailText .. "\n\n" .. tr("Admin_Shop_DetailMessage") .. "\n"
-        .. table.concat(parts, "\n")
+    local message = tr("Admin_Shop_DetailMessage") .. "\n" .. table.concat(parts, "\n")
+    self.detailText = self.detailText .. "\n\n" .. message
+    -- on the card the server's words come first, above the standing rules
+    local card = self.detailCard
+    if card ~= nil then
+        card.text = (card.text ~= nil and card.text ~= "") and (message .. "\n\n" .. card.text) or message
+    end
 end
 
 function Page:buildBatchText()
     local b = self.batch
     local lines = { getText(T .. "Admin_Shop_BatchTargets", tostring(#b.ids)) }
+    local rows = {}
     local shown = 0
     for _, id in ipairs(b.ids) do
         if shown >= BATCH_NAMES_MAX then break end
         local sku = self:sku(id)
-        lines[#lines + 1] = "- " .. tostring(id) .. "  /  " .. (sku and itemName(sku.item) or tr("Admin_Shop_BatchGone"))
+        local name = sku and itemName(sku.item) or tr("Admin_Shop_BatchGone")
+        lines[#lines + 1] = "- " .. tostring(id) .. "  /  " .. name
+        rows[#rows + 1] = { label = tostring(id), value = name, token = sku == nil and "textFaint" or nil }
         shown = shown + 1
     end
+    local more
     if #b.ids > shown then
-        lines[#lines + 1] = getText(T .. "Admin_Shop_BatchMore", tostring(#b.ids - shown))
+        more = getText(T .. "Admin_Shop_BatchMore", tostring(#b.ids - shown))
+        lines[#lines + 1] = more
     end
+    local paras = {}
     local mixed = {}
     for _, spec in ipairs(self.fields) do
         if b.start[spec.key] == nil then mixed[#mixed + 1] = self:specLabel(spec) end
     end
     if #mixed > 0 then
-        lines[#lines + 1] = getText(T .. "Admin_Shop_BatchMixedFields", table.concat(mixed, tr("Admin_Set_ListSep")))
+        local text = getText(T .. "Admin_Shop_BatchMixedFields", table.concat(mixed, tr("Admin_Set_ListSep")))
+        lines[#lines + 1] = text
+        paras[#paras + 1] = text
     end
     local _, changes, blank = self:batchChanges()
     lines[#lines + 1] = tr("Admin_Shop_BatchSummaryHead")
+    local changeLines = {}
     if #changes == 0 then
-        lines[#lines + 1] = "- " .. tr(blank ~= nil and "Admin_Shop_BatchNoValue" or "Admin_Shop_BatchNone")
+        local none = tr(blank ~= nil and "Admin_Shop_BatchNoValue" or "Admin_Shop_BatchNone")
+        lines[#lines + 1] = "- " .. none
+        changeLines[1] = { text = none }
     else
-        for _, line in ipairs(changes) do lines[#lines + 1] = "- " .. line end
+        for i, line in ipairs(changes) do
+            lines[#lines + 1] = "- " .. line
+            changeLines[i] = { text = line }
+        end
     end
     lines[#lines + 1] = ""
-    self:appendRuleText(lines)
+    local rules = {}
+    self:appendRuleText(rules)
+    for _, line in ipairs(rules) do lines[#lines + 1] = line end
+    paras[#paras + 1] = table.concat(rules, "\n\n")
     self.detailText = table.concat(lines, "\n")
+    self.detailCard = {
+        source = getText(T .. "Admin_Shop_BatchTitle", tostring(#b.ids)), sourceIcon = "shop", iconKey = "layers",
+        name = getText(T .. "Admin_Shop_BatchTargets", tostring(#b.ids)),
+        rows = rows, note = more,
+        sections = { { title = tr("PCard_Shop_Changes"), lines = changeLines } },
+        text = table.concat(paras, "\n\n"),
+        techOpen = true,
+    }
 end
 
 -- ----- enabling -----

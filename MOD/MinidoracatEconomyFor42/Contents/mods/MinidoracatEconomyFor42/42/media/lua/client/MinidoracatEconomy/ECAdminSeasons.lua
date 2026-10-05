@@ -388,6 +388,36 @@ function Page:seasonText(meta, closed)
     return table.concat(lines, "\n")
 end
 
+-- The same season as a detail card: status chips, the dates and counts as label/value rows, the
+-- record note, and the season id under the technical facts. seasonText stays the copy text.
+function Page:seasonCard(meta, closed)
+    local off = self.owner.offsetMin
+    local rows = {}
+    local started = intOf(meta.startedAt)
+    if started ~= nil then rows[#rows + 1] = { label = tr("Season_StartAt"), value = stampText(started, off) } end
+    local ends = intOf(meta.endsAt)
+    rows[#rows + 1] = { label = tr("Season_EndAt"),
+        value = ends ~= nil and stampText(ends, off) or tr("Season_Manual") }
+    local ended = intOf(meta.endedAt)
+    if ended ~= nil then rows[#rows + 1] = { label = tr("Season_ClosedAt"), value = stampText(ended, off) } end
+    rows[#rows + 1] = { label = tr("Season_Duration"), value = daysText(meta.durationDays) }
+    local people = intOf(meta.participants)
+    if people ~= nil then rows[#rows + 1] = { label = tr("PCard_Season_Accounts"), value = tostring(people) } end
+    local gap = self:recordGap(meta)
+    local chips = { { value = closed and tr("Season_Status_Closed") or tr("Season_Status_Current"),
+        token = closed and "textMuted" or "positive", dot = true } }
+    local note
+    if meta.partial == true then
+        if gap then chips[2] = { value = tr("Season_RecordGap"), token = "warn", dot = true } end
+        note = gap and tr("Season_RecordGapNote") or tr("Season_RecordFromInstall")
+    end
+    return {
+        source = tr("Season_History"), sourceIcon = "reload", iconKey = "reload",
+        name = numberText(meta), chips = chips, rows = rows, note = note,
+        tech = { { label = tr("Field_season"), value = tostring(meta.id) } }, techOpen = true,
+    }
+end
+
 function Page:rebuild()
     local currentId = self.state ~= nil and str(self.state.currentId) or nil
     local keep = self.selectedId
@@ -409,6 +439,7 @@ function Page:rebuild()
             tokens = { "text", closed and "textMuted" or "text", "textMuted", "textMuted",
                 "textMuted", gap and "warn" or "textFaint" },
             detailText = self:seasonText(meta, closed),
+            detailCard = self:seasonCard(meta, closed),
         }
         rows[#rows + 1] = row
         if row.id == keep then selected = #rows end
@@ -425,14 +456,15 @@ function Page:rebuild()
             D.close(self)
         end
     else
-        D.update(self, "season:" .. tostring(keep), tr("Season_History"), rows[selected].detailText)
+        D.update(self, "season:" .. tostring(keep), tr("Season_History"), rows[selected].detailText,
+            rows[selected].detailCard)
     end
 end
 
 function Page:onRow(item)
     if item == nil or not self.owner:readAllowed() then return end
     self.selectedId = item.id
-    D.open(self, "season:" .. tostring(item.id), tr("Season_History"), item.detailText)
+    D.open(self, "season:" .. tostring(item.id), tr("Season_History"), item.detailText, nil, item.detailCard)
 end
 
 -- ----- the help reader -----
@@ -443,10 +475,21 @@ function Page:onHelp()
     if D.isOpen(self, "seasons:help") then
         D.close(self)
     else
-        D.open(self, "seasons:help", tr("Season_Title"), tr("Season_DaysHint") .. "\n\n"
+        local copy = tr("Season_DaysHint") .. "\n\n"
             .. tr("Season_HelpRotate") .. "\n\n"
             .. getText(T .. "Admin_Tx_Pair", tr("Season_RecordGap"), tr("Season_RecordGapNote")) .. "\n\n"
-            .. tr("Season_RecordFromInstall"))
+            .. tr("Season_RecordFromInstall")
+        D.open(self, "seasons:help", tr("Season_Title"), copy, nil, {
+            source = tr("Season_Title"), sourceIcon = "document",
+            sections = {
+                { title = tr("Season_ConfigDays"), lines = { { text = tr("Season_DaysHint") } } },
+                { title = tr("Season_StartNext"), lines = { { text = tr("Season_HelpRotate") } } },
+                { title = tr("Season_Partial"), lines = {
+                    { pill = tr("Season_RecordGap"), text = tr("Season_RecordGapNote") },
+                    { text = tr("Season_RecordFromInstall") } } },
+            },
+            techOpen = true,
+        })
     end
     self:layout()
 end

@@ -938,6 +938,65 @@ function MarketDialog:bidReserve(amount)
     return math.max(0, amount - held)
 end
 
+-- ----- the price reference (market.priceRef) -----
+-- The pricing step asks once per item what it really sold for over the last 30 days and states
+-- it on one line under the price. A public, cache-only read: one in flight, never inside the
+-- server's 500 ms command window, and an answer for an item (or a dialog) the player has moved
+-- past is dropped. The newest "ready" answer is kept, so reopening the same item asks nothing.
+local REF_GAP_MS = 650
+local REF_TIMEOUT_MS = 8000
+local REF_RETRY_MS = 15000   -- a "preparing" answer is asked again this often while the step is open
+local refSentAt = 0           -- module-wide: every dialog shares the one server window
+local refDialog = nil         -- the dialog whose read is in flight
+local refLast = nil           -- the newest ready answer
+
+function MarketDialog:wantPriceRef(item)
+    if item == self.refItem then return end
+    self.refItem, self.refId = item, nil
+    self.ref = (refLast and refLast.item == item) and refLast or nil
+end
+
+-- Called every frame of the pricing step; returns at once unless a read is owed. A "ready"
+-- answer is final for the item; a "preparing" one (the server's scan has not finished) is
+-- asked again now and then, so the line fills in without reopening the dialog.
+function MarketDialog:pumpPriceRef()
+    if self.refItem == nil then return end
+    local now = EC.now()
+    local ref = self.ref
+    if ref ~= nil and (ref.state == "ready" or now - (self.refAt or 0) < REF_RETRY_MS) then return end
+    if self.refId ~= nil and now - self.refAt < REF_TIMEOUT_MS then return end
+    if now - refSentAt < REF_GAP_MS then return end
+    refSentAt, self.refAt = now, now
+    self.refId = C.newRequestId()
+    refDialog = self
+    C.requestPriceRef(self.refItem, self.refId)
+end
+
+-- The line itself, in the currency this step prices in; nil while the answer is on its way.
+-- The numbers are per unit, and the price field holds the whole lot: a lot says so.
+function MarketDialog:priceRefText()
+    local ref = self.ref
+    if ref == nil then return nil end
+    if ref.state ~= "ready" then return getText(T .. "PriceRef_Preparing") end
+    local by = type(ref.byCurrency) == "table" and ref.byCurrency[self:activeCurrency()]
+    local n = type(by) == "table" and tonumber(by.n) or 0
+    if n <= 0 or tonumber(by.median) == nil then return getText(T .. "PriceRef_None") end
+    return getText(T .. (self:lotCount() > 1 and "PriceRef_LineLot" or "PriceRef_Line"),
+        tostring(tonumber(ref.days) or 30), amountText(n), amountText(by.median),
+        amountText(by.lo or by.median), amountText(by.hi or by.median))
+end
+
+C.onMarket(function(kind, args)
+    if kind ~= "priceRef" or type(args) ~= "table" then return end
+    local dlg = refDialog
+    if dlg == nil or args.requestId == nil or args.requestId ~= dlg.refId then return end
+    refDialog, dlg.refId = nil, nil
+    if args.state == "ready" then refLast = args end
+    if dlg.panel.marketDialog ~= dlg then return end     -- closed: the answer is dropped
+    dlg.ref = args
+    dlg.panel:layoutDialog(dlg)
+end)
+
 -- Every value this step trades on, in reading order. The server's refusal comes first: the
 -- reader scrolls back to the top whenever its text changes, so it is the line the player lands
 -- on. Built when one of those values moves (syncSummary), never per frame.
@@ -1147,10 +1206,19 @@ function MarketDialog:layoutInside(maxW, maxH)
             end
             chipsH = chipRows * chipH + (chipRows - 1) * 4 + 8
         end
+        -- the price reference: the seller's own steps only, up to two lines, one always reserved
+        -- so the answer landing moves nothing but a second line
+        self.refLines, self.refY = nil, nil
+        local refH = 0
+        if curChips then
+            self:wantPriceRef(self.cand and self.cand.item)
+            self.refLines = U.wrapText(self:priceRefText() or "", w - PAD * 2, 2)
+            refH = math.max(1, #self.refLines) * (fontH.small + 2) + 6
+        end
         -- the reader takes what the fixed rows leave, and never more than its own text needs
         local lines = self:summaryLines()
         local boxW = w - PAD * 2
-        local room = maxH - y - (PAD + fieldsH + curH + chipsH + buttonH + PAD)
+        local room = maxH - y - (PAD + fieldsH + refH + curH + chipsH + buttonH + PAD)
         local box = self.summaryBox
         box:setX(PAD); box:setY(y); box:setWidth(boxW)
         box:setHeight(math.max(fontH.small + 12, math.min(readerHeight(lines, boxW), room)))
@@ -1168,6 +1236,8 @@ function MarketDialog:layoutInside(maxW, maxH)
             y = y + entryH + 8
         end
         if curChips then
+            self.refY = y
+            y = y + refH
             self.curY = y
             self.curLabelW = curX - PAD * 2
             y = placeChips(self.currencyButtons, curX, y, w - PAD, 8)
@@ -1296,6 +1366,13 @@ function MarketDialog:prerender()
         elseif mode == "auction" then key = "Auction_StartPrice" end
         text(self, fitText(getText(T .. key), self.priceLabelW), PAD,
             self.priceY + math.floor((self.priceEntry.height - fontH.small) / 2), "textMuted")
+    end
+    if self.refY then
+        self:pumpPriceRef()
+        local refLines = self.refLines
+        for i = 1, #refLines do
+            text(self, refLines[i], PAD, self.refY + (i - 1) * (fontH.small + 2), "textMuted")
+        end
     end
     if self.curY then
         text(self, fitText(getText(T .. "Trade_Currency"), self.curLabelW), PAD,

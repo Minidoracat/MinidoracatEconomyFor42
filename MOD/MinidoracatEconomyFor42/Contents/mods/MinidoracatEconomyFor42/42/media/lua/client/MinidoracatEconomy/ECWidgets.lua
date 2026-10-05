@@ -430,6 +430,7 @@ U.NO_LINE_START = { [12289] = true, [12290] = true, [65292] = true, [65294] = tr
     [12301] = true, [12303] = true, [12305] = true, [12297] = true, [12299] = true, [65306] = true,
     [65307] = true, [65281] = true, [65311] = true, [12539] = true }
 function U.wrapText(s, w, maxLines)
+    maxLines = maxLines or math.huge   -- nil: as many lines as the text needs
     local out, rest = {}, tostring(s or "")
     while rest ~= "" and #out < maxLines do
         local cut = fitText(rest, w)
@@ -589,6 +590,14 @@ function U.durationText(ms)
         return getText(T .. "Time_HM", tostring(math.floor(minutes / 60)), tostring(minutes % 60))
     end
     return getText(T .. "Time_Minutes", tostring(minutes))
+end
+
+-- How long a listing or an auction still runs, in one shape for every row and card: days and
+-- hours while a day or more is left, hours and minutes (U.durationText) below that.
+function U.remainText(ms)
+    local minutes = math.max(0, math.floor(ms / 60000))
+    if minutes < 1440 then return U.durationText(ms) end
+    return getText(T .. "Time_DH", tostring(math.floor(minutes / 1440)), tostring(math.floor(minutes / 60) % 24))
 end
 
 function U.realDurationText(ms)
@@ -796,17 +805,28 @@ end
 local AdminHistoryCell = ISPanel:derive("MinidoracatEconomyAdminHistoryCell")
 U.AdminHistoryCell = AdminHistoryCell
 
+-- entry.amountIcon (optional): a framework Icons key drawn left of the amount, in the amount's
+-- colour. entry.metaRight (optional): faint text right-aligned on the second line (a time); a
+-- rolled-back row's rolledLabel takes that place instead.
 function AdminHistoryCell:render()
     local e = self.entry
     if not e then return end
     local lit = U.framework.Table.rowBackground(self)
     local secondary = lit and "text" or "textMuted"
+    local amountToken = e.rolled and secondary or (e.amountToken or "accent")
     text(self, e.headText, PAD, e.line1Y, e.rolled and secondary or "text")
-    textRight(self, e.amountLabel, e.amountRight, e.line1Y, e.rolled and secondary or (e.amountToken or "accent"))
+    textRight(self, e.amountLabel, e.amountRight, e.line1Y, amountToken)
+    if e.amountIcon ~= nil then
+        local size = math.min(16, fontH.small)
+        U.framework.Icons.draw(self, e.amountIcon, e.amountRight - textWidth(e.amountLabel) - 4 - size,
+            e.line1Y + math.floor((fontH.small - size) / 2), size, color(amountToken), 1)
+    end
     text(self, e.metaText, PAD, e.line2Y, secondary)
     if e.rolled then
         U.strike(self, PAD, e.line1Y, e.headW)
         textRight(self, e.rolledLabel, e.amountRight, e.line2Y, secondary)
+    elseif e.metaRight ~= nil then
+        textRight(self, e.metaRight, e.amountRight, e.line2Y, lit and "textMuted" or "textFaint")
     end
 end
 
@@ -891,20 +911,26 @@ end
 -- principle "會變的數字做成膠囊"): muted label, optional coin, value. Height CHIP_H; the return
 -- value is the width taken, so a caller lays a row of pills out left to right and wraps the row
 -- itself when it runs out of width (a pill is never cut: the numbers are the point of it).
-local PILL_PAD, PILL_GAP, PILL_COIN = 10, 6, 16
-function U.pillWidth(label, value, coinId)
+-- dot (optional): a small token-coloured dot before the text (a state pill: "you lead").
+local PILL_PAD, PILL_GAP, PILL_COIN, PILL_DOT = 10, 6, 16, 7
+function U.pillWidth(label, value, coinId, dot)
     local w = PILL_PAD * 2 + textWidth(value or "")
     if label ~= nil and label ~= "" then w = w + textWidth(label) + PILL_GAP end
     if coinId ~= nil then w = w + PILL_COIN + 4 end
+    if dot then w = w + PILL_DOT + 5 end
     return w
 end
 
-function U.drawPill(el, x, y, label, value, token, coinId)
-    local w = U.pillWidth(label, value, coinId)
+function U.drawPill(el, x, y, label, value, token, coinId, dot)
+    local w = U.pillWidth(label, value, coinId, dot)
     local h = U.CHIP_H
     fill(el, x, y, w, h, "selected", "pill")
     local ty = y + math.floor((h - fontH.small) / 2)
     local tx = x + PILL_PAD
+    if dot then
+        U.Skin.dot(el, tx, y + math.floor((h - PILL_DOT) / 2), PILL_DOT, color(token or "text"))
+        tx = tx + PILL_DOT + 5
+    end
     if label ~= nil and label ~= "" then
         text(el, label, tx, ty, "textMuted")
         tx = tx + textWidth(label) + PILL_GAP

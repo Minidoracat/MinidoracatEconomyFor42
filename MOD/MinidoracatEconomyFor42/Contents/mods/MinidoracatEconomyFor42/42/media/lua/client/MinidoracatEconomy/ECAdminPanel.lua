@@ -48,6 +48,8 @@ if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEco
 end
 require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECAdminTransactions"
+require "MinidoracatEconomy/ECAdminReports"
+require "MinidoracatEconomy/ECCharts"
 require "MinidoracatEconomy/ECAdminShop"
 require "MinidoracatEconomy/ECAdminWhitelist"
 require "MinidoracatEconomy/ECAdminRecovery"
@@ -99,14 +101,24 @@ end
 -- schema: rotating a season and deciding how long the next one runs are the same rare,
 -- deliberate act, and both of them take the native role capability rather than the write role.
 -- The keyboard walks the rows in this order, which is the order they are painted in.
-local TABS = { "Dashboard", "Recovery", "Player", "Identity", "Shop", "Whitelist", "Listings", "Auctions", "Transactions", "Audit", "Currencies", "Sources", "IntegrationPlans", "Settings", "Seasons", "System" }
+local TABS = { "Dashboard", "Recovery", "Player", "Identity", "Shop", "Whitelist", "Listings", "Auctions", "Transactions", "Reports", "Audit", "Currencies", "Sources", "IntegrationPlans", "Settings", "Seasons", "System" }
 -- tab -> the group it opens (Admin_Group_<id>); a field rather than another main-chunk local
 P.TAB_GROUPS = { Dashboard = "Overview", Player = "Players", Shop = "Market", Transactions = "Money",
     Currencies = "Integration", Settings = "Server" }
+-- The rail's glyph per tab (ECAdminWindow draws them; a detail card wears its page's glyph).
+-- "Seasons" wears the rotation glyph on purpose: the framework ships neither a calendar nor a
+-- clock, and a season tab is about the turn from one period to the next rather than a date.
+P.TAB_ICONS = {
+    Player = "users", Recovery = "layers", Dashboard = "gauge", Currencies = "coins", Sources = "plug",
+    IntegrationPlans = "sliders",
+    Shop = "shop", Whitelist = "shieldCheck", Identity = "lock", Listings = "tag", Auctions = "auction",
+    Transactions = "transactions", Reports = "chart", Audit = "clipboardCheck", System = "server",
+    Settings = "settings", Seasons = "reload",
+}
 -- the overview's "needs attention" rows: every kind rebuildAttention knows, one per currency for
 -- the conservation check, fits under this bound
 P.ATTENTION_MAX = 16
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim", "admin.identity" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim", "admin.identity", "admin.report" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 
@@ -1927,7 +1939,7 @@ function Admin:createChildren()
     local summaryH = math.max(rowH(), fontH.medium + 14) + lineH() * 3 + 8
     self.summaryList = U.newTable(BalanceCell, summaryH)
     self.summaryList.onSelect = function(_, item)
-        if item then self:showDetail("balance", item.id, item.name, item.detailText) end
+        if item then self:showDetail("balance", item.id, item.name, item.detailText, nil, Admin.balanceCard, item) end
     end
     self:addChild(self.summaryList)
     self.freezeAuditButton = Button.create(0, 0, 120, btnH(), tr("Admin_Player_FreezeAudit"), self, Admin.onFreezeAudit, "chip")
@@ -1976,6 +1988,7 @@ function Admin:createChildren()
     end
     self.dashFullButton = Button.create(0, 0, 90, 22, tr("Admin_Ov_FullTable"), self, Admin.onDashFull, "chip")
     self:addChild(self.dashFullButton)
+    self:createWeekCard()
 
     -- full supply view: the issued card reads one currency at a time (five sources over three
     -- windows is a table, and two of them side by side in a third of the window would be
@@ -2127,7 +2140,7 @@ function Admin:createChildren()
     self.historyList.onSelect = function(_, row)
         if not row then return end
         self.marketHistoryDetailId = row.id
-        self:showDetail("market_history", row.id, tr("Admin_Lst_History"), row.detailText)
+        self:showDetail("market_history", row.id, tr("Admin_Lst_History"), row.detailText, nil, Admin.marketHistoryCard, row)
     end
     self:addChild(self.historyList)
     -- the history filter row: type / date / sort / page, all of it local to this side
@@ -2171,7 +2184,7 @@ function Admin:createChildren()
     self.aucHistoryList.onSelect = function(_, row)
         if not row then return end
         self.auctionHistoryDetailId = row.id
-        self:showDetail("auction_history", row.id, tr("Auction_History_Title"), row.detailText)
+        self:showDetail("auction_history", row.id, tr("Auction_History_Title"), row.detailText, nil, Admin.auctionHistoryCard, row)
     end
     self:addChild(self.aucHistoryList)
     -- the record's filter row: type / date / sort / page, all of it local to this side. "time"
@@ -2183,6 +2196,8 @@ function Admin:createChildren()
 
     self.txPage = Transactions.create(self, send, isPending, newRequestId)
     self:addChild(self.txPage)
+    self.reportsPage = C.AdminReports.create(self, send, isPending, newRequestId)
+    self:addChild(self.reportsPage)
     -- Native lists keep both the groups and their options scrollable and keyboard-reachable.
     self.setEntry = newEntry(200, entryH(), { maxLen = 32, clear = true, placeholder = tr("Admin_Set_Search") })
     self.setEntry.target = self
@@ -2486,9 +2501,7 @@ function Admin:onDashIssueCurrency(button)
     self.dashCurrency = button.internal
     for _, b in ipairs(self.dashIssueButtons) do b.active = b.internal == self.dashCurrency end
     -- the note names the currency it is about, so a window that is open follows the chips
-    if D.isOpen(self, "dash:issued") then
-        D.update(self, "dash:issued", tr("Admin_Dash_Note"), self:issuedNoteText())
-    end
+    self:showDetail("dash", "issued", tr("Admin_Dash_Note"), self:issuedNoteText(), true, Admin.issuedCard)
 end
 
 -- How many days of the widest window the server could not attribute to this currency. The card
@@ -2532,7 +2545,7 @@ function Admin:onDashNote()
         D.close(self)
         return
     end
-    self:showDetail("dash", "issued", tr("Admin_Dash_Note"), self:issuedNoteText())
+    self:showDetail("dash", "issued", tr("Admin_Dash_Note"), self:issuedNoteText(), nil, Admin.issuedCard)
 end
 
 -- ----- the overview (tab "Dashboard") -----
@@ -2714,13 +2727,21 @@ end
 -- that came back, a resize) only *updates* a window that is still open, so a record the admin
 -- closed never comes back on its own. Every window this page opens belongs to this page, so
 -- hiding it, leaving the tab or losing the read right closes them all.
-function Admin:showDetail(kind, id, title, body, refreshOnly)
+--
+-- The window shows a detail card (ECDetailWindow `card`); `body` stays the plain text "Copy"
+-- hands out. `build(self, arg)` makes the card, and only while its window is (or is about to be)
+-- up: a rebuild refreshing every row never pays for cards nobody is looking at. The admin
+-- console opens the technical facts (ids, codes) unfolded.
+function Admin:showDetail(kind, id, title, body, refreshOnly, build, arg)
     if id == nil then return end
     local key = kind .. ":" .. tostring(id)
+    if refreshOnly and not D.isOpen(self, key) then return end
+    local c = build and build(self, arg) or nil
+    if c then c.techOpen = true end
     if refreshOnly then
-        D.update(self, key, title, body)
+        D.update(self, key, title, body, c)
     else
-        D.open(self, key, title, body)
+        D.open(self, key, title, body, nil, c)
     end
 end
 
@@ -2729,6 +2750,346 @@ end
 function Admin:closeDetail(kind, id)
     if id == nil then return end
     if D.isOpen(self, kind .. ":" .. tostring(id)) then D.close(self) end
+end
+
+-- One label / value line of a card (rows and tech share the shape). A value the record does not
+-- carry is left out: a printed "-" or 0 would read as data.
+function P.cardRow(rows, label, value, token, note)
+    if value == nil or value == "" then return end
+    rows[#rows + 1] = { label = label, value = tostring(value), token = token, note = note }
+end
+
+-- The card's big figure, with its currency's coin and name when the record names one.
+function P.cardHero(value, currency, token, strike)
+    local cur = type(currency) == "string" and currency ~= "" and currency or nil
+    return { value = value, token = token, coin = cur, unit = cur and currencyName(cur) or nil, strike = strike }
+end
+
+-- "before -> after" for a balance pair; a side the line did not carry is "-".
+function P.fromTo(before, after)
+    return getText(T .. "ACard_FromTo", before ~= nil and amountText(before) or "-",
+        after ~= nil and amountText(after) or "-")
+end
+
+function P.rolledChip()
+    return { value = tr("Wallet_RolledBack"), token = "warn", dot = true }
+end
+
+-- A short value is the card's figure; a sentence (a path, a role list) wraps as a fact instead.
+function P.cardValue(c, label, value, token)
+    if value == nil or value == "" then return end
+    if #value <= 24 then
+        c.hero = { value = value, token = token }
+    else
+        c.rows = c.rows or {}
+        P.cardRow(c.rows, label, value, token)
+    end
+end
+
+-- The glyph of a receipt that names no item, by its kind's family.
+function P.kindIcon(kind)
+    local k = tostring(kind or "")
+    if k == "checkin" or string.find(k, "milestone", 1, true) then return "gift" end
+    if string.find(k, "^shop") then return "shop" end
+    if string.find(k, "^market") then return "market" end
+    if string.find(k, "^auction") then return "auction" end
+    if string.find(k, "^mail") then return "mail" end
+    return "transactions"
+end
+
+-- The time a market row has left, as the card's first chip.
+function Admin:cardRemain(expiresAt)
+    local left = (tonumber(expiresAt) or 0) - EC.now()
+    if left > 0 then return { value = getText(T .. "Auction_Ends_In", U.remainText(left)) } end
+    return { value = tr("Auction_Ended"), token = "warn", dot = true }
+end
+
+-- A card button finds the row it was built from again and takes that row's own path (the same
+-- checks, the same confirmation). A row a newer page has dropped does nothing: the rebuild has
+-- already refreshed or closed the card.
+function Admin:cardAction(kind, id, action)
+    if self:isModal() then return end
+    local rows, run
+    if kind == "listing" then rows, run = self.listingRows, Admin.onListingAction
+    elseif kind == "auction" then rows, run = self.auctionRows, Admin.onAuctionAction
+    elseif kind == "receipt" then rows, run = self.receiptRows, Admin.onReceiptAction
+    elseif kind == "option" then rows, run = self.settingRows, Admin.onOptionAction
+    else return end
+    for _, row in ipairs(rows or EMPTY_ROW) do
+        if (row.id or row.key) == id then return run(self, row, action) end
+    end
+end
+
+function Admin:listingCard(row)
+    local l = row.rec or EMPTY_ROW
+    local id = row.id
+    local rows, tech = {}, {}
+    P.cardRow(rows, tr("Market_Col_Seller"), row.seller)
+    P.cardRow(rows, tr("ACard_Category"), U.itemCategoryText(l.category))
+    P.cardRow(rows, tr("Market_Col_Expires"), stampText(l.expiresAt, self.offsetMin))
+    P.cardRow(tech, tr("Detail_ItemCode"), l.item)
+    P.cardRow(tech, tr("ACard_ListingId"), l.id)
+    return {
+        source = tr("Admin_Lst_Detail"), sourceIcon = "tag", item = l.item, iconKey = "tag",
+        name = row.plainName, sub = itemBaseName(l.item),
+        hero = P.cardHero(amountText(l.price), l.currency),
+        chips = { self:cardRemain(l.expiresAt) }, rows = rows, tech = tech,
+        actions = {
+            { id = "seller", label = tr("Admin_Lst_Seller"), enabled = row.sellerId ~= nil,
+                run = function() self:cardAction("listing", id, "seller") end },
+            { id = "delist", label = tr("Admin_Lst_Delist"), style = "danger",
+                enabled = function() return self.listingsList.optionsDisabled ~= true end,
+                run = function() self:cardAction("listing", id, "delist") end },
+        },
+    }
+end
+
+function Admin:auctionCard(row)
+    local a = row.rec or EMPTY_ROW
+    local id = row.id
+    local bid = tonumber(a.bid)
+    local rows, tech = {}, {}
+    P.cardRow(rows, tr("Market_Col_Seller"), row.seller)
+    P.cardRow(rows, tr("ACard_StartPrice"), amountText(a.startPrice))
+    if bid then P.cardRow(rows, tr("Auction_Col_Bid"), amountText(bid), nil, tostring(a.bidder or "-")) end
+    P.cardRow(rows, tr("Auction_Col_Bids"), tostring(math.max(0, math.floor(tonumber(a.bids) or 0))))
+    P.cardRow(rows, tr("Market_Col_Expires"), stampText(a.expiresAt, self.offsetMin))
+    P.cardRow(tech, tr("Detail_ItemCode"), a.item)
+    P.cardRow(tech, tr("Auction_Col_Id"), a.id)
+    return {
+        source = tr("Admin_Auc_Detail"), sourceIcon = "auction", item = a.item, iconKey = "auction",
+        name = row.lotLabel or row.plainName, sub = itemBaseName(a.item),
+        hero = P.cardHero(amountText(bid or a.startPrice), a.currency),
+        chips = { self:cardRemain(a.expiresAt), { value = bid and getText(T .. "Auction_History_Bidder",
+            tostring(a.bidder or "-")) or tr("Auction_NoBids") } },
+        rows = rows, tech = tech,
+        actions = {
+            { id = "seller", label = tr("Admin_Auc_Seller"), enabled = row.sellerId ~= nil,
+                run = function() self:cardAction("auction", id, "seller") end },
+            { id = "record", label = tr("Auction_History"),
+                run = function() self:cardAction("auction", id, "record") end },
+            { id = "cancel", label = tr("Admin_Auc_Cancel"), style = "danger",
+                enabled = function() return self.auctionsList.optionsDisabled ~= true end,
+                run = function() self:cardAction("auction", id, "cancel") end },
+        },
+    }
+end
+
+-- A market or auction record line: the item (or, for a line that names none, its kind) over the
+-- kind, the amount it was worth at that moment, and who took part.
+function Admin:historyCard(row, auction)
+    local rec = row.rec or EMPTY_ROW
+    local hasItem = type(rec.item) == "string" and rec.item ~= ""
+    local name = hasItem and itemName(rec.item) or marketKindLabel(rec.kind)
+    local qty = math.floor(tonumber(rec.qty) or 0)
+    if qty > 1 then name = name .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
+    local rows, tech = {}, {}
+    P.cardRow(rows, tr("Wallet_Col_Time"), stampText(rec.ts, self.offsetMin))
+    if auction then
+        P.cardRow(rows, tr("Market_Col_Seller"), rec.seller)
+        P.cardRow(rows, tr("ACard_Bidder"), rec.bidder)
+        P.cardRow(rows, tr("ACard_Winner"), rec.buyer)
+        P.cardRow(rows, tr("ACard_PrevBidder"), rec.previous)
+        P.cardRow(tech, tr("Auction_Col_Id"), rec.auctionId)
+    else
+        P.cardRow(rows, tr("ACard_Counterparty"), rec.other)
+    end
+    if type(rec.reason) == "string" and rec.reason ~= "" then
+        P.cardRow(rows, tr("Admin_Audit_Col_Reason"), U.marketReasonText(rec.reason))
+    end
+    if hasItem then P.cardRow(tech, tr("Detail_ItemCode"), rec.item) end
+    P.cardRow(tech, tr("Admin_Col_Tx"), rec.txId)
+    local price = tonumber(rec.price)
+    return {
+        source = tr(auction and "Auction_History_Title" or "Admin_Lst_History"),
+        sourceIcon = auction and "auction" or "tag", item = hasItem and rec.item or nil,
+        iconKey = auction and "auction" or "tag", name = name, sub = marketKindLabel(rec.kind),
+        hero = price and P.cardHero(amountText(price), rec.currency, nil, row.rolled) or nil,
+        chips = row.rolled and { P.rolledChip() } or nil, rows = rows, tech = tech,
+    }
+end
+
+function Admin:marketHistoryCard(row) return self:historyCard(row, false) end
+function Admin:auctionHistoryCard(row) return self:historyCard(row, true) end
+
+function Admin:receiptCard(e)
+    local id = e.id
+    local hasItem = type(e.item) == "string" and e.item ~= ""
+    local qty = tonumber(e.qty)
+    local name = hasItem and itemName(e.item) or kindText(e.kind)
+    if hasItem and qty ~= nil then name = name .. "  " .. getText(T .. "Market_Lot", tostring(math.floor(qty))) end
+    local amount = tonumber(e.amount) or 0
+    local rows, tech = {}, {}
+    P.cardRow(rows, tr("Wallet_Col_Time"), stampText(e.ts, self.offsetMin))
+    if e.before ~= nil or e.after ~= nil then P.cardRow(rows, tr("Wallet_Available"), P.fromTo(e.before, e.after)) end
+    if e.reservedBefore ~= nil or e.reservedAfter ~= nil then
+        P.cardRow(rows, tr("Wallet_Reserved"), P.fromTo(e.reservedBefore, e.reservedAfter))
+    end
+    P.cardRow(rows, tr("Admin_Audit_Col_Reason"), e.reasonText)
+    P.cardRow(rows, tr("ACard_SourceMod"), e.sourceMod)
+    P.cardRow(tech, tr("Admin_Col_Tx"), e.txId)
+    if hasItem then P.cardRow(tech, tr("Detail_ItemCode"), e.item) end
+    local user = tostring(self.lookupUser or "-")
+    return {
+        source = tr("Admin_Rcpt_DetailTitle"), sourceIcon = "users", item = hasItem and e.item or nil,
+        iconKey = P.kindIcon(e.kind), name = name,
+        sub = hasItem and getText(T .. "ACard_Pair", kindText(e.kind), user) or user,
+        hero = P.cardHero(signedText(amount), e.currency, amount >= 0 and "positive" or "negative", e.rolled),
+        chips = e.rolled and { P.rolledChip() } or nil, rows = rows, tech = tech,
+        actions = { { id = "tx", label = tr("ACard_OpenTx"), enabled = e.txId ~= nil,
+            run = function() self:cardAction("receipt", id, "detail") end } },
+    }
+end
+
+function Admin:balanceCard(b)
+    local tech = {}
+    P.cardRow(tech, tr("Common_Revision"), b.rev)
+    return {
+        source = tr("Admin_Player_Summary"), sourceIcon = "users", coin = b.currency, name = b.name,
+        sub = self.lookupUser, hero = { value = b.fields[1][2], coin = b.currency, unit = b.fields[1][1] },
+        rows = { { label = b.fields[2][1], value = b.fields[2][2] } }, tech = tech,
+    }
+end
+
+-- The audit line: what was done to what, by whom and why; the full file text (or every legacy
+-- candidate sharing the key) below it, and which of the two the reader is looking at as a chip.
+function Admin:auditCard(d)
+    local did = d.id
+    local state = self.auditDetailState
+    local rows, tech = {}, {}
+    P.cardRow(rows, tr("Admin_Audit_Col_Admin"), d.adminName)
+    P.cardRow(rows, tr("Wallet_Col_Time"), d.stamp)
+    P.cardRow(rows, tr("Admin_Col_Currency"), d.currency and currencyName(d.currency) or nil)
+    P.cardRow(rows, tr("Admin_Audit_Col_Change"), d.changeFull)
+    P.cardRow(rows, tr("Admin_Audit_Col_Reason"), d.reasonFull)
+    local extra = nil
+    local list = self.auditDetailEntries
+    if state == "full" and list ~= nil and type(list[1]) == "table" then
+        local reason = tostring(list[1].reason or "")
+        if reason ~= "" and reason ~= d.reasonFull then extra = getText(T .. "Admin_Audit_FullReason", reason) end
+    elseif state == "ambiguous" and list ~= nil then
+        local out = {}
+        for i, rec in ipairs(list) do
+            if type(rec) == "table" then
+                out[#out + 1] = getText(T .. "Admin_Audit_Candidate", tostring(i),
+                    stampText(rec.ts, self.offsetMin), tostring(rec.reason or "-"))
+            end
+        end
+        extra = table.concat(out, "\n")
+    end
+    if d.rawShown and d.rawTarget ~= d.targetText then P.cardRow(tech, tr("Admin_Audit_Col_Target"), d.rawTarget) end
+    P.cardRow(tech, tr("Admin_Col_Tx"), d.txId)
+    P.cardRow(tech, tr("ACard_ReclaimId"), d.reclaimId)
+    local chips = { { value = self:auditSourceLine(), token = state == "full" and "text" or "warn", dot = state ~= "full" } }
+    if d.muted then chips[2] = P.rolledChip() end
+    local actions = {
+        { id = "name", label = tr("Admin_Audit_CopyName"), run = function() self:cardAudit(did, "name") end },
+        { id = "id", label = tr("Admin_Audit_CopyId"), run = function() self:cardAudit(did, "id") end },
+    }
+    if d.reclaimId ~= nil then
+        actions[3] = { id = "restore", label = tr("Admin_Audit_Restore"),
+            enabled = function() return self:writeAllowed() and not isPending("admin.reclaim") end,
+            run = function() self:cardAudit(did, "restore") end }
+    end
+    return {
+        source = tr("Admin_Audit_Detail"), sourceIcon = "clipboardCheck", item = d.item, iconKey = "clipboardCheck",
+        name = d.actionText, sub = d.targetText, chips = chips, rows = rows, text = extra,
+        tech = tech, actions = actions,
+    }
+end
+
+-- The audit card's buttons act on the line that is still picked, through the strip's own handlers.
+function Admin:cardAudit(id, what)
+    local d = self.auditSelected
+    if d == nil or d.id ~= id or self:isModal() then return end
+    if what == "restore" then self:onAuditRestore() else self:onAuditCopy({ internal = what }) end
+end
+
+-- A stat row: a section heading opens its standing explanation, a fact opens whole.
+function Admin:statCard(r)
+    local icon = P.TAB_ICONS[self.tab]
+    local c = { source = tr("Admin_Tab_" .. self.tab), sourceIcon = icon, iconKey = icon }
+    if r.head then
+        c.name, c.text = r.label, r.note
+    elseif r.value then
+        c.name = r.label ~= "" and r.label or nil
+        c.sub = r.section ~= "" and r.section or nil
+        P.cardValue(c, tr("ACard_Value"), r.value, r.token)
+    else
+        c.sub = r.section ~= "" and r.section or nil
+        c.text = r.label
+    end
+    return c
+end
+
+function Admin:optionCard(item)
+    local spec = item.spec
+    local key = item.key
+    local chips = {}
+    if item.locked then chips[#chips + 1] = { value = tr("Admin_Set_Locked"), token = "warn", dot = true } end
+    if item.overFull then chips[#chips + 1] = { value = item.overFull, token = "accent", dot = true } end
+    if item.manageOnly then chips[#chips + 1] = { value = tr("Admin_Set_ManageOnly"), token = "warn", dot = true } end
+    if spec.page then chips[#chips + 1] = { value = getText(T .. "Admin_Set_Runtime", tr("Admin_Tab_" .. spec.page)) } end
+    local can = self.settingsList.optionsDisabled ~= true and self:optionAllowed(spec)
+    local actions = {}
+    if not item.locked then
+        if item.toggleLabel then
+            actions[1] = { id = "toggle", label = tr(item.toggleOn and "ACard_TurnOff" or "ACard_TurnOn"), style = "primary",
+                enabled = can, run = function() self:cardAction("option", key, "toggle") end }
+        else
+            actions[1] = { id = "edit", label = tr("Admin_Set_Edit"), style = "primary", enabled = can,
+                run = function() self:cardAction("option", key, "edit") end }
+        end
+        if item.override then
+            actions[#actions + 1] = { id = "reset", label = tr("Admin_Set_Reset"), enabled = can,
+                run = function() self:cardAction("option", key, "reset") end }
+        end
+    end
+    local c = {
+        source = tr("Admin_Tab_Settings"), sourceIcon = "settings", iconKey = "settings",
+        name = item.plainName, sub = tr("Admin_Set_Group_" .. spec.group), chips = chips,
+        text = item.desc ~= "" and item.desc or nil, actions = actions,
+        tech = { { label = tr("ACard_OptionKey"), value = key } },
+    }
+    P.cardValue(c, tr("ACard_Value"), item.valueRaw)
+    return c
+end
+
+function Admin:settingMessageCard()
+    local m = self.message or EMPTY_ROW
+    return { source = tr("Admin_Tab_Settings"), sourceIcon = "settings", iconKey = "settings", text = m.text,
+        chips = m.error and { { value = tr("ACard_Failed"), token = "negative", dot = true } } or nil }
+end
+
+function Admin:settingHelpCard()
+    return { source = tr("Admin_Tab_Settings"), sourceIcon = "settings", iconKey = "document",
+        name = tr("Admin_Set_Title"), text = tr("Admin_Set_Note") }
+end
+
+-- What the issued figures count, for the currency the chips picked: one section per window, the
+-- sources as pills, and the note on what the figures leave out.
+function Admin:issuedCard()
+    local cur = self.dashCurrency
+    local unknown = self:issuedUnknownDays()
+    local issued = self.system and type(self.system.issued) == "table" and self.system.issued or EMPTY_ROW
+    local sections = {}
+    for _, period in ipairs(ISSUE_PERIODS) do
+        local row = issueRow(issued, period, cur) or EMPTY_ROW
+        local lines = {}
+        for _, field in ipairs(ISSUE_FIELDS) do
+            lines[#lines + 1] = { pill = tr(field[2]), text = (issueText(row[field[1]], field[3], "text")) }
+        end
+        sections[#sections + 1] = { title = issuePeriodLabel(period), lines = lines }
+    end
+    local note = tr("Admin_Dash_IssuedNote")
+    if unknown > 0 then note = getText(T .. "Admin_Dash_IssuedPartial", tostring(unknown)) .. "\n\n" .. note end
+    return {
+        source = tr("Admin_Dash_Note"), sourceIcon = "gauge", coin = cur, name = currencyName(cur),
+        sub = getText(T .. "Admin_Dash_IssuedFor", currencyName(cur)),
+        chips = unknown > 0 and { { value = getText(T .. "Admin_Dash_IssuedPartialShort", tostring(unknown)),
+            token = "warn", dot = true } } or nil,
+        sections = sections, text = note,
+    }
 end
 
 -- Picking a receipt is a read: the whole line is spelled out in the detail window, and the row's
@@ -2740,7 +3101,7 @@ function Admin:onReceiptRow(item, refreshOnly)
         if had ~= nil then self:closeDetail("receipt", had.id) end
     else
         self:showDetail("receipt", item.id, tr("Admin_Rcpt_DetailTitle"),
-            self:receiptDetailText(item), refreshOnly)
+            self:receiptDetailText(item), refreshOnly, Admin.receiptCard, item)
     end
     self:updateEnabled()
 end
@@ -3073,7 +3434,7 @@ function Admin:buildAuditDetail(refreshOnly)
         end
     end
     self:showDetail("audit", self.auditDetailKey or d.id, tr("Admin_Audit_Detail"),
-        body .. "\n" .. self:auditSourceLine(), refreshOnly)
+        body .. "\n" .. self:auditSourceLine(), refreshOnly, Admin.auditCard, d)
 end
 
 -- The two copy chips: the translated name the admin reads, and the raw id the server wrote
@@ -3181,6 +3542,7 @@ function Admin:setStatRows(list, rows)
             r.detailText = r.note
         else
             r.key = section .. "\1" .. r.label
+            r.section = section
             if r.value then
                 local lw, vw = textWidth(r.label), textWidth(r.value)
                 if lw + PAD + vw > room then
@@ -3200,7 +3562,8 @@ end
 
 function Admin:onStatRow(item)
     if item == nil or item.detailText == nil or self:isModal() then return end
-    self:showDetail("stat", item.key, item.label ~= "" and item.label or tr("Admin_Tab_" .. self.tab), item.detailText)
+    self:showDetail("stat", item.key, item.label ~= "" and item.label or tr("Admin_Tab_" .. self.tab), item.detailText,
+        nil, Admin.statCard, item)
 end
 
 function Admin:newStatList()
@@ -3760,15 +4123,15 @@ end
 -- Row bodies only read; native row buttons own changes for pointer and keyboard alike.
 function Admin:onSettingRow(item)
     if item == nil or not self:readAllowed() or self:isModal() then return end
-    self:showDetail("option", item.key, item.plainName, item.detailText)
+    self:showDetail("option", item.key, item.plainName, item.detailText, nil, Admin.optionCard, item)
 end
 function Admin:onSettingMessage()
     if self.tab ~= "Settings" or not self.message or not self:readAllowed() or self:isModal() then return end
-    self:showDetail("settingMessage", "status", tr("Admin_Tab_Settings"), self.message.text)
+    self:showDetail("settingMessage", "status", tr("Admin_Tab_Settings"), self.message.text, nil, Admin.settingMessageCard)
 end
 function Admin:onSettingHelp()
     if not self:readAllowed() or self:isModal() then return end
-    self:showDetail("settingHelp", "help", tr("Admin_Set_Title"), tr("Admin_Set_Note"))
+    self:showDetail("settingHelp", "help", tr("Admin_Set_Title"), tr("Admin_Set_Note"), nil, Admin.settingHelpCard)
 end
 
 
@@ -4067,7 +4430,7 @@ function Admin:onListingRow(item, refreshOnly)
     if item == nil then
         if had ~= nil then self:closeDetail("listing", had.id) end
     else
-        self:showDetail("listing", item.id, tr("Admin_Lst_Detail"), item.detailText, refreshOnly)
+        self:showDetail("listing", item.id, tr("Admin_Lst_Detail"), item.detailText, refreshOnly, Admin.listingCard, item)
     end
     self:updateEnabled()
 end
@@ -4271,7 +4634,7 @@ function Admin:onAuctionRow(item, refreshOnly)
     if item == nil then
         if had ~= nil then self:closeDetail("auction", had.id) end
     else
-        self:showDetail("auction", item.id, tr("Admin_Auc_Detail"), item.detailText, refreshOnly)
+        self:showDetail("auction", item.id, tr("Admin_Auc_Detail"), item.detailText, refreshOnly, Admin.auctionCard, item)
     end
     self:updateEnabled()
 end
@@ -4588,6 +4951,7 @@ function Admin:isModal()
         or (self.tab == "Shop" and self.shopPage:isModal())
         or (self.tab == "Whitelist" and self.whitelistPage:isModal())
         or (self.tab == "Transactions" and self.txPage:isModal())
+        or (self.tab == "Reports" and self.reportsPage:isModal())
         or (self.tab == "IntegrationPlans" and self.entitlementsPage:isModal())
 end
 
@@ -4623,6 +4987,7 @@ function Admin:onEscape()
     if self.tab == "Shop" then return self.shopPage:onEscape() end
     if self.tab == "Whitelist" then return self.whitelistPage:onEscape() end
     if self.tab == "Transactions" then return self.txPage:onEscape() end
+    if self.tab == "Reports" then return self.reportsPage:onEscape() end
     if self.tab == "IntegrationPlans" then return self.entitlementsPage:onEscape() end
     return false
 end
@@ -4651,6 +5016,7 @@ local function addFilters(out, f) f:appendTargets(out) end
 function Admin:keyboardTargets()
     if not self:readAllowed() then return {} end
     if self.tab == "Transactions" then return self.txPage:keyboardTargets() end
+    if self.tab == "Reports" then return self.reportsPage:keyboardTargets() end
     if self.tab == "Shop" then return self.shopPage:keyboardTargets() end
     if self.tab == "Whitelist" then return self.whitelistPage:keyboardTargets() end
     if self.tab == "Recovery" then return self.recoveryPage:keyboardTargets() end
@@ -4712,8 +5078,14 @@ function Admin:keyboardTargets()
         addGroup(out, tr("Admin_Audit_Actions"),
             { self.auditCopyNameButton, self.auditCopyIdButton, self.auditRestoreButton })
     elseif self.tab == "Dashboard" and not self.dashFull then
-        -- the overview: one stop per "needs attention" row, then the switch to the full view
+        -- the overview: one stop per "needs attention" row, then the 7-day card (its currency,
+        -- the chart, the way to the full report), then the switch to the full view
         addGroup(out, tr("Admin_Ov_Attention"), self.attButtons)
+        addGroup(out, tr("Dash7_Currency"), self.weekCurButtons)
+        if self.weekChart:getIsVisible() then out[#out + 1] = self.weekChart:focusDescriptor(tr("Dash7_Chart")) end
+        if self.weekReportButton:getIsVisible() then
+            addTarget(out, "button", self.weekReportButton.fullTitle, self.weekReportButton)
+        end
         addTarget(out, "button", self.dashFullButton.fullTitle, self.dashFullButton)
     elseif self.tab == "Dashboard" then
         -- the way back sits at the start of the strip; then the issued card's currency, and one
@@ -5145,6 +5517,7 @@ function Admin:matchesReply(kind, args)
     if kind == "transactions" or kind == "transaction" or kind == "players" then
         return self.txPage:matchesReply(kind, args)
     end
+    if kind == "report" then return self.reportsPage:matchesReply(kind, args) end
     if kind == "entitlements" then return self.entitlementsPage:matchesReply(args) end
     if kind == "identity" then return self.identityPage:matchesReply(args) end
     if kind == "auditDetail" then
@@ -5607,6 +5980,7 @@ function Admin:onReply(kind, args)
             self.options = args.sandbox
             self.optionsSeen = C.options
         end
+        self:rebuildWeek()
         self:layout()
     elseif kind == "sources" then
         -- every reply carries the full list, a write reply included
@@ -5648,6 +6022,8 @@ function Admin:onReply(kind, args)
         end
     elseif kind == "transactions" or kind == "transaction" then
         self.txPage:onReply(kind, args)
+    elseif kind == "report" then
+        self.reportsPage:onReply(kind, args)
     elseif kind == "recovery" then
         -- The slot has already been freed by the request that reserved it (matchesReply). The
         -- request travels into the page, which is how a server-wide read, an account read, a
@@ -5788,6 +6164,7 @@ function Admin:onTimeout(command)
     if command == "admin.transaction" or command == "admin.transactions" then
         self.txPage:onTimeout(command)
     end
+    if command == "admin.report" then self.reportsPage:onTimeout(command) end
     if command == "admin.catalog" or command == "admin.option" then self.shopPage:onTimeout(command) end
     if command == "admin.whitelist" then self.whitelistPage:onTimeout(command) end
     if command == "admin.entitlements" then self.entitlementsPage:onTimeout() end
@@ -6027,6 +6404,7 @@ function Admin:rebuildAudit()
                     rawShown = action ~= "config" and action ~= "ACCOUNT_MERGE_PASS" and target ~= "file",
                     adminName = admin, stamp = stamp, changeFull = change, reasonFull = reason,
                     txId = e.txId, item = e.item,
+                    currency = (e.currency ~= nil and e.currency ~= "options") and e.currency or nil,
                     -- only the SYSTEM line of a login reclaim carries the id a restore needs
                     reclaimId = (action == "recovery" and e.after == "reclaimed" and type(e.reclaimId) == "string")
                         and e.reclaimId or nil,
@@ -6128,8 +6506,10 @@ function Admin:optionRow(spec, name, desc, snap, searching, width, lh, chipH, va
     if resetHit then table.insert(item.hits, 1, resetHit) end
     if not item.toggleLabel then item.valueText = fitText(valueRaw, item.valueW) end
     item.detailText = name .. "\n" .. valueRaw .. "\n" .. desc
+    item.valueRaw, item.desc = valueRaw, desc
+    item.overFull = override and getText(T .. "Admin_Set_Overridden", optionValueText(spec, state.default)) or nil
     if locked then item.detailText = item.detailText .. "\n" .. tr("Admin_Set_Locked") end
-    if override then item.detailText = item.detailText .. "\n" .. getText(T .. "Admin_Set_Overridden", optionValueText(spec, state.default)) end
+    if override then item.detailText = item.detailText .. "\n" .. item.overFull end
     if manageOnly then
         item.detailText = item.detailText .. "\n" .. tr("Admin_Set_ManageOnly")
     end
@@ -6197,7 +6577,7 @@ function Admin:rebuildSettings()
             if take then
                 local row = self:optionRow(spec, name, desc, snap, query ~= nil, width, lh, chipH, valueY)
                 rows[#rows + 1] = row
-                self:showDetail("option", row.key, row.plainName, row.detailText, true)
+                self:showDetail("option", row.key, row.plainName, row.detailText, true, Admin.optionCard, row)
             end
         end
     end
@@ -6276,6 +6656,7 @@ function Admin:listingRow(l, geo, lh, rowHeight)
     item.detailText = detail .. "\n" .. tostring(l.item or "-") .. "\n" .. meta
         .. "\n" .. getText(T .. "Admin_Lst_DetailPrice", amountText(l.price))
         .. "\n" .. getText(T .. "Admin_Lst_DetailId", tostring(l.id or "-"))
+    item.rec = l
     return item
 end
 
@@ -6310,10 +6691,11 @@ function Admin:auctionRow(a, geo, lh, rowHeight, now)
     local bid = tonumber(a.bid)
     local item = self:marketRow(a, geo, lh, rowHeight, label, bid or a.startPrice)
     item.plainName = name   -- the cancel dialog names the item, never the lot size
+    item.rec, item.lotLabel = a, label
     local holder = bid and (tr("Auction_Col_Bid") .. " " .. tostring(a.bidder or "-"))
         or tr("Auction_NoBids")
     local left = (tonumber(a.expiresAt) or 0) - now
-    local ends = left > 0 and getText(T .. "Auction_Ends_In", U.durationText(left))
+    local ends = left > 0 and getText(T .. "Auction_Ends_In", U.remainText(left))
         or tr("Auction_Ended")
     local meta = item.seller .. " / " .. holder .. " / " .. tr("Auction_Col_Bids") .. " "
         .. tostring(math.max(0, math.floor(tonumber(a.bids) or 0))) .. " / " .. ends
@@ -6399,7 +6781,7 @@ function Admin:auctionHistoryRow(rec, lh, width)
     local headW = math.max(0, right - textWidth(amountLabel) - PAD * 2)
     local metaW = rolled and math.max(0, headW - textWidth(rolledLabel) - PAD) or headW
     local item = {
-        id = U.recordKey(rec), detailText = head .. "\n" .. amountLabel .. "\n" .. meta .. (rolled and ("\n" .. rolledLabel) or ""),
+        id = U.recordKey(rec), rec = rec, detailText = head .. "\n" .. amountLabel .. "\n" .. meta .. (rolled and ("\n" .. rolledLabel) or ""),
         line1Y = 5, line2Y = 5 + lh, amountRight = right, amountLabel = amountLabel,
         rolled = rolled, rolledLabel = rolledLabel,
         headText = fitText(head, headW), metaText = fitText(meta, metaW),
@@ -6439,7 +6821,7 @@ function Admin:rebuildAuctionHistory()
     local found = false
     for _, row in ipairs(rows) do
         if row.id == self.auctionHistoryDetailId then
-            self:showDetail("auction_history", row.id, tr("Auction_History_Title"), row.detailText, true)
+            self:showDetail("auction_history", row.id, tr("Auction_History_Title"), row.detailText, true, Admin.auctionHistoryCard, row)
             found = true
         end
     end
@@ -6467,7 +6849,7 @@ function Admin:historyRow(rec, lh, width)
     local headW = math.max(0, right - textWidth(amountLabel) - PAD * 2)
     local metaW = rolled and math.max(0, headW - textWidth(rolledLabel) - PAD) or headW
     local item = {
-        id = U.recordKey(rec), detailText = head .. "\n" .. amountLabel .. "\n" .. meta .. (rolled and ("\n" .. rolledLabel) or ""),
+        id = U.recordKey(rec), rec = rec, detailText = head .. "\n" .. amountLabel .. "\n" .. meta .. (rolled and ("\n" .. rolledLabel) or ""),
         line1Y = 5, line2Y = 5 + lh, amountRight = right, amountLabel = amountLabel,
         rolled = rolled, rolledLabel = rolledLabel,
         headText = fitText(head, headW), metaText = fitText(meta, metaW),
@@ -6505,7 +6887,7 @@ function Admin:rebuildHistory()
     local found = false
     for _, row in ipairs(rows) do
         if row.id == self.marketHistoryDetailId then
-            self:showDetail("market_history", row.id, tr("Admin_Lst_History"), row.detailText, true)
+            self:showDetail("market_history", row.id, tr("Admin_Lst_History"), row.detailText, true, Admin.marketHistoryCard, row)
             found = true
         end
     end
@@ -6730,6 +7112,7 @@ function Admin:updateEnabled()
     self.aucF:setEnabled(read and not modal)
 
     self.txPage:updateEnabled()
+    self.reportsPage:updateEnabled()
     self.entitlementsPage:updateEnabled()
 
     self.whitelistPage:updateEnabled()
@@ -7350,6 +7733,10 @@ function Admin:layout()
     self.txPage:setY(g.bodyY)
     self.txPage:setVisible(tx)
     self.txPage:resize(w, g.bodyH)
+    self.reportsPage:setX(0)
+    self.reportsPage:setY(g.bodyY)
+    self.reportsPage:setVisible(read and self.tab == "Reports" and self:getIsVisible())
+    self.reportsPage:resize(w, g.bodyH)
     self.entitlementsPage:setX(0)
     self.entitlementsPage:setY(g.bodyY)
     self.entitlementsPage:setVisible(read and self.tab == "IntegrationPlans" and self:getIsVisible())
@@ -7631,8 +8018,10 @@ function Admin:refreshPlayerStatus()
         local detail = currencyName(id)
         for _, field in ipairs(fields) do detail = detail .. "\n" .. field[1] .. " " .. field[2] end
         local key = tostring(self.lookupUser) .. "\1" .. id
-        balances[#balances + 1] = { id = key, currency = id, name = currencyName(id), fields = fields, detailText = detail }
-        self:showDetail("balance", key, currencyName(id), detail, true)
+        local entry = { id = key, currency = id, name = currencyName(id), fields = fields, detailText = detail,
+            rev = balance and balance.rev or nil }
+        balances[#balances + 1] = entry
+        self:showDetail("balance", key, currencyName(id), detail, true, Admin.balanceCard, entry)
     end
     self.summaryList:setItems(balances)
     self.statusUser = self.lookupUser
@@ -7771,11 +8160,24 @@ function Admin:layoutOverview(on)
     g.ovItemH = math.max(lineH() * 2 + 6, chipH + 8)
     g.ovStatH = fontH.small + fontH.medium + 14
     g.ovCurH = CARD_TITLE_H + 6 + #EC.CURRENCY_ORDER * (g.ovStatH + 6) + PAD
-    -- the currency card keeps its height; the rows get what is left, and the rest is counted
-    local rows = math.max(1, math.floor((g.bodyH - g.ovCurH - PAD - CARD_TITLE_H - 8) / g.ovItemH))
+    -- The currency card keeps its height. The "last 7 days" card takes what is left once the
+    -- attention card has room for its first rows (up to two), and a window too short for the
+    -- chart's minimum drops the 7-day card -- never the rows that need attention. The attention
+    -- rows then get the rest, and what still does not fit is counted.
+    local lh = lineH()
+    local attMin = CARD_TITLE_H + 8 + math.max(1, math.min(#items, 2)) * g.ovItemH
+    -- the minimum keeps the three figures on one line each (label and value, no sparkline):
+    -- three rows of fontH.small + 4 with two 6 px gaps, the same sums layoutWeek / drawWeek use
+    local weekMin = CARD_TITLE_H + 6 + 3 * (fontH.small + 4) + 12 + lh + 8
+    local weekPref = CARD_TITLE_H + 6 + math.max(170, 3 * (fontH.small + fontH.medium + 12) + 12) + lh + 8
+    local room = g.bodyH - g.ovCurH - attMin - PAD * 2
+    g.ovWeekH = room >= weekMin and math.min(weekPref, room) or 0
+    local weekGap = g.ovWeekH > 0 and (g.ovWeekH + PAD) or 0
+    local rows = math.max(1, math.floor((g.bodyH - g.ovCurH - weekGap - PAD - CARD_TITLE_H - 8) / g.ovItemH))
     g.ovShown = math.min(#items, rows)
     g.ovAttH = CARD_TITLE_H + 8 + math.max(1, g.ovShown) * g.ovItemH
-    g.ovCurY = g.bodyY + g.ovAttH + PAD
+    g.ovWeekY = g.bodyY + g.ovAttH + PAD
+    g.ovCurY = g.ovWeekY + weekGap
     -- one width for every row button (the widest label, at most a third of the page), so the
     -- text column beside them is the same for every row
     local bw = 0
@@ -7812,6 +8214,265 @@ function Admin:layoutOverview(on)
         fb:setX(w - PAD - fb.width); fb:setY(g.ovCurY + math.floor((CARD_TITLE_H - chipH) / 2))
     end
     U.setButtonTitle(fb, title)
+    self:layoutWeek(over)
+end
+
+-- ----- the overview's "last 7 days" card -----
+--
+-- Data: admin.system's `issuedDaily` (the last seven reward days, oldest first, per currency:
+-- checkin, milestone, buyback, mint, burn, unknown). The bars stack check-ins, milestones,
+-- buyback and the rest of the system's issue (mint minus the three) above zero and the total
+-- removed below it; the line is the net. Integrations, Discord deposits and admin adjustments
+-- are not in these figures, and the card says so. No read of its own.
+
+-- legend order = the stack order of the bars: { label key, palette, index }
+P.WEEK_LEGEND = { { "Admin_Dash_Checkin", "IN", 1 }, { "Admin_Dash_Milestone", "IN", 2 },
+    { "Dash7_Buyback", "IN", 3 }, { "Dash7_Other", "IN", 4 }, { "Dash7_Burn", "OUT", 1 },
+    { "Admin_Dash_Net", "NET" } }
+
+function Admin:createWeekCard()
+    self.weekCurButtons = {}
+    for _, id in ipairs(EC.CURRENCY_ORDER) do
+        local b = Button.create(0, 0, 90, 22, currencyName(id), self, Admin.onWeekCurrency, "chip")
+        b.internal = id
+        b:setVisible(false)
+        self:addChild(b)
+        self.weekCurButtons[#self.weekCurButtons + 1] = b
+    end
+    self.weekChart = C.Charts.FlowChart.create(0, 0, 200, 120)
+    self.weekChart.onPick = function(_, index) self:onWeekPick(index) end
+    self.weekChart:setVisible(false)
+    self:addChild(self.weekChart)
+    self.weekReportButton = Button.create(0, 0, 90, 22, tr("Dash7_FullReport"), self, Admin.onWeekReport, "chip")
+    self.weekReportButton:setVisible(false)
+    self:addChild(self.weekReportButton)
+end
+
+function Admin:onWeekCurrency(button)
+    if self:isModal() or self.weekCur == button.internal then return end
+    self.weekCur = button.internal
+    self:rebuildWeek()
+end
+
+function Admin:onWeekReport()
+    if self:isModal() then return end
+    self:requestClose(function() self:setTab("Reports") end)
+end
+
+-- A day of the chart opens the money page on that reward day: [its start, the next one).
+function Admin:onWeekPick(index)
+    local week = self.week
+    local key = week and week.keys[index]
+    if key == nil or self:isModal() then return end
+    local from = self:rewardDayStart(key)
+    if from == nil then return end
+    self:showTransactions("all", { fromMs = from, toMs = from + 86400000 })
+end
+
+-- The UTC ms a reward day "YYYYMMDD" starts at: RewardDayResetHour in RewardTimezoneUTC, the
+-- same reading as the server's ECRewards.resetShiftMs (out-of-range values fall back alike).
+function Admin:rewardDayStart(key)
+    local y, m, d = string.match(tostring(key), "^(%d%d%d%d)(%d%d)(%d%d)$")
+    if not y then return nil end
+    local hour = tonumber(roleOption("RewardDayResetHour", 0)) or 0
+    if hour < 0 or hour > 23 then hour = 0 end
+    local tz = tonumber(roleOption("RewardTimezoneUTC", 8)) or 8
+    if tz < -12 or tz > 14 then tz = 8 end
+    return U.framework.Date.dayStart(y .. "-" .. m .. "-" .. d, math.floor(tz * 60 + 0.5) - hour * 60)
+end
+
+-- A y-axis tick: 1234 -> "1.2k", 5000 -> "5k".
+function P.shortAmount(n)
+    local a = math.abs(tonumber(n) or 0)
+    local s
+    if a >= 1000000 then s = string.format("%.1fM", a / 1000000)
+    elseif a >= 1000 then s = string.format("%.1fk", a / 1000)
+    else s = tostring(math.floor(a + 0.5)) end
+    s = string.gsub(s, "%.0([kM])", "%1")
+    return ((tonumber(n) or 0) < 0 and "-" or "") .. s
+end
+
+-- Rebuilt when admin.system lands, when the currency chip changes and when the data goes away;
+-- never per frame. Everything the card paints (chart data, captions, the three figures and their
+-- sparklines) is made here.
+function Admin:rebuildWeek()
+    local curs = {}
+    for _, id in ipairs(EC.CURRENCY_ORDER) do
+        local def = C.currency(id)
+        if def == nil or def.enabled ~= false then curs[#curs + 1] = id end
+    end
+    self.weekCurrencies = curs
+    local keep = false
+    for _, id in ipairs(curs) do if id == self.weekCur then keep = true end end
+    if not keep then self.weekCur = curs[1] or EC.CURRENCY_ORDER[1] end
+    local daily = self.system and type(self.system.issuedDaily) == "table" and self.system.issuedDaily or nil
+    local keys = daily and type(daily.keys) == "table" and daily.keys or nil
+    local src = keys and type(daily.byCurrency) == "table" and daily.byCurrency[self.weekCur] or nil
+    if type(src) ~= "table" or #keys == 0 then
+        self.week = nil
+    else
+        self:buildWeek(keys, src)
+    end
+    if self.g and self.g.ovWeekY then self:layoutWeek(self.tab == "Dashboard" and not self.dashFull and self.hadRead == true) end
+end
+
+function Admin:buildWeek(keys, src)
+    local n = #keys
+    local labels, checkin, milestone, buyback, other = {}, {}, {}, {}, {}
+    local mint, burn, net, hatch, captions = {}, {}, {}, {}, {}
+    local sumMint, sumBurn = 0, 0
+    for i = 1, n do
+        local d = type(src[i]) == "table" and src[i] or EMPTY_ROW
+        local c, m, b = tonumber(d.checkin) or 0, tonumber(d.milestone) or 0, tonumber(d.buyback) or 0
+        local mt, bu = tonumber(d.mint) or 0, tonumber(d.burn) or 0
+        checkin[i], milestone[i], buyback[i] = c, m, b
+        other[i] = math.max(0, mt - c - m - b)
+        mint[i], burn[i], net[i] = mt, bu, mt - bu
+        sumMint, sumBurn = sumMint + mt, sumBurn + bu
+        local k = tostring(keys[i])
+        local today = i == n
+        labels[i] = today and tr("Admin_Dash_Today") or (string.sub(k, 5, 6) .. "-" .. string.sub(k, 7, 8))
+        local unknown = d.unknown == true
+        if today or unknown then hatch[i] = true end
+        captions[i] = self:weekCaption(k, today, unknown, c, m, b, other[i], bu)
+    end
+    local Ch = C.Charts
+    self.weekChart:setData({
+        labels = labels,
+        up = { { label = tr("Admin_Dash_Checkin"), color = 1, values = checkin },
+            { label = tr("Admin_Dash_Milestone"), color = 2, values = milestone },
+            { label = tr("Dash7_Buyback"), color = 3, values = buyback },
+            { label = tr("Dash7_Other"), color = 4, values = other } },
+        down = { { label = tr("Dash7_Burn"), color = 1, values = burn } },
+        net = net, hatch = hatch,
+        caption = function(i) return captions[i] end,
+        format = P.shortAmount,
+    })
+    self.week = { keys = keys, minis = {
+        { label = tr("Dash7_Issued"), value = "+" .. amountText(sumMint), token = "positive", spark = Ch.spark(mint), rgb = Ch.IN[1] },
+        { label = tr("Dash7_Removed"), value = "-" .. amountText(sumBurn), token = "negative", spark = Ch.spark(burn), rgb = Ch.OUT[1] },
+        { label = tr("Dash7_Net"), value = signedText(sumMint - sumBurn), token = "accent", spark = Ch.spark(net), rgb = Ch.NET },
+    } }
+end
+
+-- One day's caption: its date, each source, the net, and why the bar is hatched.
+function Admin:weekCaption(key, today, unknown, c, m, b, o, bu)
+    local function line(labelKey, value, token)
+        return { text = getText(T .. "Detail_Line", tr(labelKey), value), token = token }
+    end
+    local lines = {
+        line("Admin_Dash_Checkin", "+" .. amountText(c), "positive"),
+        line("Admin_Dash_Milestone", "+" .. amountText(m), "positive"),
+        line("Dash7_Buyback", "+" .. amountText(b), "positive"),
+    }
+    if o > 0 then lines[#lines + 1] = line("Dash7_Other", "+" .. amountText(o), "positive") end
+    lines[#lines + 1] = line("Dash7_Burn", "-" .. amountText(bu), "negative")
+    lines[#lines + 1] = line("Admin_Dash_Net", signedText(c + m + b + o - bu), "text")
+    if unknown then lines[#lines + 1] = { text = tr("Dash7_Incomplete"), token = "warn" } end
+    if today then lines[#lines + 1] = { text = tr("Dash7_InProgress"), token = "textMuted" } end
+    local date = string.sub(key, 1, 4) .. "-" .. string.sub(key, 5, 6) .. "-" .. string.sub(key, 7, 8)
+    return { title = today and getText(T .. "ACard_Pair", tr("Admin_Dash_Today"), date) or date, lines = lines }
+end
+
+-- Geometry of the 7-day card: the currency chips after the title (only with two or more
+-- enabled currencies), "full report" at the right of the title row, the chart on the left, the
+-- three figures on the right and the legend along the bottom.
+function Admin:layoutWeek(over)
+    local g, w = self.g, self.width
+    local shown = over == true and (g.ovWeekH or 0) > 0
+    local chipH = math.max(20, fontH.small + 6)
+    local chipY = g.ovWeekY + math.floor((CARD_TITLE_H - chipH) / 2)
+    local rb = self.weekReportButton
+    rb:setVisible(shown)
+    rb:setWidth(math.min(textWidth(rb.fullTitle) + 20, math.floor(w / 3))); rb:setHeight(chipH)
+    rb:setX(w - PAD - rb.width); rb:setY(chipY)
+    U.setButtonTitle(rb, rb.fullTitle)
+    local curs = self.weekCurrencies or EMPTY_ROW
+    local x = PAD + textWidth(tr("Dash7_Title"), UIFont.Medium) + PAD
+    for _, b in ipairs(self.weekCurButtons) do
+        local offered = false
+        for _, id in ipairs(curs) do if id == b.internal then offered = true end end
+        local vis = shown and #curs > 1 and offered
+        b:setVisible(vis)
+        if vis then
+            b.fullTitle = currencyName(b.internal)
+            local bw = math.max(40, math.min(textWidth(b.fullTitle) + 20, rb.x - PAD - x))
+            b:setWidth(bw); b:setHeight(chipH); b:setX(x); b:setY(chipY)
+            b.active = b.internal == self.weekCur
+            U.setButtonTitle(b, b.fullTitle)
+            x = x + bw + 4
+        end
+    end
+    local lh = lineH()
+    g.weekTop = g.ovWeekY + CARD_TITLE_H + 6
+    g.weekLegendY = g.ovWeekY + (g.ovWeekH or 0) - lh - 4
+    local bodyH = math.max(20, g.weekLegendY - 4 - g.weekTop)
+    local chartW = math.floor((w - PAD * 3) * 0.6)
+    local chart = self.weekChart
+    chart:setVisible(shown and self.week ~= nil)
+    chart:setX(PAD); chart:setY(g.weekTop); chart:setWidth(chartW); chart:setHeight(bodyH)
+    g.weekMiniX = PAD * 2 + chartW
+    g.weekMiniW = math.max(40, w - PAD - g.weekMiniX)
+    g.weekMiniH = math.max(fontH.small + 4, math.floor((bodyH - 12) / 3))
+    g.weekMiniTwo = g.weekMiniH >= fontH.small + fontH.medium + 10
+    g.weekSparkW = math.min(96, math.floor(g.weekMiniW * 0.4))
+    g.weekSparkH = math.min(26, g.weekMiniH - 8)
+    -- the legend: a swatch (a short bar for the net line) and its label, then the note on what
+    -- the figures leave out, fitted to what is left of the row
+    local legend = {}
+    local lx = PAD
+    local Ch = C.Charts
+    for _, it in ipairs(P.WEEK_LEGEND) do
+        local label = tr(it[1])
+        local palette = Ch[it[2]]
+        legend[#legend + 1] = { x = lx, label = label, rgb = it[3] and palette[it[3]] or palette, line = it[3] == nil }
+        lx = lx + 14 + textWidth(label) + 12
+    end
+    g.weekLegend = legend
+    g.weekNoteX = lx
+    g.weekNote = fitText(tr("Dash7_Excludes"), math.max(0, w - PAD - lx))
+end
+
+function Admin:drawWeek()
+    local g, w = self.g, self.width
+    if (g.ovWeekH or 0) <= 0 then return end
+    card(self, 0, g.ovWeekY, w, g.ovWeekH, tr("Dash7_Title"))
+    local week = self.week
+    if week == nil then
+        text(self, isPending("admin.system") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), PAD, g.weekTop + 4, "textMuted")
+        return
+    end
+    local Ch = C.Charts
+    local x, mw, mh = g.weekMiniX, g.weekMiniW, g.weekMiniH
+    for i, m in ipairs(week.minis) do
+        local y = g.weekTop + (i - 1) * (mh + 6)
+        fill(self, x, y, mw, mh, "well")
+        if g.weekMiniTwo then
+            local tw = math.max(0, mw - 18 - g.weekSparkW)
+            text(self, fitText(m.label, tw), x + 6, y + 4, "textMuted")
+            text(self, fitText(m.value, tw, UIFont.Medium), x + 6, y + 6 + fontH.small, m.token, UIFont.Medium)
+            if g.weekSparkH > 4 then
+                Ch.drawSpark(self, x + mw - 6 - g.weekSparkW, y + math.floor((mh - g.weekSparkH) / 2),
+                    g.weekSparkW, g.weekSparkH, m.spark, m.rgb)
+            end
+        else
+            local ty = y + math.floor((mh - fontH.small) / 2)
+            text(self, fitText(m.label, math.max(0, mw - 18 - textWidth(m.value))), x + 6, ty, "textMuted")
+            textRight(self, m.value, x + mw - 6, ty, m.token)
+        end
+    end
+    local ly = g.weekLegendY
+    local sw = 10
+    for _, l in ipairs(g.weekLegend) do
+        local c = l.rgb
+        if l.line then
+            self:drawRect(l.x, ly + math.floor(fontH.small / 2) - 1, sw, 2, 1, c.r, c.g, c.b)
+        else
+            self:drawRect(l.x, ly + math.floor((fontH.small - sw) / 2), sw, sw, 1, c.r, c.g, c.b)
+        end
+        text(self, l.label, l.x + sw + 4, ly, "textMuted")
+    end
+    text(self, g.weekNote, g.weekNoteX, ly, "textFaint")
 end
 
 -- One stat cell of the currency card: the label over the figure, both fitted to the cell.
@@ -7858,6 +8519,7 @@ function Admin:drawOverview()
             y = y + g.ovItemH
         end
     end
+    self:drawWeek()
 
     card(self, 0, g.ovCurY, w, g.ovCurH, tr("Admin_Ov_Currencies"))
     local sys = self.system
@@ -8307,6 +8969,7 @@ function Admin:clearData()
     -- and so do the overview's counts and the rail bubbles they feed
     self.attention = nil
     self:rebuildAttention()
+    self:rebuildWeek()
     self.accRequestId, self.curRequestId = nil, nil
     self.accountsPage:clear()
     -- the stat lists are emptied and their caches dropped, so the next paint rebuilds from nothing
@@ -8343,6 +9006,7 @@ function Admin:clearData()
     self.aucHistory, self.aucHistId, self.aucHistAsked = nil, nil, false
     self.aucHistSentQuery, self.aucHistSentId = nil, nil
     self.txPage:clear()
+    self.reportsPage:clear()
     self.shopPage:clear()
     self.whitelistPage:clear()
     self.entitlementsPage:clear()
@@ -8468,6 +9132,7 @@ function Admin:prerender()
     end
 
     if self.tab == "Transactions" and self.hadRead then self.txPage:tick(now) end
+    if self.tab == "Reports" and self.hadRead then self.reportsPage:tick(now) end
     if self.tab == "Shop" and self.hadRead then self.shopPage:tick(now) end
     if self.tab == "Whitelist" and self.hadRead then self.whitelistPage:tick(now) end
     -- the account list: its search box's pause, and the read a cooldown or an older answer held
@@ -8541,7 +9206,7 @@ function Admin:prerender()
     -- the window opacity slider says: at 50 % the selected row's secondary text measured
     -- 1.00:1 against the world behind it (.omc/tmp/colour-audit.json). The stored opacity is
     -- untouched -- the window chrome around this child still honours it.
-    if self.tab == "Transactions" or self.tab == "Shop" or self.tab == "Whitelist"
+    if self.tab == "Transactions" or self.tab == "Reports" or self.tab == "Shop" or self.tab == "Whitelist"
         or self.tab == "Recovery" or self.tab == "Seasons" or self.tab == "IntegrationPlans" or self.tab == "Identity"
         or (self.tab == "Player" and self.playerMode == "list") then
         fillSolid(self, 0, 0, self.width, self.height, "surface")
@@ -8563,6 +9228,7 @@ function Admin:prerender()
         or (self.tab == "Listings" and (self.lstMode == "history" and self.historyAt or self.listingsAt))
         or (self.tab == "Auctions" and (self.aucMode == "history" and self.aucHistoryAt or self.auctionsAt))
         or (self.tab == "Transactions" and self.txPage.updatedAt)
+        or (self.tab == "Reports" and self.reportsPage.updatedAt)
         or (self.tab == "Recovery" and self.recoveryPage.updatedAt)
         or (self.tab == "Seasons" and self.seasonsPage.updatedAt)
         or (self.tab == "IntegrationPlans" and self.entitlementsPage.updatedAt)
@@ -8700,6 +9366,8 @@ function Admin:refresh()
         end
     elseif self.tab == "Transactions" then
         self.txPage:refresh()
+    elseif self.tab == "Reports" then
+        self.reportsPage:refresh()
     elseif self.tab == "Whitelist" then
         self.whitelistPage:refresh()
     elseif self.tab == "Recovery" then
@@ -8742,6 +9410,7 @@ function Admin:setVisible(visible)
         self:closeSellerPickers()
     end
     self.txPage:setVisible(visible and self.tab == "Transactions" and self:readAllowed())
+    self.reportsPage:setVisible(visible and self.tab == "Reports" and self:readAllowed())
     self.shopPage:setVisible(visible and self.tab == "Shop" and self:readAllowed())
     self.whitelistPage:setVisible(visible and self.tab == "Whitelist" and self:readAllowed())
     self.recoveryPage:setVisible(visible and self.tab == "Recovery" and self:readAllowed())
@@ -8757,6 +9426,7 @@ end
 function Admin:dispose()
     self:dropUnsentSeasonStart()
     self.txPage:dispose()
+    self.reportsPage:dispose()
     self.recoveryPage:dispose()
     self.pendingRecovery = nil
     self.seasonsPage:dispose()

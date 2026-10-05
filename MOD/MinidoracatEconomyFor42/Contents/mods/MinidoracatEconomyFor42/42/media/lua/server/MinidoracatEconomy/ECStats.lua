@@ -8,6 +8,10 @@
 --   St.accounts(args)      the paged, sorted, filtered account list behind admin.accounts
 --   St.leaderboard(...)    the public boards behind the `leaderboard` command: total holdings of
 --                          one currency, or one season's longest single lives (ECSeasons' record)
+--   St.wealth(cur, ms)     the holding distribution of one currency (admin.report, ECReports)
+--
+-- It also owns the money-flow classification every report shares (St.flows) and the daily
+-- rollups the ledger listener writes (issuance, per-kind breakdown, the day's opening supply).
 --
 -- Four properties this file owns:
 --
@@ -94,6 +98,7 @@ local function sortRows(list, less)
     end
     return list
 end
+St.sortRows = sortRows           -- ECReports: medians of a few hundred prices, per item
 
 -- Stable account order: case-insensitive first (what a reader expects), exact bytes to break a
 -- case-only tie, so two accounts never compare equal. One rule for every list this file builds -
@@ -739,9 +744,191 @@ local function record(day, ev, p, id)
     end
 end
 
+-- ---------- money flows: one classification for the whole server ----------
+--
+-- St.flows(rec) -> { [currency] = { i, o, t } }, fees. `rec` is a committed transaction (the
+-- ledger's event or a tx.committed line of the daily events file). Seen from the players:
+--   i  inflow:  what a non-player account paid out (amount < 0 on a SYSTEM_ / EXTERNAL_ / MOD: row)
+--   o  outflow: what a non-player account took in (amount > 0 there)
+--   t  player-to-player turnover: market_buy / auction_sale count their positive postings (the
+--      price: the seller's share plus the tax), transfer counts what the recipients received.
+-- auction_bid / auction_refund / account_merge only post to player accounts (a bucket move, a
+-- login merge): their currencies are present (a caller counts the transaction) with i = o = t = 0.
+-- fees = { [currency] = n } or nil: the tax or fee a trade or a transfer burnt (SYSTEM_BURN).
+-- The daily breakdown, the admin money view's totals and the market report all read this one
+-- function, so a row, its day and its report can never classify the same posting differently.
+St.TRADE_KINDS = { market_buy = true, auction_sale = true }
+
+function St.flows(rec)
+    local out, fees = {}, nil
+    local kind = rec.kind
+    local trade = St.TRADE_KINDS[kind] == true
+    local transfer = kind == "transfer"
+    for _, p in ipairs(type(rec.postings) == "table" and rec.postings or {}) do
+        if type(p) == "table" and type(p.account) == "string" and type(p.currency) == "string"
+            and type(p.amount) == "number" then
+            local f = out[p.currency]
+            if not f then
+                f = { i = 0, o = 0, t = 0 }
+                out[p.currency] = f
+            end
+            local amount = p.amount
+            local player = EC.accountClass(p.account) == "player"
+            if not player then
+                if amount < 0 then f.i = f.i - amount elseif amount > 0 then f.o = f.o + amount end
+            end
+            if amount > 0 and (trade or (transfer and player)) then f.t = f.t + amount end
+            if amount > 0 and (trade or transfer) and p.account == "SYSTEM_BURN" then
+                fees = fees or {}
+                fees[p.currency] = (fees[p.currency] or 0) + amount
+            end
+        end
+    end
+    return out, fees
+end
+
+-- One currency of one reward day as recorded: the raw rollup row (read only - callers copy what
+-- they reply with) or nil, and whether that day's record of this currency is incomplete (the
+-- same two rules St.issued counts in unknownDays).
+function St.rollupRow(day, id)
+    local view, legacy, broken = dayView(day)
+    local c = view and view[id]
+    if type(c) ~= "table" then c = nil end
+    return c, (legacy and id ~= R.CURRENCY) or (broken ~= nil and broken[id] == true)
+end
+
+local function count(v)
+    return tonumber(v) or 0
+end
+
+-- The last `days` reward days one by one, oldest first: what St.issued sums, per day.
+function St.issuedDaily(days, ms)
+    local out = { keys = {}, byCurrency = {} }
+    for _, id in ipairs(EC.CURRENCY_ORDER) do out.byCurrency[id] = {} end
+    for i = days - 1, 0, -1 do
+        local day = R.dayKey(ms - i * St.DAY_MS)
+        out.keys[#out.keys + 1] = day
+        for _, id in ipairs(EC.CURRENCY_ORDER) do
+            local c, unknown = St.rollupRow(day, id)
+            local list = out.byCurrency[id]
+            list[#list + 1] = {
+                checkin = count(c and c.checkinTotal), milestone = count(c and c.milestoneTotal),
+                mint = count(c and c.mint), burn = count(c and c.burn), buyback = count(c and c.buyback),
+                unknown = unknown,
+            }
+        end
+    end
+    return out
+end
+
+-- ---------- wealth distribution ----------
+
+-- Lower bounds of the fixed holding bins: 0 | 1-99 | 100-499 | 500-999 | 1000-2499 | 2500-4999 |
+-- 5000-9999 | 10000+. Fixed, so two reports of different days can be laid side by side.
+St.WEALTH_BINS = { 0, 1, 100, 500, 1000, 2500, 5000, 10000 }
+St.WEALTH_TOP = 0.1               -- "the top 10% of accounts hold ..."
+
+-- Player accounts only (the census population: system accounts are not holders), each by its
+-- total (available + reserved) of `currency`; an unreadable wallet row is left out, never a 0.
+-- Returns the distribution, the currency's supply line and the census instant.
+function St.wealth(currency, ms)
+    local snap = census(ms or EC.now(), true)
+    local values = {}
+    for _, r in ipairs(snap.rows) do
+        local b = r.balances[currency]
+        if b and b.total ~= nil then values[#values + 1] = b.total end
+    end
+    sortRows(values, function(a, b) return a < b end)
+    local n = #values
+    local bins = {}
+    for i, lo in ipairs(St.WEALTH_BINS) do
+        local nextLo = St.WEALTH_BINS[i + 1]
+        bins[i] = { lo = lo, hi = nextLo and nextLo - 1 or nil, n = 0 }
+    end
+    local total = 0
+    for _, v in ipairs(values) do
+        total = total + v
+        local k = #bins
+        while k > 1 and v < bins[k].lo do k = k - 1 end
+        bins[k].n = bins[k].n + 1
+    end
+    local median = nil
+    if n > 0 then
+        local mid = math.floor((n + 1) / 2)
+        median = n % 2 == 1 and values[mid] or math.floor((values[mid] + values[mid + 1]) / 2)
+    end
+    local topN = n > 0 and math.ceil(n * St.WEALTH_TOP) or 0
+    local topSum = 0
+    for i = n - topN + 1, n do topSum = topSum + values[i] end
+    local share = total > 0 and math.floor(topSum / total * 10000 + 0.5) / 10000 or 0
+    return { bins = bins, accounts = n, median = median, top = { n = topN, share = share } },
+        snap.supply[currency], snap.at
+end
+
+-- ---------- daily breakdown (per kind, per SKU, the day's opening supply) ----------
+--
+-- On the same rollup row as the issuance counters, anonymous numbers only:
+--   k[kind]   = { n, i, o, t }   transactions of that kind touching this currency and their flows
+--   sku[id]   = { n, u, a }      shop_buy: purchases, shares (payload.count), coins paid
+--   bb[id]    = { n, u, a }      shop_sell: the same for the buyback
+--   sup       = { t, p, r, h }   the census at the day's first commit: total, players, reserved,
+--                                holders. Absent = not taken (unknown), never 0.
+local function recordKinds(day, ev, id, f)
+    local c = R.rollupCurrency(day, id)
+    local kind = type(ev.kind) == "string" and ev.kind or "other"
+    if type(c.k) ~= "table" then c.k = {} end
+    local k = c.k[kind]
+    if type(k) ~= "table" then
+        k = { n = 0, i = 0, o = 0, t = 0 }
+        c.k[kind] = k
+    end
+    k.n, k.i, k.o, k.t = k.n + 1, k.i + f.i, k.o + f.o, k.t + f.t
+    local field = (kind == "shop_buy" and "sku") or (kind == "shop_sell" and "bb") or nil
+    local payload = type(ev.payload) == "table" and ev.payload or nil
+    if field and payload and type(payload.sku) == "string" and payload.sku ~= "" then
+        if type(c[field]) ~= "table" then c[field] = {} end
+        local s = c[field][payload.sku]
+        if type(s) ~= "table" then
+            s = { n = 0, u = 0, a = 0 }
+            c[field][payload.sku] = s
+        end
+        local shares = payload.count
+        s.n = s.n + 1
+        if type(shares) == "number" and shares > 0 and shares == math.floor(shares) then s.u = s.u + shares end
+        s.a = s.a + (field == "sku" and f.o or f.i)
+    end
+end
+
+-- The census is a whole-server walk: once per reward day, at its first commit. A restart finds
+-- the snapshot already on the day's rows and does not take a second one. A commit made while the
+-- server is still starting (the auction downtime policy runs in an init hook that may come before
+-- St.init) has no root to walk yet: it is skipped, and the next commit of the day takes it.
+local supDay = nil
+local function noteSupply(day, ms)
+    if supDay == day or md == nil then return end
+    supDay = day
+    local r = md.rollups[day]
+    if type(r) == "table" and type(r.byCurrency) == "table" then
+        for _, c in pairs(r.byCurrency) do
+            if type(c) == "table" and type(c.sup) == "table" then return end
+        end
+    end
+    local snap = census(ms, true)
+    for _, id in ipairs(EC.CURRENCY_ORDER) do
+        local s = snap.supply[id]
+        -- an incomplete census is a lower bound: no snapshot rather than a wrong one
+        if s and s.complete then
+            R.rollupCurrency(day, id).sup = { t = s.total, p = s.players, r = s.reserved, h = s.holders }
+        end
+    end
+end
+
 L.onCommitted(function(ev)
     St.invalidate()
-    local day = R.dayKey(ev.ts or EC.now())
+    local ms = ev.ts or EC.now()
+    local day = R.dayKey(ms)
+    local supOk, supErr = pcall(noteSupply, day, ms)
+    if not supOk then EC.log("supply snapshot failed on " .. tostring(day) .. ": " .. tostring(supErr)) end
     for _, p in ipairs(ev.postings or {}) do
         local id = p.currency
         if type(id) == "string" and EC.CURRENCIES[id] and type(p.amount) == "number" then
@@ -752,11 +939,21 @@ L.onCommitted(function(ev)
             end
         end
     end
+    for id, f in pairs(St.flows(ev)) do
+        if EC.CURRENCIES[id] then
+            local ok, err = pcall(recordKinds, day, ev, id, f)
+            if not ok then
+                EC.log("daily breakdown failed for " .. id .. " on " .. tostring(day) .. ": " .. tostring(err))
+                markIncomplete(day, id)
+            end
+        end
+    end
 end)
 
 function St.init(root)
     md = root
     cache = nil
+    supDay = nil
 end
 
 S.Stats = St

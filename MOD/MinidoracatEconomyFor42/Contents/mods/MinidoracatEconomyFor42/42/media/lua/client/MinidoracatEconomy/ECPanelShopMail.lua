@@ -13,6 +13,7 @@ if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEco
     require "MinidoracatEconomy/ECWidgets"
 end
 require "MinidoracatEconomy/ECPanelWidgets"
+require "MinidoracatEconomy/ECPanelCards"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -59,11 +60,8 @@ function M.shopDayNote(self)
     local ends = shop and tonumber(shop.dayEndsMs) or nil
     if ends == nil then return "" end
     local off = self.offsetMin or 0
-    local abs = math.abs(off)
-    local zone = "UTC" .. (off < 0 and "-" or "+") .. U.pad2(math.floor(abs / 60))
-        .. ":" .. U.pad2(abs % 60)
     return getText(T .. "Shop_DayEnds", U.stampText(ends, off),
-        U.durationText(math.max(0, ends - EC.now())), zone)
+        U.durationText(math.max(0, ends - EC.now())), C.PanelCards.zoneText(off))
 end
 
 -- The shop's pills, rebuilt by the layout and once a second by the paint (the reset countdown):

@@ -1058,6 +1058,7 @@ require("MinidoracatEconomy/ECEntitlements")
 require("MinidoracatEconomy/ECTransfer")
 require("MinidoracatEconomy/ECIdentity")
 require("MinidoracatEconomy/ECMerge")
+require("MinidoracatEconomy/ECReports")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
@@ -1111,6 +1112,8 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the admin overview's cou
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText never starts a line with closing punctuation (TX-1c)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the family toolbar (scenario DK: one Dock entry and no button of our own, badge and mail status, open state / click / MP-only, the FloatButton fallback without the capability or on a refused register)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the item menu before any window and MOD name files with a trailing comma (scenario IM: a player's menu has no admin entry, no framework raises nothing and disables the admin entries, an administrator's first right-click offers both; IN: a comma before the closing brace reads in full, a doubled comma stays that MOD's gap)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 25   -- +25: money flows and the admin report (scenario RP: St.flows classification (2), the daily breakdown per kind / SKU / buyback and the day's opening supply (2), a failed breakdown write marks the day and the money still moves, admin.system issuedDaily and its sum (2), admin.report gate / argument codes / summary shape / wealth / shop rows / periods (6), the market scan before and after a refresh, rolled-back trades left out, the 7-day view and the refresh throttle, priceRef from the cache only and its item check (6), admin.transactions totals over every match past 200, rolled-back rows out of the totals, per-row flow / payer / payee / fee (3), the scheduled scan after a restart on an empty server (2), the 60-day trim with the breakdown (1))
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a commit while the server is still starting, before the stats module is up (RP-26: no error, the money moves, the next commit takes the day's supply)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20657,6 +20660,319 @@ ISButton, ISPanel, Events, MinidoracatUI, isClient = saved.ISButton, saved.ISPan
 getSpecificPlayer, ISContextMenu, ISInventoryPaneContextMenu = saved.getSpecificPlayer, saved.ISContextMenu, saved.invMenu
 getModFileReader, listFilesInModDirectory, getActivatedMods = saved.getModFileReader, saved.listFiles, saved.activated
 getTextManager, UIFont = saved.getTextManager, saved.UIFont
+end)()
+
+io.write("scenario RP: money flows, daily breakdown and the admin report\n")
+;(function()
+    local St, Rp, Shop = EC.Stats, EC.Reports, S.Shop
+    local DAY = 86400000
+    modDataStore[EC.MODDATA_KEY] = nil
+    files, sentCommands = {}, {}
+    nowMs = 1789992000000          -- 12:00 UTC: the reward day (UTC+8) and the UTC day share a date
+    fire("OnServerStarted")
+    local admin = fakePlayer("rp-admin"); admin.role = "admin"
+    local reader = fakePlayer("rp-reader"); reader.role = "moderator"
+    local buyer = fakePlayer("rp-buyer")
+    local seller = fakePlayer("rp-seller")
+    onlinePlayers = { admin, reader, buyer, seller }
+    worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+    local function cmd(who, name, args)
+        nowMs = nowMs + 700
+        sentCommands = {}
+        fire("OnClientCommand", EC.COMMAND_MODULE, name, who, withCurrency(name, args or {}))
+        for _ = 1, 20 do fire("OnTickEvenPaused") end
+        local reply = lastSent(name)
+        return reply and reply.args
+    end
+    local function ticks(n) for _ = 1, n do fire("OnTickEvenPaused") end end
+    local function trade(id, item, qty, price, tax)
+        local postings = { { account = "rp-buyer", currency = "survivor", amount = -price },
+            { account = "rp-seller", currency = "survivor", amount = price - tax, fee = tax > 0 and tax or nil } }
+        if tax > 0 then postings[3] = { account = "SYSTEM_BURN", currency = "survivor", amount = tax } end
+        return L.post({ kind = "market_buy", requestId = "rp-trade-" .. id, reasonCode = "market_buy", actor = "rp-buyer",
+            payload = { item = item, qty = qty, listingId = "rp-l-" .. id, tax = tax }, postings = postings })
+    end
+    local today = R.dayKey(nowMs)
+    cmd(admin, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+    L.credit("rp-buyer", "survivor", 1000, "SYSTEM_MINT", { requestId = "rp-seed", reasonCode = "seed" })
+    local supAfterSeed = St.supply(nowMs).survivor.total
+    L.credit("rp-buyer", "survivor", 30, "SYSTEM_MINT", { kind = "checkin", requestId = "rp-checkin", reasonCode = "daily_checkin" })
+    local bought = Shop.buy(buyer, { id = "bandage", count = 2, currency = "survivor", revision = Shop.revision(), requestId = "rp-shop" })
+    S.Config.setOption("ShopBuybackEnabled", true, "rp-admin")
+    Shop.update("bandage", { prices = { survivor = { bidPrice = 5, buyback = true } } }, "rp-admin")
+    local sold = Shop.sell(buyer, { id = "bandage", itemIds = { buyer.inventory.items[1].id }, currency = "survivor",
+        revision = Shop.revision(), requestId = "rp-buyback" })
+    local pills = Shop.buy(buyer, { id = "antibiotics", count = 2, currency = "survivor", revision = Shop.revision(), requestId = "rp-pills" })
+    local axes = { trade("a1", "Base.Axe", 1, 100, 5), trade("a2", "Base.Axe", 1, 140, 7), trade("a3", "Base.Axe", 1, 200, 10) }
+    trade("n1", "Base.Nails", 4, 10, 0)
+    for i = 1, 25 do trade("f" .. i, "Test.Filler" .. i, 1, i, 0) end
+    local bid = L.post({ kind = "auction_bid", requestId = "rp-bid", reasonCode = "auction_bid", actor = "rp-buyer",
+        payload = { item = "Base.Hammer", qty = 1, auctionId = "rp-auction" },
+        postings = { { account = "rp-buyer", currency = "survivor", amount = -50 },
+            { account = "rp-buyer", currency = "survivor", amount = 50, bucket = "reserved" } } })
+    local sale = L.post({ kind = "auction_sale", requestId = "rp-sale", reasonCode = "auction_sale", actor = "rp-buyer",
+        payload = { item = "Base.Hammer", qty = 1, auctionId = "rp-auction", tax = 2 },
+        postings = { { account = "rp-buyer", currency = "survivor", amount = -50, bucket = "reserved" },
+            { account = "rp-seller", currency = "survivor", amount = 48, fee = 2 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 2 } } })
+    local transfer = L.post({ kind = "transfer", requestId = "rp-transfer", reasonCode = "transfer", actor = "rp-buyer",
+        payload = { from = "rp-buyer", to = "rp-seller" },
+        postings = { { account = "rp-buyer", currency = "survivor", amount = -22, fee = 2 },
+            { account = "rp-seller", currency = "survivor", amount = 20 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 2 } } })
+    -- yesterday's file: a trade of a world that was rolled back (its epoch is in the history)
+    local oldEpoch = "1700000000001"
+    S.modData().meta.history[#S.modData().meta.history + 1] = { epoch = oldEpoch, loadedSeq = 0 }
+    files[X.ROOT .. "/events-" .. EC.dayKey(nowMs - DAY) .. ".json"] = { opens = 0, lines = { EC.jsonEncode({
+        type = "tx.committed", txId = oldEpoch .. ":5", epoch = oldEpoch, seq = 5, ts = nowMs - DAY,
+        kind = "market_buy", requestId = "rp-ghost", reasonCode = "market_buy",
+        payload = { item = "Base.Axe", qty = 1, listingId = "rp-ghost" },
+        postings = { { account = "rp-ghost-buyer", currency = "survivor", amount = -9999 },
+            { account = "rp-ghost-seller", currency = "survivor", amount = 9999 } } }) } }
+    ticks(40)
+
+    -- RP-1/2: one classification, read straight from the postings
+    local function flows(kind, postings) return St.flows({ kind = kind, postings = postings }) end
+    local mk, mkFee = flows("market_buy", { { account = "b", currency = "survivor", amount = -100 },
+        { account = "s", currency = "survivor", amount = 95 }, { account = "SYSTEM_BURN", currency = "survivor", amount = 5 } })
+    local sb, sbFee = flows("shop_buy", { { account = "b", currency = "survivor", amount = -24 }, { account = "SYSTEM_BURN", currency = "survivor", amount = 24 } })
+    local bb = flows("shop_sell", { { account = "SYSTEM_MINT", currency = "survivor", amount = -5 }, { account = "b", currency = "survivor", amount = 5 } })
+    local ci = flows("checkin", { { account = "SYSTEM_MINT", currency = "cat", amount = -30 }, { account = "b", currency = "cat", amount = 30 } })
+    check(mk.survivor.i == 0 and mk.survivor.o == 5 and mk.survivor.t == 100 and mkFee.survivor == 5
+        and sb.survivor.o == 24 and sb.survivor.i == 0 and sb.survivor.t == 0 and sbFee == nil
+        and bb.survivor.i == 5 and bb.survivor.o == 0 and ci.cat.i == 30 and ci.survivor == nil,
+        "RP-1: a market sale is turnover plus its burnt tax, a shop purchase is an outflow, a buyback and a check-in are inflows in their own currency")
+    local hold = flows("auction_bid", { { account = "b", currency = "survivor", amount = -50 }, { account = "b", currency = "survivor", amount = 50, bucket = "reserved" } })
+    local back = flows("auction_refund", { { account = "b", currency = "survivor", amount = -50, bucket = "reserved" }, { account = "b", currency = "survivor", amount = 50 } })
+    local merge = flows("account_merge", { { account = "a", currency = "survivor", amount = -10 }, { account = "b", currency = "survivor", amount = 10 } })
+    local tr, trFee = flows("transfer", { { account = "b", currency = "survivor", amount = -22 }, { account = "s", currency = "survivor", amount = 20 },
+        { account = "SYSTEM_BURN", currency = "survivor", amount = 2 } })
+    local modDebit = flows("mod", { { account = "b", currency = "survivor", amount = -7 }, { account = "MOD:X", currency = "survivor", amount = 7 } })
+    check(hold.survivor.i + hold.survivor.o + hold.survivor.t == 0 and back.survivor.i + back.survivor.o + back.survivor.t == 0
+        and merge.survivor.i + merge.survivor.o + merge.survivor.t == 0
+        and tr.survivor.t == 20 and tr.survivor.o == 2 and tr.survivor.i == 0 and trFee.survivor == 2
+        and modDebit.survivor.o == 7 and modDebit.survivor.t == 0,
+        "RP-2: a bid reserve, its refund and a merge move nothing in or out; a transfer is what the recipient got plus its burnt fee; an integration debit is an outflow")
+
+    -- RP-3/4: the day's breakdown and opening supply on the rollup row
+    local row = R.rollupPeek(today, "survivor")
+    local k = row and row.k or {}
+    check(bought.ok and sold.ok and pills.ok and axes[3].ok and bid.ok and sale.ok and transfer.ok
+        and k.market_buy and k.market_buy.n == 29 and k.market_buy.o == 22 and k.market_buy.t == 775 and k.market_buy.i == 0
+        and k.auction_bid and k.auction_bid.n == 1 and k.auction_bid.i + k.auction_bid.o + k.auction_bid.t == 0
+        and k.auction_sale.t == 50 and k.auction_sale.o == 2 and k.transfer.t == 20 and k.transfer.o == 2
+        and k.checkin.i == 30 and k.shop_buy.n == 2 and k.shop_buy.o == 144 and k.shop_sell.i == 5,
+        "RP-3: every commit adds its kind's count, inflow, outflow and turnover to the day (a bid only counts)")
+    check(row.sku and row.sku.bandage.n == 1 and row.sku.bandage.u == 2 and row.sku.bandage.a == 24
+        and row.sku.antibiotics.u == 2 and row.sku.antibiotics.a == 120 and row.bb.bandage.n == 1 and row.bb.bandage.u == 1
+        and row.bb.bandage.a == 5 and row.sup and row.sup.t == supAfterSeed and row.sup.t == 1000 and row.sup.h == 1
+        and EC.jsonEncode(row.sup):find("rp%-") == nil and EC.jsonEncode(row.k):find("rp%-") == nil,
+        "RP-4: purchases and buybacks per SKU, and the supply taken once at the day's first commit, all without an account name")
+
+    -- RP-5: a breakdown that cannot be written marks the day, the money still moves
+    local catRow = R.rollupCurrency(today, "cat")
+    catRow.k = setmetatable({}, { __newindex = function() error("trap") end })
+    local catCredit = L.credit("rp-buyer", "cat", 10, "SYSTEM_MINT", { requestId = "rp-cat", reasonCode = "seed" })
+    setmetatable(catRow.k, nil)
+    local _, catUnknown = St.rollupRow(today, "cat")
+    local _, surUnknown = St.rollupRow(today, "survivor")
+    check(catCredit.ok and L.getBalance("rp-buyer", "cat").available == 10 and catRow.mint == 10 and catUnknown == true
+        and surUnknown == false,
+        "RP-5: a breakdown write that fails marks that currency's day incomplete; the transaction and the issuance count stand")
+
+    -- RP-6/7: the overview's last seven days
+    local sys = cmd(reader, "admin.system", {})
+    local daily = sys and sys.issuedDaily
+    local sur = daily and daily.byCurrency.survivor
+    check(daily and #daily.keys == 7 and daily.keys[7] == today and daily.keys[1] == R.dayKey(nowMs - 6 * DAY)
+        and #sur == 7 and sur[7].checkin == R.rollupPeek(today, "survivor").checkinTotal and sur[7].mint == 1035
+        and sur[7].buyback == 5 and sur[7].burn == 170
+        and sur[7].unknown == false and sur[6].mint == 0 and daily.byCurrency.cat[7].unknown == true,
+        "RP-6: admin.system carries the last seven reward days oldest first, each with the issuance counters and its unknown mark")
+    local sum = 0
+    for _, d in ipairs(sur or {}) do sum = sum + d.mint end
+    check(sys and sum == sys.issued.week.byCurrency.survivor.mint and sum > 0,
+        "RP-7: the seven days add up to the week's issuance the overview already shows")
+
+    -- RP-8..13: admin.report summary
+    local function report(who, args) args.currency = args.currency or "survivor"; return cmd(who, "admin.report", args) end
+    local denied = report(buyer, { requestId = "rp-r0", days = 7 })
+    check(denied and denied.error == "forbidden" and denied.requestId == "rp-r0" and denied.keys == nil and denied.days == nil
+        and denied.wealth == nil, "RP-8: a player is refused admin.report and learns nothing")
+    local badCur = report(reader, { requestId = "rp-r1", days = 7, currency = "nope" })
+    local zero = report(reader, { requestId = "rp-r2", days = 0 })
+    local long = report(reader, { requestId = "rp-r3", days = 61 })
+    local text = report(reader, { requestId = "rp-r4", days = "7" })
+    local old = report(reader, { requestId = "rp-r5", fromMs = R.dayStartMs(nowMs) - 60 * DAY, toMs = nowMs })
+    local back2 = report(reader, { requestId = "rp-r6", fromMs = nowMs, toMs = nowMs - 1 })
+    local action = report(reader, { requestId = "rp-r7", action = "bogus", days = 7 })
+    local mdays = report(reader, { requestId = "rp-r8", action = "market", days = 14 })
+    check(badCur.error == "invalid_args" and zero.error == "invalid_range" and long.error == "invalid_range"
+        and text.error == "invalid_args" and old.error == "invalid_range" and back2.error == "invalid_range"
+        and action.error == "invalid_args" and mdays.error == "invalid_range" and zero.days == nil and zero.requestId == "rp-r2",
+        "RP-9: currency, period, range and action are checked by the server and refused with a code")
+    local week = report(reader, { requestId = "rp-r9", days = 7 })
+    local function source(rows, kind, dir)
+        for _, r in ipairs(rows or {}) do if r.kind == kind and r.dir == dir then return r end end
+    end
+    local mb, cin = source(week.sources, "market_buy", "out"), source(week.sources, "checkin", "in")
+    check(week.ok and not week.error and #week.keys == 7 and week.keys[7] == today and #week.days == 7
+        and week.days[7].k.market_buy.t == 775 and week.days[6].k == nil and week.days[7].sup.t == 1000
+        and week.kindsFrom == today and week.prev.known == false and week.capped == false
+        and mb and mb.amount == 22 and mb.n == 29 and mb.prev == nil and cin and cin.amount == 30
+        and week.sources[1].kind == "credit" and week.sources[1].dir == "in" and source(week.sources, "auction_bid", "in") == nil
+        and source(week.sources, "auction_bid", "out") == nil and week.totals.t == 845,
+        "RP-10: the summary carries the days oldest first, the breakdown only from its first day, per-kind sources and no comparison with an unrecorded period")
+    local bal = {}
+    for _, name in ipairs({ "rp-admin", "rp-reader", "rp-buyer", "rp-seller" }) do
+        local b = L.getBalance(name, "survivor")
+        bal[#bal + 1] = b.available + b.reserved
+    end
+    EC.sortSafe(bal, function(a, b) return a < b end)
+    local total = bal[1] + bal[2] + bal[3] + bal[4]
+    local w = week.wealth
+    check(w.accounts == 4 and #w.bins == 8 and w.bins[1].lo == 0 and w.bins[1].hi == 0 and w.bins[8].lo == 10000
+        and w.bins[8].hi == nil and w.bins[1].n == 2 and w.median == math.floor((bal[2] + bal[3]) / 2)
+        and w.top.n == 1 and w.top.share == math.floor(bal[4] / total * 10000 + 0.5) / 10000
+        and week.now.total == total and week.now.accounts == 2,
+        "RP-11: wealth counts every player account in fixed bins, with the median and the top tenth's share")
+    local status = Shop.buybackStatus(nowMs).byCurrency.survivor
+    local pct = status.serverCap > 0 and math.floor(5 / (status.serverCap * 7) * 10000 + 0.5) / 10000 or nil
+    local rows = week.shop.rows
+    check(#rows == 2 and rows[1].sku == "antibiotics" and rows[1].units == 2 and rows[1].capDays == 1 and rows[1].scope == "global"
+        and rows[2].sku == "bandage" and rows[2].item == "Base.Bandage" and rows[2].count == 1 and rows[2].amount == 24
+        and rows[2].capDays == 0 and rows[2].cap == 5 and week.shop.buyback.days == 7 and week.shop.buyback.pct == pct,
+        "RP-12: shop rows count shares, coins and the days the cap was reached; buyback use is a share of the server cap")
+    local all60 = report(reader, { requestId = "rp-r10", days = 60 })
+    local oneDay = report(reader, { requestId = "rp-r11", fromMs = R.dayStartMs(nowMs), toMs = nowMs + 1 })
+    local season = report(reader, { requestId = "rp-r12", season = true })
+    check(all60.ok and #all60.keys == 60 and #all60.days == 60 and all60.keys[60] == today and #all60.sources <= Rp.SOURCES_MAX
+        and #all60.shop.rows <= Rp.SHOP_ROWS and oneDay.ok and #oneDay.keys == 1 and oneDay.keys[1] == today
+        and season.ok and #season.keys == 1 and season.capped == false,
+        "RP-13: 60 days, an explicit range and the current season resolve to reward days inside the retention")
+
+    -- RP-14..19: the market scan
+    local early = cmd(buyer, "market.priceRef", { requestId = "rp-p1", item = "Base.Axe" })
+    local before = report(reader, { requestId = "rp-m0", action = "market", days = 30 })
+    check(early and early.state == "none" and early.requestId == "rp-p1" and EC.countKeys(early.byCurrency) == 0
+        and before.state == "none" and #before.items == 0 and Rp.status().running == false,
+        "RP-14: a player's price reference before any scan answers none and starts nothing")
+    local started = report(reader, { requestId = "rp-m1", action = "market", days = 30, refresh = true })
+    for _ = 1, 300 do
+        if Rp.status().state ~= "running" then break end
+        ticks(1)
+    end
+    local m30 = report(reader, { requestId = "rp-m2", action = "market", days = 30 })
+    local axe, hammer = m30.items[1], m30.items[2]
+    check(started.state == "running" and m30.state == "ready" and m30.generatedAt ~= nil and #m30.items == Rp.TOP_ITEMS
+        and axe.item == "Base.Axe" and axe.n == 3 and axe.units == 3 and axe.amount == 440 and axe.median == 140
+        and axe.lo == 100 and axe.hi == 200 and axe.auction == 0 and hammer.item == "Base.Hammer" and hammer.auction == 1
+        and #axe.spark == 14 and axe.spark[14] == 146.67 and axe.spark[13] == false,
+        "RP-15: an administrator's refresh scans the events files: top items by coins, unit-price median and range, a 14-day line")
+    local sorted = true
+    for i = 2, #m30.items do if m30.items[i].amount > m30.items[i - 1].amount then sorted = false end end
+    check(sorted and #m30.traders.daily == 30 and m30.traders.total == 2 and m30.traders.daily[30] == 2
+        and m30.traders.daily[29] == 0 and m30.turnover.daily[30] == 845 and m30.turnover.daily[29] == 0,
+        "RP-16: a rolled-back trade is not a trade: no price, no trader, no turnover on its day")
+    local m7 = report(reader, { requestId = "rp-m3", action = "market", days = 7 })
+    local gen = m30.generatedAt
+    local again = report(reader, { requestId = "rp-m4", action = "market", days = 30, refresh = true })
+    check(m7.state == "ready" and #m7.traders.daily == 7 and #m7.turnover.daily == 7 and m7.items[1].median == 140
+        and again.state == "ready" and again.generatedAt == gen and Rp.status().running == false,
+        "RP-17: the 7-day view comes from the same scan, and a refresh within a minute of the last one starts nothing")
+    local ref = cmd(buyer, "market.priceRef", { requestId = "rp-p2", item = "Base.Axe" })
+    local nails = cmd(buyer, "market.priceRef", { requestId = "rp-p3", item = "Base.Nails" })
+    check(ref.state == "ready" and ref.days == 30 and ref.byCurrency.survivor.n == 3 and ref.byCurrency.survivor.median == 140
+        and ref.byCurrency.survivor.lo == 100 and ref.byCurrency.survivor.hi == 200 and nails.byCurrency.survivor.median == 2.5
+        and nails.byCurrency.survivor.units == 4 and Rp.status().generatedAt == gen and Rp.status().running == false,
+        "RP-18: the price reference reads the cached scan per unit, and asking never starts another scan")
+    local badItem = cmd(buyer, "market.priceRef", { requestId = "rp-p4", item = 42 })
+    local longItem = cmd(buyer, "market.priceRef", { requestId = "rp-p5", item = string.rep("x", 129) })
+    check(badItem.error == "invalid_args" and longItem.error == "invalid_args" and badItem.byCurrency == nil,
+        "RP-19: the price reference checks the item it is asked about")
+
+    -- RP-20..22: the money view's totals cover every match, and each row knows its direction
+    for i = 1, 230 do
+        L.credit("rp-noise-" .. i, "survivor", 1, "SYSTEM_MINT", { kind = "checkin", requestId = "rp-noise-" .. i, reasonCode = "daily_checkin" })
+    end
+    ticks(40)
+    local rewards = cmd(reader, "admin.transactions", { requestId = "rp-t1", group = "rewards" })
+    check(rewards and not rewards.error and rewards.truncated and #rewards.entries == 200 and rewards.total == 231
+        and rewards.summary.n == 231 and rewards.summary.byCurrency.survivor.i == 260 and rewards.summary.byGroup.rewards == 231,
+        "RP-20: the money view's totals add up every match, not only the 200 rows it sends")
+    local market = cmd(reader, "admin.transactions", { requestId = "rp-t2", group = "market" })
+    local first, ghost = nil, nil
+    for _, e in ipairs(market.entries) do
+        if e.txId == axes[1].txId then first = e end
+        if e.rolledBack then ghost = e end
+    end
+    check(market.total == 30 and ghost ~= nil and market.summary.n == 29 and market.summary.byCurrency.survivor.t == 775
+        and market.summary.byCurrency.survivor.o == 22,
+        "RP-21: a rolled-back transaction is listed but left out of the totals")
+    local tx = cmd(reader, "admin.transactions", { requestId = "rp-t3", group = "transfer" })
+    local bids = cmd(reader, "admin.transactions", { requestId = "rp-t4", group = "auction" })
+    local bidRow, saleRow = nil, nil
+    for _, e in ipairs(bids.entries) do
+        if e.kind == "auction_bid" then bidRow = e elseif e.kind == "auction_sale" then saleRow = e end
+    end
+    check(first and first.flow.survivor.t == 100 and first.flow.survivor.o == 5 and first.payer == "rp-buyer"
+        and first.payee == "rp-seller" and first.fee.survivor == 5 and tx.entries[1].fee.survivor == 2
+        and tx.entries[1].payer == "rp-buyer" and tx.entries[1].flow.survivor.t == 20
+        and bidRow and bidRow.payer == nil and bidRow.payee == nil and bidRow.fee == nil
+        and saleRow and saleRow.payer == "rp-buyer" and saleRow.fee.survivor == 2,
+        "RP-22: each row carries its flow, payer, payee and the burnt fee of a trade or transfer")
+
+    -- RP-23/24: the scheduled scan, on a server nobody is on
+    onlinePlayers = {}
+    fire("OnServerStarted")
+    nowMs = nowMs + Rp.FIRST_SCAN_MS - 1000
+    ticks(5)
+    local waiting = Rp.status()
+    nowMs = nowMs + 2000
+    ticks(1)
+    local running = Rp.status().running
+    for _ = 1, 300 do
+        if Rp.status().state ~= "running" then break end
+        ticks(1)
+    end
+    check(waiting.state == "none" and waiting.running == false and running == true,
+        "RP-23: after a restart the first scan waits about three minutes, then starts on its own tick")
+    check(Rp.status().state == "ready" and Rp.status().nextAt >= nowMs + Rp.SCAN_EVERY_MS - 60000,
+        "RP-24: with nobody online the scan finishes and the next one is six hours away")
+
+    -- RP-25: the rollups keep 60 days; the new day starts with its breakdown and supply
+    local md = S.modData()
+    for i = 1, 70 do md.rollups[string.format("2025%04d", i)] = { v = R.ROLLUP_VERSION, byCurrency = {} } end
+    nowMs = nowMs + DAY
+    L.credit("rp-buyer", "survivor", 1, "SYSTEM_MINT", { kind = "checkin", requestId = "rp-next-day", reasonCode = "daily_checkin" })
+    local kept = 0
+    for _ in pairs(md.rollups) do kept = kept + 1 end
+    local fresh = R.rollupPeek(R.dayKey(nowMs), "survivor")
+    check(kept == 60 and md.rollups["20250001"] == nil and fresh and fresh.k.checkin.n == 1 and fresh.sup ~= nil,
+        "RP-25: the day buckets keep their 60-day trim with the breakdown on them")
+
+    -- RP-26: a commit while the server is still starting (the auction downtime policy runs in an
+    -- init hook that may come before St.init) moves the money and raises nothing; the day's
+    -- supply is taken by the first commit after the start
+    local realLog, logs = EC.log, {}
+    EC.log = function(m) logs[#logs + 1] = tostring(m) end
+    St.init(nil)
+    nowMs = nowMs + DAY
+    local early = L.credit("rp-buyer", "survivor", 2, "SYSTEM_MINT", { kind = "checkin", requestId = "rp-init-commit", reasonCode = "daily_checkin" })
+    local quiet = true
+    for _, m in ipairs(logs) do
+        for _, w in ipairs({ "snapshot failed", "rollup failed", "breakdown failed" }) do
+            if string.find(m, w, 1, true) then quiet = false end
+        end
+    end
+    St.init(S.modData())
+    L.credit("rp-buyer", "survivor", 1, "SYSTEM_MINT", { kind = "checkin", requestId = "rp-after-init", reasonCode = "daily_checkin" })
+    EC.log = realLog
+    local startDay = R.rollupPeek(R.dayKey(nowMs), "survivor")
+    check(type(early) == "table" and early.ok ~= false and quiet and startDay and startDay.sup ~= nil
+        and startDay.k.checkin.n == 2,
+        "RP-26: a commit before the stats module is up raises nothing; the next one takes the day's supply")
+    onlinePlayers = {}
 end)()
 
 io.write("\n")

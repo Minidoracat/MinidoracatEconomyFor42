@@ -925,6 +925,13 @@ handlers["market.sellers"] = function(args)
     notify(C.marketListeners, "market", "sellers", args)
 end
 
+-- market.priceRef reply: { requestId, item, state = "none"|"running"|"ready"|"failed",
+-- generatedAt, days, byCurrency = { [cur] = { n, units, median, lo, hi } } }. Transport only --
+-- the listing dialog that asked matches it on its own requestId (ECPanelDialogs).
+handlers["market.priceRef"] = function(args)
+    notify(C.marketListeners, "market", "priceRef", args)
+end
+
 -- `seller` is an exact account name: the server compares it byte for byte, and it is a condition
 -- of its own -- the keyword still searches item and seller text the way it always did.
 function C.requestMarket(opts)
@@ -1030,6 +1037,10 @@ end
 -- owns the requestId and the throttle: this is the wire and nothing else.
 function C.requestSellers(query, context, requestId)
     send("market.sellers", { query = query, context = context, requestId = requestId })
+end
+-- The caller owns the requestId and the throttle (the listing dialog: one in flight, > 500 ms).
+function C.requestPriceRef(item, requestId)
+    send("market.priceRef", { item = item, requestId = requestId })
 end
 function C.requestMyAuctions() askSnapshot(auctionsSnapshot) end
 -- `itemIds` is the whole lot the player picked; `startPrice` is the opening bid for it.

@@ -15,6 +15,7 @@ require "MinidoracatEconomy/ECReadGate"
 require "MinidoracatEconomy/ECPanelDialogs"
 require "MinidoracatEconomy/ECPanelPreferences"
 require "MinidoracatEconomy/ECPanelLayout"
+require "MinidoracatEconomy/ECPanelCards"
 require "MinidoracatEconomy/ECDetailWindow"
 require "MinidoracatEconomy/ECPlayerPicker"
 require "MinidoracatEconomy/ECLeaderboard"
@@ -1064,10 +1065,14 @@ local function normalize(e, offsetMin)
     local cpClass = type(cp) == "string" and EC.accountClass(cp) or nil
     local desc = "-"
     local kind = e.kind or e.type
+    local qty = math.floor(tonumber(e.qty) or 1)
     if cpClass == "player" then
-        -- a transfer names the other player and, when there is one, the memo both sides wrote
+        -- a transfer names the other player and, when there is one, the memo both sides wrote;
+        -- a market or auction deal names what changed hands and with whom
         desc = cp
-        if kind == "transfer" and type(e.reasonText) == "string" and e.reasonText ~= "" then
+        if type(e.item) == "string" then
+            desc = getText(T .. "Card_DescItem", itemName(e.item), tostring(qty), cp)
+        elseif kind == "transfer" and type(e.reasonText) == "string" and e.reasonText ~= "" then
             desc = desc .. " - " .. e.reasonText
         end
     elseif cpClass == "discord" then
@@ -1078,7 +1083,7 @@ local function normalize(e, offsetMin)
         if type(e.reasonText) == "string" and e.reasonText ~= "" then desc = desc .. " - " .. e.reasonText end
     elseif type(e.item) == "string" then
         -- shop purchases carry the item and count (ring and receipt files alike)
-        desc = itemName(e.item) .. " x" .. tostring(math.floor(tonumber(e.qty) or 1))
+        desc = itemName(e.item) .. " x" .. tostring(qty)
     elseif cpClass ~= nil then
         -- the faucet, the burn drain, a Discord deposit: name what moved the money, not a dash
         desc = accountName(cp)
@@ -1097,6 +1102,7 @@ local function normalize(e, offsetMin)
     return {
         recordKey = U.recordKey(e),
         ts = e.ts, txId = e.txId, kind = kind, currency = e.currency, amount = amount,
+        item = item, qty = qty, counterparty = cp, cpClass = cpClass,
         after = e.after or e.availableAfter, rolledBack = e.rolledBack == true,
         time = stampText(e.ts, offsetMin), kindText = label, desc = desc,
         reasonText = type(e.reasonText) == "string" and e.reasonText or nil,
@@ -1146,6 +1152,11 @@ function Panel:rebuildBalances()
         for _, line in ipairs(self:detailText("balance", row)) do lines[#lines + 1] = line end
     end
     self.balanceText = table.concat(lines, "\n")
+    self.balanceLines = lines
+    -- the month's income and spending by kind, drawn under the balances (ECPanelCards.monthView);
+    -- the balance view on screen measures it again (its bars and labels are fitted by the layout)
+    C.PanelCards.monthView(self)
+    if self.g and self.tab == "Wallet" and self.walletDetails then self:layout() end
     self:updateDetail()
 end
 
@@ -1185,18 +1196,36 @@ function Panel:rebuildList()
     if self.g then self:layout() end
 end
 
--- Month in/out per currency from this month's receipt file (design: balance card "this month").
+-- Month in/out per currency from this month's receipt file (design: balance card "this month"),
+-- split by kind for the "this month" bars of the balance view. The server answers with the newest
+-- W.HISTORY_MAX_ENTRIES lines of a read: a capped answer still holds the whole month when its
+-- oldest kept line is from an earlier month, otherwise the month is marked incomplete.
 function Panel:updateMonthTotals(history)
     local month = EC.monthKey(EC.now())
     if history.month ~= month and history.month ~= "recent" then return end
     local totals = {}
-    for _, e in ipairs(history.entries or {}) do
-        -- the recent window spans two months: only this month's lines count
-        if e.rolledBack ~= true and EC.monthKey(tonumber(e.ts) or 0) == month then
+    local entries = history.entries or {}
+    local first = entries[1]
+    self.monthComplete = history.truncated ~= true
+        or (first ~= nil and EC.monthKey(tonumber(first.ts) or 0) ~= month)
+    self.monthLoaded = month
+    for _, e in ipairs(entries) do
+        -- the recent window spans two months: only this month's lines count. A line that left the
+        -- spendable balance as it was is the reserved bucket's mirror of a bid hold or a refund:
+        -- the spendable side of the same transaction is what counts as money in or out.
+        local mirror = e.availableBefore ~= nil and e.availableBefore == e.availableAfter
+        if e.rolledBack ~= true and not mirror and EC.monthKey(tonumber(e.ts) or 0) == month then
             local t = totals[e.currency]
-            if not t then t = { inn = 0, out = 0 }; totals[e.currency] = t end
-            local d = tonumber(e.delta) or 0
-            if d >= 0 then t.inn = t.inn + d else t.out = t.out - d end
+            if not t then t = { inn = 0, out = 0, byIn = {}, byOut = {} }; totals[e.currency] = t end
+            local d = tonumber(e.delta or e.amount) or 0
+            local kind = tostring(e.kind or e.type)
+            if d >= 0 then
+                t.inn = t.inn + d
+                t.byIn[kind] = (t.byIn[kind] or 0) + d
+            else
+                t.out = t.out - d
+                t.byOut[kind] = (t.byOut[kind] or 0) - d
+            end
         end
     end
     self.monthTotals = totals
@@ -1377,8 +1406,8 @@ function Panel:rebuildMail()
         local weight = tonumber(e.weight)
         local name = itemName(e.item)
         local seller = type(e.seller) == "string" and e.seller ~= "" and e.seller or nil
-        local from = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or U.unknownText("mail kind", e.kind)
-        if seller then from = from .. " - " .. getText(buyFrom, seller) end
+        local source = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or U.unknownText("mail kind", e.kind)
+        local from = seller and (source .. " - " .. getText(buyFrom, seller)) or source
         rows[#rows + 1] = {
             id = e.id, item = e.item, qty = qty, name = name, altName = itemBaseName(e.item),
             texture = itemTexture(e.item),
@@ -1386,7 +1415,7 @@ function Panel:rebuildMail()
             -- carries none says nothing at all instead of quoting a zero
             price = tonumber(e.price), currency = e.currency, seller = seller,
             nameText = name .. " x" .. tostring(qty),
-            fromText = from,
+            fromText = from, fromName = source,
             weight = weight,
             weightText = weight and getText(T .. "Mail_Weight", C.weightText(weight * qty)) or nil,
             claimable = e.claimable ~= false,
@@ -2086,7 +2115,7 @@ function Panel:onIdentity()
     local body = self:identityText()
     if body == nil then return end
     if Detail.isOpen(self, "identity") then Detail.close(self); return end
-    Detail.open(self, "identity", getText(T .. "Player_IdentityTitle"), body)
+    Detail.open(self, "identity", getText(T .. "Player_IdentityTitle"), body, nil, C.PanelCards.identity(self, body))
 end
 
 -- identity.unverified / identity.verified (ECClient): the row is relabelled and an open record
@@ -2095,7 +2124,9 @@ end
 function Panel:onIdentityChanged()
     self:layout()
     local body = self:identityText()
-    if body ~= nil then Detail.update(self, "identity", getText(T .. "Player_IdentityTitle"), body) end
+    if body ~= nil then
+        Detail.update(self, "identity", getText(T .. "Player_IdentityTitle"), body, C.PanelCards.identity(self, body))
+    end
     if not C.identityUnverified and self.shown and not self.isCollapsed then
         self:refresh()
         if self.tab == "Wallet" then self:loadHistory() end
@@ -2640,7 +2671,8 @@ function Panel:detailTitle(kind)
 end
 
 -- Only a click or Enter opens a record. Remember its source list so another highlight or
--- another table's refresh cannot replace it.
+-- another table's refresh cannot replace it. The window gets the full text (what "copy" hands
+-- over) and the card it paints (ECPanelCards), built against that source list.
 function Panel:showDetail(kind, item, explicit)
     if item == nil then return end
     local key = detailKey(kind, item)
@@ -2651,9 +2683,26 @@ function Panel:showDetail(kind, item, explicit)
         for _, spec in ipairs(self.detailWatch or {}) do
             if spec.kind == kind and spec.list:getSelectedItem() == item then self.detailList = spec.list; break end
         end
-        Detail.open(self, key, title, body)
+        self.detailKind = kind
+        Detail.open(self, key, title, body, nil, C.PanelCards.build(self, kind, item, key, title))
     else
-        Detail.update(self, key, title, body)
+        Detail.update(self, key, title, body, C.PanelCards.build(self, kind, item, key, title))
+    end
+end
+
+-- A card button (contract: run -> onDetailAction): find the record's current row in the list it
+-- was opened from, pick it, and press the row's own button through the list's onRowAction --
+-- the very path, gates and dialogs of the button on the row. A row that is gone does nothing
+-- (syncDetail then refreshes or closes the card).
+function Panel:onDetailAction(kind, key, actionId)
+    local list = self.detailList
+    if list == nil or type(list.onRowAction) ~= "function" then return end
+    for i, row in ipairs(list:getItems()) do
+        if detailKey(kind, row) == key then
+            list:setSelectedIndex(i)
+            list.onRowAction(list, row, actionId)
+            return
+        end
     end
 end
 
@@ -2787,7 +2836,7 @@ function Panel:syncRewards()
         U.setButtonTitle(b, getText(T .. "Rewards_Claim"), UIFont.Medium)
         b.coinId, b.tooltip = nil, nil
         b:setEnable(false)
-        rw.rulesNote = rw.body
+        rw.rulesNote, rw.rulesCard = rw.body, nil
         self:syncRewardsRules()
         return
     end
@@ -2886,8 +2935,10 @@ function Panel:syncRewards()
             and getText(T .. "Rewards_ToGo", tostring(math.max(0, (tonumber(m.days) or 0) - days))) or nil
     end
     rw.markCount = n
-    -- the rules: every line the old reading page carried, today's figures included
+    -- the rules: every line the old reading page carried, today's figures included (the copy
+    -- text), and the same facts as the sections of the rules card
     rw.rulesNote = table.concat(self:rewardLines(st), "\n")
+    rw.rulesCard = C.PanelCards.rewardsRules(self, st, reason)
     self:syncRewardsRules()
 end
 
@@ -2896,8 +2947,8 @@ end
 function Panel:syncRewardsRules()
     if self.tab ~= "Rewards" then return end
     local rules = self.rulesButton
-    rules.note, rules.ruleTitle = self.rw.rulesNote, getText(T .. "Trade_Rules")
-    Detail.update(self, "rules:Rewards", rules.ruleTitle, rules.note)
+    rules.note, rules.card, rules.ruleTitle = self.rw.rulesNote, self.rw.rulesCard, getText(T .. "Trade_Rules")
+    Detail.update(self, "rules:Rewards", rules.ruleTitle, rules.note, rules.card)
 end
 
 -- The wrap follows the box width (U.setWrappedText keeps the unwrapped value on the box for the
@@ -2937,13 +2988,28 @@ function Panel:syncDetail()
         end
     end
     if moved then Keys.invalidate(self) end
+    -- The card's buttons are enabled by the same flags as the row's (Panel:prerender sets them):
+    -- when the write gate of the source list opens or shuts, the open card is built again.
+    local list = self.detailList
+    if list ~= nil then
+        local off = list.actionDisabled == true or list.buyDisabled == true
+        if off ~= self.detailOff then
+            self.detailOff = off
+            for _, row in ipairs(list:getItems()) do
+                if Detail.isOpen(self, detailKey(self.detailKind, row)) then
+                    self:showDetail(self.detailKind, row, false)
+                    break
+                end
+            end
+        end
+    end
 end
 
 function Panel:onRules()
     local rules = self.rulesButton
     if self:isModal() or not rules:getIsVisible() or rules.note == nil then return end
     self.detailList = nil
-    Detail.open(self, "rules:" .. self.tab, rules.ruleTitle or getText(T .. "Trade_Rules"), rules.note)
+    Detail.open(self, "rules:" .. self.tab, rules.ruleTitle or getText(T .. "Trade_Rules"), rules.note, nil, rules.card)
 end
 
 -- What is copied is the untruncated value the box kept, so it is exactly what the player reads.
@@ -3369,6 +3435,8 @@ function Panel:onMarket(kind, args)
     -- the auction pages ride this listener: their kinds carry the "auction." prefix
     local auctionKind = string.match(kind, "^auction%.(.+)$")
     if auctionKind then return self:onAuction(auctionKind, args) end
+    -- the listing dialog's price reference answers itself (ECPanelDialogs): no write reply here
+    if kind == "priceRef" then return end
     if kind == "notice" then
         -- the server told an online seller their listing left the market (or moved an auction
         -- under its bidders): the page it is on is now out of date, and ECClient already

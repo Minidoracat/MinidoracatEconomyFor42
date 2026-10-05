@@ -37,8 +37,9 @@
 --   owner.owner           the root window, the only thing C.Keyboard.invalidate accepts
 --
 -- The controller also hands the page what belongs to it and to nothing else:
---   Page:show(group, filters)     filters = { account?, item?, query?, txId?, ts? }; txId with ts
---                                 opens that one record over the single civil day it happened on
+--   Page:show(group, filters)     filters = { account?, item?, query?, txId?, ts?, fromMs?, toMs? };
+--                                 txId with ts opens that one record over the single civil day it
+--                                 happened on; fromMs / toMs (toMs exclusive) set the date boxes
 --   Page:onPlayersReply(args)     an admin.players reply the account picker asked for
 --   Page:onViewChanged(scope)     'transactions' changed on the server: read again when visible
 --   Page:isModal() / onEscape()   the item picker overlay this page puts over itself
@@ -210,6 +211,105 @@ local function txButtonRow(buttons, visible, x, y, width, height, skipA, skipB)
         end
     end
     return x
+end
+
+-- "Market sale  Hammer x1": the kind and the item it moved, the head of a row and of the card.
+local function txHeadText(e)
+    local head = U.kindText(tostring(e.kind or "?"))
+    if type(e.item) == "string" and e.item ~= "" then
+        head = head .. "  " .. itemName(e.item)
+        -- an event that never carried a lot size says nothing rather than inventing one
+        local qty = math.floor(tonumber(e.qty) or 0)
+        if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
+    end
+    return head
+end
+
+-- The one currency an amount speaks in, out of a per-currency map (a row's flow or its moved
+-- amounts): the currency the read was narrowed to, else this server's first currency the map
+-- carries, else whatever other one it carried.
+local function flowCurrency(map, cur)
+    if type(map) ~= "table" then return nil end
+    if cur ~= nil then return map[cur] ~= nil and cur or nil end
+    for _, id in ipairs(EC.CURRENCY_ORDER) do
+        if map[id] ~= nil then return id end
+    end
+    for id in pairs(map) do return tostring(id) end
+    return nil
+end
+
+-- The amount of one transaction with its direction (the server's St.flows split): money players
+-- traded with each other (t), else what entered the players' side (+, positive) or left it (-,
+-- negative). Returns value, token, icon, currency; nil when the row carries no flow (an older
+-- server) or the flow nets to nothing (a hold that only changed bucket) -- the caller keeps the
+-- moved amount then.
+local function flowAmount(flow, cur)
+    local id = flowCurrency(flow, cur)
+    if id == nil then return nil end
+    local f = flow[id]
+    if type(f) ~= "table" then return nil end
+    local t = tonumber(f.t) or 0
+    if t > 0 then return amountText(t), "text", "transactions", id end
+    local net = (tonumber(f.i) or 0) - (tonumber(f.o) or 0)
+    if net == 0 then return nil end
+    return signedText(net), net > 0 and "positive" or "negative", nil, id
+end
+
+-- "Alice -> Bob": who paid and who was paid. One side alone is that side; neither is nil.
+local function txPartiesText(e)
+    local payer = (type(e.payer) == "string" and e.payer ~= "") and e.payer or nil
+    local payee = (type(e.payee) == "string" and e.payee ~= "") and e.payee or nil
+    if payer ~= nil and payee ~= nil then
+        return getText(T .. "TxCard_Parties", accountName(payer), accountName(payee))
+    end
+    if payer ~= nil then return accountName(payer) end
+    if payee ~= nil then return accountName(payee) end
+    return nil
+end
+
+-- "Tax 2": the fee or the tax a trade or a transfer paid into SYSTEM_BURN, in `cur` when it has
+-- one, else in the first currency it carries. nil when there was none.
+local function txFeeText(e, cur)
+    local fee = e.fee
+    if type(fee) ~= "table" then return nil end
+    local n = cur ~= nil and tonumber(fee[cur]) or nil
+    if n == nil then
+        for _, id in ipairs(EC.CURRENCY_ORDER) do
+            n = n or tonumber(fee[id])
+        end
+    end
+    if n == nil or n <= 0 then return nil end
+    return getText(T .. "TxCard_RowFee", tr(U.FEE_KEY[tostring(e.kind)] or "Wallet_Col_Fee"), amountText(n))
+end
+
+-- What one posting did, by its account, its sign and its bucket. A move between one wallet's two
+-- buckets (the same account and currency, the other bucket, the opposite amount) is a hold or a
+-- release, never a payment; money taken out of a hold elsewhere says it came from the hold.
+local function postingRole(kind, postings, p, amount)
+    local reserved = p.bucket == "reserved"
+    local paired = false
+    for _, q in ipairs(postings) do
+        if type(q) == "table" and q ~= p and q.account == p.account and q.currency == p.currency
+            and (q.bucket == "reserved") ~= reserved and tonumber(q.amount) == -amount then
+            paired = true
+            break
+        end
+    end
+    if paired then
+        if reserved then return tr("TxCard_Role_Reserve") end
+        return tr(amount < 0 and "TxCard_Role_Hold" or "TxCard_Role_Release")
+    end
+    local cls = EC.accountClass(p.account)
+    local key
+    if cls == "burn" and amount > 0 then
+        key = U.FEE_KEY[kind] or "TxCard_Role_Burn"
+    elseif cls == "mint" and amount < 0 then
+        key = "TxCard_Role_Mint"
+    else
+        key = amount < 0 and "TxCard_Role_Pay" or "TxCard_Role_Receive"
+    end
+    if reserved then return tr(key) .. tr("TxCard_Sep") .. tr("Admin_Tx_Reserved") end
+    return tr(key)
 end
 
 local Page = ISPanel:derive("MinidoracatEconomyAdminTxPage")
@@ -448,7 +548,12 @@ end
 -- The civil days the two boxes hold, as the range the server will read: "to" means the end of
 -- that day, so the exclusive bound is the next midnight. A malformed box is simply not a bound
 -- (its placeholder says what it wants).
+-- A span handed to show() (a reward day from the reports page or the overview) is asked for as
+-- it is, to the millisecond, for as long as the day boxes still read what show() wrote into them:
+-- a reward day that crosses this window's midnight would otherwise widen to two whole days.
 function Page:txRange()
+    local span = self.txSpan
+    if span ~= nil and span.sig == self:txDateText() then return span.from, span.to end
     return self.txF:dateRange()
 end
 
@@ -767,10 +872,10 @@ function Page:updateTxMore()
 end
 
 -- The standing notes (what a row is, the range rule, where the advanced conditions are) and
--- the read's full status -- every MOD the name index could not read included -- in the shared
--- detail window, where they wrap, scroll and copy whole.
+-- the read's full status -- every MOD the name index could not read included -- as a card of
+-- sections in the shared detail window; Copy still hands over the plain text whole.
 function Page:onTxHelp()
-    Detail.open(self, "tx:help", tr("Admin_Tx_Title"), self.txNotesText or "")
+    Detail.open(self, "tx:help", tr("Admin_Tx_Title"), self.txNotesText or "", nil, self.txNotesCard)
 end
 
 -- The body of a row reads: the pick is held by tx id, so a page turn or a fresh read still
@@ -799,7 +904,8 @@ end
 -- a second command, and the refresh chip is what re-reads it.
 function Page:openTxDetail(txId, fromMs, toMs)
     if type(txId) ~= "string" or txId == "" then return end
-    self.txDetailSummary = self:txSummaryText(self:txEntryById(txId))
+    self.txDetailEntry = self:txEntryById(txId)
+    self.txDetailSummary = self:txSummaryText(self.txDetailEntry)
     if self.txDetailTx ~= txId or self.txDetailFrom ~= fromMs or self.txDetailTo ~= toMs then
         self.txDetailTx = txId
         self.txDetailFrom, self.txDetailTo = fromMs, toMs
@@ -831,14 +937,170 @@ function Page:showTxDetail(open)
     end
     local key = "tx:" .. id
     local title = getText(T .. "Admin_Tx_Id", id)
-    local body = self:txDetailNoteText(self:txDetailStatus())
+    local state = self:txDetailStatus()
+    local body = self:txDetailNoteText(state)
     local more = self.txDetailText or self.txDetailSummary
     if more ~= nil then body = body .. "\n\n" .. more end
+    local c = self:txCard(id, state)
     if open == true then
         self.txDetailOpenPending = nil
-        return Detail.open(self, key, title, body, function() self:onTxDetailClosed() end) ~= nil
+        return Detail.open(self, key, title, body, function() self:onTxDetailClosed() end, c) ~= nil
     end
-    return Detail.update(self, key, title, body)
+    return Detail.update(self, key, title, body, c)
+end
+
+-- The record as a card: the kind and the item on top, the directed amount and the time as the
+-- hero, every posting as one flow row (who, what it did, how much, the balance before and after),
+-- the shortcuts back into this list, and every identifier in the technical block (open: this is
+-- the admin's view). Until the record lands the row's summary fills what it can, and a jump
+-- straight to an id with neither says only what the read is doing.
+function Page:txCard(id, state)
+    local d = self.txDetail
+    local e = self.txDetailEntry
+    local note = state ~= "ready" and self:txDetailNoteText(state) or nil
+    local out = { source = tr("Admin_Tx_Title"), sourceIcon = "transactions", techOpen = true,
+        actionsLeft = true, note = note }
+    local src = d or e
+    if type(src) ~= "table" then
+        out.iconKey = "transactions"
+        out.name = getText(T .. "Admin_Tx_Id", id)
+        out.tech = { { label = tr("Admin_Tx_Field_Id"), value = id } }
+        return out
+    end
+    local sep = tr("TxCard_Sep")
+    local kind = tostring(src.kind or "?")
+    local item = (type(src.item) == "string" and src.item ~= "") and src.item or nil
+    if item ~= nil then out.item = item else out.iconKey = "transactions" end
+    out.name = txHeadText(src)
+    local sub = getText(T .. "Admin_Tx_Source", txGroupText(src.group))
+    if kind == "exchange_deposit" or (type(src.sourceMod) == "string" and src.sourceMod ~= "") then
+        sub = sub .. sep .. txSourceName(src)
+    end
+    if type(src.actor) == "string" and src.actor ~= "" then
+        sub = sub .. sep .. getText(T .. "TxCard_Actor", U.actorText(src.actor))
+    end
+    out.sub = sub
+    -- the record carries the summary's fields; the row's own flow covers a record from an older
+    -- reply shape
+    local flow = type(src.flow) == "table" and src.flow or (e and e.flow)
+    local value, token, _, cur = flowAmount(flow, self.txSnapCur)
+    if value == nil then
+        cur = flowCurrency(src.amounts, self.txSnapCur)
+        value = cur ~= nil and amountText(tonumber(src.amounts[cur]) or 0) or "-"
+        token = "text"
+    end
+    out.hero = { value = value, token = token, coin = cur,
+        unit = (cur ~= nil and (currencyName(cur) .. sep) or "") .. stampText(src.ts, self.offsetMin),
+        strike = src.rolledBack == true }
+    if src.rolledBack == true then
+        out.chips = { { value = tr("Wallet_RolledBack"), token = "warn", dot = true } }
+    end
+    out.flow = self:txFlowRows(d, kind)
+    local rows = {}
+    local reason = d and reasonText(d.reasonCode, d.reasonText) or nil
+    if reason ~= nil then rows[#rows + 1] = { label = tr("Admin_Tx_Field_Reason"), value = reason } end
+    if type(src.category) == "string" and src.category ~= "" then
+        rows[#rows + 1] = { label = tr("Admin_Tx_Field_Category"), value = U.categoryText(src.category) }
+    end
+    -- until the postings land, the accounts the row named stand in for them
+    if out.flow == nil then rows[#rows + 1] = { label = tr("Admin_Tx_Account"), value = txAccountsText(src.accounts) } end
+    out.rows = rows
+    out.actions = self:txCardActions(src, item)
+    out.tech = self:txCardTech(src, id)
+    return out
+end
+
+-- Every posting of the record as one flow row; nil until the record has landed.
+function Page:txFlowRows(d, kind)
+    local postings = d and type(d.postings) == "table" and d.postings or nil
+    if postings == nil or #postings == 0 then return nil end
+    local multi, first = false, nil
+    for _, p in ipairs(postings) do
+        if type(p) == "table" then
+            first = first or p.currency
+            if p.currency ~= first then multi = true end
+        end
+    end
+    local rows = {}
+    for _, p in ipairs(postings) do
+        if type(p) == "table" then
+            local amount = tonumber(p.amount) or 0
+            local delta = signedText(amount)
+            if multi and type(p.currency) == "string" then delta = delta .. " " .. currencyName(p.currency) end
+            local reserved = p.bucket == "reserved"
+            local a = tonumber(reserved and p.reservedBefore or p.availableBefore)
+            local b = tonumber(reserved and p.reservedAfter or p.availableAfter)
+            local note = nil
+            if a ~= nil or b ~= nil then
+                note = getText(T .. "TxCard_BeforeAfter", a and amountText(a) or "-", b and amountText(b) or "-")
+            end
+            rows[#rows + 1] = { name = accountName(p.account), role = postingRole(kind, postings, p, amount),
+                delta = delta, token = amount > 0 and "positive" or (amount < 0 and "negative" or "text"),
+                note = note }
+        end
+    end
+    return rows
+end
+
+-- The shortcuts back into this list: each player account of the transaction, and its item.
+-- They narrow the list on top of the conditions it is reading with (this transaction already
+-- matches them), through the page's own account and item conditions.
+function Page:txCardActions(src, item)
+    local actions = {}
+    local seen = {}
+    for _, account in ipairs(type(src.accounts) == "table" and src.accounts or {}) do
+        if #actions < 4 and type(account) == "string" and not seen[account] and #account <= TX_ACCOUNT_BYTES
+            and EC.accountClass(account) == "player" then
+            seen[account] = true
+            actions[#actions + 1] = { id = "account:" .. account, label = getText(T .. "TxCard_OnlyAccount", account),
+                run = function() self:onTxOnlyAccount(account) end }
+        end
+    end
+    if item ~= nil and #item <= TX_ITEM_BYTES then
+        actions[#actions + 1] = { id = "item", label = getText(T .. "TxCard_OnlyItem", itemName(item)),
+            run = function() self:onTxOnlyItem(item) end }
+    end
+    return #actions > 0 and actions or nil
+end
+
+-- Every identifier the record (or, until it lands, the row) carries.
+function Page:txCardTech(src, id)
+    local tech = {}
+    local function add(label, value) tech[#tech + 1] = { label = label, value = value } end
+    add(tr("Admin_Tx_Field_Id"), tostring(src.txId or id))
+    if type(src.epoch) == "string" or src.seq ~= nil then
+        add(tr("Admin_Tx_Field_Event"), getText(T .. "TxCard_Event", tostring(src.epoch or "-"), tostring(src.seq or "-")))
+    end
+    if type(src.requestId) == "string" and src.requestId ~= "" then add(tr("Admin_Tx_Field_Request"), src.requestId) end
+    local ref = src.ref
+    if type(ref) == "table" and (ref.id ~= nil or ref.type ~= nil) then
+        local refId = tostring(ref.id or "-")
+        add(tr("Admin_Tx_Field_Ref"), getTextOrNull(T .. "Admin_Tx_RefType_" .. tostring(ref.type), refId)
+            or getText(T .. "Admin_Tx_Pair", U.unknownText("tx ref type", ref.type), refId))
+    end
+    for _, key in ipairs(TX_REF_KEYS) do
+        if src[key] ~= nil then add(tr("Admin_Tx_Field_Ref"), getText(T .. "Admin_Tx_Ref_" .. key, tostring(src[key]))) end
+    end
+    if type(src.reasonCode) == "string" and src.reasonCode ~= "" then add(tr("TxCard_ReasonCode"), src.reasonCode) end
+    if type(src.sku) == "string" and src.sku ~= "" then add(tr("Admin_Tx_Field_Sku"), src.sku) end
+    if type(src.item) == "string" and src.item ~= "" then add(tr("Detail_ItemCode"), src.item) end
+    if type(src.sourceMod) == "string" and src.sourceMod ~= "" then add(tr("Admin_Tx_Field_Mod"), src.sourceMod) end
+    return tech
+end
+
+-- "Only Alice's money flow": the exact account condition, set the way the picker sets it; the
+-- advanced row opens so the condition that now narrows the list is on screen.
+function Page:onTxOnlyAccount(account)
+    self.txAdvOpen = true
+    self:onAccountPicked(account)
+    self:layout()
+    if C.Keyboard and C.Keyboard.invalidate then pcall(C.Keyboard.invalidate, self.owner.owner) end
+end
+
+-- "Only this item": the exact item condition, set the way the item picker sets it.
+function Page:onTxOnlyItem(fullType)
+    self.txAdvOpen = true
+    self:onItemPicked({ fullType = fullType })
 end
 
 -- The window closed (its own chip, Escape, the page hid, or another owner took it over). The
@@ -846,6 +1108,7 @@ end
 -- reading, and picking it again opens the record once more.
 function Page:onTxDetailClosed()
     self.txDetailSummary = nil
+    self.txDetailEntry = nil
 end
 
 -- Everything the *record* read learned, dropped, and the window with it. The selection is not
@@ -855,6 +1118,7 @@ function Page:clearTxDetail()
     self.txDetail = nil
     self.txDetailText = nil
     self.txDetailSummary = nil
+    self.txDetailEntry = nil
     self.txDetailError = nil
     self.txDetailTimeout = false
     self.txDetailAnswered = false
@@ -928,12 +1192,14 @@ end
 --   query     free text, the caller's own stable value
 --   txId + ts one committed transaction: the days are set to the single civil day it happened
 --             on, and its whole record opens straight away
+--   fromMs / toMs  a span in ms, toMs exclusive (the reports page's day, in this window's zone):
+--             the day boxes read the first and the last civil day it covers
 -- The filter is set before the tab switch, so the page's first read is already the filtered one
 -- instead of a full read followed a frame later by the real one. The controller calls this and
 -- then switches the tab itself.
 --
 -- Everything the caller did NOT name goes back to its default -- the source stays as asked, but
--- the currency, the account class, the match mode and (without a ts) the days are cleared --
+-- the currency, the account class, the match mode and (without a ts or a span) the days are cleared --
 -- because a shortcut asks a fresh question: leaving last week's range or another currency on
 -- would answer a different one and say nothing about it.
 function Page:show(group, filters)
@@ -965,9 +1231,18 @@ function Page:show(group, filters)
     local txId = (type(filters.txId) == "string" and filters.txId ~= "") and filters.txId or nil
     local ts = tonumber(filters.ts)
     local day = (txId ~= nil and ts ~= nil) and dateText(ts, self.offsetMin) or ""
-    f:setDateText(day, day, true)
+    local fromDay, toDay = day, day
+    if day == "" then
+        local fromMs, toMs = tonumber(filters.fromMs), tonumber(filters.toMs)
+        if fromMs ~= nil then fromDay = dateText(fromMs, self.offsetMin) end
+        if toMs ~= nil and (fromMs == nil or toMs > fromMs) then toDay = dateText(toMs - 1, self.offsetMin) end
+    end
+    f:setDateText(fromDay, toDay, true)
     U.framework.DatePicker.close(self)
     self.txDateSig = self:txDateText()
+    local spanFrom, spanTo = tonumber(filters.fromMs), tonumber(filters.toMs)
+    self.txSpan = (day == "" and spanFrom ~= nil and spanTo ~= nil and spanTo > spanFrom)
+        and { from = spanFrom, to = spanTo, sig = self.txDateSig } or nil
     self.txCurrency = nil
     for _, b in ipairs(self.txCurButtons) do b.active = b.internal == "all" end
     self.txAccountClass = nil
@@ -1138,6 +1413,8 @@ function Page:onReply(kind, args)
         -- in the same files
         self.txFromMs = tonumber(args.fromMs)
         self.txToMs = tonumber(args.toMs)
+        -- the currency this snapshot was narrowed to: its rows and its totals speak in that one
+        self.txSnapCur = (type(args.currency) == "string" and args.currency ~= "") and args.currency or nil
         -- the picked row either survives this answer or it is not in it: a summary of a
         -- transaction the current conditions do not return would describe nothing on screen
         self:syncSelection()
@@ -1195,37 +1472,47 @@ end
 
 -- ----- data normalisation (data or geometry changes only) -----
 
--- One transaction: "kind / item xN" over "time / tx id / the accounts it touched", and the
--- per-currency movement on the right. The row carries no control at all -- picking it is what
--- opens the record -- so every pixel of the width is text.
+-- One transaction: "kind  item xN" over "payer -> payee, tax N" with the time on the right, and
+-- the amount with its direction on the right of the head (players trading with each other, money
+-- into or out of the players' side). The tx id is the record's and the search's, never the row's.
+-- A reply without the flow fields (an older server) keeps the moved amount and the account list.
+-- The row carries no control at all -- picking it is what opens the record -- so every pixel of
+-- the width is text.
 function Page:transactionRow(e, lh, width)
-    local kind = tostring(e.kind or "?")
-    local head = U.kindText(kind)
-    if type(e.item) == "string" and e.item ~= "" then
-        head = head .. "  " .. itemName(e.item)
-        -- an event that never carried a lot size says nothing rather than inventing one
-        local qty = math.floor(tonumber(e.qty) or 0)
-        if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
+    local sep = tr("TxCard_Sep")
+    local amountLabel, amountToken, amountIcon, cur = flowAmount(e.flow, self.txSnapCur)
+    if amountLabel ~= nil then
+        -- a read over every currency names the one this amount is in
+        if self.txSnapCur == nil and #EC.CURRENCY_ORDER > 1 then amountLabel = amountLabel .. " " .. currencyName(cur) end
+    else
+        amountLabel = txAmountText(e.amounts)
+        amountToken = type(e.flow) == "table" and "text" or nil
     end
-    local meta = stampText(e.ts, self.offsetMin) .. " / " .. getText(T .. "Admin_Tx_Id", tostring(e.txId or "-"))
-    local accounts = e.accounts
-    if type(accounts) == "table" and #accounts > 0 then
-        meta = meta .. " / " .. tr("Admin_Tx_Account") .. " " .. txAccountsText(accounts)
+    local meta = txPartiesText(e)
+    if meta == nil and type(e.accounts) == "table" and #e.accounts > 0 then
+        meta = tr("Admin_Tx_Account") .. " " .. txAccountsText(e.accounts)
     end
+    local fee = txFeeText(e, cur or self.txSnapCur)
+    if fee ~= nil then meta = meta ~= nil and (meta .. sep .. fee) or fee end
     if type(e.sourceMod) == "string" and e.sourceMod ~= "" then
-        meta = meta .. " / " .. getText(T .. "Admin_Tx_Source", txSourceName(e))
+        local src = getText(T .. "Admin_Tx_Source", txSourceName(e))
+        meta = meta ~= nil and (meta .. sep .. src) or src
     end
     local rolled = e.rolledBack == true
     local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
-    local amountLabel = txAmountText(e.amounts)
+    local metaRight = stampText(e.ts, self.offsetMin)
     local right = math.max(60, width - PAD)
-    local headW = math.max(0, right - textWidth(amountLabel) - PAD * 2)
-    local metaW = rolled and math.max(0, headW - textWidth(rolledLabel) - PAD) or headW
+    local iconW = amountIcon ~= nil and (math.min(16, fontH.small) + 4) or 0
+    local headW = math.max(0, right - textWidth(amountLabel) - iconW - PAD * 2)
+    -- the time and the rolled-back label share the right end of the second line (the cell draws
+    -- the label instead of the time on a rolled-back row)
+    local metaW = math.max(0, right - textWidth(rolled and rolledLabel or metaRight) - PAD * 2)
     local item = {
         txId = tostring(e.txId or ""),
         line1Y = 5, line2Y = 5 + lh, amountRight = right, amountLabel = amountLabel,
+        amountToken = amountToken, amountIcon = amountIcon, metaRight = metaRight,
         rolled = rolled, rolledLabel = rolledLabel,
-        headText = fitText(head, headW), metaText = fitText(meta, metaW),
+        headText = fitText(txHeadText(e), headW), metaText = fitText(meta or "", metaW),
     }
     item.headW = textWidth(item.headText)
     return item
@@ -1383,7 +1670,9 @@ function Page:rebuildTxNotes()
     self.txEmpty = state == "empty"
     if state ~= "ready" and state ~= "empty" then parts[#parts + 1] = self:txStatusText(state) end
     local warn = state ~= "ready" and state ~= "loading" and state ~= "empty"
-    if snap ~= nil and snap.truncated == true then
+    -- the totals row says the 200-row cut itself ("N matching, the list shows the newest 200");
+    -- a reply without totals (an older server) keeps the warning
+    if snap ~= nil and snap.truncated == true and type(snap.summary) ~= "table" then
         parts[#parts + 1] = tr("Admin_Tx_Truncated")
         warn = true
     end
@@ -1395,15 +1684,29 @@ function Page:rebuildTxNotes()
         warn = true
     end
     local help = {}
-    for _, part in ipairs(parts) do help[#help + 1] = part end
+    local statusLines = {}
+    for _, part in ipairs(parts) do
+        help[#help + 1] = part
+        statusLines[#statusLines + 1] = { text = part }
+    end
     if gaps ~= nil then
-        for _, gap in ipairs(gaps) do help[#help + 1] = gap.modId .. ": " .. errorText(gap.reason) end
+        for _, gap in ipairs(gaps) do
+            help[#help + 1] = gap.modId .. ": " .. errorText(gap.reason)
+            statusLines[#statusLines + 1] = { text = gap.modId, note = errorText(gap.reason) }
+        end
     end
     if #help > 0 then help[#help + 1] = "" end
-    help[#help + 1] = tr("Admin_Tx_Note")
-    help[#help + 1] = tr("Admin_Tx_RangeHint")
-    help[#help + 1] = tr("Admin_Tx_MoreHelp")
+    local notes = { tr("Admin_Tx_Note"), tr("TxCard_HelpAmount"), tr("Admin_Tx_RangeHint"), tr("Admin_Tx_MoreHelp") }
+    local noteLines = {}
+    for _, line in ipairs(notes) do
+        help[#help + 1] = line
+        noteLines[#noteLines + 1] = { text = line }
+    end
     self.txNotesText = table.concat(help, "\n")
+    local sections = {}
+    if #statusLines > 0 then sections[1] = { title = tr("TxCard_HelpStatus"), lines = statusLines } end
+    sections[#sections + 1] = { title = tr("TxCard_HelpRead"), lines = noteLines }
+    self.txNotesCard = { source = tr("Admin_Tx_Title"), sourceIcon = "transactions", sections = sections }
     local g = self.g
     local width = g and g.txStatusW or self.width
     local lines = {}
@@ -1413,7 +1716,7 @@ function Page:rebuildTxNotes()
     end
     self.txStatusLines = lines
     self.txStatusToken = warn and "warn" or "textMuted"
-    Detail.update(self, "tx:help", tr("Admin_Tx_Title"), self.txNotesText)
+    Detail.update(self, "tx:help", tr("Admin_Tx_Title"), self.txNotesText, self.txNotesCard)
     if g ~= nil and self.txInLayout ~= true and #lines ~= (g.txStatusN or 0) then self:layout() end
 end
 
@@ -1749,6 +2052,109 @@ function Page:layoutTxCriteria(visible, y, w, eh)
     return itemY + eh - y
 end
 
+-- The totals row over the list: what the server summed over *every* matching, not rolled-back
+-- transaction (not just the 200 listed) -- the match count, money into and out of the players'
+-- side and money traded between players (per currency: the one the read was narrowed to, else
+-- each it carried), then the share of each source. Each part is a label and its figure kept
+-- whole; a part that does not fit what is left of the line starts the next one. Laid out into
+-- draw ops here (data or width changes only) so the frame only paints. Returns the height; 0 for
+-- a reply without totals (an older server) or with no match.
+function Page:layoutTxSummary(width)
+    self.txSumOps = nil
+    local snap = self.transactions
+    local s = snap and snap.summary
+    local count = type(s) == "table" and tonumber(s.n) or nil
+    if count == nil or count <= 0 then return 0 end
+    local sep = tr("TxCard_Sep")
+    local icon = math.min(16, fontH.small)
+    local segs = {}
+    local function part(seg, k, str, token, w)
+        seg[#seg + 1] = { k = k, s = str, token = token, w = w or textWidth(str) }
+    end
+    local seg = {}
+    part(seg, "text", getText(T .. "TxCard_SumMatched", amountText(count)), "text")
+    if snap.truncated == true then
+        part(seg, "text", getText(T .. "TxCard_SumCapped", tostring(#(type(snap.entries) == "table" and snap.entries or {}))), "textMuted")
+    end
+    segs[1] = seg
+    local byCur = type(s.byCurrency) == "table" and s.byCurrency or {}
+    local curs = {}
+    if self.txSnapCur ~= nil then
+        curs[1] = self.txSnapCur
+    else
+        for _, id in ipairs(EC.CURRENCY_ORDER) do
+            if type(byCur[id]) == "table" then curs[#curs + 1] = id end
+        end
+    end
+    for _, id in ipairs(curs) do
+        local f = type(byCur[id]) == "table" and byCur[id] or {}
+        local i, o, t = tonumber(f.i) or 0, tonumber(f.o) or 0, tonumber(f.t) or 0
+        if self.txSnapCur ~= nil or i ~= 0 or o ~= 0 or t ~= 0 then
+            seg = {}
+            part(seg, "coin", id, nil, icon)
+            part(seg, "text", tr("TxCard_SumIn"), "textMuted")
+            part(seg, "text", "+" .. amountText(i), "positive")
+            segs[#segs + 1] = seg
+            seg = {}
+            part(seg, "text", tr("TxCard_SumOut"), "textMuted")
+            part(seg, "text", "-" .. amountText(o), "negative")
+            segs[#segs + 1] = seg
+            seg = {}
+            part(seg, "text", tr("TxCard_SumBetween"), "textMuted")
+            part(seg, "icon", "transactions", "text", icon)
+            part(seg, "text", amountText(t), "text")
+            segs[#segs + 1] = seg
+        end
+    end
+    -- the share of each source by count: the three largest, the rest as one "other"
+    local groups, total = {}, 0
+    for group, n in pairs(type(s.byGroup) == "table" and s.byGroup or {}) do
+        n = tonumber(n) or 0
+        if n > 0 then
+            groups[#groups + 1] = { g = tostring(group), n = n }
+            total = total + n
+        end
+    end
+    if #groups > 1 then
+        EC.sortSafe(groups, function(a, b)
+            if a.n ~= b.n then return a.n > b.n end
+            return a.g < b.g
+        end)
+        local shown = #groups > 4 and 3 or #groups
+        local list, rest = nil, total
+        for k = 1, shown do
+            local pct = getText(T .. "TxCard_GroupShare", txGroupText(groups[k].g), tostring(math.floor(groups[k].n * 100 / total + 0.5)))
+            list = list and (list .. sep .. pct) or pct
+            rest = rest - groups[k].n
+        end
+        if rest > 0 then
+            list = list .. sep .. getText(T .. "TxCard_GroupShare", txGroupText("other"), tostring(math.floor(rest * 100 / total + 0.5)))
+        end
+        seg = {}
+        part(seg, "text", fitText(getText(T .. "TxCard_BySource", list), width), "textMuted")
+        segs[#segs + 1] = seg
+    end
+    local lh = lineH()
+    local ops = {}
+    local x, y = 0, 0
+    for _, sg in ipairs(segs) do
+        local segW = 0
+        for k, p in ipairs(sg) do segW = segW + p.w + (k > 1 and 4 or 0) end
+        if x > 0 and x + segW > width then x, y = 0, y + lh end
+        for k, p in ipairs(sg) do
+            if k > 1 then x = x + 4 end
+            p.x = PAD + x
+            -- text sits on the line; an icon is centred on the text's height
+            p.y = p.k == "text" and y or (y + math.floor((fontH.small - icon) / 2))
+            ops[#ops + 1] = p
+            x = x + p.w
+        end
+        x = x + 16
+    end
+    self.txSumOps = ops
+    return y + lh + 4
+end
+
 -- The card: the everyday row, the action row (more filters, clear, retry, help), the advanced
 -- conditions while they are open, the status band, then the rows. Short windows fold the
 -- conditions into a filter sheet; results and complete information keep real viewports.
@@ -1771,6 +2177,9 @@ function Page:layout()
     self:rebuildTxNotes()
     g.txStatusN = #self.txStatusLines
     local statusH = g.txStatusN > 0 and (g.txStatusN * lh + 4) or 0
+    -- the totals row sits right under the status band, wrapped to the same width
+    g.txSumOff = statusH
+    statusH = statusH + self:layoutTxSummary(lstW)
     -- the first pass only decides whether the card is a compact one; it passes the visibility
     -- the rows have now, so measuring never blurs a day box the admin is typing in
     local condH = self:layoutTxMain(on, txTop, lstW) + 4 + pageH + 4
@@ -1839,6 +2248,7 @@ function Page:layout()
     end
     statusY = statusY or (actionY + pageH + 4)
     g.txStatusY = statusY
+    g.txSumY = statusY + g.txSumOff
     g.txSelectY = txBottom - lh
     -- the rows get the whole workspace under the band: the record they describe is a window of
     -- its own, so nothing here has to be traded for it
@@ -1940,6 +2350,22 @@ function Page:drawTxList()
         for i = 1, #lines do
             text(self, lines[i], PAD, g.txStatusY + (i - 1) * lh, self.txStatusToken)
         end
+        -- the totals row, laid out by layoutTxSummary
+        local ops = self.txSumOps
+        if ops ~= nil then
+            local y0 = g.txSumY
+            local Icons = U.framework and U.framework.Icons
+            for i = 1, #ops do
+                local op = ops[i]
+                if op.k == "text" then
+                    text(self, op.s, op.x, y0 + op.y, op.token)
+                elseif op.k == "coin" then
+                    U.drawCoin(self, op.s, op.x, y0 + op.y, op.w)
+                elseif Icons ~= nil then
+                    Icons.draw(self, op.s, op.x, y0 + op.y, op.w, U.color(op.token), 1)
+                end
+            end
+        end
     end
     if self.txList:getIsVisible() then
         local hint = tr("Admin_Tx_Select")
@@ -2004,6 +2430,8 @@ function Page:clear()
     self.txReqSig, self.txSnapSig = nil, nil
     self.txNamesGaps, self.txReqGaps, self.txSnapGaps = nil, nil, nil
     self.txFromMs, self.txToMs = nil, nil
+    self.txSnapCur = nil
+    self.txSumOps = nil
     self.txListError = nil
     self.txListTimeout = false
     self.txBlockedBy = nil

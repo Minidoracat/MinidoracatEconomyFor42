@@ -103,14 +103,51 @@ local function radioLines(terminal)
     return lines
 end
 
--- Use the existing scrollable reader; a tall native tooltip has no scrolling or keyboard path.
+local STATE_TOKENS = { disabled = "textMuted", active = "positive", waiting = "warn", error = "negative" }
+
+-- The same facts as a card: the lock as a chip, one row per fact the server really sent (a fact
+-- that never arrived is left out, never guessed), the native rules as the text under them.
+local function radioCard(terminal)
+    local card = { sourceIcon = "server", iconKey = "server", name = tr("Radio_Channel"),
+        chips = { { label = tr("RadioCard_Locked"), token = "warn", dot = true } } }
+    local info = C.radio
+    if type(info) ~= "table" then
+        card.text = tr("Terminal_Radio_Unknown")
+        return card
+    end
+    local rows = {}
+    card.rows = rows
+    local frequency = tonumber(info.frequency)
+    if frequency then rows[#rows + 1] = { label = tr("RadioCard_Freq"), value = tr("RadioCard_FreqValue", mhz(frequency)) } end
+    local relay = info.relayEnabled == true
+    rows[#rows + 1] = { label = tr("RadioCard_Relay"), value = tr(relay and "RadioCard_On" or "RadioCard_Off"),
+        token = relay and "positive" or "textMuted" }
+    local range = tonumber(info.range)
+    if relay and range then
+        rows[#rows + 1] = { label = tr("RadioCard_Range"), value = range >= RELAY_RANGE_UNLIMITED
+            and tr("RadioCard_RangeMax") or tr("RadioCard_RangeTiles", tostring(math.floor(range))) }
+    end
+    local summary = info.summaryEnabled == true
+    rows[#rows + 1] = { label = tr("RadioCard_Summary"), value = tr(summary and "RadioCard_SummaryOn" or "RadioCard_Off"),
+        token = summary and "text" or "textMuted" }
+    local state = terminal ~= nil and terminal.radioState or nil
+    local stateText = type(state) == "string" and getTextOrNull(T .. "RadioCard_State_" .. state) or nil
+    if stateText then rows[#rows + 1] = { label = tr("RadioCard_State"), value = stateText, token = STATE_TOKENS[state] } end
+    rows[#rows + 1] = { label = tr("RadioCard_Limits"), value = tr("RadioCard_LimitsValue") }
+    card.text = tr("Terminal_Radio_Limits")
+    return card
+end
+
+-- Use the card window; a tall native tooltip has no scrolling or keyboard path. The copy text is
+-- the full note, line by line.
 local function showRadioInfo(terminal)
     local owner = P.instance()
     if not owner or owner:isModal() then return end
     owner:setVisible(true)
     owner.detailList = nil
+    local current = C.terminalAt(terminal.x, terminal.y, terminal.z) or terminal
     C.DetailWindow.open(owner, "radio:" .. tostring(terminal.id), tr("Terminal_Radio_Name"),
-        table.concat(radioLines(C.terminalAt(terminal.x, terminal.y, terminal.z) or terminal), "\n"))
+        table.concat(radioLines(current), "\n"), nil, radioCard(current))
 end
 
 -- A native context-menu tooltip (shown while the option is highlighted, mouse or controller).

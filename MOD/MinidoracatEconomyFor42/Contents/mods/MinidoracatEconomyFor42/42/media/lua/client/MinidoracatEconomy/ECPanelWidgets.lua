@@ -295,14 +295,21 @@ end
 -- fresh copy), one translated token per fact in order of importance. Fluid names go through the
 -- Fluid registry's own translated display name (Fluid.java:99, 324-326; FluidDefinitionScript.java:228),
 -- fire modes through vanilla's ContextMenu_FireMode_* (ISInventoryPaneContextMenu.lua:1800).
-local function stateTokens(st)
+-- `skipMeters` leaves out the facts stateMeters draws as bars, so a detail card says each once.
+local function fluidName(st)
+    local ok, name = pcall(function() return Fluid.Get(st.fluid):getDisplayName() end)
+    if not ok or type(name) ~= "string" or name == "" then name = st.fluid end
+    return name
+end
+
+local function stateTokens(st, skipMeters)
     local out = {}
     if type(st) ~= "table" then return out end
     local function add(key, ...) out[#out + 1] = getText(T .. key, ...) end
     local function int(v) return tostring(math.floor((tonumber(v) or 0) + 0.5)) end
-    if type(st.fluid) == "string" and st.fluid ~= "" then
-        local ok, name = pcall(function() return Fluid.Get(st.fluid):getDisplayName() end)
-        if not ok or type(name) ~= "string" or name == "" then name = st.fluid end
+    local bars = skipMeters == true
+    if type(st.fluid) == "string" and st.fluid ~= "" and not (bars and tonumber(st.fluidCap)) then
+        local name = fluidName(st)
         local amount = string.format("%.2f", tonumber(st.fluidL) or 0)
         if tonumber(st.fluidCap) then add("Market_State_Fluid", name, amount, string.format("%.2f", tonumber(st.fluidCap)))
         else add("Market_Fluid", name, amount) end
@@ -310,15 +317,17 @@ local function stateTokens(st)
     local food = type(st.food) == "table" and st.food or nil
     if food and food.stale then add("Market_State_Stale")
     elseif food and tonumber(food.freshDays) then add("Market_State_Fresh", string.format("%.1f", tonumber(food.freshDays))) end
-    if tonumber(st.cond) then
+    if tonumber(st.cond) and not (bars and tonumber(st.condMax)) then
         if tonumber(st.condMax) then add("Market_State_Condition", int(st.cond), int(st.condMax)) else add("Market_Condition", int(st.cond)) end
     end
-    if tonumber(st.head) and tonumber(st.headMax) then add("Market_State_Head", int(st.head), int(st.headMax)) end
-    if tonumber(st.sharp) then add("Market_State_Sharpness", int(st.sharp)) end
-    if tonumber(st.ammo) and tonumber(st.ammoMax) then add("Market_State_Rounds", int(st.ammo), int(st.ammoMax)) end
-    if tonumber(st.uses) and tonumber(st.usesMax) then add("Market_State_Uses", int(st.uses), int(st.usesMax)) end
+    if not bars then
+        if tonumber(st.head) and tonumber(st.headMax) then add("Market_State_Head", int(st.head), int(st.headMax)) end
+        if tonumber(st.sharp) then add("Market_State_Sharpness", int(st.sharp)) end
+        if tonumber(st.ammo) and tonumber(st.ammoMax) then add("Market_State_Rounds", int(st.ammo), int(st.ammoMax)) end
+        if tonumber(st.uses) and tonumber(st.usesMax) then add("Market_State_Uses", int(st.uses), int(st.usesMax)) end
+    end
     if st.battery == false then add("Market_State_NoBattery")
-    elseif tonumber(st.power) then add("Market_State_Power", int(st.power)) end
+    elseif tonumber(st.power) and not bars then add("Market_State_Power", int(st.power)) end
     if (tonumber(st.holes) or 0) > 0 then add("Market_State_Holes", int(st.holes)) end
     if (tonumber(st.patches) or 0) > 0 then add("Market_State_Patches", int(st.patches)) end
     if (tonumber(st.blood) or 0) > 0 then add("Market_State_Blood", int(st.blood)) end
@@ -361,6 +370,35 @@ local function stateLines(st, out)
     out[#out + 1] = getText(T .. "Market_State_Title")
     for i = 1, #tokens do out[#out + 1] = "  " .. tokens[i] end
     if type(st.food) == "table" then out[#out + 1] = getText(T .. "Market_State_FoodAging") end
+    return out
+end
+
+-- The facts of the state that have a maximum, as detail-card meters ({ label, frac, value, token }):
+-- condition, head, sharpness, fluid, rounds, uses, battery. stateTokens(st, true) is the rest.
+local function stateMeters(st)
+    local out = {}
+    if type(st) ~= "table" then return out end
+    local function int(v) return tostring(math.floor((tonumber(v) or 0) + 0.5)) end
+    local function add(label, value, max, valueText)
+        local frac = max > 0 and math.max(0, math.min(1, value / max)) or 0
+        out[#out + 1] = { label = label, frac = frac, value = valueText,
+            token = frac >= 0.6 and "positive" or (frac >= 0.3 and "warn" or "negative") }
+    end
+    local function pair(key, v, max)
+        add(getText(T .. key), tonumber(v), tonumber(max), int(v) .. "/" .. int(max))
+    end
+    if tonumber(st.cond) and tonumber(st.condMax) then pair("Card_M_Cond", st.cond, st.condMax) end
+    if tonumber(st.head) and tonumber(st.headMax) then pair("Card_M_Head", st.head, st.headMax) end
+    if tonumber(st.sharp) then add(getText(T .. "Card_M_Sharp"), tonumber(st.sharp), 100, int(st.sharp) .. "%") end
+    if type(st.fluid) == "string" and st.fluid ~= "" and tonumber(st.fluidCap) then
+        add(fluidName(st), tonumber(st.fluidL) or 0, tonumber(st.fluidCap), string.format("%.2f/%.2f L",
+            tonumber(st.fluidL) or 0, tonumber(st.fluidCap)))
+    end
+    if tonumber(st.ammo) and tonumber(st.ammoMax) then pair("Card_M_Rounds", st.ammo, st.ammoMax) end
+    if tonumber(st.uses) and tonumber(st.usesMax) then pair("Card_M_Uses", st.uses, st.usesMax) end
+    if st.battery ~= false and tonumber(st.power) then
+        add(getText(T .. "Card_M_Power"), tonumber(st.power), 100, int(st.power) .. "%")
+    end
     return out
 end
 
@@ -1042,6 +1080,7 @@ local function historyRow(rec, offsetMin)
     local detail = table.concat(parts, "  ")
     return {
         recordKey = U.recordKey(rec),
+        rec = rec, item = type(rec.item) == "string" and rec.item or nil, qty = qty,   -- the detail card
         kind = kind,
         ts = tonumber(rec.ts) or 0,           -- the filter bar pages/sorts on the raw numbers
         amount = amount or 0,                 -- the sort key; the painted value is below
@@ -1091,6 +1130,8 @@ local function auctionHistoryRow(rec, offsetMin)
     end
     return {
         recordKey = U.recordKey(rec),
+        rec = rec, item = (type(rec.item) == "string" and rec.item ~= "") and rec.item or nil,   -- the detail card
+        qty = qty and math.max(1, math.floor(qty)) or nil,
         kind = kind,
         ts = tonumber(rec.ts) or 0,           -- the filter bar pages/sorts on the raw numbers
         amount = price or 0,
@@ -1313,6 +1354,8 @@ W.shopError = shopError
 W.sellRefusalText = sellRefusalText
 W.sellRefusedLines = sellRefusedLines
 W.marketError = marketError
+W.stateTokens = stateTokens
+W.stateMeters = stateMeters
 W.historyError = historyError
 W.capacityLines = capacityLines
 W.stateLines = stateLines
@@ -1347,13 +1390,7 @@ W.sortLabel = sortLabel
 W.MARKET_SORTS = MARKET_SORTS
 W.AUCTION_SORTS = AUCTION_SORTS
 
--- How long a listing or an auction still runs, in one shape for every row: days and hours while
--- a day or more is left, hours and minutes (U.durationText) below that.
-function W.remainText(ms)
-    local minutes = math.max(0, math.floor(ms / 60000))
-    if minutes < 1440 then return durationText(ms) end
-    return getText(T .. "Time_DH", tostring(math.floor(minutes / 1440)), tostring(math.floor(minutes / 60) % 24))
-end
+W.remainText = U.remainText
 
 -- A small chip that shows a framework icon instead of its label (the refresh action of the trade
 -- pages). The label stays the button's fullTitle, so the tooltip and the keyboard read it; without

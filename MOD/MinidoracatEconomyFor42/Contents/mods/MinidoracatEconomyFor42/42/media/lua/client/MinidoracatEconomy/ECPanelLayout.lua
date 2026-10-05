@@ -23,6 +23,7 @@ if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEco
 end
 require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECPanelShopMail"
+require "MinidoracatEconomy/ECPanelCards"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -235,7 +236,8 @@ function L.tradeRules(self, open)
     rules:setVisible(open)
     rules:setX(g[prefix .. "RulesX"]); rules:setY(g[prefix .. "RulesY"])
     local note
-    if (market and self.marketMode or self.auctionMode) == "history" then
+    local history = (market and self.marketMode or self.auctionMode) == "history"
+    if history then
         note = getText(T .. (market and "Market_History_Note" or "Auction_History_Note"))
     elseif market then
         local info = self.marketInfo
@@ -251,7 +253,8 @@ function L.tradeRules(self, open)
             or getText(T .. "Auction_Rule", hours))
     end
     rules.note, rules.ruleTitle = note, getText(T .. "Trade_Rules")
-    C.DetailWindow.update(self, "rules:" .. self.tab, rules.ruleTitle, note)
+    rules.card = C.PanelCards.tradeRules(self, market, history)
+    C.DetailWindow.update(self, "rules:" .. self.tab, rules.ruleTitle, note, rules.card)
 end
 
 -- Keep the debug compiler's cumulative local-variable table below its 200-entry limit.
@@ -571,8 +574,9 @@ function L.layout(self)
     local boxW = math.max(80, copy.x - 6 - g.bodyX)
     local boxH = math.max(1, g.detailH)
     if balances then
-        -- inset from the card's edge like every other card body
+        -- inset from the card's edge like every other card body; "this month" takes the room under it
         boxX, boxY, boxW, boxH = listX + PAD, chromeTop + 4, listW - PAD * 2, math.max(1, copy.y - 10 - chromeTop)
+        boxH = L.layoutBalances(self, boxX, boxY, boxW, boxH)
     end
 
     -- Full filters, a compact filter sheet, or the full balance reader; never stacked into zero room.
@@ -846,8 +850,9 @@ function L.layout(self)
         rules:setX(g.rulesX); rules:setY(g.rulesY)
         local SM = C.PanelShopMail
         rules.note = self.tab == "Shop" and SM.shopRules(self) or SM.mailRules(self)
+        rules.card = self.tab == "Shop" and C.PanelCards.shopRules(self) or C.PanelCards.mailRules(self)
         rules.ruleTitle = getText(T .. "Trade_Rules")
-        C.DetailWindow.update(self, "rules:" .. self.tab, rules.ruleTitle, rules.note)
+        C.DetailWindow.update(self, "rules:" .. self.tab, rules.ruleTitle, rules.note, rules.card)
     end
 
     -- A failed read is recoverable from the list it belongs to.
@@ -1114,13 +1119,94 @@ function L.layoutWalletHeader(self, listX, listW, shown)
     head:setColumns(specs)
 end
 
+-- The balance view: the reader takes what its lines need (never under four lines), the month
+-- block (ECPanelCards.monthView) the room under it. The fitted labels, the wrapped note and the
+-- column widths are kept here, so L.drawBalances only paints.
+function L.layoutBalances(self, x, y, w, h)
+    local g, mv = self.g, self.monthView
+    g.monthY = nil
+    if mv == nil then return h end
+    local lineH = fontH.small + 6
+    g.monthLineH = lineH
+    mv.noteLines = U.wrapText(mv.note, math.max(60, w), 2)
+    local need = fontH.medium + 8 + #mv.noteLines * lineH + (#mv.lines + (mv.empty and 1 or 0)) * lineH + PAD
+    local boxH = math.max(math.min(h, fontH.small * 4 + 12),
+        math.min(W.readerHeight(self.balanceLines or {}, w), h - need - 8))
+    g.monthX, g.monthW, g.monthY = x, w, y + boxH + 8
+    g.monthBottom = y + h
+    -- columns: the kind as wide as the widest (at most 40% of the block), the amount at the right
+    local labelW, amountW = 0, 0
+    for _, line in ipairs(mv.lines) do
+        if not line.head then
+            labelW = math.max(labelW, textWidth(line.label))
+            amountW = math.max(amountW, textWidth(line.amountText))
+        end
+    end
+    labelW = math.min(labelW, math.floor(w * 0.4))
+    g.monthLabelW, g.monthAmountW = labelW, amountW
+    for _, line in ipairs(mv.lines) do
+        if line.head then
+            line.inW, line.outW = textWidth(line.inText), textWidth(line.outText)
+            line.fit = fitText(line.text, math.max(0, w - line.inW - line.outW - COIN_SMALL - PAD * 3))
+        else
+            line.fit = fitText(line.label, labelW)
+        end
+    end
+    return boxH
+end
+
+-- "This month" under the balances: a title, the scope (or why it is incomplete), then per
+-- currency its income and spending and one bar per kind (green in, red out). Lines that do not fit
+-- the card are left out, never squeezed.
+function L.drawBalances(self)
+    local g, mv = self.g, self.monthView
+    if mv == nil or g.monthY == nil or mv.noteLines == nil then return end   -- laid out by L.layoutBalances
+    local x, w, y, bottom, lh = g.monthX, g.monthW, g.monthY, g.monthBottom, g.monthLineH
+    if y + fontH.medium > bottom then return end
+    local c = U.color("border")
+    self:drawRect(x, y - 4, w, 1, c.a * 0.5, c.r, c.g, c.b)
+    text(self, mv.title, x, y + 2, "text", UIFont.Medium)
+    y = y + fontH.medium + 8
+    for i = 1, #(mv.noteLines or {}) do
+        if y + lh > bottom then return end
+        text(self, mv.noteLines[i], x, y + 3, mv.noteToken)
+        y = y + lh
+    end
+    if mv.empty and y + lh <= bottom then text(self, mv.empty, x, y + 3, "textMuted") end
+    local track = U.color("selected")
+    local barX = x + g.monthLabelW + PAD
+    local barW = math.max(0, w - g.monthLabelW - g.monthAmountW - PAD * 2)
+    for i = 1, #mv.lines do
+        if y + lh > bottom then return end
+        local line = mv.lines[i]
+        local ty = y + 3
+        if line.head then
+            drawCoin(self, line.coin, x, y + math.floor((lh - COIN_SMALL) / 2), COIN_SMALL)
+            text(self, line.fit, x + COIN_SMALL + 6, ty, "text")
+            textRight(self, line.outText, x + w, ty, "negative")
+            textRight(self, line.inText, x + w - line.outW - PAD, ty, "positive")
+        else
+            text(self, line.fit, x + 4, ty, "textMuted")
+            local by = y + math.floor((lh - 8) / 2)
+            self:drawRect(barX, by, barW, 8, track.a, track.r, track.g, track.b)
+            local fillW = math.floor(barW * line.frac + 0.5)
+            if fillW > 0 then
+                local bc = U.color(line.token)
+                self:drawRect(barX, by, fillW, 8, 1, bc.r, bc.g, bc.b)
+            end
+            textRight(self, line.amountText, x + w, ty, line.token)
+        end
+        y = y + lh
+    end
+end
+
 function L.drawWallet(self)
     local g = self.g
     local bx, bw = g.bodyX, g.bodyW
     local title = fitText(getText(T .. (g.walletBalances and "Wallet_Balances" or "Wallet_Statement")),
         math.max(0, g.walletTitleW), UIFont.Medium)
     card(self, bx, g.contentY, bw, g.workH, title, g.walletHeaderH)
-    if g.walletBalances then return end
+    if g.walletBalances then return L.drawBalances(self) end
     if g.walletFilters then self.walletBar:draw(self) end
     if not g.walletList then return end
     local cols = self.list.cols

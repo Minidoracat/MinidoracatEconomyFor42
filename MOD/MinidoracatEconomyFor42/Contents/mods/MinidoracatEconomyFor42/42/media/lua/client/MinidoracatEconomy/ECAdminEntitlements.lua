@@ -229,6 +229,26 @@ function P.rentalsText(entry, now, offsetMin)
     return table.concat(lines, "\n")
 end
 
+-- The same rentals as a detail card: the product and account in the header, one line per rental
+-- with its auto-renew label as the note, and the source mod / product id as technical facts.
+function P.rentalsCard(entry, username, now, offsetMin)
+    local ent = type(entry) == "table" and type(entry.entitlement) == "table" and entry.entitlement or {}
+    local lines = {}
+    for i, r in ipairs(type(ent.rentals) == "table" and ent.rentals or {}) do
+        if type(r) == "table" then
+            lines[#lines + 1] = { text = P.rentalLine(i, r, now, offsetMin), note = (P.autoTag(r, entry.plan, ent)) }
+        end
+    end
+    return {
+        sourceIcon = "sliders", iconKey = "sliders",
+        name = Ent().productName(entry), sub = tostring(username),
+        sections = { { title = tr("Ent_RentalsHead"), lines = lines } },
+        tech = { { label = tr("Ent_Origin_source"), value = tostring(entry.sourceMod) },
+            { label = tr("PCard_Ent_ProductId"), value = tostring(entry.productId) } },
+        techOpen = true,
+    }
+end
+
 -- The settings file problem a source reported ({ key, field?, ref? }): its own sentence when this
 -- client has the source's translations, else Economy's general one with the file key.
 function P.problemText(problem)
@@ -768,22 +788,24 @@ end
 function Page:rentalsContent()
     local entry = self:selectedAccountEntry()
     if entry == nil then return nil end
+    local now = EC.now()
     return getText(T .. "Ent_Pair", self.account.username, Ent().productName(entry)),
-        P.rentalsText(entry, EC.now(), self.owner.offsetMin)
+        P.rentalsText(entry, now, self.owner.offsetMin),
+        P.rentalsCard(entry, self.account.username, now, self.owner.offsetMin)
 end
 
 function Page:onAllRentals()
     local D = C.DetailWindow
-    local title, body = self:rentalsContent()
+    local title, body, card = self:rentalsContent()
     if D == nil or title == nil then return end
-    D.open(self, self:rentalsKey(), title, body)
+    D.open(self, self:rentalsKey(), title, body, nil, card)
 end
 
 -- a fresh account read keeps an open list current; the window never outlives its account
 function Page:refreshRentals()
     local D = C.DetailWindow
-    local title, body = self:rentalsContent()
-    if D ~= nil and title ~= nil then D.update(self, self:rentalsKey(), title, body) end
+    local title, body, card = self:rentalsContent()
+    if D ~= nil and title ~= nil then D.update(self, self:rentalsKey(), title, body, card) end
 end
 
 function Page:closeRentals()

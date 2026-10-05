@@ -609,9 +609,18 @@ function Page:onHelp()
     self:refreshStatus()
     local lines = { tr("Admin_Rec_HelpIntro"), tr("Admin_Rec_AccountsHint"), tr("Admin_Rec_Hint"),
         tr("Admin_Rec_BatchHint") }
-    if self.durableLine ~= nil then lines[#lines + 1] = self.durableLine end
-    if self.noWatermark then lines[#lines + 1] = tr("Recovery_NoWatermark") end
-    D.open(self, "recovery:help", tr("Admin_Help"), table.concat(lines, "\n\n"))
+    local save = {}
+    if self.durableLine ~= nil then save[#save + 1] = { text = self.durableLine } end
+    if self.noWatermark then save[#save + 1] = { text = tr("Recovery_NoWatermark") } end
+    for _, line in ipairs(save) do lines[#lines + 1] = line.text end
+    local sections = {
+        { title = tr("PCard_Rec_HelpWhat"), lines = { { text = tr("Admin_Rec_HelpIntro") } } },
+        { title = tr("PCard_Rec_HelpNumbers"), lines = { { text = tr("Admin_Rec_AccountsHint") } } },
+        { title = tr("PCard_Rec_HelpUse"), lines = { { text = tr("Admin_Rec_Hint") }, { text = tr("Admin_Rec_BatchHint") } } },
+    }
+    if #save > 0 then sections[#sections + 1] = { title = tr("Admin_Rec_PillWatermark"), lines = save } end
+    D.open(self, "recovery:help", tr("Admin_Help"), table.concat(lines, "\n\n"), nil,
+        { source = tr("Admin_Tab_Recovery"), sourceIcon = "document", sections = sections, techOpen = true })
 end
 
 -- The empty list's one next step: an account view goes back to the whole server, a filter that
@@ -1071,7 +1080,7 @@ function Page:startBatch(decision, note, items, excludedCount)
     if self.job ~= nil or type(items) ~= "table" or #items == 0 then return false end
     self.batchReport = nil
     self.job = { kind = "batch", decision = decision, note = note, items = items,
-        i = 1, total = #items, counts = { excluded = excludedCount }, lines = {}, sent = nil }
+        i = 1, total = #items, counts = { excluded = excludedCount }, lines = {}, cardLines = {}, sent = nil }
     self.owner.message = nil
     self:layout()
     return true
@@ -1102,7 +1111,7 @@ function Page:onRecheckAll()
     end
     self.batchReport = nil
     self.job = { kind = "sweep", items = items, i = 1, total = #items,
-        counts = {}, lines = {}, sent = nil }
+        counts = {}, lines = {}, cardLines = {}, sent = nil }
     self.owner.message = nil
     self:layout()
 end
@@ -1116,18 +1125,21 @@ function Page:recordResult(item, state, code, result)
     local job = self.job
     if job == nil or item == nil then return end
     job.counts[state] = (job.counts[state] or 0) + 1
-    local line = tostring(item.username) .. "  " .. tostring(item.key or "-") .. "  " .. stateLabel(state)
-    if code ~= nil then line = line .. "  " .. refusalText(code) end
+    local extra = ""
+    if code ~= nil then extra = extra .. "  " .. refusalText(code) end
     if type(result) == "table" then
         for _, key in ipairs({ "removed", "stuck", "refused", "qty" }) do
             if type(result[key]) == "number" then
-                line = line .. "  " .. getText(T .. "Admin_Rec_Result_" .. key, tostring(result[key]))
+                extra = extra .. "  " .. getText(T .. "Admin_Rec_Result_" .. key, tostring(result[key]))
             end
         end
-        if str(result.approvalToken) then line = line .. "  " .. getText(T .. "Admin_Rec_Token", result.approvalToken) end
-        if str(result.mailId) then line = line .. "  " .. pair("Admin_Rec_Mail", result.mailId) end
+        if str(result.approvalToken) then extra = extra .. "  " .. getText(T .. "Admin_Rec_Token", result.approvalToken) end
+        if str(result.mailId) then extra = extra .. "  " .. pair("Admin_Rec_Mail", result.mailId) end
     end
-    job.lines[#job.lines + 1] = line
+    local who = tostring(item.username) .. "  " .. tostring(item.key or "-")
+    job.lines[#job.lines + 1] = who .. "  " .. stateLabel(state) .. extra
+    job.cardLines[#job.cardLines + 1] = { pill = stateLabel(state), text = who,
+        note = extra ~= "" and string.match(extra, "^%s*(.-)$") or nil }
 end
 
 -- One queued write at a time, paced by the controller's own 650 ms cooldown (send() holds a
@@ -1212,15 +1224,19 @@ function Page:finishJob(reason, silent)
     local job = self.job
     if job == nil then return end
     self.job = nil
-    local parts = {}
+    local parts, chips = {}, {}
     for _, state in ipairs(STATES) do
         local n = job.counts[state]
         if n ~= nil and n > 0 then
             parts[#parts + 1] = stateLabel(state) .. " " .. tostring(n)
+            chips[#chips + 1] = { label = stateLabel(state), value = tostring(n),
+                token = (state == "refused" or state == "unknown" or state == "partial") and "warn" or "text" }
         end
     end
     local tally = #parts > 0 and table.concat(parts, "  /  ") or "-"
     self.batchReport = table.concat(job.lines, "\n")
+    self.batchCard = { sourceIcon = "layers", chips = chips, techOpen = true,
+        sections = { { title = tr("PCard_Rec_PerRecord"), lines = job.cardLines } } }
     if not silent then
         local head = job.kind == "batch" and getText(T .. "Admin_Rec_BatchDone", tally)
             or getText(T .. "Admin_Rec_SweepDone", tally)
@@ -1232,6 +1248,7 @@ function Page:finishJob(reason, silent)
             head = head .. "  " .. tr("Admin_Rec_Stopped")
         end
         self.batchReport = head .. "\n\n" .. self.batchReport
+        self.batchCard.text = head
         self.owner.message = { text = head, error = (job.counts.unknown or 0) > 0
             or (job.counts.partial or 0) > 0 or (job.counts.refused or 0) > 0 or reason == "forbidden" }
         -- the queue is over, so the view it was working on is asked for again once
@@ -1242,7 +1259,7 @@ end
 
 function Page:onReport()
     if self.batchReport == nil then return end
-    D.open(self, "recovery:report", tr("Admin_Rec_BatchReport"), self.batchReport)
+    D.open(self, "recovery:report", tr("Admin_Rec_BatchReport"), self.batchReport, nil, self.batchCard)
 end
 
 -- ----- rows -----
@@ -1258,17 +1275,43 @@ function Page:statusDetails()
     for _, p in ipairs(self.pills or {}) do lines[#lines + 1] = getText(T .. "Admin_Tx_Pair", p.label, p.value) end
     if self.durableLine ~= nil then lines[#lines + 1] = self.durableLine end
     for _, line in ipairs(self.statusText or {}) do lines[#lines + 1] = line end
+    for _, line in ipairs(self:accountLines()) do lines[#lines + 1] = line end
+    return table.concat(lines, "\n")
+end
+
+function Page:accountLines()
+    local lines = {}
     for _, account in ipairs(self.snapshot and self.snapshot.accounts or {}) do
         local name = tostring(account.username) .. " (" .. tr(account.online and "Admin_Player_Online" or "Admin_Player_Offline") .. ")"
         lines[#lines + 1] = getText(T .. "Admin_Rec_AccountLine", name, tostring(account.held or 0),
             account.open ~= nil and tostring(account.open) or tr("Admin_Rec_QuantityUnknown"))
     end
-    return table.concat(lines, "\n")
+    return lines
+end
+
+-- The same snapshot as a card: the page's pills as chips, the message, save line and band as
+-- text, and one line per account.
+function Page:statusCard()
+    local chips = {}
+    for i, p in ipairs(self.pills or {}) do chips[i] = { label = p.label, value = p.value, token = p.token } end
+    local paras = {}
+    local message = self.owner.message
+    if message and message.text then paras[#paras + 1] = message.text end
+    if self.durableLine ~= nil then paras[#paras + 1] = self.durableLine end
+    if self.statusText ~= nil and #self.statusText > 0 then paras[#paras + 1] = table.concat(self.statusText, "\n") end
+    local accounts = {}
+    for i, line in ipairs(self:accountLines()) do accounts[i] = { text = line } end
+    return {
+        source = tr("Admin_Tab_Recovery"), sourceIcon = "layers", chips = chips,
+        text = #paras > 0 and table.concat(paras, "\n\n") or nil,
+        sections = #accounts > 0 and { { title = tr("Admin_Rec_PillAccounts"), lines = accounts } } or nil,
+        techOpen = true,
+    }
 end
 
 function Page:onStatus()
     self:refreshStatus()
-    D.open(self, "recovery:status", tr("Admin_Rec_StatusDetails"), self:statusDetails())
+    D.open(self, "recovery:status", tr("Admin_Rec_StatusDetails"), self:statusDetails(), nil, self:statusCard())
 end
 
 function Page:rowStrip(rec, width, height, pickW)
@@ -1389,6 +1432,7 @@ function Page:recordRow(rec, width, rowHeight, pickW, labels)
         qtyRight = math.max(qtyW, (limit or width) - PAD),
         headText = head,
         detailText = self:recordText(rec, user),
+        detailCard = self:recordCard(rec, user, rowId(user, rec.key)),
     }
 end
 
@@ -1591,6 +1635,125 @@ function Page:recordText(rec, user)
     return table.concat(lines, "\n")
 end
 
+-- The same record as a detail card. Nothing is dropped against recordText: the item and account in
+-- the header, short states as chips, the facts as rows, every evidence sentence in the text, the
+-- preview and the commit-point mismatch as sections, the identifiers as technical facts, and the
+-- row's own decisions as actions (they run the row's own path, onRowAction, on the row found by id).
+function Page:recordCard(rec, user, id)
+    local flags = type(rec.actions) == "table" and rec.actions or {}
+    local write = self.owner:writeAllowed() == true
+    local actions = {}
+    for _, decision in ipairs(DECISIONS) do
+        if flags[decision] == true then
+            actions[#actions + 1] = { id = decision, label = decisionLabel(decision),
+                style = P.DANGER[decision] and "danger" or "chip", enabled = write,
+                run = function() self:onCardAction(id, decision) end }
+        end
+    end
+    local chips = {}
+    local proof = proofText(rec.source)
+    if proof ~= nil then
+        chips[#chips + 1] = { value = proof, token = rec.unproven == true and "warn" or "text", dot = true }
+    end
+    chips[#chips + 1] = #actions > 0 and { value = tr("PCard_Rec_Actionable"), token = "positive", dot = true }
+        or { value = tr("PCard_Rec_Blocked"), token = "warn", dot = true }
+    local readError = rec.readError ~= nil and rec.readError ~= false
+    if readError then chips[#chips + 1] = { value = tr("Admin_Rec_ReadErrorTag"), token = "warn" } end
+    if rec.duplicate == true then chips[#chips + 1] = { value = tr("Admin_Rec_EvidenceConflictTag"), token = "warn" } end
+    if rec.foreign == true then chips[#chips + 1] = { value = tr("Admin_Rec_ForeignTag"), token = "warn" } end
+    local online = rec.online
+    if online == nil then online = self:online() end
+    if online ~= true then chips[#chips + 1] = { value = tr("Admin_Rec_RowOffline"), token = "textMuted" } end
+
+    local rows = { { label = tr("PCard_Rec_Reason"), value = reasonText(rec.reason) } }
+    local qty, present = intOf(rec.qty), intOf(rec.presentQty)
+    if qty ~= nil then rows[#rows + 1] = { label = tr("PCard_Rec_Qty"), value = amountText(qty) } end
+    if present ~= nil then rows[#rows + 1] = { label = tr("PCard_Rec_Present"), value = amountText(present) } end
+    rows[#rows + 1] = { label = tr("PCard_Rec_Source"), value = sourceText(rec.sourceState),
+        token = (rec.sourceState == "rolledback" or rec.sourceState == "ambiguous") and "warn" or nil }
+    rows[#rows + 1] = { label = tr("PCard_Rec_Verdict"), value = verdictText(rec.verdict) }
+    local at = intOf(rec.at)
+    if at then rows[#rows + 1] = { label = tr("PCard_Rec_At"), value = stampText(at, self.owner.offsetMin) } end
+
+    -- the evidence sentences, in recordText's order
+    local paras = {}
+    if readError then paras[#paras + 1] = tr("Admin_Rec_ReadError") end
+    local blocked = blockedText(rec.blocked)
+    if blocked ~= nil then paras[#paras + 1] = blocked end
+    if blockedRecheck(rec) then paras[#paras + 1] = tr("Admin_Rec_JournalRecheck") end
+    if rec.previous == true then paras[#paras + 1] = tr("Admin_Rec_Previous") end
+    if rec.duplicate == true then paras[#paras + 1] = tr("Admin_Rec_EvidenceConflict") end
+    if rec.foreign == true then paras[#paras + 1] = tr("Admin_Rec_Foreign") end
+    local proofField = proofFieldText(rec.proofField)
+    if proofField ~= nil then paras[#paras + 1] = getText(T .. "Admin_Rec_ProofField", proofField) end
+    if rec.unproven == true then paras[#paras + 1] = tr("Admin_Rec_UnprovenWarn") end
+    local proofState = str(rec.proofState)
+    if proofState ~= nil then paras[#paras + 1] = getText(T .. "Admin_Rec_ProofState", reasonText(proofState)) end
+    local outcome = str(rec.outcome)
+    if outcome ~= nil then paras[#paras + 1] = getText(T .. "Admin_Rec_Outcome", verdictText(outcome)) end
+
+    local sections = {}
+    local mismatch = self:mismatchLines(rec)
+    if mismatch ~= nil then
+        local lines = {}
+        for i, line in ipairs(mismatch) do lines[i] = { text = line } end
+        if rec.source == "journal" then lines[#lines + 1] = { text = tr("Admin_Rec_MismatchAuthoritative") } end
+        sections[#sections + 1] = { title = tr("PCard_Rec_Mismatch"), lines = lines }
+    end
+    local preview = self:previewLines(rec)
+    if preview ~= nil then
+        local lines = {}
+        for i = 2, #preview do lines[#lines + 1] = { text = preview[i] } end
+        sections[#sections + 1] = { title = preview[1], lines = lines }
+    end
+
+    local tech = { { label = tr("Admin_Rec_Key"), value = tostring(rec.key or "-") } }
+    local mail, op, tx, kind = str(rec.mailId), str(rec.opId), str(rec.txId), str(rec.kind)
+    if mail then tech[#tech + 1] = { label = tr("Admin_Rec_Mail"), value = mail } end
+    if op then tech[#tech + 1] = { label = tr("Admin_Rec_Operation"), value = op } end
+    if tx then tech[#tech + 1] = { label = tr("Admin_Tx_Field_Id"), value = tx } end
+    if kind then tech[#tech + 1] = { label = tr("Admin_Tx_Field_Kind"), value = kindText(kind) } end
+    local epoch, seq = str(rec.epoch), intOf(rec.seq)
+    if epoch then tech[#tech + 1] = { label = tr("Admin_Sys_Epoch"), value = epoch } end
+    if seq then tech[#tech + 1] = { label = tr("Admin_Sys_Seq"), value = tostring(seq) } end
+    if type(rec.nativeIds) == "table" and #rec.nativeIds > 0 then
+        local ids = {}
+        for i, nid in ipairs(rec.nativeIds) do ids[i] = tostring(nid) end
+        tech[#tech + 1] = { label = tr("Admin_Rec_NativeIds"), value = table.concat(ids, ", ") }
+    end
+    local detail = detailText(rec)
+    if detail then tech[#tech + 1] = { label = tr("Admin_Rec_Detail"), value = detail } end
+    local revision = str(rec.revision)
+    if revision then tech[#tech + 1] = { label = tr("Common_Revision"), value = revision } end
+
+    local item = str(rec.item)
+    local name
+    if item ~= nil then
+        name = itemName(item)
+        if qty ~= nil and qty > 1 then name = name .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
+    else
+        name = kind ~= nil and kindText(kind) or tr("Admin_Rec_Open")
+    end
+    return {
+        source = tr("Admin_Rec_List"), sourceIcon = "layers",
+        item = item, iconKey = item == nil and "layers" or nil,
+        name = name, sub = user ~= nil and tostring(user) or nil,
+        chips = chips, rows = rows, sections = sections,
+        text = #paras > 0 and table.concat(paras, "\n\n") or nil,
+        note = #actions == 0 and tr("Admin_Rec_NoAction") or nil,
+        actions = actions, tech = tech, techOpen = true,
+    }
+end
+
+-- A decision pressed on the card: the row it was built from is looked up again by id in the
+-- current rows and goes through the same path as the row's own button; a row that is gone does
+-- nothing (the next rebuild closes or refreshes the card).
+function Page:onCardAction(id, decision)
+    for _, row in ipairs(self.rows or {}) do
+        if row.id == id then return self:onRowAction(row, decision) end
+    end
+end
+
 function Page:rebuild()
     local current = self.rows and self.rows[self.list:getSelectedIndex() or 0]
     local focusId = current and current.id
@@ -1619,7 +1782,7 @@ function Page:rebuild()
         if row.id == focusId then self.list:setSelectedIndex(i) end
         if row.id == readingId then
             self.selected = row
-            D.update(self, "recovery:" .. row.id, tr("Admin_Rec_List"), row.detailText)
+            D.update(self, "recovery:" .. row.id, tr("Admin_Rec_List"), row.detailText, row.detailCard)
         end
     end
     if not anchorFound then self.pickAnchor = nil end
@@ -1641,7 +1804,7 @@ function Page:onRow(item, index)
         self:updateEnabled()
         return
     end
-    D.open(self, "recovery:" .. item.id, tr("Admin_Rec_List"), item.detailText)
+    D.open(self, "recovery:" .. item.id, tr("Admin_Rec_List"), item.detailText, nil, item.detailCard)
     self:updateEnabled()
 end
 

@@ -93,7 +93,7 @@ end
 local function finishJob(key, job)
     jobs[key] = nil
     if job.reader then pcall(function() job.reader:close() end) end
-    if not job.player then return end
+    if not job.player and not job.onComplete then return end
     local reply
     if job.failed then
         reply = { entries = {}, total = 0, truncated = false, error = "read_failed" }
@@ -209,14 +209,17 @@ end
 -- and may report its own outcome by writing `extra.error` (a broken read still wins).
 -- strictJson fails on malformed non-empty rows; financial queries cannot silently skip them.
 --
--- `options` is internal only (the recovery proof journal; no client command passes one) and
--- every existing six-argument caller keeps its exact behaviour:
+-- `options` is internal only (the recovery proof journal, the market report scan; no client
+-- command passes one) and every existing six-argument caller keeps its exact behaviour:
 --   onComplete(reply)  the whole outcome - finish, refuse and read failure - goes to this
 --                      callback and nothing is sent to the player. Server-only evidence is read
 --                      through this door and never leaves as a reply.
 --   bytesPerTick       an extra per-tick budget on top of the line count. There is deliberately
 --                      no row pre-filter: a caller that skips a row it did not parse cannot say
 --                      the row was intact, and for a financial read that is the whole question.
+--   owner              a server-side job with no player at all (player = nil): this string is
+--                      the throttle key in place of the account. Only meaningful together with
+--                      onComplete - there is nobody to reply to.
 -- One read job per account and command (throttle key); a player without a verified identity
 -- only ever gets here through an exempt path and is keyed apart, under its claimed name.
 local function jobOwner(player)
@@ -226,7 +229,8 @@ local function jobOwner(player)
 end
 
 function W.tail(player, command, paths, extra, projector, strictJson, options)
-    local key = jobOwner(player) .. ":" .. command
+    local owner = type(options) == "table" and type(options.owner) == "string" and options.owner or nil
+    local key = (owner or jobOwner(player)) .. ":" .. command
     local onComplete = type(options) == "table" and options.onComplete or nil
     local function refuse(code)
         local reply = { entries = {}, total = 0, truncated = false, error = code }
