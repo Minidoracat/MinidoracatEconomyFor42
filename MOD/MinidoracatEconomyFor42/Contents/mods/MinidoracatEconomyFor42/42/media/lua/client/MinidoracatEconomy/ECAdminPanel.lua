@@ -92,14 +92,20 @@ local function fillSolid(el, x, y, w, h, token)
     U.theme:fill(el, x, y, w, h, token, "rect", 1)
 end
 
--- "Recovery" sits beside "Player" on purpose: what the whole server is holding back is a question
--- of its own, not something a host should have to reach by guessing account names one at a time.
+-- The rail reads in six groups (user ruling 2026-10-05), in the order a host works through them:
+-- what needs attention first (the overview, then the reconciliation desk it counts), then who
+-- plays, what is traded, where the money went, what the money is, and the server itself.
 -- "Seasons" sits beside "Settings" for the same reason the season length lives in the option
 -- schema: rotating a season and deciding how long the next one runs are the same rare,
 -- deliberate act, and both of them take the native role capability rather than the write role.
--- "Identity" sits beside "Whitelist": both are about who may be who on this server, and it is the
--- one page that works for an administrator whose own name the server has not verified yet.
-local TABS = { "Player", "Recovery", "Dashboard", "Currencies", "Sources", "IntegrationPlans", "Shop", "Whitelist", "Identity", "Listings", "Auctions", "Transactions", "Audit", "System", "Settings", "Seasons" }
+-- The keyboard walks the rows in this order, which is the order they are painted in.
+local TABS = { "Dashboard", "Recovery", "Player", "Identity", "Shop", "Whitelist", "Listings", "Auctions", "Transactions", "Audit", "Currencies", "Sources", "IntegrationPlans", "Settings", "Seasons", "System" }
+-- tab -> the group it opens (Admin_Group_<id>); a field rather than another main-chunk local
+P.TAB_GROUPS = { Dashboard = "Overview", Player = "Players", Shop = "Market", Transactions = "Money",
+    Currencies = "Integration", Settings = "Server" }
+-- the overview's "needs attention" rows: every kind rebuildAttention knows, one per currency for
+-- the conservation check, fits under this bound
+P.ATTENTION_MAX = 16
 local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim", "admin.identity" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
@@ -372,7 +378,7 @@ local function currencyUses(id, def)
     local out = nil
     local function add(key)
         local body = tr("Admin_Cur_Use_" .. key)
-        out = out and (out .. ", " .. body) or body
+        out = out and (out .. tr("Admin_Set_ListSep") .. body) or body
     end
     if static and static.marketUnit then add("Market") end
     -- Two different things, never treated as one: `directTransfer` is a player handing money to
@@ -482,9 +488,12 @@ local setEntryText = U.setEntryText
 
 local setEntryEditable = U.setEntryEditable
 
--- Column layout for a text-cell table (UI.Table.TextCell): spec = { { key, header, sample, flex } , ... }.
--- Every column gets max(header, sample) + PAD; one flex column absorbs the rest and carries a
--- width for fitText. `right` columns are measured from their right edge.
+-- Column layout for a text-cell table (UI.Table.TextCell): spec = { { key, header, sample, flex, shrink, extra } , ... }.
+-- Every column gets max(header, sample) + PAD (+ `extra`: room the row paints itself, e.g. a coin
+-- before the amount); one flex column absorbs the rest and carries a
+-- width for fitText. `right` columns are measured from their right edge. When the fixed columns
+-- do not fit, a `shrink` column (text the row's detail window shows whole) gives up its room
+-- first, so the columns after it -- figures -- are not the ones cut.
 local function layoutColumns(list, spec, innerWidth)
     local cols = list.cols
     for i = #cols, 1, -1 do cols[i] = nil end
@@ -495,8 +504,18 @@ local function layoutColumns(list, spec, innerWidth)
             flexIndex = i
             widths[i] = 0
         else
-            widths[i] = math.max(textWidth(c.header), textWidth(c.sample or "")) + PAD
+            -- 4 px of slack: the table cell fits against the same width with its own measure, and a
+            -- sample exactly as wide as the text it stands for came back cut ("05:...") in EN
+            widths[i] = math.max(textWidth(c.header), textWidth(c.sample or "") + (c.extra or 0)) + PAD + 4
             fixed = fixed + widths[i]
+        end
+    end
+    local over = fixed + (flexIndex and 40 or 0) - (innerWidth - PAD)
+    for i, c in ipairs(spec) do
+        if c.shrink and over > 0 then
+            local cut = math.min(over, math.max(0, widths[i] - (textWidth(c.header) + PAD + 4)))
+            widths[i] = widths[i] - cut
+            fixed, over = fixed - cut, over - cut
         end
     end
     if flexIndex then
@@ -534,14 +553,20 @@ end
 local RECEIPT_COLS = nil
 local AUDIT_COLS = nil
 
-local function receiptSpec()
+-- The same order as the player's own statement: time, what happened, the amount, the balance.
+-- The currency is the coin painted before the amount (the detail window still names it), and the
+-- type and the item share one column per line: a line with a long type ("Mod charge / payout")
+-- carries no item and a line with an item has a short type, so two fixed columns would cut one
+-- of them on every line while one shared column keeps both whole at the default size. The two
+-- figures are measured on the lines on screen (rebuildReceipts) so they give back the room a
+-- worst-case sample would hold; the defaults only size the empty table's headers.
+local function receiptSpec(amountSample, balanceSample)
     RECEIPT_COLS = {
         { header = tr("Wallet_Col_Time"), sample = U.STAMP_SAMPLE },
-        { header = tr("Admin_Col_Currency"), sample = currencyName(EC.CURRENCY_ORDER[1]) },
-        { header = tr("Wallet_Col_Amount"), sample = "+999,999", right = true },
-        { header = tr("Wallet_Col_Kind"), sample = kindText("admin_adjust") },
-        { header = tr("Wallet_Col_Balance"), sample = "999,999,999", right = true },
-        { header = tr("Admin_Col_Tx"), sample = "", flex = true },
+        { header = tr("Admin_Rcpt_Col_What"), sample = "", flex = true },
+        { header = tr("Wallet_Col_Amount"), sample = amountSample or "+999,999", right = true,
+            extra = math.max(12, math.min(fontH.small + 2, 20)) + 4 },
+        { header = tr("Wallet_Col_Balance"), sample = balanceSample or "999,999,999", right = true },
     }
     return RECEIPT_COLS
 end
@@ -590,7 +615,9 @@ local ReceiptCell = ISPanel:derive("MinidoracatEconomyReceiptCell")
 function ReceiptCell:render()
     U.framework.Table.TextCell.render(self)   -- the shared text cell owns zebra / selection / hover
     local e = self.entry
-    if e == nil or e.actions == nil then return end
+    if e == nil then return end
+    if e.coinX then drawCoin(self, e.currency, e.coinX, e.coinY, e.coinSize) end
+    if e.actions == nil then return end
     R.begin(self)
     for _, a in ipairs(e.actions) do
         R.put(self, a.id, a.label, a.x, a.y, a.w, a.h, a.id ~= "detail" or e.txId ~= nil)
@@ -599,18 +626,24 @@ function ReceiptCell:render()
 end
 
 local function auditSpec()
+    -- the action column fits the common actions whole in every language; a rare long one is cut
+    -- and read whole in the row's detail
+    local action = ""
+    for _, id in ipairs({ "unfreeze", "catalog", "config", "delist", "adjust", "source" }) do
+        local label = tr("Admin_Audit_Action_" .. id)
+        if textWidth(label) > textWidth(action) then action = label end
+    end
     AUDIT_COLS = {
         { header = tr("Wallet_Col_Time"), sample = U.STAMP_SAMPLE },
         { header = tr("Admin_Audit_Col_Admin"), sample = "admin0000" },
-        { header = tr("Admin_Audit_Col_Action"), sample = tr("Admin_Audit_Action_unfreeze") },
-        -- the target is a fullType / a DisplayCategory / a SKU id as often as an account now,
-        -- and the change column carries a translated "field: before -> after" for the
-        -- structural actions: both are budgeted for that, not for a player name and an amount
+        { header = tr("Admin_Audit_Col_Action"), sample = action .. " " },
+        -- the target is a fullType / a DisplayCategory / a SKU id as often as an account now
         { header = tr("Admin_Audit_Col_Target"), sample = "Base.Screwdriver" },
         { header = tr("Admin_Col_Currency"), sample = currencyName(EC.CURRENCY_ORDER[1]) },
-        { header = tr("Admin_Audit_Col_Change"), right = true,
-            sample = getText(T .. "Admin_Audit_Change", tr("Admin_Audit_Field_category"), tr("Admin_Audit_Value_inherit"), tr("Admin_Audit_Value_exclude")) },
-        { header = tr("Admin_Audit_Col_Reason"), sample = "", flex = true },
+        -- "field: before -> after" is the column a host reads the line by, so it takes whatever
+        -- the fixed columns leave; the reason keeps a short slot and is read whole in the detail
+        { header = tr("Admin_Audit_Col_Change"), sample = "", flex = true },
+        { header = tr("Admin_Audit_Col_Reason"), sample = "0000000000000" },
         { header = tr("Admin_Col_Tx"), sample = "0000000000000:0000" },
     }
     return AUDIT_COLS
@@ -805,14 +838,14 @@ end
 function OptionCell:render()
     local e = self.entry
     if not e then return end
-    local w = self.width
     local muted = (self.list:isSelected(self.index) or self:isMouseOver()) and "text" or "textMuted"
     if e.prefixText then text(self, e.prefixText, PAD, e.line1Y, muted) end
     text(self, e.nameText, e.nameX, e.line1Y, "text")
-    if e.overText then text(self, e.overText, PAD, e.line2Y, "warn") end
-    if e.descText ~= "" then text(self, e.descText, e.descX, e.line2Y, muted) end
-    if e.runtimeText then text(self, e.runtimeText, e.runtimeX, e.line2Y, "warn") end
-    if e.lockedText then textRight(self, e.lockedText, w - PAD, e.line2Y, muted) end
+    if e.overText then U.drawPill(self, e.overX, e.overY, nil, e.overText, "warn") end
+    if e.runtimeText then text(self, e.runtimeText, e.runtimeX, e.line1Y, "warn") end
+    -- up to two lines of the description; a longer one ends in "..." and the row opens it whole
+    for i = 1, #e.descLines do text(self, e.descLines[i], PAD, e.line2Y + (i - 1) * e.lh, muted) end
+    if e.lockedText then textRight(self, e.lockedText, e.lockedRight, e.line2Y, muted) end
     if e.valueText then
         local token = e.missing and "textFaint" or "accent"
         if e.valueCentre then
@@ -851,8 +884,6 @@ local function itemBaseName(fullType)
 end
 
 local itemTexture = U.itemTexture
-
-local categoryText = U.categoryText
 
 -- A texture the engine handed out can still be refused by the renderer: ask once, and a refusal
 -- clears the entry's icon so the row simply has none from the next frame on. Shared by every
@@ -899,12 +930,14 @@ function MarketRowCell:render()
     if e.altText then text(self, e.altText, e.altX, e.line1Y, "textFaint") end
     text(self, e.metaText, e.nameX, e.line2Y, "textFaint")
     textRight(self, e.priceText, e.priceRight, e.line1Y, "accent")
+    if e.coinX then drawCoin(self, e.currency, e.coinX, e.coinY, e.coinSize) end
     -- a read action (the auctions page's jump to the record) is never disabled with the writes:
     -- looking at what happened is allowed whenever the page itself is
     local write = self.list.optionsDisabled ~= true
     R.begin(self)
     for _, a in ipairs(e.actions) do
-        R.put(self, a.id, a.label, a.x, a.y, a.w, a.h, a.read == true or write)
+        -- the irreversible write (delist, cancel) wears the danger style; the dialog still confirms it
+        R.put(self, a.id, a.label, a.x, a.y, a.w, a.h, a.read == true or write, a.danger and "danger" or nil)
     end
     R.finish(self)
 end
@@ -919,7 +952,7 @@ local LISTING_ACTIONS, AUCTION_ACTIONS = nil, nil
 local function listingActions()
     if LISTING_ACTIONS == nil then
         LISTING_ACTIONS = { { id = "seller", label = tr("Admin_Lst_Seller"), read = true },
-            { id = "delist", label = tr("Admin_Lst_Delist") } }
+            { id = "delist", label = tr("Admin_Lst_Delist"), danger = true } }
     end
     return LISTING_ACTIONS
 end
@@ -928,7 +961,7 @@ local function auctionActions()
     if AUCTION_ACTIONS == nil then
         AUCTION_ACTIONS = { { id = "seller", label = tr("Admin_Auc_Seller"), read = true },
             { id = "record", label = tr("Auction_History"), read = true },
-            { id = "cancel", label = tr("Admin_Auc_Cancel") } }
+            { id = "cancel", label = tr("Admin_Auc_Cancel"), danger = true } }
     end
     return AUCTION_ACTIONS
 end
@@ -966,8 +999,7 @@ end
 -- DisplayCategory name the way the vanilla inventory paints it (ISInventoryPane.lua:2533): the
 -- engine's own IGUI_ItemCat_* key, falling back to the raw script category.
 local function itemCategoryName(category)
-    local key = tostring(category or "-")
-    return getTextOrNull("IGUI_ItemCat_" .. key) or key
+    return U.itemCategoryText(category)
 end
 
 -- ---------- audit page ----------
@@ -1065,7 +1097,7 @@ local function configChangeText(e)
         if spec ~= nil and v ~= nil then return optionValueText(spec, v) end
         return configValueText(v)
     end
-    return value(e.before) .. " > " .. value(e.after)
+    return getText(T .. "Admin_Tx_BeforeAfter", value(e.before), value(e.after))
 end
 
 -- One integration plan field: its label on the plan cards, qualified by the card it is on.
@@ -1263,7 +1295,9 @@ function Dialog:createChildren()
             self.currencyButtons[#self.currencyButtons + 1] = b
         end
     end
-    self.confirmButton = Button.create(0, 0, 140, btnH(), self.confirmLabel, self, Dialog.onConfirm, "primary")
+    -- an action that cannot be undone confirms in the danger style, not the gold primary one
+    self.confirmButton = Button.create(0, 0, 140, btnH(), self.confirmLabel, self, Dialog.onConfirm,
+        self.danger and "danger" or "primary")
     self:addChild(self.confirmButton)
     local cancel = tr("Admin_Cancel")
     self.cancelButton = Button.create(0, 0, textWidth(cancel) + 30, btnH(), cancel, self, Dialog.onCancel, "chip")
@@ -1837,6 +1871,11 @@ function Admin:createChildren()
         local b = Button.create(0, 0, textWidth(title) + 28, 26, title, self, Admin.onSubTab)
         b.internal = tab
         b.active = tab == self.tab
+        -- ECNavigation: a caption above the first row of each group, and the two rows the
+        -- overview counts for keep room for their bubble (`navBadge`, painted by ECAdminWindow)
+        local group = P.TAB_GROUPS[tab]
+        b.navGroup = group and tr("Admin_Group_" .. group) or nil
+        b.navBadgeSlot = tab == "Recovery" or tab == "Identity"
         self:addChild(b)
         self.subTabButtons[#self.subTabButtons + 1] = b
     end
@@ -1884,7 +1923,7 @@ function Admin:createChildren()
     -- line of the status card that counts those records
     self.recoveryButton = Button.create(0, 0, 120, btnH(), tr("Admin_Rec_Open"), self, Admin.onRecoveryOpen, "chip")
     self:addChild(self.recoveryButton)
-    self.statusReader = U.newReader(self, 200, 100)
+    self.statusList = self:newStatList()
     local summaryH = math.max(rowH(), fontH.medium + 14) + lineH() * 3 + 8
     self.summaryList = U.newTable(BalanceCell, summaryH)
     self.summaryList.onSelect = function(_, item)
@@ -1923,9 +1962,24 @@ function Admin:createChildren()
     self.curHoldersButton = Button.create(0, 0, 120, btnH(), tr("Admin_Cur_ViewHolders"), self, Admin.onCurrencyHolders, "chip")
     self:addChild(self.curHoldersButton)
 
-    -- dashboard: the issued card reads one currency at a time (five sources over three windows
-    -- is a table, and two of them side by side in a third of the window would be unreadable), and
-    -- every supply column carries its own entry into the account list
+    -- The overview (tab "Dashboard"): one button per "needs attention" row (rebuildAttention
+    -- titles and points them; made here, before every popup and dialog, so none can paint over
+    -- those), and one chip that switches the page between the overview and the full supply view
+    -- below, which stays as it was: the detail.
+    self.attButtons = {}
+    for i = 1, P.ATTENTION_MAX do
+        local b = Button.create(0, 0, 90, 22, "", self, Admin.onAttentionGo, "chip")
+        b.internal = i
+        b:setVisible(false)
+        self:addChild(b)
+        self.attButtons[i] = b
+    end
+    self.dashFullButton = Button.create(0, 0, 90, 22, tr("Admin_Ov_FullTable"), self, Admin.onDashFull, "chip")
+    self:addChild(self.dashFullButton)
+
+    -- full supply view: the issued card reads one currency at a time (five sources over three
+    -- windows is a table, and two of them side by side in a third of the window would be
+    -- unreadable), and every supply column carries its own entry into the account list
     self.dashIssueButtons = {}
     for _, id in ipairs(EC.CURRENCY_ORDER) do
         local b = Button.create(0, 0, 90, 22, currencyName(id), self, Admin.onDashIssueCurrency, "chip")
@@ -1955,9 +2009,16 @@ function Admin:createChildren()
     -- whether this integration may move money between players (admin.sources allowTransfer)
     self.srcTransferButton = Button.create(0, 0, 120, btnH(), tr("Admin_Src_TransferAllow"), self, Admin.onSourceTransferClick, "chip")
     self:addChild(self.srcTransferButton)
-    self.currencyReader = U.newReader(self, 100, 100)
-    self.sourceReader = U.newReader(self, 100, 100)
-    self.systemReader = U.newReader(self, 100, 100)
+    self.currencyList = self:newStatList()
+    self.sourceList = self:newStatList()
+    self.systemList = self:newStatList()
+    self.currencyTable = U.newTable(P.CurrencyCell, rowH())
+    self.currencyTable.onSelect = function(_, item)
+        if item == nil then return end
+        self.cfgSelected = item.id
+        self:updateEnabled()
+    end
+    self:addChild(self.currencyTable)
 
     -- audit page: the search box and the action chips share the top row, the dates / sort / page
     -- chips get their own line under it. Both are local filters over what the two reads carried.
@@ -2135,7 +2196,7 @@ function Admin:createChildren()
     self.settingsNav.onSelect = function(_, group) self:onSettingNav(group) end
     self:addChild(self.settingsNav)
     self:addChild(self.setResetButton)
-    self.settingsList = U.newTable(OptionCell, lineH() * 2 + 12)
+    self.settingsList = U.newTable(OptionCell, lineH() * 3 + 12)
     self.settingsList.onSelect = function(_, item)
         self:onSettingRow(item)
     end
@@ -2146,6 +2207,9 @@ function Admin:createChildren()
     self.setMessageButton = Button.create(0, 0, 1, 1, tr("Admin_Tab_Settings"), self, Admin.onSettingMessage, "chip")
     self.setMessageButton:setVisible(false)
     self:addChild(self.setMessageButton)
+    -- what this page is and who may change what: one click away instead of a line on the page
+    self.setHelpButton = Button.create(0, 0, 60, 22, tr("Admin_Help"), self, Admin.onSettingHelp, "chip")
+    self:addChild(self.setHelpButton)
 
     -- last children: the account picker's candidate list paints over the page and takes the
     -- press before the row underneath it (the dialog is added later still, and hides it while
@@ -2284,6 +2348,10 @@ function Admin:setTab(tab)
     -- the season desk has an unsent draft and a read of its own; leaving the tab drops the
     -- focus and the record window, and a read still in flight keeps the slot it owns
     if self.tab ~= "Seasons" then self:leaveSeasons() end
+    -- the overview always opens on its own first screen; the full supply view is a detail of it
+    if tab == "Dashboard" then self.dashFull = false end
+    -- opening the identity page is what the overview's "new identity alerts" are new since
+    if tab == "Identity" then self:seeIdentityAlerts() end
     -- the detail window belongs to the page that opened it: leaving that page closes it
     D.close(self)
     filterCloseCombo(self.auditActorCombo)
@@ -2465,6 +2533,156 @@ function Admin:onDashNote()
         return
     end
     self:showDetail("dash", "issued", tr("Admin_Dash_Note"), self:issuedNoteText())
+end
+
+-- ----- the overview (tab "Dashboard") -----
+
+-- The identity export states that leave an administrator something to do (Admin_Id_Export_*):
+-- the file was refused or went missing, or bindings were applied without the reservations.
+P.EXPORT_PROBLEMS = { unreadable = true, server_mismatch = true, malformed = true, truncated = true,
+    replaced = true, reserve_suspect = true, missing = true }
+
+-- The "needs attention" rows and the two rail counts, rebuilt whenever one of their sources lands
+-- (admin.system: `attention` and the status blocks; the reconciliation overview's summary; the
+-- identity page's status; any supply) and never per frame. Only what has a problem is listed,
+-- each as a sentence, a muted detail and the page that deals with it (`go`; "full" = the full
+-- supply view). The bubbles count what waits for a decision: records on the reconciliation desk;
+-- conflicts, unread alerts and a broken binding file or export on the identity desk.
+function Admin:rebuildAttention()
+    local items = {}
+    local function add(token, title, detail, go)
+        if #items < P.ATTENTION_MAX then
+            items[#items + 1] = { token = token, title = title, detail = detail, go = go }
+        end
+    end
+    local att = type(self.attention) == "table" and self.attention or EMPTY_ROW
+    local rec = type(att.recovery) == "table" and att.recovery or EMPTY_ROW
+    local held = tonumber(rec.held) or 0
+    if held > 0 then
+        add("errorText", getText(T .. "Admin_Ov_Recovery", numText(held)),
+            getText(T .. "Admin_Ov_RecoveryDetail", numText(rec.accounts), numText(rec.online)), "Recovery")
+    end
+    local id = type(att.identity) == "table" and att.identity or EMPTY_ROW
+    local idCount = 0
+    if id.unreadable == true then
+        add("errorText", tr("Admin_Ov_IdFile"), tr("Admin_Ov_IdFileDetail"), "Identity")
+        idCount = idCount + 1
+    end
+    if id.damaged == true then
+        add("warn", tr("Admin_Ov_IdDamaged"), tr("Admin_Ov_IdDamagedDetail"), "Identity")
+        idCount = idCount + 1
+    end
+    local conflicts = tonumber(id.conflicts) or 0
+    if conflicts > 0 then
+        add("warn", getText(T .. "Admin_Ov_IdConflicts", numText(conflicts)), tr("Admin_Ov_IdConflictsDetail"), "Identity")
+        idCount = idCount + conflicts
+    end
+    -- the server counts alerts per uptime: a smaller count is a restart, and all of it is new
+    local alerts = tonumber(id.alerts) or 0
+    if alerts < self.alertsSeen then self.alertsSeen = 0 end
+    local fresh = alerts - self.alertsSeen
+    if fresh > 0 then
+        add("warn", getText(T .. "Admin_Ov_IdAlerts", numText(fresh)), tr("Admin_Ov_IdAlertsDetail"), "Identity")
+        idCount = idCount + fresh
+    end
+    if id.steam == true and P.EXPORT_PROBLEMS[id.export] then
+        add("warn", tr("Admin_Ov_IdExport"), getText(T .. "Admin_Id_Export_" .. id.export), "Identity")
+        idCount = idCount + 1
+    end
+    local sys = type(self.system) == "table" and self.system or nil
+    if sys then
+        local durable = type(sys.durable) == "table" and sys.durable or EMPTY_ROW
+        -- "idle" is the first poll not having run yet, not a missing watermark
+        if durable.seq == nil and durable.status ~= nil and durable.status ~= "idle" then
+            add("warn", tr("Admin_Ov_Durable"), tr("Admin_Ov_DurableDetail"), "System")
+        end
+        local gaps = type(sys.ledgerGaps) == "table" and #sys.ledgerGaps or 0
+        if gaps > 0 then
+            add("warn", getText(T .. "Admin_Ov_LedgerGaps", numText(gaps)), tr("Admin_Ov_LedgerGapsDetail"), "System")
+        end
+        local cat = type(sys.catalog) == "table" and sys.catalog or EMPTY_ROW
+        if type(cat.errorCode) == "string" and cat.errorCode ~= "" then
+            add("errorText", tr("Admin_Ov_Catalog"), U.fileErrorText(cat.errorCode, cat.errorDetail), "Shop")
+        end
+        local wl = type(sys.whitelist) == "table" and sys.whitelist or EMPTY_ROW
+        if type(wl.errorCode) == "string" and wl.errorCode ~= "" then
+            add("errorText", tr("Admin_Ov_Whitelist"), U.fileErrorText(wl.errorCode, wl.errorDetail), "Whitelist")
+        end
+        local market = type(sys.market) == "table" and sys.market or EMPTY_ROW
+        if (tonumber(market.held) or 0) > 0 then
+            add("warn", getText(T .. "Admin_Ov_HeldListings", numText(market.held)), tr("Admin_Ov_HeldDetail"), "Listings")
+        end
+        local auctions = type(sys.auctions) == "table" and sys.auctions or EMPTY_ROW
+        if (tonumber(auctions.held) or 0) > 0 then
+            add("warn", getText(T .. "Admin_Ov_HeldAuctions", numText(auctions.held)), tr("Admin_Ov_HeldDetail"), "Auctions")
+        end
+    end
+    local supply = type(self.supply) == "table" and self.supply or EMPTY_ROW
+    for _, cid in ipairs(EC.CURRENCY_ORDER) do
+        local s = supply[cid]
+        if type(s) == "table" then
+            if s.complete == false then
+                add("warn", getText(T .. "Admin_Ov_Conserve", currencyName(cid)),
+                    getText(T .. "Admin_Dash_ConserveUnproven", numText(s.unreadable)), "full")
+            elseif (tonumber(s.net) or 0) ~= 0 then
+                add("warn", getText(T .. "Admin_Ov_Conserve", currencyName(cid)),
+                    getText(T .. "Admin_Ov_ConserveDetail", numText(s.net)), "full")
+            end
+        end
+    end
+    self.attentionItems = items
+    for _, b in ipairs(self.subTabButtons) do
+        if b.internal == "Recovery" then b.navBadge = held
+        elseif b.internal == "Identity" then b.navBadge = idCount end
+    end
+    -- each row's button names where it goes; its tooltip carries the detail line whole
+    for i, b in ipairs(self.attButtons) do
+        local item = items[i]
+        if item then
+            b.fullTitle = item.go == "full" and tr("Admin_Ov_FullTable")
+                or getText(T .. "Admin_Ov_Go", tr("Admin_Tab_" .. item.go))
+            b.tooltip = item.detail
+        end
+    end
+    if self.tab == "Dashboard" and self.g ~= nil then
+        self:layout()
+        if C.Keyboard then C.Keyboard.invalidate(self.owner) end
+    end
+end
+
+-- The overview's identity alerts are the ones that arrived since the Identity page was last up.
+-- Session memory only: nothing is acknowledged on the server, and a new session starts from the
+-- whole uptime's count again.
+function Admin:seeIdentityAlerts()
+    local id = type(self.attention) == "table" and self.attention.identity or nil
+    local alerts = type(id) == "table" and tonumber(id.alerts) or nil
+    if alerts ~= nil and alerts ~= self.alertsSeen then
+        self.alertsSeen = alerts
+        self:rebuildAttention()
+    end
+end
+
+-- A row's button: the page that deals with it, through the unsaved-work gate every page switch
+-- takes. The reconciliation desk opens on the whole server, not on an account a lookup left.
+function Admin:onAttentionGo(button)
+    if self:isModal() then return end
+    local item = (self.attentionItems or EMPTY_ROW)[button.internal]
+    if item == nil then return end
+    if item.go == "full" then return self:onDashFull() end
+    self:requestClose(function()
+        if item.go == "Recovery" then self.recoveryPage:showAll() end
+        self:setTab(item.go)
+    end)
+end
+
+-- The one switch between the overview and the full supply view. No read: both draw the same
+-- admin.system snapshot.
+function Admin:onDashFull()
+    if self:isModal() then return end
+    self.dashFull = not self.dashFull
+    D.close(self)   -- the issued note belongs to the full view
+    self:layout()
+    if C.Keyboard then C.Keyboard.invalidate(self.owner) end
 end
 
 -- The account list's one read. The page owns the conditions; this owns the shared command slot,
@@ -2910,254 +3128,385 @@ function Admin:selectedSource()
     return list[1]
 end
 
--- Reader bodies retain full values and their scroll position while a snapshot is refreshed.
-local function setReaderContent(reader, value)
-    local scroll = reader:getYScroll()
-    U.setWrappedText(reader, value, reader.width)
-    reader:setYScroll(scroll)
+-- ---------- stat lists (system, currency and source details, account status) ----------
+--
+-- One fact per row: a muted label with its figure right aligned, or a sentence on its own. A
+-- section heading carries a status dot when its part has a state to report, and "Help" when the
+-- part has a standing explanation (click or Enter opens it). Rows are measured once per rebuild
+-- (Admin:setStatRows); a row that had to be cut opens whole in the detail window, and the list
+-- scrolls, so a short window drops nothing the server said.
+P.StatCell = ISPanel:derive("MinidoracatEconomyStatCell")
+
+function P.StatCell:render()
+    local e = self.entry
+    if not e then return end
+    local ty = math.floor((self.height - fontH.small) / 2)
+    if not e.head then rowBackground(self) end
+    if e.dot then fill(self, PAD, ty + e.dotY, e.dotSize, e.dotSize, e.dot, "pill") end
+    if e.head then
+        text(self, e.labelText, e.labelX, ty, "accent")
+        if e.cueText then textRight(self, e.cueText, e.right, ty, "textFaint") end
+        fill(self, PAD, self.height - 1, math.max(0, e.right - PAD), 1, "border", "rect")
+    elseif e.valueText then
+        text(self, e.labelText, e.labelX, ty, "textMuted")
+        textRight(self, e.valueText, e.right, ty, e.token or "text")
+    else
+        text(self, e.labelText, e.labelX, ty, e.token or "text")
+    end
 end
 
-local function addReaderLine(lines, label, value)
-    lines[#lines + 1] = value == nil and label or (label .. "  " .. tostring(value))
+-- rows: { head = true, label, dot?, note? } or { label, value?, token?, dot? }
+local function addReaderHead(lines, label, dot, note)
+    lines[#lines + 1] = { head = true, label = label, dot = dot, note = note }
+end
+
+local function addReaderLine(lines, label, value, token, dot)
+    lines[#lines + 1] = { label = label, value = value ~= nil and tostring(value) or nil, token = token, dot = dot }
+end
+
+function Admin:setStatRows(list, rows)
+    local right = math.max(PAD * 2, list.width - 12 - PAD)   -- 12 = the scrollbar gutter
+    local dotSize = math.max(6, math.floor(fontH.small / 2))
+    local dotY = math.floor((fontH.small - dotSize) / 2)
+    local section = ""
+    for _, r in ipairs(rows) do
+        r.right, r.dotSize, r.dotY = right, dotSize, dotY
+        r.labelX = r.dot and (PAD + dotSize + 6) or PAD
+        local room = math.max(0, right - r.labelX)
+        if r.head then
+            section = r.label
+            r.key = "\2" .. r.label
+            if r.note then r.cueText = tr("Admin_Help") end
+            r.labelText = fitText(r.label, math.max(0, room - (r.cueText and (textWidth(r.cueText) + PAD) or 0)))
+            r.detailText = r.note
+        else
+            r.key = section .. "\1" .. r.label
+            if r.value then
+                local lw, vw = textWidth(r.label), textWidth(r.value)
+                if lw + PAD + vw > room then
+                    vw = math.min(vw, math.max(room - lw - PAD, math.floor(room * 0.55)))
+                end
+                r.valueText = fitText(r.value, vw)
+                r.labelText = fitText(r.label, math.max(0, room - textWidth(r.valueText) - PAD))
+                r.detailText = r.label == "" and r.value or (r.label .. "\n" .. r.value)
+            else
+                r.labelText = fitText(r.label, room)
+                r.detailText = r.label
+            end
+        end
+    end
+    list:setItems(rows)
+end
+
+function Admin:onStatRow(item)
+    if item == nil or item.detailText == nil or self:isModal() then return end
+    self:showDetail("stat", item.key, item.label ~= "" and item.label or tr("Admin_Tab_" .. self.tab), item.detailText)
+end
+
+function Admin:newStatList()
+    local list = U.newTable(P.StatCell, math.max(22, fontH.small + 8))
+    list.onSelect = function(_, item) self:onStatRow(item) end
+    self:addChild(list)
+    return list
+end
+
+-- The currency table: a real list, so the keyboard and the controller pick a currency the way the
+-- mouse does, and every action below it follows the pick.
+P.CurrencyCell = ISPanel:derive("MinidoracatEconomyCurrencyCell")
+
+function P.CurrencyCell:render()
+    local e = self.entry
+    if not e then return end
+    rowBackground(self)
+    local ty = math.floor((self.height - fontH.small) / 2)
+    -- the icon in force for this currency (U.drawCoin: icon cache, shipped texture, then the dot)
+    drawCoin(self, e.id, PAD, math.floor((self.height - e.coin) / 2), e.coin)
+    text(self, e.idText, e.idX, ty, self.list:isSelected(self.index) and "accent" or "text")
+    text(self, e.useText, e.useX, ty, "textMuted")
+    text(self, e.nameText, e.nameX, ty, "text")
+    text(self, e.stateText, e.stateX, ty, e.enabled and "positive" or "textFaint")
+end
+
+-- Column x of the currency table, shared by its header and its rows. "Uses" lists every role
+-- the currency has, so it gets the widest share.
+function Admin:currencyColumns()
+    local w = self.currencyTable.width
+    return math.floor(w * 0.22), math.floor(w * 0.58), math.floor(w * 0.82)
+end
+
+function Admin:rebuildCurrencyRows()
+    local list = self.currencyTable
+    local defs = currencyDefs()
+    if list.ecDefs == defs and list.ecWidth == list.width and list.ecSelected == self.cfgSelected then return end
+    list.ecDefs, list.ecWidth, list.ecSelected = defs, list.width, self.cfgSelected
+    local c2, c3, c4 = self:currencyColumns()
+    local coin = math.max(16, math.min(list.rowHeight - 6, 24))
+    local idX = PAD + coin + 6
+    local rows, pick = {}, nil
+    for i, id in ipairs(EC.CURRENCY_ORDER) do
+        local def = currencyDef(id)
+        local enabled = def == nil or def.enabled ~= false
+        -- What this currency may be used for: every property that is true, not one of two roles.
+        rows[i] = { id = id, coin = coin, idX = idX, useX = c2, nameX = c3, stateX = c4, enabled = enabled,
+            idText = fitText(id, math.max(20, c2 - idX - PAD)),
+            useText = fitText(currencyUses(id, def), math.max(20, c3 - c2 - PAD)),
+            nameText = fitText(currencyName(id), math.max(20, c4 - c3 - PAD)),
+            stateText = tr(enabled and "Admin_On" or "Admin_Off") }
+        if id == self:selectedCurrency() then pick = i end
+    end
+    list:setItems(rows)
+    list:setSelectedIndex(pick)
 end
 
 function Admin:refreshCurrencyReader(id, def)
-    local reader = self.currencyReader
-    if reader.ecTarget ~= id then reader:setYScroll(0); reader.ecTarget = id end
-    -- the supply figures are part of this card now, so a fresh measurement rebuilds it as surely
-    -- as a changed definition does
-    if reader.ecSnapshot ~= def or reader.ecIcons ~= self.icons or reader.ecSupply ~= self.supply
-        or reader.ecRawText == nil then
-        local lines = {}
-        if not def then
-            lines[1] = tr("Admin_Loading")
-        else
-            lines[1] = type(def.nameOverride) == "string" and def.nameOverride ~= ""
-                and getText(T .. "Admin_Cur_Override", def.nameOverride) or tr("Admin_Cur_NoOverride")
-            lines[#lines + 1] = getText(T .. (def.balanceMaxOverride and "Admin_Cur_BalanceMaxOverride" or "Admin_Cur_BalanceMaxDefault"), amountText(def.balanceMax or 0))
-            addReaderLine(lines, tr("Admin_Cur_Transfer"), def.directTransfer == true and tr("Admin_On") or tr("Admin_Off"))
-            if EC.isIconHash(def.iconHash) and type(def.iconBytes) == "number" then
-                lines[#lines + 1] = getText(T .. "Admin_Cur_IconCustom", def.iconHash, tostring(math.floor((def.iconBytes + 1023) / 1024)))
-            else
-                lines[#lines + 1] = tr("Admin_Cur_IconDefault")
-                lines[#lines + 1] = getText(T .. "Admin_Cur_IconHint", def.id .. ".png")
-            end
-            local status = self.icons and self.icons[def.id]
-            if status and status.error then
-                local code = tostring(status.error)
-                lines[#lines + 1] = getText(T .. "Admin_Cur_IconError", getTextOrNull(T .. "Admin_IconErr_" .. code)
-                    or U.unknownText("icon error", code))
-            end
-            local ex = def.exchange
-            if type(ex) == "table" then
-                lines[#lines + 1] = getText(T .. "Admin_Cur_RateVersion", tostring(ex.rateVersion or 1))
-                for _, field in ipairs(EXCHANGE_FIELDS) do addReaderLine(lines, exchangeLabel(field), amountText(ex[field] or 0)) end
-            else
-                lines[#lines + 1] = tr("Admin_Cur_NoExchange")
-            end
-            -- What the server is holding in this currency, and the two bounds on it. The
-            -- per-account bound is the balance cap above; there is no server-wide circulation
-            -- cap at all, and that is said in words -- a blank here would be read as "no data",
-            -- and a 0 as "nothing may circulate".
-            local s = type(self.supply) == "table" and self.supply[id] or nil
-            if s == nil then
-                lines[#lines + 1] = isPending("admin.currency") and tr("Admin_Loading")
-                    or tr("Admin_Cur_SupplyNone")
-            else
-                local proven = s.complete ~= false
-                addReaderLine(lines, tr("Admin_Dash_Total"), boundText(s.total, proven))
-                addReaderLine(lines, tr("Admin_Dash_Players"), boundText(s.players, proven))
-                addReaderLine(lines, tr("Admin_Dash_Reserved"), boundText(s.reserved, proven))
-                addReaderLine(lines, tr("Admin_Dash_Holders"), boundText(s.holders, proven))
-                addReaderLine(lines, tr("Admin_Dash_WalletAccounts"), boundText(s.accounts, proven))
-                -- The rows the dashboard column is allowed to drop when a scaled-up font leaves
-                -- it no height: they have to exist somewhere, and this reader wraps and scrolls,
-                -- so this is that somewhere. Without them "the cross-reference is elsewhere"
-                -- would not be true of anything.
-                addReaderLine(lines, tr("Admin_Dash_System"), boundText(s.system, proven))
-                if s.systemReserved ~= nil then
-                    addReaderLine(lines, tr("Admin_Dash_SystemReserved"),
-                        boundText(s.systemReserved, proven))
-                end
-                local top = type(s.top) == "table" and s.top or {}
-                lines[#lines + 1] = getText(T .. "Admin_Dash_Top", tostring(#top))
-                for _, holder in ipairs(top) do
-                    addReaderLine(lines, tostring(holder.account or "-"), numText(holder.amount))
-                end
-                addReaderLine(lines, tr("Admin_Dash_Conserve"),
-                    proven and numText(s.net) or tr("Admin_Dash_ConserveUnverifiable"))
-                -- the reader wraps, so this is where the unprovable case is stated in full
-                local unreadable = tonumber(s.unreadable)
-                if unreadable ~= nil and unreadable > 0 then
-                    addReaderLine(lines, tr("Admin_Dash_Unreadable"), numText(s.unreadable))
-                end
-                if s.complete == false then
-                    lines[#lines + 1] = getText(T .. "Admin_Cur_ConserveUnprovenNote",
-                        numText(s.unreadable))
-                end
-            end
-            addReaderLine(lines, tr("Admin_Dash_AccountCap"), numText(def.balanceMax))
-            addReaderLine(lines, tr("Admin_Dash_ServerCap"), tr("Admin_Dash_ServerCapNone"))
-            -- the dashboard column has room for the verdict only; the reader wraps, so the
-            -- reason there is no such cap is said here in full
-            lines[#lines + 1] = tr("Admin_Cur_ServerCapNote")
-            -- The two buyback caps. Zero is a decision, not an absence: the shop stops buying
-            -- this currency back, which is the opposite of "no limit", so it is spelled out.
-            addReaderLine(lines, tr("Admin_Cur_BuybackAccount"), (buybackCapText(def, "account")))
-            addReaderLine(lines, tr("Admin_Cur_BuybackServer"), (buybackCapText(def, "server")))
-            if buybackOptionKey(id, "account") == nil or buybackOptionKey(id, "server") == nil then
-                lines[#lines + 1] = tr("Admin_Cur_BuybackNoOption")
-            end
-        end
-        setReaderContent(reader, table.concat(lines, "\n"))
-        reader.ecSnapshot, reader.ecIcons, reader.ecSupply = def, self.icons, self.supply
-    else
-        setReaderContent(reader, reader.ecRawText)
+    local list = self.currencyList
+    if list.ecTarget ~= id then list:setScrollOffset(0); list.ecTarget = id end
+    -- the supply figures are part of this card, so a fresh measurement rebuilds it as surely as
+    -- a changed definition does
+    local waiting = isPending("admin.currency")
+    if list.ecSnapshot == def and list.ecIcons == self.icons and list.ecSupply == self.supply
+        and list.ecWaiting == waiting and list.ecWidth == list.width then return end
+    list.ecSnapshot, list.ecIcons, list.ecSupply = def, self.icons, self.supply
+    list.ecWaiting, list.ecWidth = waiting, list.width
+    local rows = {}
+    if not def then
+        addReaderLine(rows, tr("Admin_Loading"), nil, "textFaint")
+        return self:setStatRows(list, rows)
     end
+    local ex = type(def.exchange) == "table" and def.exchange or nil
+    local custom = EC.isIconHash(def.iconHash) and type(def.iconBytes) == "number"
+    local status = self.icons and self.icons[def.id]
+    -- basics: the name, what one account may hold, whether it moves between players and its
+    -- icon; how to replace the icon is the section's standing note
+    addReaderHead(rows, tr("Admin_Cur_Sec_Basic"), (status and status.error) and "negative" or nil,
+        (not custom) and getText(T .. "Admin_Cur_IconHint", def.id .. ".png") or nil)
+    addReaderLine(rows, type(def.nameOverride) == "string" and def.nameOverride ~= ""
+        and getText(T .. "Admin_Cur_Override", def.nameOverride) or tr("Admin_Cur_NoOverride"))
+    addReaderLine(rows, getText(T .. (def.balanceMaxOverride and "Admin_Cur_BalanceMaxOverride" or "Admin_Cur_BalanceMaxDefault"), amountText(def.balanceMax or 0)))
+    addReaderLine(rows, tr("Admin_Cur_Transfer"), tr(def.directTransfer == true and "Admin_On" or "Admin_Off"))
+    addReaderLine(rows, custom and getText(T .. "Admin_Cur_IconCustom", def.iconHash,
+        tostring(math.floor((def.iconBytes + 1023) / 1024))) or tr("Admin_Cur_IconDefault"))
+    if status and status.error then
+        local code = tostring(status.error)
+        addReaderLine(rows, getText(T .. "Admin_Cur_IconError", getTextOrNull(T .. "Admin_IconErr_" .. code)
+            or U.unknownText("icon error", code)), nil, "negative")
+    end
+    if ex then
+        -- the deposit rate exists only for a currency that takes outside deposits
+        addReaderHead(rows, tr("Admin_Cur_Sec_Exchange"))
+        addReaderLine(rows, getText(T .. "Admin_Cur_RateVersion", tostring(ex.rateVersion or 1)))
+        for _, field in ipairs(EXCHANGE_FIELDS) do addReaderLine(rows, exchangeLabel(field), amountText(ex[field] or 0)) end
+    else
+        addReaderLine(rows, tr("Admin_Cur_NoExchange"), nil, "textFaint")
+    end
+    -- What the server is holding in this currency. Once a supply reports `complete = false`
+    -- every sum excludes the wallet rows it could not read, so the section says so.
+    local s = type(self.supply) == "table" and self.supply[id] or nil
+    local proven = s ~= nil and s.complete ~= false
+    addReaderHead(rows, tr("Admin_Cur_Sec_Supply"), (s ~= nil and not proven) and "warn" or nil)
+    if s == nil then
+        addReaderLine(rows, waiting and tr("Admin_Loading") or tr("Admin_Cur_SupplyNone"), nil, "textFaint")
+    else
+        addReaderLine(rows, tr("Admin_Dash_Total"), boundText(s.total, proven))
+        addReaderLine(rows, tr("Admin_Dash_Players"), boundText(s.players, proven))
+        addReaderLine(rows, tr("Admin_Dash_Reserved"), boundText(s.reserved, proven))
+        addReaderLine(rows, tr("Admin_Dash_Holders"), boundText(s.holders, proven))
+        addReaderLine(rows, tr("Admin_Dash_WalletAccounts"), boundText(s.accounts, proven))
+        -- the rows the dashboard column may drop at a scaled-up font live here in full
+        addReaderLine(rows, tr("Admin_Dash_System"), boundText(s.system, proven))
+        if s.systemReserved ~= nil then
+            addReaderLine(rows, tr("Admin_Dash_SystemReserved"), boundText(s.systemReserved, proven))
+        end
+        local top = type(s.top) == "table" and s.top or {}
+        -- "top 0 holders" says nothing the holder count above does not
+        if #top > 0 then addReaderLine(rows, getText(T .. "Admin_Dash_Top", tostring(#top)), nil, "textMuted") end
+        for _, holder in ipairs(top) do
+            addReaderLine(rows, tostring(holder.account or "-"), numText(holder.amount))
+        end
+        addReaderLine(rows, tr("Admin_Dash_Conserve"),
+            proven and numText(s.net) or tr("Admin_Dash_ConserveUnverifiable"), (not proven) and "warn" or nil)
+        local unreadable = tonumber(s.unreadable)
+        if unreadable ~= nil and unreadable > 0 then
+            addReaderLine(rows, tr("Admin_Dash_Unreadable"), numText(s.unreadable), "warn")
+        end
+        if s.complete == false then
+            addReaderLine(rows, getText(T .. "Admin_Cur_ConserveUnprovenNote", numText(s.unreadable)), nil, "warn")
+        end
+    end
+    -- The bounds: the per-account cap, no server-wide circulation cap (said in words: a blank
+    -- would read as "no data", a 0 as "nothing may circulate"), and the two buyback caps, where
+    -- zero is a decision -- the shop stops buying this currency back -- not an absence.
+    addReaderHead(rows, tr("Admin_Cur_Sec_Caps"), nil, tr("Admin_Cur_ServerCapNote"))
+    addReaderLine(rows, tr("Admin_Dash_AccountCap"), numText(def.balanceMax))
+    addReaderLine(rows, tr("Admin_Dash_ServerCap"), tr("Admin_Dash_ServerCapNone"))
+    local accountCap, accountToken = buybackCapText(def, "account")
+    addReaderLine(rows, tr("Admin_Cur_BuybackAccount"), accountCap, accountToken)
+    local serverCap, serverToken = buybackCapText(def, "server")
+    addReaderLine(rows, tr("Admin_Cur_BuybackServer"), serverCap, serverToken)
+    if buybackOptionKey(id, "account") == nil or buybackOptionKey(id, "server") == nil then
+        addReaderLine(rows, tr("Admin_Cur_BuybackNoOption"), nil, "textFaint")
+    end
+    self:setStatRows(list, rows)
 end
 
 function Admin:refreshSourceReader(selected)
-    local reader = self.sourceReader
+    local list = self.sourceList
     local id = selected and selected.modId
-    if reader.ecTarget ~= id then reader:setYScroll(0); reader.ecTarget = id end
+    if list.ecTarget ~= id then list:setScrollOffset(0); list.ecTarget = id end
     local waiting = selected == nil and isPending("admin.sources")
-    if reader.ecSnapshot ~= selected or reader.ecOffset ~= self.offsetMin or reader.ecCurrencies ~= C.currencies
-        or reader.ecWaiting ~= waiting or reader.ecRawText == nil then
-        local lines = {}
-        if not selected then
-            lines[1] = waiting and tr("Admin_Loading") or tr("Admin_Src_Empty")
-        else
-            addReaderLine(lines, tr("Admin_Src_Name"), C.AdminEntitlements.sourceName(selected))
-            addReaderLine(lines, tr("Admin_Src_RegisteredAt"), selected.registeredAt and stampText(tonumber(selected.registeredAt) or 0, self.offsetMin) or "-")
-            local today = selected.today or {}
-            addReaderLine(lines, tr("Admin_Src_Col_Mint"), amountText(today.mint or 0) .. " / " .. amountText(selected.dailyMintCap or 0))
-            addReaderLine(lines, tr("Admin_Src_Col_Burn"), amountText(today.burn or 0) .. " / " .. capText(selected.dailyBurnCap))
-            addReaderLine(lines, tr("Admin_Src_Transfer"), selected.allowTransfer == true and tr("Admin_On") or tr("Admin_Off"))
-            local balances = selected.balance or {}
-            for _, currency in ipairs(EC.CURRENCY_ORDER) do
-                addReaderLine(lines, getText(T .. "Admin_Src_Balance", currencyName(currency)), amountText(balances[currency] or 0))
-            end
-            lines[#lines + 1] = tr("Admin_Src_BalanceNote")
-            lines[#lines + 1] = getText(T .. "Admin_Src_Calls", amountText(today.ok or 0), amountText(today.calls or 0))
-            for _, rejected in ipairs(selected.rejectedRows or {}) do
-                addReaderLine(lines, getText(T .. "Admin_Src_Rejected", errorText(rejected.code)), amountText(rejected.n))
-            end
-        end
-        setReaderContent(reader, table.concat(lines, "\n"))
-        reader.ecSnapshot, reader.ecOffset = selected, self.offsetMin
-        reader.ecCurrencies, reader.ecWaiting = C.currencies, waiting
+    if list.ecSnapshot == selected and list.ecOffset == self.offsetMin and list.ecCurrencies == C.currencies
+        and list.ecWaiting == waiting and list.ecWidth == list.width then return end
+    list.ecSnapshot, list.ecOffset, list.ecCurrencies = selected, self.offsetMin, C.currencies
+    list.ecWaiting, list.ecWidth = waiting, list.width
+    local rows = {}
+    if not selected then
+        addReaderLine(rows, waiting and tr("Admin_Loading") or tr("Admin_Src_Empty"), nil, "textFaint")
     else
-        setReaderContent(reader, reader.ecRawText)
+        addReaderLine(rows, tr("Admin_Src_Name"), C.AdminEntitlements.sourceName(selected))
+        addReaderLine(rows, tr("Admin_Src_RegisteredAt"), selected.registeredAt and stampText(tonumber(selected.registeredAt) or 0, self.offsetMin) or "-")
+        local today = selected.today or {}
+        addReaderLine(rows, tr("Admin_Src_Col_Mint"), amountText(today.mint or 0) .. " / " .. amountText(selected.dailyMintCap or 0))
+        addReaderLine(rows, tr("Admin_Src_Col_Burn"), amountText(today.burn or 0) .. " / " .. capText(selected.dailyBurnCap))
+        addReaderLine(rows, tr("Admin_Src_Transfer"), tr(selected.allowTransfer == true and "Admin_On" or "Admin_Off"))
+        -- The mod account is that mod's net take: below zero it has issued more than it took
+        -- back, above zero the reverse. Said in words, never left to a sign.
+        local balances = selected.balance or {}
+        for _, currency in ipairs(EC.CURRENCY_ORDER) do
+            local n = tonumber(balances[currency]) or 0
+            local value = amountText(0)
+            if n < 0 then
+                value = getText(T .. "Admin_Src_NetMint", amountText(-n))
+            elseif n > 0 then
+                value = getText(T .. "Admin_Src_NetBurn", amountText(n))
+            end
+            addReaderLine(rows, getText(T .. "Admin_Src_Balance", currencyName(currency)), value)
+        end
+        addReaderLine(rows, getText(T .. "Admin_Src_Calls", amountText(today.ok or 0), amountText(today.calls or 0)))
+        for _, rejected in ipairs(selected.rejectedRows or {}) do
+            addReaderLine(rows, getText(T .. "Admin_Src_Rejected", errorText(rejected.code)), amountText(rejected.n), "warn")
+        end
     end
+    self:setStatRows(list, rows)
 end
 
 function Admin:refreshSystemReader()
-    local reader, sys = self.systemReader, self.system
+    local list, sys = self.systemList, self.system
     local second = math.floor(EC.now() / 1000)
-    if reader.ecSnapshot ~= sys or reader.ecSecond ~= second or reader.ecOffset ~= self.offsetMin or reader.ecRawText == nil then
-        local lines = {}
-        if not sys then
-            lines[1] = isPending("admin.system") and tr("Admin_Loading") or tr("Admin_Dash_Empty")
+    if list.ecSnapshot == sys and list.ecSecond == second and list.ecOffset == self.offsetMin
+        and list.ecWidth == list.width then return end
+    list.ecSnapshot, list.ecSecond, list.ecOffset, list.ecWidth = sys, second, self.offsetMin, list.width
+    local rows = {}
+    if not sys then
+        addReaderLine(rows, isPending("admin.system") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), nil, "textFaint")
+        return self:setStatRows(list, rows)
+    end
+    -- runtime: which build, which world, since when, and who is in it
+    addReaderHead(rows, tr("Admin_Sys_Sec_State"), "positive")
+    addReaderLine(rows, getText(T .. "Admin_Sys_Version", tostring(sys.version or "-"), tostring(sys.schemaVersion or "-")))
+    addReaderLine(rows, getText(T .. "Admin_Sys_StartedAt", stampText(sys.startedAt, self.offsetMin)))
+    addReaderLine(rows, tr("Admin_Sys_Epoch"), sys.epoch or "-")
+    addReaderLine(rows, tr("Admin_Sys_Realm"), sys.realmId or "-")
+    addReaderLine(rows, getText(T .. "Admin_Sys_Accounts", tostring(sys.accounts or 0), tostring(sys.frozen or 0)))
+    addReaderLine(rows, tr("Admin_Sys_Terminals"), amountText(sys.terminals or 0))
+    -- storage: the event sequence against the save the server has confirmed (the watermark),
+    -- and how much the mod keeps in ModData
+    local durable = type(sys.durable) == "table" and sys.durable or nil
+    local saved = durable ~= nil and durable.seq ~= nil
+    addReaderHead(rows, tr("Admin_Sys_Sec_Storage"), saved and "positive" or "warn",
+        tr("Admin_Sys_LoadedSeqNote") .. "\n" .. tr("Admin_Sys_SizeNote"))
+    addReaderLine(rows, tr("Admin_Sys_Seq"), amountText(sys.seq or 0))
+    addReaderLine(rows, tr("Admin_Sys_Durable"), saved and amountText(durable.seq) or tr("Admin_Sys_DurableNone"), (not saved) and "warn" or nil)
+    addReaderLine(rows, tr("Admin_Sys_LoadedSeq"), amountText(sys.loadedSeq or 0))
+    addReaderLine(rows, tr("Admin_Sys_Size"), sizeText(sys.sizeEstimate))
+    if type(sys.sizeParts) == "table" then
+        addReaderLine(rows, "", getText(T .. "Admin_Sys_SizeParts", sizeText(sys.sizeParts.ledger), sizeText(sys.sizeParts.admin)))
+    end
+    if sys.auditCount ~= nil then addReaderLine(rows, tr("Admin_Sys_AuditRing"), tostring(sys.auditCount) .. " / " .. tostring(sys.auditMax or "?")) end
+    -- ledger and trading. A rollback ledger this start could not read in full blocks mail and
+    -- transfers until it leaves the recent starts (ECRecovery.ledgerGaps; one row whatever the
+    -- count). `held` is the fail-closed pile -- rows whose currency the server could not prove,
+    -- taken out of trading until a host deals with them -- so it is named even when it is zero,
+    -- and a count the reply did not carry stays a dash instead of reading as "nothing is stuck".
+    local gaps = type(sys.ledgerGaps) == "table" and sys.ledgerGaps or {}
+    local market = type(sys.market) == "table" and sys.market or {}
+    local auctions = type(sys.auctions) == "table" and sys.auctions or {}
+    local marketHeld, auctionHeld = tonumber(market.held) or 0, tonumber(auctions.held) or 0
+    addReaderHead(rows, tr("Admin_Sys_Sec_Ledger"), #gaps > 0 and "negative"
+        or ((marketHeld > 0 or auctionHeld > 0) and "warn" or "positive"))
+    if #gaps > 0 then
+        local epochs = {}
+        for _, g in ipairs(gaps) do epochs[#epochs + 1] = tostring(g.epoch) end
+        addReaderLine(rows, getText(T .. "Admin_Sys_LedgerGap", table.concat(epochs, ", "),
+            stampText(gaps[1].at, self.offsetMin)), nil, "negative")
+    end
+    addReaderLine(rows, tr("Admin_Sys_Mailbox"), amountText(sys.mailboxUnclaimed or 0))
+    addReaderLine(rows, tr("Admin_Sys_Listings"), amountText(market.listings or 0) .. " / " .. tostring(market.max or "?"))
+    addReaderLine(rows, tr("Admin_Sys_ListingsByCurrency"), boardByCurrencyText(market.byCurrency))
+    addReaderLine(rows, tr("Admin_Sys_Held"), numText(market.held), marketHeld > 0 and "warn" or nil)
+    addReaderLine(rows, tr("Admin_Sys_Auctions"), amountText(auctions.auctions or 0) .. " / " .. tostring(auctions.max or "?"))
+    addReaderLine(rows, tr("Admin_Sys_AuctionsByCurrency"), boardByCurrencyText(auctions.byCurrency))
+    addReaderLine(rows, tr("Admin_Sys_Held"), numText(auctions.held), auctionHeld > 0 and "warn" or nil)
+    -- Buyback is per currency: the switch is server-wide, the counter and both caps belong to
+    -- one currency. A cap at or below zero stops that currency, so it is said in words.
+    local buyback = sys.buyback
+    if type(buyback) == "table" then
+        addReaderLine(rows, tr("Admin_Sys_Buyback"), tr(buyback.enabled == true and "Admin_On" or "Admin_Off"))
+        local byCurrency = type(buyback.byCurrency) == "table" and buyback.byCurrency or nil
+        if byCurrency == nil then
+            addReaderLine(rows, tr("Admin_Cur_BuybackUnset"), nil, "textFaint")
         else
-            addReaderLine(lines, tr("Admin_Sys_Seq"), amountText(sys.seq or 0))
-            local durable = type(sys.durable) == "table" and sys.durable or nil
-            addReaderLine(lines, tr("Admin_Sys_Durable"), durable and durable.seq ~= nil and amountText(durable.seq) or tr("Admin_Sys_DurableNone"))
-            addReaderLine(lines, tr("Admin_Sys_Epoch"), sys.epoch or "-")
-            addReaderLine(lines, tr("Admin_Sys_LoadedSeq"), amountText(sys.loadedSeq or 0))
-            lines[#lines + 1] = tr("Admin_Sys_LoadedSeqNote")
-            addReaderLine(lines, tr("Admin_Sys_Realm"), sys.realmId or "-")
-            lines[#lines + 1] = getText(T .. "Admin_Sys_StartedAt", stampText(sys.startedAt, self.offsetMin))
-            lines[#lines + 1] = getText(T .. "Admin_Sys_Version", tostring(sys.version or "-"), tostring(sys.schemaVersion or "-"))
-            lines[#lines + 1] = getText(T .. "Admin_Sys_Accounts", tostring(sys.accounts or 0), tostring(sys.frozen or 0))
-            addReaderLine(lines, tr("Admin_Sys_Terminals"), amountText(sys.terminals or 0))
-            addReaderLine(lines, tr("Admin_Sys_Mailbox"), amountText(sys.mailboxUnclaimed or 0))
-            -- a rollback ledger this start could not read in full: what it blocks, until when, and
-            -- where to look (ECRecovery.ledgerGaps; one line whatever the count)
-            local gaps = type(sys.ledgerGaps) == "table" and sys.ledgerGaps or {}
-            if #gaps > 0 then
-                local epochs = {}
-                for _, g in ipairs(gaps) do epochs[#epochs + 1] = tostring(g.epoch) end
-                lines[#lines + 1] = getText(T .. "Admin_Sys_LedgerGap", table.concat(epochs, ", "),
-                    stampText(gaps[1].at, self.offsetMin))
-            end
-            local cat = type(sys.catalog) == "table" and sys.catalog or {}
-            -- the catalog names its failure with a code (file_unreadable / catalog_invalid /
-            -- arbitrage_rejected / file_write_failed) plus what the file got wrong, both worded here
-            local catError = nil
-            if type(cat.errorCode) == "string" and cat.errorCode ~= "" then
-                catError = U.fileErrorText(cat.errorCode, cat.errorDetail)
-            end
-            addReaderLine(lines, tr("Admin_Sys_Catalog"),
-                catError or getText(T .. "Admin_Shop_Count", tostring(cat.count or 0)))
-            -- The two boards: how many rows are up against the bound, then the per-currency
-            -- split, then what is held back. `held` is the fail-closed pile -- rows whose
-            -- currency the server could not prove, taken out of trading until a host deals with
-            -- them -- so it is named even when it is zero, and a count the reply did not carry
-            -- stays a dash instead of reading as "nothing is stuck".
-            local market = type(sys.market) == "table" and sys.market or {}
-            addReaderLine(lines, tr("Admin_Sys_Listings"), amountText(market.listings or 0) .. " / " .. tostring(market.max or "?"))
-            addReaderLine(lines, tr("Admin_Sys_ListingsByCurrency"), boardByCurrencyText(market.byCurrency))
-            addReaderLine(lines, tr("Admin_Sys_Held"), numText(market.held))
-            local auctions = type(sys.auctions) == "table" and sys.auctions or {}
-            addReaderLine(lines, tr("Admin_Sys_Auctions"), amountText(auctions.auctions or 0) .. " / " .. tostring(auctions.max or "?"))
-            addReaderLine(lines, tr("Admin_Sys_AuctionsByCurrency"), boardByCurrencyText(auctions.byCurrency))
-            addReaderLine(lines, tr("Admin_Sys_Held"), numText(auctions.held))
-            -- Buyback is per currency now: the switch is server-wide, the counter and both caps
-            -- belong to one currency. A cap at or below zero is what stops that currency, so it
-            -- is said in words rather than printed as a bare 0.
-            local buyback = sys.buyback
-            if type(buyback) == "table" then
-                addReaderLine(lines, tr("Admin_Sys_Buyback"),
-                    tr(buyback.enabled == true and "Admin_On" or "Admin_Off"))
-                local byCurrency = type(buyback.byCurrency) == "table" and buyback.byCurrency or nil
-                if byCurrency == nil then
-                    lines[#lines + 1] = tr("Admin_Cur_BuybackUnset")
+            for _, id in ipairs(EC.CURRENCY_ORDER) do
+                local b = byCurrency[id]
+                local body, token
+                if type(b) ~= "table" then
+                    body = tr("Admin_Cur_BuybackUnset")
                 else
-                    for _, id in ipairs(EC.CURRENCY_ORDER) do
-                        local b = byCurrency[id]
-                        local body
-                        if type(b) ~= "table" then
-                            body = tr("Admin_Cur_BuybackUnset")
-                        else
-                            local account, server = tonumber(b.accountCap), tonumber(b.serverCap)
-                            local stopped = account ~= nil and server ~= nil
-                                and (account <= 0 or server <= 0)
-                            body = getText(T .. "Admin_Sys_BuybackValue", numText(b.mintedToday),
-                                numText(b.accountCap), numText(b.serverCap))
-                            if stopped then body = body .. "  " .. tr("Admin_Cur_BuybackOff") end
-                        end
-                        addReaderLine(lines, getText(T .. "Admin_Sys_BuybackCurrency", currencyName(id)), body)
+                    local account, server = tonumber(b.accountCap), tonumber(b.serverCap)
+                    local stopped = account ~= nil and server ~= nil and (account <= 0 or server <= 0)
+                    if stopped and (tonumber(b.mintedToday) or 0) == 0 then
+                        -- nothing minted and nothing can be: the state alone, not "0, cap 0, cap 0 (stopped)"
+                        body, token = tr("Shop_PillBuybackOff"), "warn"
+                    else
+                        body = getText(T .. "Admin_Sys_BuybackValue", numText(b.mintedToday),
+                            numText(b.accountCap), numText(b.serverCap))
+                        if stopped then body = getText(T .. "Admin_Sys_BuybackStopped", body) end
                     end
                 end
+                addReaderLine(rows, getText(T .. "Admin_Sys_BuybackCurrency", currencyName(id)), body, token)
             end
-            local exchange = sys.exchange
-            if type(exchange) == "table" then
-                local today = 0
-                for _, value in pairs(type(exchange.depositedToday) == "table" and exchange.depositedToday or {}) do today = today + (tonumber(value) or 0) end
-                addReaderLine(lines, tr("Admin_Sys_Exchange"), getText(T .. "Admin_Sys_ExchangeValue", amountText(today), amountText(exchange.tombstones or 0), amountText(exchange.tombstoneMax or 0), tostring(math.floor(tonumber(exchange.inboxFiles) or 0))))
-            end
-            local whitelist = type(sys.whitelist) == "table" and sys.whitelist or {}
-            local counts = type(whitelist.counts) == "table" and whitelist.counts or {}
-            local wlError = type(whitelist.errorCode) == "string" and whitelist.errorCode ~= ""
-                and U.fileErrorText(whitelist.errorCode, whitelist.errorDetail) or nil
-            addReaderLine(lines, tr("Admin_Sys_Whitelist"), wlError or tostring(counts.categories or 0))
-            addReaderLine(lines, tr("Admin_Sys_Size"), sizeText(sys.sizeEstimate))
-            if type(sys.sizeParts) == "table" then
-                lines[#lines + 1] = getText(T .. "Admin_Sys_SizeParts", sizeText(sys.sizeParts.ledger), sizeText(sys.sizeParts.admin))
-            end
-            lines[#lines + 1] = tr("Admin_Sys_SizeNote")
-            if sys.auditCount ~= nil then addReaderLine(lines, tr("Admin_Sys_AuditRing"), tostring(sys.auditCount) .. " / " .. tostring(sys.auditMax or "?")) end
-            lines[#lines + 1] = tr("Admin_Sys_Export")
-            addReaderLine(lines, tr("Admin_Sys_Queued"), amountText(sys.queuedLines or 0))
-            local heartbeat = tonumber(sys.heartbeatAt) or 0
-            lines[#lines + 1] = heartbeat > 0 and getText(T .. "Admin_Sys_Heartbeat", stampText(heartbeat, self.offsetMin), agoText(heartbeat, EC.now())) or tr("Admin_Sys_HeartbeatNever")
-            lines[#lines + 1] = tr("Admin_Sys_HeartbeatNote")
         end
-        setReaderContent(reader, table.concat(lines, "\n"))
-        reader.ecSnapshot, reader.ecSecond, reader.ecOffset = sys, second, self.offsetMin
-    else
-        setReaderContent(reader, reader.ecRawText or "")
     end
+    local exchange = sys.exchange
+    if type(exchange) == "table" then
+        local today = 0
+        for _, value in pairs(type(exchange.depositedToday) == "table" and exchange.depositedToday or {}) do today = today + (tonumber(value) or 0) end
+        addReaderLine(rows, tr("Admin_Sys_Exchange"), getText(T .. "Admin_Sys_ExchangeValue", amountText(today), amountText(exchange.tombstones or 0), amountText(exchange.tombstoneMax or 0), tostring(math.floor(tonumber(exchange.inboxFiles) or 0))))
+    end
+    -- files: the catalog and the whitelist name their failure with a code plus what the file got
+    -- wrong (U.fileErrorText words both)
+    local cat = type(sys.catalog) == "table" and sys.catalog or {}
+    local catError = nil
+    if type(cat.errorCode) == "string" and cat.errorCode ~= "" then
+        catError = U.fileErrorText(cat.errorCode, cat.errorDetail)
+    end
+    local whitelist = type(sys.whitelist) == "table" and sys.whitelist or {}
+    local counts = type(whitelist.counts) == "table" and whitelist.counts or {}
+    local wlError = type(whitelist.errorCode) == "string" and whitelist.errorCode ~= ""
+        and U.fileErrorText(whitelist.errorCode, whitelist.errorDetail) or nil
+    addReaderHead(rows, tr("Admin_Sys_Sec_Files"), (catError or wlError) and "negative" or "positive")
+    addReaderLine(rows, tr("Admin_Sys_Catalog"), catError or getText(T .. "Admin_Shop_Count", tostring(cat.count or 0)),
+        catError and "negative" or nil)
+    addReaderLine(rows, tr("Admin_Sys_Whitelist"), wlError or tostring(counts.categories or 0), wlError and "negative" or nil)
+    -- the event export and the mod's own heartbeat file
+    local heartbeat = tonumber(sys.heartbeatAt) or 0
+    addReaderHead(rows, tr("Admin_Sys_Export"), heartbeat > 0 and "positive" or "warn", tr("Admin_Sys_HeartbeatNote"))
+    addReaderLine(rows, tr("Admin_Sys_Queued"), amountText(sys.queuedLines or 0))
+    if heartbeat > 0 then
+        addReaderLine(rows, getText(T .. "Admin_Sys_Heartbeat", stampText(heartbeat, self.offsetMin), agoText(heartbeat, EC.now())))
+    else
+        addReaderLine(rows, tr("Admin_Sys_HeartbeatNever"), nil, "warn")
+    end
+    self:setStatRows(list, rows)
 end
 
 function Admin:onIconsClick()
@@ -3416,6 +3765,10 @@ end
 function Admin:onSettingMessage()
     if self.tab ~= "Settings" or not self.message or not self:readAllowed() or self:isModal() then return end
     self:showDetail("settingMessage", "status", tr("Admin_Tab_Settings"), self.message.text)
+end
+function Admin:onSettingHelp()
+    if not self:readAllowed() or self:isModal() then return end
+    self:showDetail("settingHelp", "help", tr("Admin_Set_Title"), tr("Admin_Set_Note"))
 end
 
 
@@ -3728,7 +4081,7 @@ function Admin:onListingAction(item, id)
     if id ~= "delist" or self.listingsList.optionsDisabled then return end
     self:openDialog("delist", {
         title = getText(T .. "Admin_Lst_DelistTitle", item.plainName, item.seller),
-        confirm = tr("Admin_Lst_Delist"), listingId = item.id,
+        confirm = tr("Admin_Lst_Delist"), listingId = item.id, warn = tr("Admin_Lst_DelistWarn"), danger = true,
     })
 end
 
@@ -3936,7 +4289,7 @@ function Admin:onAuctionAction(item, id)
     if id ~= "cancel" or self.auctionsList.optionsDisabled then return end
     self:openDialog("auctionCancel", {
         title = getText(T .. "Admin_Auc_CancelTitle", item.plainName),
-        confirm = tr("Admin_Auc_Cancel"), auctionId = item.id,
+        confirm = tr("Admin_Auc_Cancel"), auctionId = item.id, warn = tr("Admin_Auc_CancelWarn"), danger = true,
     })
 end
 
@@ -4160,7 +4513,7 @@ function Admin:openSeasonDialog(ctx)
         warn = getText(T .. "Season_StartConfirm", current, after),
         seasonExpected = ctx.expectedSeason,
         allowed = self:manageAllowed(),
-        deniedError = "manage_settings_required",
+        deniedError = "manage_settings_required", danger = true,
     })
 end
 
@@ -4194,7 +4547,7 @@ function Admin:openRecoveryDialog(rec)
         confirm = getTextOrNull(T .. "Admin_Rec_Do_" .. decision) or U.unknownText("recovery decision", decision),
         warn = warn,
         recovery = rec,
-        requireAccept = rec.unproven == true,
+        requireAccept = rec.unproven == true, danger = C.AdminRecovery.DANGER[decision] == true,
     })
     return dlg
 end
@@ -4224,7 +4577,7 @@ function Admin:openRecoveryBatchDialog(ctx)
         title = getTextOrNull(T .. "Admin_Rec_Title_" .. decision) or tr("Admin_Rec_List"),
         confirm = getTextOrNull(T .. "Admin_Rec_Do_" .. decision) or U.unknownText("recovery decision", decision),
         warn = warn,
-        recoveryBatch = ctx,
+        recoveryBatch = ctx, danger = C.AdminRecovery.DANGER[decision] == true,
     })
 end
 
@@ -4319,7 +4672,7 @@ function Admin:keyboardTargets()
             { self.lookupButton, self.adjustButton, self.freezeButton })
         addGroup(out, tr("Admin_Player_Status"),
             { self.recoveryButton, self.moneyButton, self.lstJumpButton, self.aucJumpButton })
-        out[#out + 1] = { kind = "scroll", label = tr("Admin_Player_Status"), control = self.statusReader, focusable = false }
+        addTarget(out, "list", tr("Admin_Player_Status"), self.statusList)
         addTarget(out, "button", tr("Admin_Player_FreezeAudit"), self.freezeAuditButton)
         addTarget(out, "list", tr("Admin_Player_Receipts"), self.receiptList)
         addGroup(out, tr("Admin_Rcpt_Actions"), R.targets(self.receiptList))
@@ -4350,30 +4703,40 @@ function Admin:keyboardTargets()
             addGroup(out, tr("Admin_Auc_RowActions"), R.targets(self.auctionsList))
         end
     elseif self.tab == "Audit" then
-        addTarget(out, "entry", tr("Admin_Audit_Hint"), self.auditEntry)
-        addTarget(out, "entry", tr("Admin_Audit_Actor"), self.auditActorEntry)
+        -- the two boxes sit between the page title and the dates: a caption above covers the
+        -- title and one below the dates, and each box already shows its own placeholder
+        out[#out + 1] = { kind = "entry", label = tr("Admin_Audit_Hint"), control = self.auditEntry, captionSide = "none" }
+        out[#out + 1] = { kind = "entry", label = tr("Admin_Audit_Actor"), control = self.auditActorEntry, captionSide = "none" }
         addFilters(out, self.auditF)
         addTarget(out, "list", tr("Admin_Audit_Title"), self.auditList)
         addGroup(out, tr("Admin_Audit_Actions"),
             { self.auditCopyNameButton, self.auditCopyIdButton, self.auditRestoreButton })
+    elseif self.tab == "Dashboard" and not self.dashFull then
+        -- the overview: one stop per "needs attention" row, then the switch to the full view
+        addGroup(out, tr("Admin_Ov_Attention"), self.attButtons)
+        addTarget(out, "button", self.dashFullButton.fullTitle, self.dashFullButton)
     elseif self.tab == "Dashboard" then
-        -- the issued card's currency, and one entry per supply column into the account list
+        -- the way back sits at the start of the strip; then the issued card's currency, and one
+        -- entry per supply column into the account list
+        addTarget(out, "button", self.dashFullButton.fullTitle, self.dashFullButton)
         addGroup(out, tr("Admin_Dash_Issued"), self.dashIssueButtons)
         addTarget(out, "button", tr("Admin_Dash_Note"), self.dashNoteButton)
         addGroup(out, tr("Admin_Dash_ViewHolders"), self.dashHolderButtons)
     elseif self.tab == "Currencies" then
-        out[#out + 1] = { kind = "scroll", label = tr("Admin_Cur_Title"), control = self.currencyReader, focusable = false }
+        addTarget(out, "list", tr("Admin_Cur_Title"), self.currencyTable)
+        addTarget(out, "list", getText(T .. "Admin_Cur_Detail", currencyName(self:selectedCurrency())), self.currencyList)
         addGroup(out, tr("Admin_Cur_Title"), { self.renameButton, self.toggleButton, self.rateButton, self.balanceMaxButton, self.curTransferButton })
         addGroup(out, tr("Admin_Cur_Actions"), { self.buybackAccountButton, self.buybackServerButton,
             self.curHoldersButton, self.iconsButton })
     elseif self.tab == "Sources" then
-        out[#out + 1] = { kind = "scroll", label = tr("Admin_Src_Title"), control = self.sourceReader, focusable = false }
+        addTarget(out, "list", tr("Admin_Src_Title"), self.sourceList)
         addGroup(out, tr("Admin_Src_Title"), { self.srcCapsButton, self.srcToggleButton, self.srcTransferButton })
     elseif self.tab == "System" then
-        out[#out + 1] = { kind = "scroll", label = tr("Admin_Sys_State"), control = self.systemReader, focusable = false }
+        addTarget(out, "list", tr("Admin_Sys_State"), self.systemList)
         addGroup(out, tr("Admin_Sys_Paths"), self.copyButtons)
     elseif self.tab == "Settings" then
         addTarget(out, "entry", tr("Admin_Set_Search"), self.setEntry)
+        addTarget(out, "button", tr("Admin_Help"), self.setHelpButton)
         addTarget(out, "list", tr("Admin_Tab_Settings"), self.settingsNav)
         addTarget(out, "list", tr("Admin_Tab_Settings"), self.settingsList)
         local selected = self.settingsList:getSelectedItem()
@@ -4435,6 +4798,7 @@ function Admin:openDialog(mode, ctx)
     dlg.titleText = ctx.title
     dlg.confirmLabel = ctx.confirm
     dlg.warnText = ctx.warn
+    dlg.danger = ctx.danger == true
     dlg.optionKey = ctx.optionKey
     dlg.optionGroup = ctx.optionGroup
     dlg.listingId = ctx.listingId
@@ -4879,6 +5243,9 @@ function Admin:onViewChanged(scope)
     if scope == "transactions" then self.txPage:onViewChanged(scope) end
     local tab = SCOPE_TAB[scope]
     if tab ~= nil then self.dirty[tab] = true end
+    -- the overview reads supply (moved by money) and the two desks' counts (every hold, decision
+    -- and identity alert is an audit line): either scope re-reads it while it is up
+    if scope == "transactions" or scope == "audit" then self.dirty.Dashboard = true end
 end
 
 function Admin:tabDirty()
@@ -4897,6 +5264,8 @@ function Admin:adoptSupply(args)
     if type(args.supply) ~= "table" then return end
     self.supply = args.supply
     self.supplyAt = tonumber(args.at) or EC.now()
+    -- the overview's conservation rows follow the figures, wherever they came from
+    self:rebuildAttention()
 end
 
 -- The record read's own reply (admin.auctions{action = "history"}), matched against the request
@@ -5230,7 +5599,9 @@ function Admin:onReply(kind, args)
         end
         self.system = args
         self.systemAt = EC.now()
-        self:adoptSupply(args)
+        -- the overview's counts (ECAdmin A.attention); a reply without them leaves none behind
+        self.attention = type(args.attention) == "table" and args.attention or nil
+        if type(args.supply) == "table" then self:adoptSupply(args) else self:rebuildAttention() end
         -- admin.system carries the option snapshot under `sandbox` (ECAdmin.system)
         if type(args.sandbox) == "table" then
             self.options = args.sandbox
@@ -5288,6 +5659,14 @@ function Admin:onReply(kind, args)
         self.pendingRecovery = nil
         if req ~= nil and req.requestId == args.requestId then
             self.recoveryPage:onReply(args, req)
+            -- the server-wide summary is the very count the overview and the rail bubble show
+            -- (ECAdmin A.attention walks the same records): a decision taken here updates both
+            local s = args.ok == true and args.scope == "all" and args.summary or nil
+            if type(s) == "table" then
+                self.attention = self.attention or {}
+                self.attention.recovery = { held = s.held, accounts = s.accounts, online = s.onlineAccounts }
+                self:rebuildAttention()
+            end
         end
     elseif kind == "seasons" then
         -- The slot has already been freed by the request that reserved it (matchesReply). The
@@ -5313,6 +5692,18 @@ function Admin:onReply(kind, args)
         self.entitlementsPage:onReply(args)
     elseif kind == "identity" then
         self.identityPage:onReply(args)
+        -- the identity page's status carries the same counts as the overview's (Id.attention)
+        local st = type(args.status) == "table" and args.status or nil
+        if st then
+            self.attention = self.attention or {}
+            self.attention.identity = { steam = st.steam, unreadable = st.unreadable, damaged = st.damaged == true,
+                conflicts = st.conflictCount, alerts = st.alertCount,
+                export = type(st.export) == "table" and st.export.status or nil }
+            if self.tab == "Identity" then
+                self.alertsSeen = tonumber(st.alertCount) or self.alertsSeen
+            end
+            self:rebuildAttention()
+        end
     end
     self:updateEnabled()
 end
@@ -5444,6 +5835,9 @@ function Admin:rebuildReceipts()
     local chipH = math.max(20, fontH.small + 6)
     local geo = receiptActionGeo(math.max(120, self.receiptList.width - 12), chipH,
         math.max(2, math.floor((self.receiptList.rowHeight - chipH) / 2)))
+    local coinSize = math.max(12, math.min(fontH.small + 2, 20))
+    local coinY = math.floor((self.receiptList.rowHeight - coinSize) / 2)
+    local wideAmount, wideBalance = "", ""
     for i = #src, 1, -1 do
         local e = src[i]
         local amount = tonumber(e.amount or e.delta) or 0
@@ -5451,6 +5845,9 @@ function Admin:rebuildReceipts()
         if e.after == nil then e.after = e.availableAfter end
         if e.before == nil then e.before = e.availableBefore end
         if e.kind == nil then e.kind = e.type end
+        local amountStr, balanceStr = signedText(amount), amountText(e.after)
+        if textWidth(amountStr) > textWidth(wideAmount) then wideAmount = amountStr end
+        if textWidth(balanceStr) > textWidth(wideBalance) then wideBalance = balanceStr end
         rows[#rows + 1] = {
             -- a txId alone is not unique across currencies: the band has to come back to the
             -- very line it was reading after a poll, so the identity carries all three
@@ -5460,16 +5857,33 @@ function Admin:rebuildReceipts()
             sourceMod = e.sourceMod, before = e.before, after = e.after,
             reservedBefore = e.reservedBefore, reservedAfter = e.reservedAfter,
             rolled = e.rolledBack == true, actions = geo,
+            coinY = coinY, coinSize = coinSize,
+            -- the transaction id is read in the detail window and opened by the row's button
             cells = {
-                stampText(e.ts, self.offsetMin), currencyName(e.currency), signedText(amount),
-                kindText(e.kind), amountText(e.after),
-                (type(e.item) == "string" and (itemName(e.item)
-                    .. (qty ~= nil and (" x" .. tostring(math.floor(qty))) or "") .. "  ") or "")
-                    .. tostring(e.txId or "-"),
+                stampText(e.ts, self.offsetMin),
+                kindText(e.kind) .. (type(e.item) == "string" and ("  " .. itemName(e.item)
+                    .. (qty ~= nil and (" x" .. tostring(math.floor(qty))) or "")) or ""),
+                amountStr, balanceStr,
             },
-            tokens = { "textMuted", "text", amount >= 0 and "positive" or "negative", "text", "text", "textFaint" },
+            tokens = { "textMuted", "text", amount >= 0 and "positive" or "negative", "text" },
             muted = e.rolledBack == true,
         }
+    end
+    -- the figure columns as wide as the widest figure on screen (never under their header), so
+    -- the type / item column gets the rest; then each coin sits right before its own amount
+    if #rows > 0 then
+        layoutColumns(self.receiptList, receiptSpec(wideAmount, wideBalance),
+            self.receiptList.width - 12 - receiptActionsW())
+    end
+    local amountCol = self.receiptList.cols[3]
+    for _, row in ipairs(rows) do
+        local coinX = nil
+        if amountCol and type(row.currency) == "string" then
+            coinX = amountCol.x - textWidth(row.cells[3]) - 4 - coinSize
+            -- an amount wider than the column is cut by the cell; the coin then stays out of it
+            if coinX < amountCol.x - amountCol.width then coinX = nil end
+        end
+        row.coinX = coinX
     end
     self.receiptRows = rows
     self.receiptList:setItems(rows)
@@ -5633,7 +6047,7 @@ end
 -- Rejection counters arrive as a map; the drawn order has to be stable, so the rows are built
 -- and sorted when the reply lands, never per frame.
 function Admin:rebuildSources()
-    self.sourceReader.ecRawText = nil
+    self.sourceList.ecWidth = nil   -- the rejection rows below are new: the detail is rebuilt
     for _, s in ipairs(self.sources or {}) do
         local rows = {}
         local rejected = type(s.today) == "table" and s.today.rejected or nil
@@ -5660,77 +6074,99 @@ function Admin:optionRow(spec, name, desc, snap, searching, width, lh, chipH, va
     local item = {
         key = spec.key, spec = spec, plainName = name, missing = state == nil,
         locked = locked, override = override, manageOnly = manageOnly, hits = {},
-        chipH = chipH, line1Y = 5, line2Y = 5 + lh, valueY = valueY,
+        chipH = chipH, lh = lh, line1Y = 5, line2Y = 5 + lh, valueY = valueY,
     }
+    local valueRaw = optionValueText(spec, value)
+    local valueCap = math.floor(width * 0.3)
     local stepW = math.max(26, fontH.small + 8)
-    local controlW = math.max(240, textWidth(optionValueText(spec, value)) + stepW * 2
-        + textWidth(tr("Admin_Set_Edit")) + (override and textWidth(tr("Admin_Set_Reset")) or 0) + 64)
-    local ctrlX = math.max(80, width - PAD - controlW)
     local right = width - PAD
-    local valueRaw = nil
-    -- the reset chip is pinned to the right edge, so the value column stays where it is
-    if override then
-        local label = tr("Admin_Set_Reset")
-        local bw = textWidth(label) + 16
-        right = right - bw
-        item.hits[#item.hits + 1] = { id = "reset", x = right, w = bw, label = label }
-        right = right - 4
-    end
+    local ctrlX
+    -- Controls from the right edge: the value's own control, then [reset] left of it, so the
+    -- value column lines up down the list whether a row is overridden or not. A number reads as
+    -- one group [- value +] with [edit] standing apart after it, so the two steps sit on either
+    -- side of the figure they move. `hits` is filled left to right: the keyboard walks them in
+    -- the order the eye reads them.
+    local resetHit, editHit = nil, nil
     if locked then
-        valueRaw = optionValueText(spec, value)
-        item.valueX, item.valueW = ctrlX, math.max(10, right - ctrlX)
+        item.valueW = math.max(10, math.min(textWidth(valueRaw), valueCap))
+        item.valueX = right - item.valueW
         item.valueY = item.line1Y
-        item.lockedText = fitText(tr("Admin_Set_Locked"), math.max(0, width - PAD - ctrlX))
+        item.lockedText = fitText(tr("Admin_Set_Locked"), math.floor(width * 0.35))
+        item.lockedRight = right
+        ctrlX = math.min(item.valueX, right - textWidth(item.lockedText))
     elseif spec.kind == "bool" then
         item.toggleOn = value == true
         item.toggleLabel = tr(item.toggleOn and "Admin_On" or "Admin_Off")
-        item.hits[#item.hits + 1] = { id = "toggle", x = ctrlX, w = OPTION_TOGGLE_W }
+        ctrlX = right - OPTION_TOGGLE_W
+        item.hits[1] = { id = "toggle", x = ctrlX, w = OPTION_TOGGLE_W }
     else
         local label = tr("Admin_Set_Edit")
         local bw = textWidth(label) + 16
         right = right - bw
-        item.hits[#item.hits + 1] = { id = "edit", x = right, w = bw, label = label }
-        right = right - 4
+        editHit = { id = "edit", x = right, w = bw, label = label }
+        right = right - 8
+        item.valueW = math.max(10, math.min(textWidth(valueRaw) + 12, valueCap))
         if spec.kind == "int" or spec.kind == "number" then
-            item.hits[#item.hits + 1] = { id = "minus", x = ctrlX, w = stepW, label = "-" }
-            item.hits[#item.hits + 1] = { id = "plus", x = right - stepW, w = stepW, label = "+" }
-            item.valueX = ctrlX + stepW + 4
-            item.valueW = math.max(10, right - stepW - 8 - item.valueX)
+            item.valueW = math.max(item.valueW, math.min(60, valueCap))
+            item.valueX = right - stepW - 2 - item.valueW
             item.valueCentre = true
+            ctrlX = item.valueX - 2 - stepW
+            item.hits[1] = { id = "minus", x = ctrlX, w = stepW, label = "-" }
+            item.hits[2] = { id = "plus", x = right - stepW, w = stepW, label = "+" }
         else
-            item.valueX = ctrlX
-            item.valueW = math.max(10, right - ctrlX)
+            item.valueX = right - item.valueW
+            ctrlX = item.valueX
         end
-        valueRaw = optionValueText(spec, value)
     end
-    if valueRaw then item.valueText = fitText(valueRaw, item.valueW) end
-    item.detailText = name .. "\n" .. optionValueText(spec, value) .. "\n" .. desc
+    if override then
+        local label = tr("Admin_Set_Reset")
+        local bw = textWidth(label) + 16
+        ctrlX = ctrlX - 6 - bw
+        resetHit = { id = "reset", x = ctrlX, w = bw, label = label }
+    end
+    if editHit then item.hits[#item.hits + 1] = editHit end
+    if resetHit then table.insert(item.hits, 1, resetHit) end
+    if not item.toggleLabel then item.valueText = fitText(valueRaw, item.valueW) end
+    item.detailText = name .. "\n" .. valueRaw .. "\n" .. desc
     if locked then item.detailText = item.detailText .. "\n" .. tr("Admin_Set_Locked") end
     if override then item.detailText = item.detailText .. "\n" .. getText(T .. "Admin_Set_Overridden", optionValueText(spec, state.default)) end
     if manageOnly then
         item.detailText = item.detailText .. "\n" .. tr("Admin_Set_ManageOnly")
     end
 
-    -- left column: [group] name over [overridden (default X)] description [runtime hint]
-    local leftW = math.max(0, ctrlX - PAD * 2)
+    -- left column: [group] name [overridden (default X)] [runtime hint] over the description
+    local leftEnd = math.max(PAD, ctrlX - PAD)
     item.nameX = PAD
     if searching then
-        item.prefixText = fitText(tr("Admin_Set_Group_" .. spec.group), math.floor(leftW * 0.35))
+        item.prefixText = fitText(tr("Admin_Set_Group_" .. spec.group), math.floor((leftEnd - PAD) * 0.35))
         item.nameX = PAD + textWidth(item.prefixText) + 6
     end
-    item.nameText = fitText(name, math.max(0, ctrlX - PAD - item.nameX))
-    item.descX = PAD
+    local tagW = 0
     if override then
-        item.overText = fitText(getText(T .. "Admin_Set_Overridden", optionValueText(spec, state.default)), math.floor(leftW * 0.5))
-        item.descX = PAD + textWidth(item.overText) + 6
+        local over = getText(T .. "Admin_Set_Overridden", optionValueText(spec, state.default))
+        local maxW = math.floor((leftEnd - item.nameX) * 0.5)
+        if U.pillWidth(nil, over) > maxW then over = fitText(over, math.max(0, maxW - 20)) end
+        item.overText = over
+        tagW = U.pillWidth(nil, over) + 8
     end
-    if spec.page then item.runtimeText = getText(T .. "Admin_Set_Runtime", tr("Admin_Tab_" .. spec.page)) end
-    local runW = item.runtimeText and (textWidth(item.runtimeText) + 8) or 0
-    item.descText = fitText(desc, math.max(0, ctrlX - PAD - item.descX - runW))
-    if item.runtimeText then
-        item.runtimeX = item.descX + textWidth(item.descText) + 8
-        item.runtimeText = fitText(item.runtimeText, math.max(0, ctrlX - PAD - item.runtimeX))
+    item.nameText = fitText(name, math.max(0, leftEnd - item.nameX - tagW))
+    local x = item.nameX + textWidth(item.nameText) + 8
+    if override then
+        item.overX = x
+        item.overY = math.max(1, item.line1Y + math.floor((fontH.small - U.CHIP_H) / 2))
+        x = x + tagW
     end
+    if spec.page then
+        item.runtimeX = x
+        item.runtimeText = fitText(getText(T .. "Admin_Set_Runtime", tr("Admin_Tab_" .. spec.page)), math.max(0, leftEnd - x))
+    end
+    local descW = math.max(0, leftEnd - PAD)
+    local lines = U.wrapText(desc, descW, 3)
+    if #lines > 2 then
+        lines[2] = fitText(lines[2] .. " " .. lines[3], descW)
+        lines[3] = nil
+    end
+    item.descLines = lines
     return item
 end
 
@@ -5782,12 +6218,14 @@ function Admin:rowChipGeometry(width, chipH, chipY, actions)
         local a = actions[i]
         local bw = textWidth(a.label) + 20
         x = x - bw
-        geo.actions[i] = { id = a.id, label = a.label, read = a.read, x = math.max(40, x),
+        geo.actions[i] = { id = a.id, label = a.label, read = a.read, danger = a.danger, x = math.max(40, x),
             y = chipY, w = bw, h = chipH }
         x = x - ROW_ACTION_GAP
     end
     geo.priceRight = math.max(60, x + ROW_ACTION_GAP - 8)
-    geo.textLimit = math.max(0, geo.priceRight - geo.priceW - PAD)
+    -- the price carries its currency's coin, so the text gives the coin's room back too
+    geo.coinSize = math.max(12, math.min(fontH.small + 2, 20))
+    geo.textLimit = math.max(0, geo.priceRight - geo.priceW - geo.coinSize - 4 - PAD)
     return geo
 end
 
@@ -5814,6 +6252,11 @@ function Admin:marketRow(entry, geo, lh, rowHeight, name, amount)
         local altW = geo.textLimit - item.altX
         if altW > 20 then item.altText = fitText(alt, altW) end
     end
+    if type(entry.currency) == "string" then
+        item.currency, item.coinSize = entry.currency, geo.coinSize
+        item.coinX = geo.priceRight - textWidth(item.priceText) - 4 - geo.coinSize
+        item.coinY = item.line1Y + math.floor((fontH.small - geo.coinSize) / 2)
+    end
     return item
 end
 
@@ -5822,7 +6265,9 @@ end
 function Admin:listingRow(l, geo, lh, rowHeight)
     local name = itemName(l.item)
     local item = self:marketRow(l, geo, lh, rowHeight, name, l.price)
-    local meta = item.seller .. " / " .. categoryText(l.category) .. " / "
+    -- a listing's category is the item's own DisplayCategory (the same one the player market's
+    -- box offers), named the way vanilla names it -- not a shop catalog category
+    local meta = item.seller .. " / " .. U.itemCategoryText(l.category) .. " / "
         .. tr("Market_Col_Expires") .. " " .. stampText(l.expiresAt, self.offsetMin)
     item.metaText = fitText(meta, item.textW)
     local detail = name
@@ -6300,6 +6745,7 @@ function Admin:updateEnabled()
     setEntryEditable(self.setEntry, read and not modal)
     -- the queue is already filtered to what this actor may reset, so its size is the answer
     self.setResetButton:setEnable(not optBusy and #self:overriddenKeys(self.setGroup) > 0)
+    self.setHelpButton:setEnable(read and not modal)
     self.recoveryPage:updateEnabled()
     self.accountsPage:updateEnabled()
     self.seasonsPage:updateEnabled()
@@ -6332,14 +6778,14 @@ function Admin:layoutAuditFilters()
     local visible = self:readAllowed() and self.tab == "Audit"
     local f = self.auditF
     -- the count line sits on the search row, right of the actor box
-    g.auditCountX = self.auditEntry.width + PAD + self.auditActorEntry.width + PAD
+    g.auditCountX = self.auditActorEntry.x + self.auditActorEntry.width + PAD
     -- the actor combo is this page's control: its width and height are set here, the bar places it
     local combo = self.auditActorCombo
     combo:setWidth(math.min(self.auditActorW or combo.width, math.max(110, self.width - PAD * 2)))
     combo:setHeight(f.height)
     combo.baseHeight = f.height
     if not visible then filterCloseCombo(combo) end
-    return f:layout(0, g.auditFilterY, self.width, visible) - g.auditFilterY
+    return f:layout(PAD, g.auditFilterY, self.width - PAD, visible) - g.auditFilterY
 end
 
 function Admin:layoutHistoryFilters()
@@ -6381,6 +6827,47 @@ local function fairShareButtons(items, visible, x, y, totalW, height)
         U.setButtonTitle(b, b.fullTitle)
         x = x + b.width + 6
     end
+end
+
+-- Currencies page: the table left, the detail card and its actions right. Only the actions that
+-- apply to the picked currency are on screen -- the rate needs an outside deposit, a buyback cap
+-- needs its option key in this build -- and what applied is kept on g, so the painter lays the
+-- rows out again the moment a pick or a fresh definition changes it. Two rows, fair share with
+-- redistribution inside each, so no label is cut to three dots at the minimum window width.
+function Admin:layoutCurrencies(visible)
+    local g, w = self.g, self.width
+    local rh, actionH = rowH(), btnH()
+    g.cfgTableW = math.max(240, math.floor((w - PAD) * 0.58))
+    g.cfgDetailX = g.cfgTableW + PAD
+    g.cfgDetailW = math.max(200, w - g.cfgDetailX)
+    g.cfgHeaderY = g.bodyY + CARD_TITLE_H
+    local tableY = g.cfgHeaderY + rh
+    U.placeList(self.currencyTable, visible, 1, tableY, g.cfgTableW - 2, math.max(rh, g.bodyY + g.bodyH - 2 - tableY))
+    local id = self:selectedCurrency()
+    local def = currencyDef(id)
+    g.cfgRate = def ~= nil and type(def.exchange) == "table"
+    g.cfgBuyAccount = buybackOptionKey(id, "account") ~= nil
+    g.cfgBuyServer = buybackOptionKey(id, "server") ~= nil
+    local row2Y = g.bodyY + g.bodyH - actionH
+    g.cfgButtonY = row2Y - actionH - 6
+    local toggleFull = math.max(textWidth(tr("Admin_Cur_Disable")), textWidth(tr("Admin_Cur_Enable"))) + 30
+    local items = { { self.renameButton, textWidth(self.renameButton.fullTitle) + 30 }, { self.toggleButton, toggleFull } }
+    if g.cfgRate then items[#items + 1] = { self.rateButton, textWidth(self.rateButton.fullTitle) + 30 } end
+    items[#items + 1] = { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 }
+    items[#items + 1] = { self.curTransferButton, math.max(textWidth(tr("Admin_Cur_TransferAllow")), textWidth(tr("Admin_Cur_TransferStop"))) + 30 }
+    fairShareButtons(items, visible, g.cfgDetailX, g.cfgButtonY, g.cfgDetailW, actionH)
+    local items2 = {}
+    if g.cfgBuyAccount then items2[#items2 + 1] = { self.buybackAccountButton, textWidth(self.buybackAccountButton.fullTitle) + 30 } end
+    if g.cfgBuyServer then items2[#items2 + 1] = { self.buybackServerButton, textWidth(self.buybackServerButton.fullTitle) + 30 } end
+    items2[#items2 + 1] = { self.curHoldersButton, textWidth(self.curHoldersButton.fullTitle) + 30 }
+    items2[#items2 + 1] = { self.iconsButton, textWidth(self.iconsButton.fullTitle) + 30 }
+    fairShareButtons(items2, visible, g.cfgDetailX, row2Y, g.cfgDetailW, actionH)
+    self.rateButton:setVisible(visible and g.cfgRate)
+    self.buybackAccountButton:setVisible(visible and g.cfgBuyAccount)
+    self.buybackServerButton:setVisible(visible and g.cfgBuyServer)
+    -- the coin preview keeps its own space; the grouped detail under it scrolls
+    local listY = g.bodyY + CARD_TITLE_H + 12 + math.max(32, math.min(64, lineH() * 2))
+    U.placeList(self.currencyList, visible, g.cfgDetailX + 1, listY, g.cfgDetailW - 2, math.max(1, g.cfgButtonY - 8 - listY))
 end
 
 function Admin:layout()
@@ -6545,10 +7032,8 @@ function Admin:layout()
     end
     local summaryY = g.cardsY + CARD_TITLE_H + 4
     U.placeList(self.summaryList, player, 4, summaryY, g.leftW - 8, math.max(1, g.cardsY + g.cardsH - summaryY - 4))
-    self.statusReader:setVisible(player)
-    self.statusReader:setX(g.midX + 2); self.statusReader:setY(g.cardsY + CARD_TITLE_H + 4)
-    self.statusReader:setWidth(math.max(40, g.midW - 4))
-    self.statusReader:setHeight(math.max(fontH.small + 10, g.statusBottom - self.statusReader.y))
+    local statusY = g.cardsY + CARD_TITLE_H + 4
+    U.placeList(self.statusList, player, g.midX + 1, statusY, math.max(40, g.midW - 2), math.max(fontH.small + 10, g.statusBottom - statusY))
     self:refreshPlayerStatus()
 
     -- receipts table inside the right card: it owns the whole card, because a picked line is
@@ -6563,11 +7048,14 @@ function Admin:layout()
     layoutColumns(self.receiptList, receiptSpec(), listW - 12 - receiptActionsW())
     g.receiptBottom = listY + receiptH
 
-    -- Dashboard: the issued card on the left reads one currency at a time (its chips sit in the
-    -- card's title row area), and every supply column to the right of it carries its own entry
-    -- into the account list, sorted by that very currency. The geometry is here rather than in
-    -- the painter because a chip has to be placed before it can be clicked.
-    local dash = read and self.tab == "Dashboard"
+    -- Dashboard, two views: the overview (its own method: attention rows, currency stats and the
+    -- switch chip) and the full supply view below. In the full view the issued card on the left
+    -- reads one currency at a time (its chips sit in the card's title row area), and every
+    -- supply column to the right of it carries its own entry into the account list, sorted by
+    -- that very currency. The geometry is here rather than in the painter because a chip has to
+    -- be placed before it can be clicked.
+    self:layoutOverview(read and self.tab == "Dashboard")
+    local dash = read and self.tab == "Dashboard" and self.dashFull
     local dashChipH = math.max(20, fontH.small + 6)
     local order = EC.CURRENCY_ORDER
     g.dashLeftW = math.max(220, math.floor((w - PAD) * 0.34))
@@ -6646,33 +7134,7 @@ function Admin:layout()
         g.dashCapPlan[key] = plan
     end
 
-    -- currencies page
-    g.cfgTableW = math.max(240, math.floor((w - PAD) * 0.58))
-    g.cfgDetailX = g.cfgTableW + PAD
-    g.cfgDetailW = math.max(200, w - g.cfgDetailX)
-    g.cfgRowY = g.bodyY + CARD_TITLE_H + rh
-    -- Eight actions now share the detail column, so they take two rows: four per row, fair share
-    -- with redistribution inside each. One row of eight would leave every label as three dots at
-    -- the minimum window width, and an action nobody can read is an action nobody finds.
-    local cfgRow2Y = g.bodyY + g.bodyH - actionH
-    local cfgBtnY = cfgRow2Y - actionH - 6
-    g.cfgButtonY = cfgBtnY
-    local toggleFull = math.max(textWidth(tr("Admin_Cur_Disable")), textWidth(tr("Admin_Cur_Enable"))) + 30
-    local cfgItems = { { self.renameButton, textWidth(self.renameButton.fullTitle) + 30 },
-        { self.toggleButton, toggleFull }, { self.rateButton, textWidth(self.rateButton.fullTitle) + 30 },
-        { self.balanceMaxButton, textWidth(self.balanceMaxButton.fullTitle) + 30 },
-        { self.curTransferButton, math.max(textWidth(tr("Admin_Cur_TransferAllow")), textWidth(tr("Admin_Cur_TransferStop"))) + 30 } }
-    fairShareButtons(cfgItems, currencies, g.cfgDetailX, cfgBtnY, g.cfgDetailW, actionH)
-    local cfgItems2 = { { self.buybackAccountButton, textWidth(self.buybackAccountButton.fullTitle) + 30 },
-        { self.buybackServerButton, textWidth(self.buybackServerButton.fullTitle) + 30 },
-        { self.curHoldersButton, textWidth(self.curHoldersButton.fullTitle) + 30 },
-        { self.iconsButton, textWidth(self.iconsButton.fullTitle) + 30 } }
-    fairShareButtons(cfgItems2, currencies, g.cfgDetailX, cfgRow2Y, g.cfgDetailW, actionH)
-    local currencyY = g.bodyY + CARD_TITLE_H + 12 + math.max(32, math.min(64, lineH() * 2))
-    self.currencyReader:setVisible(currencies)
-    self.currencyReader:setX(g.cfgDetailX + 2); self.currencyReader:setY(currencyY)
-    self.currencyReader:setWidth(g.cfgDetailW - 4)
-    self.currencyReader:setHeight(math.max(1, g.cfgButtonY - 8 - currencyY))
+    self:layoutCurrencies(currencies)
 
     -- sources page: table left, detail card plus two action buttons right (the currencies page
     -- shape, which a host already knows). Same fair share with redistribution for the buttons.
@@ -6688,20 +7150,19 @@ function Admin:layout()
         { self.srcTransferButton, math.max(textWidth(tr("Admin_Src_TransferAllow")), textWidth(tr("Admin_Src_TransferStop"))) + 30 } }
     fairShareButtons(srcItems, sources, g.srcDetailX, g.srcButtonY, g.srcDetailW, actionH)
     local sourceY = g.bodyY + CARD_TITLE_H + 4
-    self.sourceReader:setVisible(sources)
-    self.sourceReader:setX(g.srcDetailX + 2); self.sourceReader:setY(sourceY)
-    self.sourceReader:setWidth(g.srcDetailW - 4)
-    self.sourceReader:setHeight(math.max(1, g.srcButtonY - 8 - sourceY))
+    U.placeList(self.sourceList, sources, g.srcDetailX + 1, sourceY, g.srcDetailW - 2, math.max(1, g.srcButtonY - 8 - sourceY))
 
     -- audit page: the search box, the exact actor box and the action chips on the first row,
     -- the actor candidates / dates / sort / page chips on the second, then the table
     self.auditEntry:setVisible(audit)
-    self.auditEntry:setX(0); self.auditEntry:setY(g.bodyY + CARD_TITLE_H + 2)
+    self.auditEntry:setX(PAD); self.auditEntry:setY(g.bodyY + CARD_TITLE_H + 2)
     self.auditEntry:setWidth(math.min(240, math.floor(w * 0.28))); self.auditEntry:setHeight(eh)
     self.auditActorEntry:setVisible(audit)
-    self.auditActorEntry:setX(self.auditEntry.width + PAD)
+    self.auditActorEntry:setX(self.auditEntry.x + self.auditEntry.width + PAD)
     self.auditActorEntry:setY(self.auditEntry.y)
-    self.auditActorEntry:setWidth(math.max(120, math.min(180, math.floor(w * 0.18))))
+    -- the placeholder is the box's only label: room for all of it (clear button included), up to a quarter
+    local actorW = math.max(math.min(180, math.floor(w * 0.18)), textWidth(tr("Admin_Audit_ActorHint")) + 36)
+    self.auditActorEntry:setWidth(math.max(120, math.min(actorW, math.floor(w * 0.25))))
     self.auditActorEntry:setHeight(eh)
     g.auditFilterY = self.auditEntry.y + eh + 4
     g.auditHeaderY = g.auditFilterY + self:layoutAuditFilters() + 6
@@ -6737,10 +7198,7 @@ function Admin:layout()
     g.sysRightX = g.sysLeftW + PAD
     g.sysRightW = math.max(220, w - g.sysRightX)
     local systemY = g.bodyY + CARD_TITLE_H + 4
-    self.systemReader:setVisible(system)
-    self.systemReader:setX(2); self.systemReader:setY(systemY)
-    self.systemReader:setWidth(g.sysLeftW - 4)
-    self.systemReader:setHeight(math.max(1, g.bodyY + g.bodyH - systemY - 4))
+    U.placeList(self.systemList, system, 1, systemY, g.sysLeftW - 2, math.max(1, g.bodyY + g.bodyH - systemY - 4))
     local copyH = math.max(20, fontH.small + 6)
     local top = g.bodyY + CARD_TITLE_H + PAD
     local roomH = g.bodyY + g.bodyH - PAD - top
@@ -6904,7 +7362,6 @@ function Admin:layout()
     self.setEntry:setVisible(settings)
     self.setEntry:setX(PAD); self.setEntry:setY(setTop)
     self.setEntry:setWidth(math.max(120, math.min(260, math.floor(w * 0.3)))); self.setEntry:setHeight(eh)
-    g.setCountX = PAD + self.setEntry.width + PAD
     g.setNavY = setTop + eh + 6
     local navNeed = 200
     for _, group in ipairs(EC.OPTION_GROUPS) do
@@ -6919,7 +7376,7 @@ function Admin:layout()
     U.placeList(self.settingsNav, settings, PAD, g.setNavY, g.setNavW, g.setNavH)
     g.setContentX = PAD + g.setNavW + PAD
     g.setContentW = math.max(160, w - g.setContentX - PAD)
-    g.setHeadY = g.setNavY   -- the group heading; the standing note rides the search row instead
+    g.setHeadY = g.setNavY   -- the group heading; the page's explanation sits behind the help chip
     local resetH = math.max(20, fontH.small + 6)
     g.setResetY = g.bodyY + g.bodyH - PAD - resetH
     local resetW = math.min(textWidth(self.setResetButton.fullTitle) + 24, g.setContentW)
@@ -6929,6 +7386,13 @@ function Admin:layout()
     self.setResetButton:setX(g.setContentX + g.setContentW - resetW)
     self.setResetButton:setY(g.setResetY)
     U.setButtonTitle(self.setResetButton, self.setResetButton.fullTitle)
+    -- the help chip rides the card's title row, right aligned
+    self.setHelpButton:setVisible(settings)
+    self.setHelpButton:setWidth(math.min(textWidth(self.setHelpButton.fullTitle) + 24, math.floor(w * 0.25)))
+    self.setHelpButton:setHeight(resetH)
+    self.setHelpButton:setX(w - PAD - self.setHelpButton.width)
+    self.setHelpButton:setY(g.bodyY + math.floor((CARD_TITLE_H - resetH) / 2))
+    U.setButtonTitle(self.setHelpButton, self.setHelpButton.fullTitle)
     local setListY = g.setHeadY + fontH.medium + 6
     local setW = math.max(120, g.setContentW)
     local setH = math.max(rowH(), g.setResetY - 6 - setListY)
@@ -7044,56 +7508,66 @@ end
 
 function Admin:refreshPlayerStatus()
     local lookup, waiting = self.lookup, isPending("admin.lookup")
+    local list = self.statusList
     if self.statusLookup == lookup and self.statusLookupAt == self.lookupAt and self.statusWaiting == waiting
         and self.statusCurrencies == C.currencies and self.statusOffset == self.offsetMin
-        and self.statusWidth == self.statusReader.width and self.statusHeight == self.statusReader.height then return end
+        and self.statusWidth == list.width then return end
     self.statusLookup, self.statusLookupAt, self.statusWaiting = lookup, self.lookupAt, waiting
-    self.statusCurrencies, self.statusOffset, self.statusWidth = C.currencies, self.offsetMin, self.statusReader.width
-    self.statusHeight = self.statusReader.height
+    self.statusCurrencies, self.statusOffset, self.statusWidth = C.currencies, self.offsetMin, list.width
+    if self.statusUser ~= self.lookupUser then list:setScrollOffset(0) end
     local lines = {}
     if not lookup then
-        lines[1] = waiting and tr("Admin_Loading") or tr("Admin_Player_Hint")
+        addReaderLine(lines, waiting and tr("Admin_Loading") or tr("Admin_Player_Hint"), nil, "textFaint")
     else
+        -- the account itself: what the server is holding for it, what it has on the two boards,
+        -- and a freeze said out loud
         local held, listed, running = tonumber(lookup.recoveryHeld), tonumber(lookup.listingsCount), tonumber(lookup.auctionsCount)
         if held and held > 0 then
-            lines[#lines + 1] = getText(T .. "Admin_Player_Recovery", tostring(math.floor(held)))
+            addReaderLine(lines, getText(T .. "Admin_Player_Recovery", tostring(math.floor(held))), nil, "warn", "warn")
         end
         if listed then
-            lines[#lines + 1] = getText(T .. "Admin_Player_Listings", tostring(math.floor(listed)), countLimitText(lookup.maxListings))
+            addReaderLine(lines, getText(T .. "Admin_Player_Listings", tostring(math.floor(listed)), countLimitText(lookup.maxListings)))
         end
         if running then
-            lines[#lines + 1] = getText(T .. "Admin_Player_Auctions", tostring(math.floor(running)), countLimitText(lookup.maxAuctions))
+            addReaderLine(lines, getText(T .. "Admin_Player_Auctions", tostring(math.floor(running)), countLimitText(lookup.maxAuctions)))
+        end
+        if lookup.frozen then
+            local info = lookup.frozenInfo or {}
+            addReaderLine(lines, getText(T .. "Admin_Player_FrozenBy", tostring(info.by or "-"), stampText(info.ts, self.offsetMin)), nil, "warn", "negative")
+            if info.reason then addReaderLine(lines, getText(T .. "Admin_Player_FrozenReason", tostring(info.reason)), nil, "warn") end
         end
         local rewards = lookup.rewards or {}
-        lines[#lines + 1] = lookup.hoursSurvived ~= nil
+        local blocked = type(rewards.blockedReason) == "string" and rewards.blockedReason ~= ""
+        addReaderHead(lines, tr("Admin_Player_Sec_Rewards"), blocked and "warn" or nil)
+        addReaderLine(lines, lookup.hoursSurvived ~= nil
             and getText(T .. "Admin_Player_Survived", string.format("%.1f", (tonumber(lookup.hoursSurvived) or 0) / 24))
-            or tr("Admin_Player_SurvivedOffline")
+            or tr("Admin_Player_SurvivedOffline"))
         -- Check-in is a count now, not a flag: a day can allow several claims, so the card says
         -- how many were taken of how many and how many are left. `claimed` and `minPlaytimeMs`
         -- are gone from the reply -- reading them would have shown "not claimed" forever.
-        lines[#lines + 1] = getText(T .. "Admin_Player_Claims", numText(rewards.claimedCount),
-            numText(rewards.dailyLimit), numText(rewards.remainingClaims))
+        addReaderLine(lines, getText(T .. "Admin_Player_Claims", numText(rewards.claimedCount),
+            numText(rewards.dailyLimit), numText(rewards.remainingClaims)))
         -- Today's total time online against the next cumulative threshold. The server deliberately does
         -- not say whether a claim is possible right now (that is the rewards backend's verdict),
         -- so this card states the two figures and never a verdict of its own.
-        lines[#lines + 1] = getText(T .. "Admin_Player_OnlineToday", minutesText(rewards.playedMs),
-            minutesText(rewards.requiredOnlineMs))
+        addReaderLine(lines, getText(T .. "Admin_Player_OnlineToday", minutesText(rewards.playedMs),
+            minutesText(rewards.requiredOnlineMs)))
         -- The cumulative step only matters when a day allows more than one claim.
         local limit = tonumber(rewards.dailyLimit)
         if rewards.intervalMs ~= nil and limit ~= nil and limit > 1 then
-            lines[#lines + 1] = getText(T .. "Admin_Player_ClaimInterval", minutesText(rewards.intervalMs))
+            addReaderLine(lines, getText(T .. "Admin_Player_ClaimInterval", minutesText(rewards.intervalMs)))
         end
         -- The one reason the server states for withholding a reward (currently "day_reverted":
         -- the reward day was moved back and that day has slid out of the durable payment window,
         -- so the server fail-closes). Absent means "not applicable", never "everything is fine".
-        if type(rewards.blockedReason) == "string" and rewards.blockedReason ~= "" then
+        if blocked then
             -- the wording is the rewards slice's own (Rewards_Error_<code>), so the admin reads
             -- the very sentence the player is shown instead of a second explanation of it
             local code = rewards.blockedReason
-            lines[#lines + 1] = getText(T .. "Admin_Player_Blocked",
-                getTextOrNull(T .. "Rewards_Error_" .. code) or U.unknownText("rewards blocked", code))
+            addReaderLine(lines, getText(T .. "Admin_Player_Blocked",
+                getTextOrNull(T .. "Rewards_Error_" .. code) or U.unknownText("rewards blocked", code)), nil, "warn")
         end
-        if rewards.nextResetMs then lines[#lines + 1] = getText(T .. "Admin_Player_NextReset", stampText(rewards.nextResetMs, self.offsetMin)) end
+        if rewards.nextResetMs then addReaderLine(lines, getText(T .. "Admin_Player_NextReset", stampText(rewards.nextResetMs, self.offsetMin))) end
         local done, total = 0, 0
         for _, milestone in ipairs(rewards.milestoneList or {}) do
             total = total + 1
@@ -7106,58 +7580,53 @@ function Admin:refreshPlayerStatus()
         -- `Admin_Player_Survived` line further up stays the character's total across every
         -- season: the two must never be read as the same number.
         local seasonNo = tonumber(rewards.seasonNumber)
-        lines[#lines + 1] = getText(T .. "Admin_Player_Milestones", tostring(done), tostring(total),
-            seasonNo ~= nil and getText(T .. "Season_Number", tostring(math.floor(seasonNo))) or "-")
+        addReaderLine(lines, getText(T .. "Admin_Player_Milestones", tostring(done), tostring(total),
+            seasonNo ~= nil and getText(T .. "Season_Number", tostring(math.floor(seasonNo))) or "-"))
         -- A read the server could not complete is its own answer: it is neither "nothing
         -- recorded yet" nor a reason to keep the last figure that was confirmed on screen. The
         -- code is printed exactly as the server stated it -- the same wording the player's own
         -- card uses (ECPanel rewards lines), so the two never describe one failure differently.
         local survivalError = rewards.survivalError
         if survivalError ~= nil then
-            lines[#lines + 1] = getText(T .. "Season_SurvivalFailed", getTextOrNull(T .. "Rewards_Error_" .. tostring(survivalError))
-                or U.unknownText("survival error", survivalError))
+            addReaderLine(lines, getText(T .. "Season_SurvivalFailed", getTextOrNull(T .. "Rewards_Error_" .. tostring(survivalError))
+                or U.unknownText("survival error", survivalError)), nil, "warn")
         else
             local seasonKnown = rewards.survivalKnown == true
-            lines[#lines + 1] = getText(T .. "Rewards_SeasonSurvived",
-                survivalFigure(seasonKnown, rewards.survivalHours))
-            lines[#lines + 1] = getText(T .. "Rewards_SeasonBest",
-                survivalFigure(seasonKnown, rewards.bestSurvivalHours))
+            addReaderLine(lines, getText(T .. "Rewards_SeasonSurvived",
+                survivalFigure(seasonKnown, rewards.survivalHours)))
+            addReaderLine(lines, getText(T .. "Rewards_SeasonBest",
+                survivalFigure(seasonKnown, rewards.bestSurvivalHours)))
             -- the server could only account for part of the season (a restart it cannot
             -- bridge): said plainly, so a figure that is a floor is never read as the whole
             -- truth
-            if rewards.survivalIncomplete == true then lines[#lines + 1] = tr("Season_Incomplete") end
+            if rewards.survivalIncomplete == true then addReaderLine(lines, tr("Season_Incomplete"), nil, "warn") end
         end
-        if lookup.frozen then
-            local info = lookup.frozenInfo or {}
-            lines[#lines + 1] = getText(T .. "Admin_Player_FrozenBy", tostring(info.by or "-"), stampText(info.ts, self.offsetMin))
-            if info.reason then lines[#lines + 1] = getText(T .. "Admin_Player_FrozenReason", tostring(info.reason)) end
-        end
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = tr("Admin_Player_MyDaily")
+        addReaderHead(lines, tr("Admin_Player_MyDaily"))
         local today = lookup.adminToday or {}
         if type(today.currencies) == "table" then
             for _, id in ipairs(currencyOrder(lookup)) do
                 local amount = today.currencies[id] or {}
-                lines[#lines + 1] = getText(T .. "Admin_Player_DailyRow", currencyName(id), amountText(amount.add or 0), amountText(amount.sub or 0))
+                addReaderLine(lines, getText(T .. "Admin_Player_DailyRow", currencyName(id), amountText(amount.add or 0), amountText(amount.sub or 0)))
             end
-        else lines[#lines + 1] = getText(T .. "Admin_Player_DailyAll", amountText(today.add or 0), amountText(today.sub or 0)) end
-        lines[#lines + 1] = getText(T .. "Admin_Player_DailyCap", amountText(today.cap or 0))
+        else addReaderLine(lines, getText(T .. "Admin_Player_DailyAll", amountText(today.add or 0), amountText(today.sub or 0))) end
+        addReaderLine(lines, getText(T .. "Admin_Player_DailyCap", amountText(today.cap or 0)))
         local server = today.serverDaily or today.server or lookup.serverDaily
         if type(server) == "table" and server.cap ~= nil then
-            lines[#lines + 1] = getText(T .. "Admin_Player_ServerDaily", amountText(server.add or 0), amountText(server.sub or 0), amountText(server.cap))
+            addReaderLine(lines, getText(T .. "Admin_Player_ServerDaily", amountText(server.add or 0), amountText(server.sub or 0), amountText(server.cap)))
         end
-        lines[#lines + 1] = getText(T .. "Admin_Player_MaxPerTx", amountText(lookup.maxPerTx or 0))
+        addReaderLine(lines, getText(T .. "Admin_Player_MaxPerTx", amountText(lookup.maxPerTx or 0)))
     end
-    local scroll = self.statusUser == self.lookupUser and self.statusReader:getYScroll() or 0
-    U.setWrappedText(self.statusReader, table.concat(lines, "\n"), self.statusReader.width)
-    self.statusReader:setYScroll(scroll)
+    self:setStatRows(list, lines)
     local balances = {}
     for _, id in ipairs(currencyOrder(lookup)) do
-        local balance = lookup and lookup.balances and lookup.balances[id] or {}
+        -- an account that was read and has no row for a currency holds 0 of it; before any read
+        -- (or for a name the server did not find) there is no balance: "-", not a 0 that reads as data
+        local balance = lookup and lookup.found ~= false and (lookup.balances and lookup.balances[id] or {}) or nil
+        local function figure(v) return balance and amountText(v or 0) or "-" end
         local fields = {
-            { tr("Wallet_Available"), amountText(balance.available or 0), "accent" },
-            { tr("Wallet_Reserved"), amountText(balance.reserved or 0), "text" },
-            { "", getText(T .. "Admin_Player_Rev", tostring(balance.rev or 0)), "textFaint" },
+            { tr("Wallet_Available"), figure(balance and balance.available), "accent" },
+            { tr("Wallet_Reserved"), figure(balance and balance.reserved), "text" },
+            { "", balance and getText(T .. "Admin_Player_Rev", tostring(balance.rev or 0)) or "", "textFaint" },
         }
         local detail = currencyName(id)
         for _, field in ipairs(fields) do detail = detail .. "\n" .. field[1] .. " " .. field[2] end
@@ -7291,7 +7760,140 @@ function Admin:drawIssued(sys, lh)
     end
 end
 
+-- The overview's geometry (tab "Dashboard" with dashFull off): the "needs attention" card sized
+-- to its rows, the currency card under it, one button per row, and the switch chip. `on` is
+-- whether the Dashboard tab is up at all: the chip also serves the full view, from the tab strip.
+function Admin:layoutOverview(on)
+    local g, w = self.g, self.width
+    local over = on and not self.dashFull
+    local chipH = math.max(20, fontH.small + 6)
+    local items = self.attentionItems or EMPTY_ROW
+    g.ovItemH = math.max(lineH() * 2 + 6, chipH + 8)
+    g.ovStatH = fontH.small + fontH.medium + 14
+    g.ovCurH = CARD_TITLE_H + 6 + #EC.CURRENCY_ORDER * (g.ovStatH + 6) + PAD
+    -- the currency card keeps its height; the rows get what is left, and the rest is counted
+    local rows = math.max(1, math.floor((g.bodyH - g.ovCurH - PAD - CARD_TITLE_H - 8) / g.ovItemH))
+    g.ovShown = math.min(#items, rows)
+    g.ovAttH = CARD_TITLE_H + 8 + math.max(1, g.ovShown) * g.ovItemH
+    g.ovCurY = g.bodyY + g.ovAttH + PAD
+    -- one width for every row button (the widest label, at most a third of the page), so the
+    -- text column beside them is the same for every row
+    local bw = 0
+    for i = 1, g.ovShown do bw = math.max(bw, textWidth(self.attButtons[i].fullTitle) + 20) end
+    bw = math.min(bw, math.floor(w / 3))
+    g.ovTextX = PAD + 18
+    g.ovTextW = math.max(40, w - PAD * 2 - bw - g.ovTextX)
+    for i, b in ipairs(self.attButtons) do
+        local shown = over and i <= g.ovShown
+        b:setVisible(shown)
+        if shown then
+            b:setWidth(bw); b:setHeight(chipH)
+            b:setX(w - PAD - bw)
+            b:setY(g.bodyY + CARD_TITLE_H + 4 + (i - 1) * g.ovItemH + math.floor((g.ovItemH - chipH) / 2))
+            U.setButtonTitle(b, b.fullTitle)
+        end
+    end
+    -- the currency card: a name column (coin and name), then five stat cells
+    local nameW = 0
+    for _, id in ipairs(EC.CURRENCY_ORDER) do nameW = math.max(nameW, textWidth(currencyName(id))) end
+    g.ovNameW = math.min(nameW + 26 + PAD * 2, math.floor(w * 0.22))
+    -- five cells and four 6px gaps between the name column and the card's right padding
+    g.ovCellW = math.max(40, math.floor((w - PAD * 2 - g.ovNameW - 6 * 4) / 5))
+    -- the chip: in the currency card's title row on the overview, at the start of the tab strip
+    -- in the full view (nothing else sits there), so the way back is where the eye starts
+    local fb = self.dashFullButton
+    local title = tr(self.dashFull and "Admin_Ov_Back" or "Admin_Ov_FullTable")
+    fb:setVisible(on)
+    fb:setWidth(math.min(textWidth(title) + 20, math.floor(w / 3)))
+    fb:setHeight(chipH)
+    if self.dashFull then
+        fb:setX(0); fb:setY(math.floor((g.subH - chipH) / 2))
+    else
+        fb:setX(w - PAD - fb.width); fb:setY(g.ovCurY + math.floor((CARD_TITLE_H - chipH) / 2))
+    end
+    U.setButtonTitle(fb, title)
+end
+
+-- One stat cell of the currency card: the label over the figure, both fitted to the cell.
+function Admin:ovStat(col, y, label, value, token)
+    local g = self.g
+    local x = PAD + g.ovNameW + (col - 1) * (g.ovCellW + 6)
+    fill(self, x, y, g.ovCellW, g.ovStatH, "well")
+    text(self, fitText(label, g.ovCellW - 12), x + 6, y + 5, "textMuted")
+    text(self, fitText(value, g.ovCellW - 12, UIFont.Medium), x + 6, y + 7 + fontH.small, token, UIFont.Medium)
+end
+
+-- The overview: what needs attention (only what has a problem; a dot, a sentence and a detail
+-- per row, the row's button beside it), then each currency's figures in one row of cells. The
+-- severity is the dot's colour and the sentence says what is wrong, so colour is never alone.
+function Admin:drawOverview()
+    local g, w = self.g, self.width
+    local lh = lineH()
+    local items = self.attentionItems or EMPTY_ROW
+    card(self, 0, g.bodyY, w, g.ovAttH, tr("Admin_Ov_Attention"))
+    local hidden = #items - g.ovShown
+    local titleY = g.bodyY + math.floor((CARD_TITLE_H - fontH.small) / 2)
+    if hidden > 0 then
+        textRight(self, fitText(getText(T .. "Admin_Ov_More", tostring(hidden)), math.floor(w / 2)), w - PAD, titleY, "warn")
+    else
+        textRight(self, fitText(tr("Admin_Ov_AttentionNote"), math.floor(w / 2)), w - PAD, titleY, "textFaint")
+    end
+    local y = g.bodyY + CARD_TITLE_H + 4
+    local dot = 10
+    if self.system == nil then
+        text(self, isPending("admin.system") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), PAD, y + 4, "textMuted")
+    elseif #items == 0 then
+        local ty = y + math.floor((g.ovItemH - fontH.small) / 2)
+        local c = color("positive")
+        U.Skin.dot(self, PAD, ty + math.floor((fontH.small - dot) / 2), dot, c, c)
+        text(self, fitText(tr("Admin_Ov_AllClear"), w - g.ovTextX - PAD), g.ovTextX, ty, "positive")
+    else
+        for i = 1, g.ovShown do
+            local item = items[i]
+            local ty = y + math.floor((g.ovItemH - lh * 2) / 2) + 3
+            local c = color(item.token)
+            U.Skin.dot(self, PAD, ty + math.floor((fontH.small - dot) / 2), dot, c, c)
+            text(self, fitText(item.title, g.ovTextW), g.ovTextX, ty, "text")
+            text(self, fitText(item.detail, g.ovTextW), g.ovTextX, ty + lh, "textMuted")
+            y = y + g.ovItemH
+        end
+    end
+
+    card(self, 0, g.ovCurY, w, g.ovCurH, tr("Admin_Ov_Currencies"))
+    local sys = self.system
+    local issued = sys and type(sys.issued) == "table" and sys.issued or EMPTY_ROW
+    local supply = self.supply
+    y = g.ovCurY + CARD_TITLE_H + 6
+    local coin = 20
+    for _, id in ipairs(EC.CURRENCY_ORDER) do
+        local midY = y + math.floor((g.ovStatH - fontH.small) / 2)
+        drawCoin(self, id, PAD, y + math.floor((g.ovStatH - coin) / 2), coin)
+        text(self, fitText(currencyName(id), g.ovNameW - coin - 6 - PAD), PAD + coin + 6, midY, "text")
+        local s = type(supply) == "table" and supply[id] or nil
+        if s == nil then
+            text(self, supply and tr("Admin_Dash_Empty") or tr("Admin_Loading"), PAD + g.ovNameW, midY, "textMuted")
+        else
+            -- the players' side whole and its reserved part, today's issue, the conservation
+            -- check and the holder count; a census with unreadable rows marks each figure a floor
+            local proven = s.complete ~= false
+            self:ovStat(1, y, tr("Admin_Ov_Total"), boundText(s.total, proven), "text")
+            self:ovStat(2, y, tr("Admin_Ov_Reserved"), boundText(s.reserved, proven), "text")
+            local body, token = issueText((issueRow(issued, "today", id) or EMPTY_ROW).mint, "+", "positive")
+            self:ovStat(3, y, tr("Admin_Ov_IssuedToday"), body, token)
+            if proven then
+                self:ovStat(4, y, tr("Admin_Dash_Conserve"), numText(s.net),
+                    (tonumber(s.net) or 0) ~= 0 and "warn" or "text")
+            else
+                self:ovStat(4, y, tr("Admin_Dash_Conserve"), tr("Admin_Dash_ConserveUnverifiable"), "warn")
+            end
+            self:ovStat(5, y, tr("Admin_Ov_Holders"), boundText(s.holders, proven), "text")
+        end
+        y = y + g.ovStatH + 6
+    end
+end
+
 function Admin:drawDashboard()
+    if not self.dashFull then return self:drawOverview() end
     local g = self.g
     local lh = lineH()
     local sys = self.system
@@ -7363,10 +7965,7 @@ function Admin:drawDashboard()
                 self:lineRow(tr("Admin_Dash_Unreadable"), numText(s.unreadable), "warn")
             end
             local top = s.top or {}
-            self:line(getText(T .. "Admin_Dash_Top", tostring(#top)), "textMuted")
-            if #top == 0 then
-                self:line(tr("Admin_Dash_Empty"), "textFaint")
-            end
+            if #top > 0 then self:line(getText(T .. "Admin_Dash_Top", tostring(#top)), "textMuted") end
             for _, holder in ipairs(top) do
                 if not self:lineRow(tostring(holder.account or "-"), numText(holder.amount)) then break end
             end
@@ -7378,58 +7977,33 @@ end
 function Admin:drawCurrencies()
     local g = self.g
     local rh = rowH()
-    card(self, 0, g.bodyY, g.cfgTableW, g.bodyH, tr("Admin_Cur_Title"))
-    local headerY = g.bodyY + CARD_TITLE_H
-    fill(self, 1, headerY, g.cfgTableW - 2, rh, "well", "rect")
-    local hy = headerY + math.floor((rh - fontH.small) / 2)
-    local c1, c2, c3, c4 = PAD, math.floor(g.cfgTableW * 0.24), math.floor(g.cfgTableW * 0.46), math.floor(g.cfgTableW * 0.76)
-    text(self, tr("Admin_Cur_Col_Id"), c1, hy, "textMuted")
-    text(self, tr("Admin_Cur_Col_Use"), c2, hy, "textMuted")
-    text(self, tr("Admin_Cur_Col_Name"), c3, hy, "textMuted")
-    text(self, tr("Admin_Cur_Col_State"), c4, hy, "textMuted")
-    local y = g.cfgRowY
-    local rects = self.cfgRowRects
-    for i = #rects, 1, -1 do rects[i] = nil end
-    local coin = math.max(16, math.min(rh - 6, 24))
-    for i, id in ipairs(EC.CURRENCY_ORDER) do
-        if y + rh > g.bodyY + g.bodyH - 2 then break end
-        local def = currencyDef(id)
-        local selected = id == self:selectedCurrency()
-        if selected then
-            fill(self, 1, y, g.cfgTableW - 2, rh, "selected", "rect")
-        elseif i % 2 == 0 then
-            fill(self, 1, y, g.cfgTableW - 2, rh, "card", "rect")
-        end
-        local ty = y + math.floor((rh - fontH.small) / 2)
-        -- the icon that is in force for this currency, at row size: U.drawCoin is the one reader
-        -- (EC.IconCache, then the shipped texture, then the dot), so the list costs no load of
-        -- its own and an unknown or still-loading icon simply keeps the fallback
-        drawCoin(self, id, c1, y + math.floor((rh - coin) / 2), coin)
-        local idX = c1 + coin + 6
-        text(self, fitText(id, math.max(20, c2 - idX - PAD)), idX, ty, selected and "accent" or "text")
-        -- What this currency may be used for: every property that is true, not one of two roles.
-        -- "Tradable on the market" and "bought back by the shop" are independent, and a unit can
-        -- be both -- calling one of them "external" would state the opposite of the other.
-        text(self, fitText(currencyUses(id, def), math.max(20, c3 - c2 - PAD)), c2, ty, "textMuted")
-        text(self, fitText(currencyName(id), c4 - c3 - PAD), c3, ty, "text")
-        local enabled = def == nil or def.enabled ~= false
-        text(self, enabled and tr("Admin_On") or tr("Admin_Off"), c4, ty, enabled and "positive" or "textFaint")
-        rects[#rects + 1] = { id = id, y = y, h = rh }
-        y = y + rh
-    end
-    if not currencyDefs() then
-        text(self, tr("Admin_Loading"), PAD, y + 4, "textFaint")
-    end
-
-    -- detail card for the selected currency (exchange block only where the server has one)
     local id = self:selectedCurrency()
     local def = currencyDef(id)
+    -- a pick or a fresh definition can change which actions apply: lay the action rows out again
+    if g.cfgRate ~= (def ~= nil and type(def.exchange) == "table") or g.cfgBuyAccount ~= (buybackOptionKey(id, "account") ~= nil)
+        or g.cfgBuyServer ~= (buybackOptionKey(id, "server") ~= nil) then
+        self:layoutCurrencies(true)
+        if C.Keyboard then C.Keyboard.invalidate(self.owner) end
+    end
+    card(self, 0, g.bodyY, g.cfgTableW, g.bodyH, tr("Admin_Cur_Title"))
+    fill(self, 1, g.cfgHeaderY, g.cfgTableW - 2, rh, "well", "rect")
+    local hy = g.cfgHeaderY + math.floor((rh - fontH.small) / 2)
+    local c2, c3, c4 = self:currencyColumns()
+    text(self, tr("Admin_Cur_Col_Id"), 1 + PAD, hy, "textMuted")
+    text(self, tr("Admin_Cur_Col_Use"), 1 + c2, hy, "textMuted")
+    text(self, tr("Admin_Cur_Col_Name"), 1 + c3, hy, "textMuted")
+    text(self, tr("Admin_Cur_Col_State"), 1 + c4, hy, "textMuted")
+    self:rebuildCurrencyRows()
+    if not currencyDefs() then
+        text(self, tr("Admin_Loading"), PAD, g.cfgHeaderY + rh * (#EC.CURRENCY_ORDER + 1) + 4, "textFaint")
+    end
+
+    -- detail card for the selected currency, grouped by section (the rate only where it applies)
     local detailH = math.max(60, g.cfgButtonY - 6 - g.bodyY)
     card(self, g.cfgDetailX, g.bodyY, g.cfgDetailW, detailH, getText(T .. "Admin_Cur_Detail", currencyName(id)))
-    -- The preview keeps its own space; the complete settings below it are scrollable.
+    -- The preview keeps its own space; the grouped settings below it scroll.
     local big = math.max(32, math.min(64, lineH() * 2))
-    local iconY = g.bodyY + CARD_TITLE_H + 4
-    drawCoin(self, id, g.cfgDetailX + PAD, iconY, big)
+    drawCoin(self, id, g.cfgDetailX + PAD, g.bodyY + CARD_TITLE_H + 4, big)
     self:refreshCurrencyReader(id, def)
 end
 
@@ -7682,12 +8256,10 @@ function Admin:drawSettings()
     card(self, 0, g.bodyY, self.width, g.bodyH, tr("Admin_Set_Title"))
     local searching = self.setQuery ~= nil
     local rows = self.settingRows or {}
-    -- search row: the standing note fills the space beside the box, the row count sits far right
+    -- search row: the row count sits far right; what the page is lives behind the help chip
     local countText = getText(T .. "Admin_Set_Count", tostring(#rows))
     local headY = self.setEntry.y + math.floor((self.setEntry.height - fontH.small) / 2)
     textRight(self, countText, self.width - PAD, headY, "textFaint")
-    text(self, fitText(tr("Admin_Set_Note"), math.max(0, self.width - PAD * 2 - g.setCountX - textWidth(countText))),
-        g.setCountX, headY, "textFaint")
 
     -- The group list draws inside this well and owns its scrollbar.
     fill(self, PAD, g.setNavY, g.setNavW, g.setNavH, "well", "rect")
@@ -7732,13 +8304,18 @@ function Admin:clearData()
     -- losing the right to read must not leave the whole server's balances on screen: the supply
     -- figures and the account list both go with it
     self.supply, self.supplyAt = nil, nil
+    -- and so do the overview's counts and the rail bubbles they feed
+    self.attention = nil
+    self:rebuildAttention()
     self.accRequestId, self.curRequestId = nil, nil
     self.accountsPage:clear()
-    for _, reader in ipairs({ self.statusReader, self.currencyReader, self.sourceReader, self.systemReader }) do
-        reader.ecSnapshot, reader.ecIcons, reader.ecSupply = nil, nil, nil
-        U.setWrappedText(reader, "", reader.width)
-        reader.ecRawText = nil
+    -- the stat lists are emptied and their caches dropped, so the next paint rebuilds from nothing
+    for _, list in ipairs({ self.statusList, self.currencyList, self.sourceList, self.systemList }) do
+        list.ecSnapshot, list.ecIcons, list.ecSupply, list.ecWidth = nil, nil, nil, nil
+        list:setItems({})
     end
+    self.statusWidth = nil
+    self.currencyTable.ecDefs = nil
     self.summaryList:setItems({})
     self.audit, self.auditFile, self.auditSelected, self.options = nil, nil, nil, nil
     self.auditDetailKey, self.auditDetailMonth = nil, nil
@@ -8063,15 +8640,7 @@ end
 
 function Admin:onMouseDown(x, y)
     if self.dialog then return true end
-    if self.tab == "Currencies" and x < (self.g and self.g.cfgTableW or 0) then
-        for _, r in ipairs(self.cfgRowRects or {}) do
-            if y >= r.y and y < r.y + r.h then
-                self.cfgSelected = r.id
-                self:updateEnabled()
-                return true
-            end
-        end
-    elseif self.tab == "Sources" and x < (self.g and self.g.srcTableW or 0) then
+    if self.tab == "Sources" and x < (self.g and self.g.srcTableW or 0) then
         for _, r in ipairs(self.srcRowRects or {}) do
             if y >= r.y and y < r.y + r.h then
                 self.srcSelected = r.id
@@ -8256,7 +8825,10 @@ function P.create(owner)
     setmetatable(o, Admin)
     o.background = false
     o.owner = owner
-    o.tab = "Player"
+    -- the window opens on the overview: what needs attention, then the money at a glance
+    o.tab = "Dashboard"
+    o.dashFull = false
+    o.alertsSeen = 0      -- identity alerts counted when the Identity page was last on screen
     -- the player tab opens on the account list: "who holds what" is a question the server can
     -- answer with nothing typed in, and the operate mode needs a target first
     o.playerMode = "list"
@@ -8270,7 +8842,6 @@ function P.create(owner)
     o.dirty = {}
     o.auditQuery = nil
     o.cfgSelected = EC.CURRENCY_ORDER[1]
-    o.cfgRowRects = {}
     o.srcRowRects = {}
     o.setGroup = EC.OPTION_GROUPS[1]
     o.offsetMin = U.localOffsetMinutes()

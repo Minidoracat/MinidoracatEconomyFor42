@@ -43,9 +43,9 @@ local function newEntry(width, height, placeholder, numbers)
     return e
 end
 
--- "Label: value", the line shape every reader in this window uses.
+-- "Label: value", the line shape every reader in this window uses (full-width colon in CH/JP).
 local function detailLine(key, value)
-    return getText(T .. key) .. ": " .. tostring(value)
+    return getText(T .. "Detail_Line", getText(T .. key), tostring(value))
 end
 
 -- How tall `lines` becomes inside a reader `width` wide: the same wrap U.setWrappedText applies
@@ -158,7 +158,9 @@ local function recoveryError(detail, recovery)
     return table.concat(lines, "\n")
 end
 
--- shop.buy and mail.claim share one error key space (Shop_Error_<code>, timeout included)
+-- shop.buy and mail.claim share one error key space (Shop_Error_<code>, timeout included); the
+-- market's shared codes and the item menu's refusals end here too, so "not at a terminal" names
+-- the way to the nearest one in this one place (ECNavigate, absent in the offline harness)
 local function shopError(code, recovery, detail)
     local explained = recoveryError(detail, recovery)
     if explained then return explained end
@@ -173,6 +175,7 @@ local function shopError(code, recovery, detail)
     end
     code = tostring(code)
     local s = getTextOrNull(T .. "Shop_Error_" .. code)
+    if s and code == "not_at_terminal" and C.Navigate then return C.Navigate.withHint(s) end
     if s then return s end
     U.logUnknown("shop error", code)
     return getText(T .. "Shop_Error_unknown")
@@ -443,21 +446,16 @@ local function lotText(qty)
     return getText(T .. "Market_Lot", tostring(qty))
 end
 
-local function listingRow(it, username, offsetMin, mine)
+local function listingRow(it, username, mine)
     local price = tonumber(it.price) or 0
     local name = itemName(it.item)
     local alt = it.name
     if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
     local seller = tostring(it.seller or "")
     local own = mine or (username ~= nil and seller == username)
-    -- a listing runs for days: only the last day is worth counting down, before that the date
-    -- says more than "168 hours"
+    -- every row, own or not, says how long it still runs in the one shape W.remainText gives
     local expires = tonumber(it.expiresAt)
-    local expiresText = "-"
-    if expires then
-        local left = expires - EC.now()
-        expiresText = left > 86400000 and stampText(expires, offsetMin) or durationText(left)
-    end
+    local expiresText = expires and W.remainText(expires - EC.now()) or "-"
     local qty = math.max(1, math.floor(tonumber(it.qty) or 1))
     local lot = lotText(qty)
     local currency = type(it.currency) == "string" and it.currency or nil
@@ -562,7 +560,7 @@ local function auctionRow(it, context)
         bidsText = bids > 0 and tostring(bids) or getText(T .. "Auction_NoBids"),
         bidsToken = bids > 0 and "accent" or "textFaint",
         expiresText = ended and getText(T .. "Auction_Ended")
-            or getText(T .. "Auction_Ends_In", durationText(left)),
+            or getText(T .. "Auction_Ends_In", W.remainText(left)),
         expiresToken = ended and "warn" or "textFaint",
         blocked = blocked,
         actionId = actionId,
@@ -628,8 +626,8 @@ end
 -- so both prices are readable without switching the page first.
 --
 -- A sku the admin took off the shelf (enabled = false) sells in no currency, whatever its quotes
--- still hold, and says "not for sale" where the price would be; its buyback is untouched (ECShop:
--- the sale switch closes the way in only), so on the page it is a sell-only row.
+-- still hold, and carries a "buyback only" tag with its bid on the second line; its buyback is
+-- untouched (ECShop: the sale switch closes the way in only), so on the page it is a sell-only row.
 local function shopRow(it, currency, buyback)
     local cap = tonumber(it.dailyCap) or 0
     local remaining = tonumber(it.remaining)
@@ -640,14 +638,19 @@ local function shopRow(it, currency, buyback)
     scope = (scope == "global" or scope == "server") and "global"
         or (scope == "lifetime" and "lifetime" or "player")
     local used = tonumber(it.used)
+    -- The column is scope-agnostic ("left"): the count alone, the cap and the scope sentence go to
+    -- the record (remainFull) and the buy dialog's spec, and a used-up share is the row's own
+    -- disabled "sold out" button rather than a sentence squeezed into the column.
     local remainText, remainToken, soldOut = getText(T .. "Shop_Unlimited"), "textMuted", false
+    local remainFull = remainText
     if cap > 0 then
         local left = remaining or cap
         soldOut = left <= 0
-        remainText = soldOut
+        remainText = tostring(math.max(0, left))
+        remainFull = soldOut
             and getText(T .. (scope == "lifetime" and "Shop_SoldOutLifetime" or "Shop_SoldOut"))
             or (tostring(left) .. " / " .. tostring(cap))
-        remainToken = soldOut and "warn" or "text"
+        remainToken = soldOut and "textFaint" or "text"
     end
     local qty = tonumber(it.qty) or 1
     local delisted = it.enabled == false
@@ -661,7 +664,7 @@ local function shopRow(it, currency, buyback)
     local canBuyback = q ~= nil and q.buyback == true and bid ~= nil
     local open = canBuyback and buybackOpen(buyback, currency)
     -- a sale that can never happen has no purchase allowance worth a column
-    if delisted then remainText, remainToken = "-", "textFaint" end
+    if delisted then remainText, remainToken, remainFull = "-", "textFaint", "-" end
     -- every other currency this sku quotes, named on the second line
     local alt, quotes = {}, {}
     for _, id in ipairs(currencyIds()) do
@@ -683,6 +686,9 @@ local function shopRow(it, currency, buyback)
         qtyText = qtyText .. "   " .. getText(T .. "Shop_Scope_lifetime")
     end
     if #alt > 0 then qtyText = qtyText .. "   " .. getText(T .. "Shop_AltQuote", table.concat(alt, "  ")) end
+    -- a buyback-only row has no lot to buy: its second line is what the shop pays for one
+    if delisted then qtyText = getText(T .. "Shop_BidLine", moneyText(bid, currency)) end
+    local tagText = delisted and getText(T .. "Shop_Tag_BuybackOnly") or nil
     return {
         id = it.id, item = it.item, qty = qty, price = price, hasQuote = hasQuote, delisted = delisted,
         -- the detail window's status line: why a row with a sell button has no buy button
@@ -700,10 +706,11 @@ local function shopRow(it, currency, buyback)
         -- one item's own weight as the catalog quoted it: what the buy dialog estimates the
         -- backpack room with. An older snapshot carries none, and none is not zero.
         weight = tonumber(it.weight),
-        priceText = delisted and getText(T .. "Shop_Disabled")
+        priceText = delisted and "-"
             or (price ~= nil and amountText(price) or getText(T .. "Shop_NoQuote")),
-        remainText = remainText, remainToken = remainToken,
-        buyLabel = getText(T .. "Shop_Buy"),
+        remainText = remainText, remainToken = remainToken, remainFull = remainFull,
+        tagText = tagText, tagW = tagText and textWidth(tagText) or 0,
+        buyLabel = getText(T .. (soldOut and "Shop_SoldOutButton" or "Shop_Buy")),
         -- Keep the configured price visible while the server-wide switch pauses buyback.
         bidPrice = bid, buyback = canBuyback, buybackOpen = open,
         buybackCap = tonumber(it.buybackCap) or 0, buybackRemaining = tonumber(it.buybackRemaining),
@@ -711,10 +718,11 @@ local function shopRow(it, currency, buyback)
     }
 end
 
--- Shop row: icon + name over "N per lot", the unit price, the share the cap has left, and the two
--- real action buttons of the row (buy, and sell on a buyback sku). The row body itself only
--- selects and reads: ECRowActions owns those buttons, so a press is a press and never a
--- hit-tested area of the row. Column edges come from Panel:layout (list.cols) and
+-- Shop row: icon + name (and the "buyback only" tag) over "N per lot", the unit price, what the
+-- cap has left, and the real action buttons of the row (buy -- "sold out" and shut once the share
+-- is spent -- and sell on a buyback sku; a delisted row has no buy button at all). The row body
+-- itself only selects and reads: ECRowActions owns those buttons, so a press is a press and never
+-- a hit-tested area of the row. Column edges come from Panel:layout (list.cols) and
 -- `list.buyDisabled` closes both buttons while the write gate is shut (frozen account, no
 -- terminal within reach, a write in flight).
 local ShopCell = ISPanel:derive("MinidoracatEconomyShopCell")
@@ -727,12 +735,18 @@ function ShopCell:render()
     rowBackground(self)
     drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
     local half = math.floor(h / 2)
-    local nameText = fitText(e.name, cols.nameW)
-    text(self, nameText, cols.name, half - fontH.small - 2, "text")
+    local nameW = e.tagText and math.max(0, cols.nameW - e.tagW - 8) or cols.nameW
+    local nameText = fitText(e.name, nameW)
+    local nameY = half - fontH.small - 2
+    text(self, nameText, cols.name, nameY, "text")
+    local altX = cols.name + textWidth(nameText) + 8
+    if e.tagText then
+        text(self, e.tagText, altX, nameY, "warn")
+        altX = altX + e.tagW + 8
+    end
     if e.altName then
-        local altX = cols.name + textWidth(nameText) + 8
         local altW = cols.name + cols.nameW - altX
-        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
+        if altW > 20 then text(self, fitText(e.altName, altW), altX, nameY, "textFaint") end
     end
     text(self, e.qtyText, cols.name, half + 2, "textFaint")
     local ty = math.floor((h - fontH.small) / 2)
@@ -748,8 +762,10 @@ function ShopCell:render()
         R.put(self, "sell", e.sellLabel, cols.sellX, chipY, cols.sellW, chipH,
             e.buybackOpen == true and self.list.buyDisabled ~= true and e.buybackRemaining ~= 0)
     end
-    R.put(self, "buy", e.buyLabel, cols.buyX, chipY, cols.buyW, chipH,
-        self.list.buyDisabled ~= true and not e.soldOut and e.hasQuote)
+    if not e.delisted then
+        R.put(self, "buy", e.buyLabel, cols.buyX, chipY, cols.buyW, chipH,
+            self.list.buyDisabled ~= true and not e.soldOut and e.hasQuote)
+    end
     R.finish(self)
 end
 
@@ -788,16 +804,19 @@ function MailCell:render()
     text(self, fitText(e.fromText, fromW), cols.name, half + 2, faint)
     textRight(self, e.timeText, cols.timeR, math.floor((h - fontH.small) / 2), faint)
     R.begin(self)
-    R.put(self, "claim", e.claimLabel, cols.claimX, math.floor((h - CHIP_H) / 2), cols.claimW, CHIP_H,
-        e.claimable == true and self.list.actionDisabled ~= true)
+    local claim = R.put(self, "claim", e.claimLabel, cols.claimX, math.floor((h - CHIP_H) / 2), cols.claimW,
+        CHIP_H, e.claimable == true and self.list.actionDisabled ~= true)
+    -- away from a terminal the shut button says where to go (Panel:prerender sets the hint)
+    if not claim.autoTooltip then claim.tooltip = self.list.actionHint end
     R.finish(self)
 end
 
--- Statement row (the wallet ledger): the seven columns the header paints, plus the selection band
--- every table in this window carries. The picked row is what the full-value strip spells out, so a
--- keyboard user has to be able to see which row that is. The kind and counterparty/note columns
--- truncate, so their fitted text is cached per row and per column width instead of measured again
--- on every frame of every visible row.
+-- Statement row (the wallet ledger): time, kind, note, amount, balance and -- only while a listed
+-- row was rolled back -- the status column, plus the selection band every table in this window
+-- carries. A fee or tax rides on the note as a muted "(incl. fee N)" instead of a column of its
+-- own; the row's record still names it on a line of its own. The kind and note columns truncate,
+-- so their fitted text is cached per row and per column width instead of measured again on every
+-- frame of every visible row.
 local StatementCell = ISPanel:derive("MinidoracatEconomyPlayerStatementCell")
 
 function StatementCell:render()
@@ -808,7 +827,14 @@ function StatementCell:render()
     if self.descEntry ~= e or self.descBudget ~= cols.descW or self.timeBudget ~= cols.timeW
         or self.kindBudget ~= cols.kindW then
         self.descEntry, self.descBudget, self.timeBudget, self.kindBudget = e, cols.descW, cols.timeW, cols.kindW
-        self.descText = fitText(e.desc, cols.descW or 0)
+        -- the fee note keeps its own fainter token only while the whole of it fits after the
+        -- note; otherwise the two are cut as one line (the record window spells both out)
+        local budget = cols.descW or 0
+        if e.feeNote ~= "" and textWidth(e.desc .. e.feeNote) <= budget then
+            self.descText, self.feeX = e.desc, textWidth(e.desc)
+        else
+            self.descText, self.feeX = fitText(e.desc .. e.feeNote, budget), nil
+        end
         self.timeText = cols.compact and fitText(e.time, cols.timeW) or e.time
         self.kindText = fitText(e.kindText, cols.kindW or 0)
     end
@@ -834,13 +860,13 @@ function StatementCell:render()
     text(self, e.time, cols.time, ty, tokenMuted)
     text(self, self.kindText, cols.kind, ty, tokenText)
     text(self, self.descText, cols.desc, ty, tokenMuted)
+    if self.feeX then text(self, e.feeNote, cols.desc + self.feeX, ty, lit and "textMuted" or "textFaint") end
     textRight(self, e.amountText, cols.amountR, ty, amountToken)
-    if e.feeText ~= "" then textRight(self, e.feeText, cols.feeR, ty, tokenText) end
     textRight(self, amountText(e.after), cols.balanceR, ty, tokenText)
     if muted then
         text(self, getText(T .. "Wallet_RolledBack"), cols.status, ty, lit and "text" or "textFaint")
         strike(self, cols.time, ty, cols.balanceR - cols.time)
-    else
+    elseif cols.status then
         text(self, "-", cols.status, ty, lit and "textMuted" or "textFaint")
     end
 end
@@ -902,12 +928,7 @@ function ListingCell:render()
     if cols.bidsR then
         textRight(self, fitText(e.bidsText, cols.bidsW), cols.bidsR, ty, e.bidsToken or "textFaint")
     end
-    if cols.wrapDate and string.match(e.expiresText, "^%d%d%d%d%-%d%d%-%d%d ") then
-        textRight(self, string.sub(e.expiresText, 1, 10), cols.expiresR, half - fontH.small - 2, "textFaint")
-        textRight(self, string.sub(e.expiresText, 12), cols.expiresR, half + 2, "textFaint")
-    else
-        textRight(self, fitText(e.expiresText, cols.expiresW), cols.expiresR, ty, e.expiresToken or "textFaint")
-    end
+    textRight(self, fitText(e.expiresText, cols.expiresW), cols.expiresR, ty, e.expiresToken or "textFaint")
     -- The record button of the auction tables, left of the action one: it opens this auction's
     -- own timeline. A record is a read, so the write gate (list.actionDisabled) never closes it.
     local chipY = math.floor((h - CHIP_H) / 2)
@@ -1325,6 +1346,55 @@ W.closeCombo = closeCombo
 W.sortLabel = sortLabel
 W.MARKET_SORTS = MARKET_SORTS
 W.AUCTION_SORTS = AUCTION_SORTS
+
+-- How long a listing or an auction still runs, in one shape for every row: days and hours while
+-- a day or more is left, hours and minutes (U.durationText) below that.
+function W.remainText(ms)
+    local minutes = math.max(0, math.floor(ms / 60000))
+    if minutes < 1440 then return durationText(ms) end
+    return getText(T .. "Time_DH", tostring(math.floor(minutes / 1440)), tostring(math.floor(minutes / 60) % 24))
+end
+
+-- A small chip that shows a framework icon instead of its label (the refresh action of the trade
+-- pages). The label stays the button's fullTitle, so the tooltip and the keyboard read it; without
+-- the icon the label is painted as an ordinary chip.
+function W.iconChipRender(b)
+    U.Button.render(b)
+    local hot = b.enable and b:isMouseOver()
+    U.framework.Icons.draw(b, b.iconName, math.floor((b.width - 16) / 2), math.floor((b.height - 16) / 2),
+        16, color(not b.enable and "textDisabled" or (hot and "text" or "textMuted")), 1)
+end
+
+function W.iconChip(owner, iconName, label, onClick)
+    local Icons = U.framework and U.framework.Icons
+    local hasIcon = Icons ~= nil and Icons.get ~= nil and Icons.get(iconName) ~= nil
+    local b = U.Button.create(0, 0, hasIcon and CHIP_H + 10 or textWidth(label) + 22, CHIP_H,
+        hasIcon and "" or label, owner, onClick, "chip")
+    b.fullTitle = label
+    if hasIcon then
+        b.iconName = iconName
+        b.render = W.iconChipRender
+    end
+    owner:addChild(b)
+    return b
+end
+
+-- Enter (or controller A) on a mode tab row: the next tab, and from the last one back to the
+-- first (`tabs.firstId`, set by the owner). The arrows are the tab row's own (UI.Tabs:onFocusKey).
+function W.tabsNext(tabs)
+    if not tabs:selectRelative(1) then tabs:setSelected(tabs.firstId) end
+end
+
+-- The mode row of a trade page: the framework's segmented tabs (accent underline on the open one),
+-- `items` as UI.Tabs takes them, `onSelect(owner, id)` on a change.
+function W.modeTabs(owner, items, selected, onSelect)
+    local tabs = U.framework.Tabs.new({ height = math.max(CHIP_H, fontH.small + 10), theme = U.theme,
+        target = owner, selected = selected, items = items, onSelect = onSelect })
+    tabs.firstId = items[1].id
+    tabs.forceClick = W.tabsNext
+    owner:addChild(tabs)
+    return tabs
+end
 
 -- The shop row that buys `fullType` back right now - the sku's own switch, the server-wide one and
 -- the currency's cap block all open, and allowance left - trying currency `first` before the

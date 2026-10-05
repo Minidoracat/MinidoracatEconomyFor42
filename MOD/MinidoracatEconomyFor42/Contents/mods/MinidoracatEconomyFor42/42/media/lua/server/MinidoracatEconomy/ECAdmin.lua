@@ -19,7 +19,8 @@
 --   admin.audit   {limit,actor,fromMs,toMs,       read   filtered ModData audit ring, newest first
 --                  requestId}
 --   admin.system  {}                              read   seq/epoch, sizes, heartbeat, paths, supply,
---                                                        7/30-day issuance, top holders
+--                                                        7/30-day issuance, top holders, and the
+--                                                        overview's counts (attention, A.attention)
 --   admin.transactions {query,matchMode,itemTypes,  read   server-wide money view: one committed
 --                       account,item,group,               transaction per row from the daily events
 --                       accountClass,currency,            files (tx.committed only, <= 62 days per
@@ -819,6 +820,8 @@ function A.system(write, manage)
         -- rollback ledgers this start could not read in full: letters minted up to one are not
         -- claimable and transfers up to one are held until it leaves the recent-starts history
         ledgerGaps = S.Recovery and S.Recovery.ledgerGaps() or nil,
+        -- what the overview's "needs attention" card and the sidebar badges count (A.attention)
+        attention = A.attention(),
     }
 end
 
@@ -2267,6 +2270,17 @@ function A.recoveryOverview(player, requestId, query, page)
             offlineAccounts = #accounts - online, open = open },
         status = { durableSource = durable.source, durableStatus = durable.status, durableSeq = durable.seq },
         perms = { read = true, write = A.isAdmin(player) } })
+end
+
+-- The admin overview's counts, carried by admin.system (read gate, so a refusal carries none):
+-- how much the reconciliation desk and the identity desk have waiting, as numbers only - no
+-- account, no record, no SteamID. The recovery side is the same walk as the overview summary
+-- above, so the sidebar badge and the reconciliation page never disagree.
+function A.attention()
+    local accounts, index, _, held = recoveryRefs()
+    local online = recoveryOnline(accounts, index)
+    return { recovery = { held = held, accounts = #accounts, online = online },
+        identity = S.Identity and S.Identity.attention() or nil }
 end
 
 

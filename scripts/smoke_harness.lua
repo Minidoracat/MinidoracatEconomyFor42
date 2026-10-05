@@ -1042,6 +1042,7 @@ require("MinidoracatEconomy/ECWallet")
 require("MinidoracatEconomy/ECIcons")
 require("MinidoracatEconomy/ECIntegration")
 require("MinidoracatEconomy/ECTerminal")
+require("MinidoracatEconomy/ECAtmMap")
 require("MinidoracatEconomy/ECRecovery")
 require("MinidoracatEconomy/ECRecoveryJournal")
 require("MinidoracatEconomy/ECMailbox")
@@ -1103,6 +1104,11 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the companion export's r
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: codes become words on the player pages and in the shared helpers (scenario TX: integration refusals, known codes without their code, unknown ones as the generic word, the player pages' routes, no slot in a fallback sentence)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: reconciliation codes instead of sentences (RA-1..4: the held record's detail code and counts, the remove / approve / restore audit lines as decision codes with their facts; RW-1..4: the page words a detail code in the reader's language, keeps an old stored line as written, words each decision, and turns an unknown code into the generic word; RW-5: the audit detail shows the record, letter, source state, objects present and the approved tokens / removed ids)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: whitelist / catalog refusals and catalog audit lines as codes with facts (FE-1..4: a catalog row's field path, bounds and index, the reload / add audit lines, the whitelist's JSON line and entry in reply, status and audit; FE-4b: a successful reload carries no refusal code; FE-5..7: the client words a failure in the reader's language, keeps an unknown code off screen, words the add / reload audit lines and leaves an older stored line alone)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: nearest terminal and its words (scenario NV: floor-weighted ranking, 8-way compass, upstairs text, refusal hint, arrow start / stop)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: map ATMs (scenario NA: load hook and one record per square, debounced push, hello.ack wire shape, cap logged once, restart; candidates with MapATMAsTerminal, ATM row and refusal words, MiniMap provider cache and revision, the stale set, vanilla markers per map)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText cuts Chinese / Japanese at the character, English at the space (TX-1b)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the admin overview's counts on admin.system (scenario 51: equal to the reconciliation summary, none on a refusal; FS: identity counts equal the identity page's status)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText never starts a line with closing punctuation (TX-1c)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -8525,6 +8531,19 @@ io.write("scenario 51: server-wide reconciliation overview\n")
         "closing one record removes that record from the overview and nothing else")
     check(live.modData[KEY] == nil,
         "browsing and resolving an old item never manufacture a player's pending or claim records")
+    -- the admin overview's counts ride on admin.system and are this very summary, numbers only
+    nowMs = nowMs + 700
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", boss, {})
+    local att = lastSent("admin.system").args.attention or {}
+    local rec = att.recovery or {}
+    check(rec.held == after.summary.held and rec.accounts == after.summary.accounts
+        and rec.online == after.summary.onlineAccounts and type(att.identity) == "table"
+        and att.identity.conflicts == 0 and rec.records == nil,
+        "admin.system carries the reconciliation counts the overview and the sidebar badge read, equal to the overview summary")
+    nowMs = nowMs + 700
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", plain, {})
+    check(lastSent("admin.system").args.ok == false and lastSent("admin.system").args.attention == nil,
+        "a refused admin.system carries no overview counts")
     onlinePlayers = {}
 end)()
 
@@ -17185,6 +17204,13 @@ check(st.multiAccount == false and multi.steamIds == 3 and multi.logins == 6 and
     and lp.total == 3 and lp.counts.blocked == 3 and lp.counts.ready == 2
     and type(st.alerts) == "table" and #st.alerts == st.alertCount and st.alerts[1].at >= st.alerts[#st.alerts].at,
     "LP-1: the status counts every Steam account with several logins; the logins page lists each other login once, under its main account, with the policy and the merge plan, and the alerts come newest first")
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "admin.system", boss, {})
+local fsAtt = (lastSent("admin.system").args.attention or {}).identity or {}
+check(fsAtt.alerts == (fsReply.status or {}).alertCount and fsAtt.conflicts == (fsReply.status or {}).conflictCount
+    and fsAtt.steam == true and fsAtt.unreadable == false and fsAtt.damaged == false
+    and fsAtt.export == ((fsReply.status or {}).export or {}).status,
+    "the overview's identity counts (admin.system attention) match the identity page's own status")
 local function lpAsk(q, who)
     nowMs = nowMs + 700
     sentCommands = {}
@@ -19971,6 +19997,32 @@ for code, key in pairs({ transfer_disabled = "Transfer_Error_transfer_disabled",
     if s == nil or s ~= say(key) or string.find(s, "%", 1, true) then wrong[#wrong + 1] = code end
 end
 check(okU and #wrong == 0, "TX-1: every integration refusal and admin code reads as an argument-free sentence (" .. table.concat(wrong, ", ") .. ")")
+-- TX-1b: U.wrapText breaks English at a space but Chinese / Japanese at the character that no
+-- longer fits: a space beside a number or "ATM" inside a CJK sentence is not a line break
+do
+    local savedTM, savedFont = getTextManager, UIFont
+    UIFont = UIFont or { Small = 1 }
+    getTextManager = function() return { MeasureStringX = function(_, _, s) return #s * 6 end } end
+    local cjk = call(U.wrapText, "aaaa " .. string.rep("\228\184\173", 10), 102, 9) or {}
+    local en = call(U.wrapText, "hello world again", 72, 9) or {}
+    getTextManager, UIFont = savedTM, savedFont
+    check(cjk[1] == "aaaa " .. string.rep("\228\184\173", 3) and en[1] == "hello",
+        "TX-1b: wrapText cuts CJK at the character, English at the space (" .. tostring(cjk[1]) .. " / " .. tostring(en[1]) .. ")")
+end
+-- TX-1c: closing punctuation never starts a line; the character before it moves down with it.
+-- The table holds CJK UTF-16 code units (Kahlua); under standard Lua's UTF-8 they never match, so
+-- '.' stands in for one here.
+do
+    local savedTM, savedFont = getTextManager, UIFont
+    UIFont = UIFont or { Small = 1 }
+    getTextManager = function() return { MeasureStringX = function(_, _, s) return #s * 6 end } end
+    U.NO_LINE_START[46] = true
+    local lines = call(U.wrapText, "abcdef.ghij", 54, 9) or {}
+    U.NO_LINE_START[46] = nil
+    getTextManager, UIFont = savedTM, savedFont
+    check(lines[1] == "abcde" and lines[2] == "f.ghij",
+        "TX-1c: wrapText moves the character before closing punctuation down with it (" .. tostring(lines[1]) .. " / " .. tostring(lines[2]) .. ")")
+end
 -- TX-2: one of this mod's own codes reads as words alone, the raw code not appended; a reason code
 -- another mod registered is that mod's identifier, shown inside a translated frame and logged
 logged = {}
@@ -20187,6 +20239,218 @@ check(call(U.catalogAuditText, { action = "catalog", field = "add", target = "pa
     "FE-7: a new SKU, a reload and a refused reload read as sentences; an older stored line and a field edit are left to the generic change text")
 require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
 ISButton, ISPanel = saved.ISButton, saved.ISPanel
+end)()
+
+-- NV: the nearest terminal (ECNavigate). Two terminals: one 20 tiles north on this floor, one 13
+-- tiles north-west a floor up; a floor costs six tiles, so the upstairs one (13 + 6) wins over 20.
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client,
+    getPlayer = getPlayer, getWorldMarkers = getWorldMarkers }
+local dict = EC.jsonDecode(io.open(MEDIA .. "/shared/Translate/EN/IG_UI.json", "rb"):read("*a"))
+getTextOrNull = function(key, ...)
+    local s, args = dict[key], { ... }
+    return s and (string.gsub(s, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end)) or nil
+end
+getText = function(key, ...) return getTextOrNull(key, ...) or key end
+require = function() end
+local removed, placed = 0, nil
+local player = { getX = function() return 100.5 end, getY = function() return 100.5 end, getZ = function() return 0 end,
+    isDead = function() return false end }
+getPlayer = function() return player end
+getWorldMarkers = function() return { addDirectionArrow = function(_, p, x, y, z)
+    placed = { x = x, y = y, z = z }
+    return { remove = function() removed = removed + 1 end }
+end } end
+EC.Client = { terminals = { { id = "a", x = 100, y = 80, z = 0 }, { id = "b", x = 91, y = 91, z = 1 } } }
+local ok = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECNavigate.lua")
+local N = EC.Client.Navigate or {}
+local best = ok and N.nearest()
+local hint = ok and N.hintText()
+local refusal = ok and N.withHint("Stand next to a terminal")
+local started = ok and N.start()
+local active = ok and N.active()
+if ok then N.stop() end
+check(ok and best and best.id == "b" and best.dirKey == "NW" and best.dist == 13 and best.dz == 1
+    and hint == "Nearest terminal: 13 tiles northwest, upstairs"
+    and refusal == "Stand next to a terminal. Nearest terminal: 13 tiles northwest, upstairs"
+    and started == true and active == true and placed and placed.x == 91 and placed.z == 1
+    and removed == 1 and not N.active(),
+    "NV: the nearest terminal ranks a floor as six tiles, reads as an 8-way direction with its floor, rides on a refusal, and the arrow comes and goes")
+require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
+getPlayer, getWorldMarkers = saved.getPlayer, saved.getWorldMarkers
+end)()
+
+-- NA: map ATMs the server has seen (ECAtmMap) and where they show up on the client (ECNavigate,
+-- ECNavMarkers). Server: the load hook, one record per square, the cap, the debounced push and the
+-- wire shape. Client: candidates follow MapATMAsTerminal and drop an ATM seen gone, ATM words, the
+-- MiniMap provider rebuilds only on a change, the vanilla fallback marks each map once and takes
+-- only its own marker back.
+;(function()
+local A, realLog, logs = S.AtmMap, EC.log, {}
+EC.log = function(m) logs[#logs + 1] = tostring(m) end
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local root = S.modData()
+root.mapAtms = nil
+A.init(root)
+local ann = fakePlayer("na-ann")
+onlinePlayers = { ann }
+sentCommands = {}
+local hooks = 0
+for name in pairs(EC.ATM_SPRITES) do
+    local h = mapObjectsOnLoad[name]
+    if h and h.fn == A.onLoad and h.priority == A.PRIORITY and h.priority ~= 5 then hooks = hooks + 1 end
+end
+local function atm(x, y, z)
+    worldSprites[worldKey(x, y, z)] = "location_business_bank_01_64"
+    local sq = getCell():getGridSquare(x, y, z)
+    return { getSprite = function() return { getName = function() return "location_business_bank_01_64" end } end,
+        getSquare = function() return sq end }
+end
+local function pushes()
+    local n = 0
+    for _, c in ipairs(sentCommands) do if c.command == "atms" then n = n + 1 end end
+    return n
+end
+local first = atm(10604, 10319, 0)
+A.onLoad(first)
+A.onLoad(first)
+A.onLoad(atm(10604, 10319, 0))
+check(hooks == 4 and #root.mapAtms == 1 and root.mapAtms[1].x == 10604 and root.mapAtms[1].z == 0,
+    "NA-1: the four ATM sprites load into a hook of their own priority, and a square is recorded once however often it loads")
+fire("OnTickEvenPaused")
+local p1 = lastSent("atms")
+nowMs = nowMs + 1000
+A.onLoad(atm(10620, 10330, 1))
+fire("OnTickEvenPaused")
+local held = pushes()
+nowMs = nowMs + A.PUSH_MS
+fire("OnTickEvenPaused")
+fire("OnTickEvenPaused")
+local p2 = lastSent("atms")
+check(p1 and p1.player == ann and #p1.args.list == 3 and held == 1 and pushes() == 2
+    and #p2.args.list == 6 and p2.args.list[4] == 10620 and p2.args.list[6] == 1,
+    "NA-2: a change is pushed to everyone at most once per PUSH_MS, and nothing is pushed while nothing changed")
+nowMs = nowMs + 600
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", ann, {})
+local ack = lastSent("hello.ack").args
+check(type(ack.atms) == "table" and #ack.atms == 6 and ack.atms[1] == 10604 and ack.atms[2] == 10319
+    and S.wireBytes(ack.atms) == 5 + 6 * 18,
+    "NA-3: hello.ack carries the ATMs as flat x, y, z numbers, 54 bytes a record on the wire")
+local max = A.MAX
+A.MAX = 3
+A.onLoad(atm(1, 1, 0))
+A.onLoad(atm(2, 2, 0))
+A.onLoad(atm(3, 3, 0))
+local full = 0
+for _, l in ipairs(logs) do if string.find(l, "map ATMs", 1, true) then full = full + 1 end end
+A.MAX = max
+check(#root.mapAtms == 3 and root.mapAtms[3].x == 1 and full == 1, "NA-4: past the cap nothing more is kept, logged once")
+nowMs = nowMs + 1000
+fire("OnServerStarted")
+onlinePlayers = { ann }
+sentCommands = {}
+A.onLoad(first)
+nowMs = nowMs + A.PUSH_MS
+fire("OnTickEvenPaused")
+check(#S.modData().mapAtms == 3 and pushes() == 0, "NA-5: the records survive a restart and a known ATM loading again changes nothing")
+onlinePlayers = {}
+for _, k in ipairs({ "10604,10319,0", "10620,10330,1", "1,1,0", "2,2,0", "3,3,0" }) do worldSprites[k] = nil end
+EC.log = realLog
+
+-- the client
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client,
+    getPlayer = getPlayer, getWorldMarkers = getWorldMarkers, getTexture = getTexture, api = MinidoracatMiniMapAPI,
+    world = ISWorldMap_instance, mini = getPlayerMiniMap }
+local dict = EC.jsonDecode(io.open(MEDIA .. "/shared/Translate/EN/IG_UI.json", "rb"):read("*a"))
+getTextOrNull = function(key, ...)
+    local s, args = dict[key], { ... }
+    return s and (string.gsub(s, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end)) or nil
+end
+getText = function(key, ...) return getTextOrNull(key, ...) or key end
+require = function() end
+local player = { getX = function() return 100.5 end, getY = function() return 100.5 end, getZ = function() return 0 end,
+    isDead = function() return false end }
+getPlayer = function() return player end
+getWorldMarkers = function() return { addDirectionArrow = function() return { remove = function() end } end } end
+getTexture = function(path) return { path = path } end
+local registered = nil
+MinidoracatMiniMapAPI = { markerApiVersion = 2, registerMarkerProvider = function(owner, fn) registered = { owner = owner, fn = fn } end }
+local terminal = { id = "t1", x = 100, y = 60, z = 0, kind = "atm" }
+local east = { x = 110, y = 100, z = 0, kind = "map_atm" }
+local south = { x = 100, y = 130, z = 0, kind = "map_atm" }
+EC.Client = { terminals = { terminal }, mapAtms = { east, south } }
+worldSprites["110,100,0"] = "location_business_bank_01_64"
+local ok = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECNavigate.lua")
+local N = EC.Client.Navigate or {}
+local list = ok and N.candidates()
+local same = ok and N.candidates() == list
+local best = ok and N.nearest()
+local hint = ok and N.hintText()
+SandboxVars.MinidoracatEconomy.MapATMAsTerminal = false
+local offList = ok and N.candidates()
+SandboxVars.MinidoracatEconomy.MapATMAsTerminal = nil
+check(ok and #list == 3 and same and best and best.kind == "map_atm" and best.x == 110
+    and hint == "Nearest ATM: 10 tiles east" and #offList == 1 and offList[1] == terminal,
+    "NA-6: the candidates are the terminals plus the map ATMs, one table until an input changes, and only the terminals with MapATMAsTerminal off")
+local started = ok and N.start(best)
+local row, refusal = ok and N.targetText(), ok and N.refusalText(best)
+check(started == true and row == "ATM: 10 tiles east"
+    and refusal == "The Economy Center only opens next to a terminal or an ATM. The arrow points to the nearest ATM (10 tiles east).",
+    "NA-7: the navigating row and the refusal toast name an ATM for a map ATM")
+
+-- the MiniMap provider, then the vanilla fallback
+local mok = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECNavMarkers.lua")
+local M = EC.Client.NavMarkers or {}
+if mok then M.register() end
+local fn = registered and registered.fn
+local a = fn and fn(0, "mini")
+local b = fn and fn(0, "world")
+local focus = a and a.markers[#a.markers]
+check(mok and registered.owner == "MinidoracatEconomyFor42" and a == b and #a.markers == 4 and fn(1, "mini") == nil
+    and a.markers[1].texture.path == "media/ui/MinidoracatEconomy/terminal_icon.png" and a.markers[2].texture.path ~= a.markers[1].texture.path
+    and focus.x == 110.5 and focus.scale > 1 and focus.ring ~= nil and focus.badge.texture ~= nil and focus.label == "10 tiles east",
+    "NA-8: the provider draws every place and the target on top, ringed and labelled with its way, and answers each surface from one cached table")
+local rev = a and a.revision
+N.stop()
+local c = fn and fn(0, "mini")
+check(c and c.revision > rev and #c.markers == 3 and fn(0, "world") == c and c.revision == fn(0, "mini").revision,
+    "NA-9: ending navigation rebuilds once without the target, and an unchanged input keeps the revision")
+
+-- an ATM this client sees gone: its square is loaded, a floor and no ATM
+worldSprites["110,100,0"] = nil
+worldObjects["110,100,0"] = { { getSprite = function() return { getName = function() return "floors_1" end } end } }
+nowMs = nowMs + 600
+local after = N.nearest()
+local pruned = N.candidates()
+check(after and after.x == 100 and after.y == 130 and #pruned == 2 and N.stale["110,100,0"] == true
+    and N.hintText() == "Nearest ATM: 30 tiles south",
+    "NA-10: a map ATM whose loaded square holds none is dropped for the session and the next place is taken")
+
+-- without MiniMap: one vanilla marker per map, ours alone taken back
+local function fakeMap()
+    local api = { added = {}, removed = {} }
+    local markers = { addGridSquareMarker = function(_, x, y, r) local m = { x = x, y = y }; api.added[#api.added + 1] = m; return m end,
+        removeMarker = function(_, m) api.removed[#api.removed + 1] = m end }
+    api.getMarkersAPI = function() return markers end
+    return api
+end
+local world, mini = fakeMap(), fakeMap()
+ISWorldMap_instance = { mapAPI = world }
+getPlayerMiniMap = function() return { inner = { mapAPI = mini } } end
+M.registered, MinidoracatMiniMapAPI = false, nil
+M.register()
+N.start()
+M.tick(); M.tick()
+local placed = #world.added == 1 and #mini.added == 1 and world.added[1].x == 100 and world.added[1].y == 130
+N.stop()
+M.tick()
+check(placed and #world.removed == 1 and world.removed[1] == world.added[1] and #mini.removed == 1 and #M.placed == 0,
+    "NA-11: without MiniMap the target gets one vanilla marker on each map and only that marker is removed when navigation ends")
+worldObjects["110,100,0"] = nil
+require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
+getPlayer, getWorldMarkers, getTexture, MinidoracatMiniMapAPI = saved.getPlayer, saved.getWorldMarkers, saved.getTexture, saved.api
+ISWorldMap_instance, getPlayerMiniMap = saved.world, saved.mini
 end)()
 
 io.write("\n")

@@ -349,6 +349,16 @@ for m in MEDIA_DIRS:
     fail("翻譯鍵集一致", mismatch) if mismatch else ok(f"翻譯鍵集一致（{'/'.join(langs)}）")
     pct_label = "翻譯值無裸 %（翻譯包模式：另接受 printf 指令）" if tolerant else "翻譯值無裸 %（僅 %1-%9 與 %%）"
     fail(pct_label, sorted(set(badpct))) if badpct else ok(pct_label)
+    # OpenCC tw2sp 把台灣的「帳」（帳號、轉帳、對帳）轉成「帐」（帳篷的帐）；簡中的帳目一律寫「账」。
+    # 本 MOD 的「帳」全是帳目，所以 CN 不得出現「帐」（改 CN 後跑一次 .replace("帐", "账")）。
+    if "CN" in langs:
+        zhang = []
+        for n in names:
+            p = os.path.join(troot, "CN", n)
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8") as fh:
+                    zhang += [f"CN/{n} {k}" for k, v in json.load(fh).items() if isinstance(v, str) and "帐" in v]
+        fail("簡中帳目用「账」不用「帐」", zhang) if zhang else ok("簡中帳目用「账」不用「帐」")
 
 # ---- 5+6. Kahlua 禁用全域 / table.sort ----
 FORBIDDEN = ("next", "xpcall")

@@ -1,7 +1,7 @@
 -- MinidoracatEconomyFor42 -- shared account candidate picker (client). Adds exactly one
 -- namespace: C.PlayerPicker.
 --
---   C.PlayerPicker.create(owner, send, isPending, newRequestId, onPick, context, command, onEnter)
+--   C.PlayerPicker.create(owner, send, isPending, newRequestId, onPick, context, command, onEnter, onText)
 --
 -- The box and its dropped candidate list are the framework's UI.Autocomplete (rev 11); this file
 -- is only the Economy transport around it. It owns no command slot and no Events hook of its own:
@@ -30,6 +30,10 @@
 -- command without ever reading each other's answer. Five are known: "player" / "transactions"
 -- (the admin account box), "market" / "auction" (the seller box) and "transfer" (the recipient
 -- box of the wallet's transfer dialog, over transfer.recipients; ECClient names that reply).
+--
+-- `onText(text)` turns the box into a combined search (the player market and auction pages): every
+-- edit is also the host's own keyword, the box is labelled as that search, and an empty candidate
+-- list stays folded instead of saying "no matches" over a table that may well have some.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.UI then
     require "MinidoracatEconomy/ECWidgets"
@@ -52,6 +56,8 @@ local SELLER_LABELS = { hint = "Market_Seller_Hint", account = "Market_Seller",
     candidates = "Market_Seller_Candidates" }
 local RECIPIENT_LABELS = { hint = "Transfer_Recipient_Hint", account = "Transfer_Recipient",
     candidates = "Transfer_Recipient_Candidates" }
+local SEARCH_LABELS = { hint = "Market_Search", account = "Market_Search",
+    candidates = "Market_Seller_Candidates" }
 local CONTEXTS = {
     player = ACCOUNT_LABELS, transactions = ACCOUNT_LABELS,
     market = SELLER_LABELS, auction = SELLER_LABELS, transfer = RECIPIENT_LABELS,
@@ -90,7 +96,10 @@ function Picker:onReply(args)
     if args.ok == false then
         self.ac:queryFailed(false)
     else
-        self.ac:setResults(self.sentText, args.players, args.total, args.truncated)
+        local shown = self.ac:setResults(self.sentText, args.players, args.total, args.truncated)
+        if shown and self.search and (type(args.players) ~= "table" or #args.players == 0) then
+            self.ac:close()
+        end
     end
     return true
 end
@@ -120,12 +129,13 @@ end
 -- owner: the page that hosts this picker. Both children are added to it (the list last, so it
 -- paints over the rows behind it); the owner positions them through layout(). `onEnter(text)` is
 -- Enter pressed inside the box. No command is sent here.
-function P.create(owner, send, isPending, newRequestId, onPick, context, command, onEnter)
+function P.create(owner, send, isPending, newRequestId, onPick, context, command, onEnter, onText)
     local o = setmetatable({}, Picker)
     o.owner = owner
     o.send, o.isPending, o.newRequestId = send, isPending, newRequestId
     o.context = CONTEXTS[context] and context or "player"
-    local labels = CONTEXTS[o.context]
+    o.search = onText ~= nil
+    local labels = o.search and SEARCH_LABELS or CONTEXTS[o.context]
     o.accountLabel, o.candidatesLabel = tr(labels.account), tr(labels.candidates)
     -- the public seller candidates, the transfer recipients and the admin account candidates are
     -- the same box over three commands; nothing else in here knows the difference
@@ -143,6 +153,13 @@ function P.create(owner, send, isPending, newRequestId, onPick, context, command
         onEnter = onEnter and function(_, text) onEnter(text) end or nil,
     })
     o.entry = o.ac.field
+    if onText then
+        local fieldChanged = o.entry.onChange
+        o.entry.onChange = function(field, text)
+            fieldChanged(field, text)
+            onText(o.ac:getText())
+        end
+    end
     o.ac:setVisible(false)
     o.ac:addTo(owner)
     return o

@@ -50,6 +50,10 @@ local MOD_COLORS = {
     card = { r = 1, g = 1, b = 1, a = 0.04 },
     surface = { r = 0, g = 0, b = 0, a = 1 },    -- 100 % on the opacity slider means opaque (framework default is 0.8)
     track = { r = 1, g = 1, b = 1, a = 0.10 },
+    -- a disabled control's label: dimmer than textFaint (#8C8C8C reads as enabled next to the
+    -- idle textMuted #9E9E9E, 1.25:1), still legible on the opaque surface (#666, 3.66:1). The
+    -- framework has the same token from rev 12; this copy keeps it under a rev 11 framework.
+    textDisabled = { r = 0.40, g = 0.40, b = 0.40, a = 1 },
 }
 
 local color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, dateText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2
@@ -286,8 +290,11 @@ end
 
 -- An item's own category (EC.itemCategory), named the way vanilla's inventory names it
 -- (IGUI_ItemCat_*, ISInventoryPane.lua:2547); a MOD category with no translation shows its key.
+-- The engine's misspelt "VehicleMantenance" reads vanilla's correctly spelt key.
 function U.itemCategoryText(category)
-    return getTextOrNull("IGUI_ItemCat_" .. tostring(category)) or tostring(category or "-")
+    local key = tostring(category or "-")
+    if key == "VehicleMantenance" then key = "VehicleMaintenance" end
+    return getTextOrNull("IGUI_ItemCat_" .. key) or key
 end
 
 function U.newEntry(width, height, opts)
@@ -410,7 +417,16 @@ function U.recordKey(record)
 end
 
 -- Split on the same UTF-16/UTF-8 boundaries as fitText. Used by scrolling detail views;
--- the unwrapped value is retained separately for copying.
+-- the unwrapped value is retained separately for copying. A line that would end inside a word
+-- breaks at its last space instead, as long as that keeps at least a third of the line (English
+-- and other spaced text; CJK, which carries no spaces, still breaks at the character that fits).
+-- CJK closing punctuation never starts a line: the character before it moves down with it.
+-- Kahlua strings are UTF-16, so each of these is one code unit (under standard Lua's UTF-8 they
+-- never match, and the plain cut stands): U+3001 U+3002 U+FF0C U+FF0E U+FF09 U+300D U+300F
+-- U+3011 U+3009 U+300B U+FF1A U+FF1B U+FF01 U+FF1F U+30FB.
+U.NO_LINE_START = { [12289] = true, [12290] = true, [65292] = true, [65294] = true, [65289] = true,
+    [12301] = true, [12303] = true, [12305] = true, [12297] = true, [12299] = true, [65306] = true,
+    [65307] = true, [65281] = true, [65311] = true, [12539] = true }
 function U.wrapText(s, w, maxLines)
     local out, rest = {}, tostring(s or "")
     while rest ~= "" and #out < maxLines do
@@ -424,8 +440,25 @@ function U.wrapText(s, w, maxLines)
                 out[#out + 1] = cut
                 rest = ""
             else
-                out[#out + 1] = string.sub(rest, 1, n)
-                rest = string.sub(rest, n + 1)
+                -- English breaks at the last space; Chinese / Japanese break at any character, so
+                -- a cut touching a non-ASCII character is taken as it is (a space beside a number
+                -- or "ATM" in a CJK sentence must not push the rest of the line down)
+                local space = nil
+                local a, b = string.byte(rest, n), string.byte(rest, n + 1)
+                if a and b and a < 128 and b < 128 and a ~= 32 and b ~= 32 then
+                    for i = n, math.floor(n / 3) + 1, -1 do
+                        if string.byte(rest, i) == 32 then space = i; break end
+                    end
+                end
+                if space then
+                    out[#out + 1] = string.sub(rest, 1, space - 1)
+                    rest = string.sub(rest, space + 1)
+                else
+                    if n > 1 and U.NO_LINE_START[string.byte(rest, n + 1)] then n = n - 1 end
+                    out[#out + 1] = string.sub(rest, 1, n)
+                    rest = string.sub(rest, n + 1)
+                end
+                while string.byte(rest, 1) == 32 do rest = string.sub(rest, 2) end
             end
         end
     end
@@ -711,19 +744,33 @@ function Button:render()
             border(self, 0, 0, w, h, "border")
             textToken = "textFaint"
         end
+    elseif self.style == "danger" then
+        -- an action that cannot be undone (delist, cancel an auction, start the next season): its
+        -- own red surface, so it never reads like the routine chip or the gold primary beside it
+        if self.enable then
+            fill(self, 0, 0, w, h, hovered and "errorSurface" or "well", "pill")
+            border(self, 0, 0, w, h, "errorText", "pill")
+            textToken = "errorText"
+        else
+            U.theme:border(self, 0, 0, w, h, "border", "pill", U.alpha * 0.45)
+        end
     else -- chip
         local stateToken = self.enable and self.stateToken or nil
         if self.active then
             fill(self, 0, 0, w, h, "selected", "pill")
             border(self, 0, 0, w, h, stateToken or "accent", "pill")
             textToken = stateToken or "accent"
+        elseif not self.enable then
+            -- a disabled chip fades its outline as well as its label: the label colour alone
+            -- (textFaint against the idle textMuted) is too close to tell the two apart
+            U.theme:border(self, 0, 0, w, h, "border", "pill", U.alpha * 0.45)
         else
             if hovered then fill(self, 0, 0, w, h, "hover", "pill") end
             border(self, 0, 0, w, h, stateToken or "border", "pill")
             textToken = stateToken or (hovered and "text" or "textMuted")
         end
     end
-    if not self.enable then textToken = "textFaint" end
+    if not self.enable then textToken = "textDisabled" end
     if self.joypadFocused then border(self, 1, 1, w - 2, h - 2, "accent") end
     local fh = font == UIFont.Medium and fontH.medium or fontH.small
     local ty = math.floor((h - fh) / 2)
@@ -833,6 +880,73 @@ function U.card(el, x, y, w, h, title, titleHeight)
         text(el, title, x + PAD, y + math.floor((titleHeight - fontH.medium) / 2), "text", UIFont.Medium)
         local c = color("border")
         el:drawRect(x + 1, y + titleHeight, w - 2, 1, c.a * U.alpha, c.r, c.g, c.b)
+    end
+end
+
+-- ---------- stat pill / empty state (UI refresh 2026-10-05) ----------
+
+-- A number that changes, shown as a short labelled pill instead of inside a sentence (design
+-- principle "會變的數字做成膠囊"): muted label, optional coin, value. Height CHIP_H; the return
+-- value is the width taken, so a caller lays a row of pills out left to right and wraps the row
+-- itself when it runs out of width (a pill is never cut: the numbers are the point of it).
+local PILL_PAD, PILL_GAP, PILL_COIN = 10, 6, 16
+function U.pillWidth(label, value, coinId)
+    local w = PILL_PAD * 2 + textWidth(value or "")
+    if label ~= nil and label ~= "" then w = w + textWidth(label) + PILL_GAP end
+    if coinId ~= nil then w = w + PILL_COIN + 4 end
+    return w
+end
+
+function U.drawPill(el, x, y, label, value, token, coinId)
+    local w = U.pillWidth(label, value, coinId)
+    local h = U.CHIP_H
+    fill(el, x, y, w, h, "selected", "pill")
+    local ty = y + math.floor((h - fontH.small) / 2)
+    local tx = x + PILL_PAD
+    if label ~= nil and label ~= "" then
+        text(el, label, tx, ty, "textMuted")
+        tx = tx + textWidth(label) + PILL_GAP
+    end
+    if coinId ~= nil then
+        drawCoin(el, coinId, tx, y + math.floor((h - PILL_COIN) / 2), PILL_COIN)
+        tx = tx + PILL_COIN + 4
+    end
+    text(el, value or "", tx, ty, token or "text")
+    return w
+end
+
+-- An empty list says what the place is for and what to do next (design principle "空的時候指
+-- 路"). U.emptyState measures one named slot of an element (title, body wrapped to at most four
+-- lines, kept per body and width so the per-frame draw allocates nothing) and returns the y where
+-- the caller places its one action button, centred on the same column; U.drawEmptyState paints
+-- what the last measurement of that slot holds. The button stays a real Button the caller owns,
+-- so keyboard and controller reach it like any other control.
+function U.emptyState(el, slot, x, y, w, h, title, body)
+    local states = el.ecEmptyStates
+    if states == nil then states = {}; el.ecEmptyStates = states end
+    local s = states[slot]
+    if s == nil then s = {}; states[slot] = s end
+    local cw = math.max(60, math.min(w - PAD * 4, 520))
+    if s.body ~= body or s.cw ~= cw then
+        s.body, s.cw = body, cw
+        s.lines = (type(body) == "string" and body ~= "") and U.wrapText(body, cw, 4) or {}
+    end
+    s.title = title or ""
+    s.lh = fontH.small + 2
+    local blockH = fontH.medium + 6 + #s.lines * s.lh + U.CHIP_H + 10
+    s.top = y + math.max(PAD, math.floor((h - blockH) / 2))
+    s.cx = x + math.floor(w / 2)
+    return s.top + fontH.medium + 6 + #s.lines * s.lh + 10
+end
+
+function U.drawEmptyState(el, slot)
+    local s = el.ecEmptyStates and el.ecEmptyStates[slot]
+    if s == nil then return end
+    textCentre(el, s.title, s.cx, s.top, "text", UIFont.Medium)
+    local ly = s.top + fontH.medium + 6
+    for i = 1, #s.lines do
+        textCentre(el, s.lines[i], s.cx, ly, "textMuted")
+        ly = ly + s.lh
     end
 end
 

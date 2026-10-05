@@ -14,15 +14,18 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [*] Keep server and clients on the same versions; fully restart both after each update
 [*] Set a world save interval and always shut down normally
 [*] Deploy companion on the server host (see below) so item transfers settle and player identities import automatically
-[*] In game, press Admin in the Economy Center to open [b]Economy Administration[/b] and review Settings and the role lists
+[*] In game, press Admin in the Economy Center to open [b]Economy Administration[/b] (it opens on Overview) and review Settings and the role lists
 [/olist]
+
+[h2]🧭 Overview[/h2]
+Needs attention lists only what has a problem (assets to reconcile, identity conflicts and new alerts, save confirmation, ledgers, shop catalog, whitelist, held listings and auctions, conservation gaps), each with a button to the page that fixes it; otherwise it reads "Nothing needs attention right now". The sidebar has six groups, and Reconciliation and Identity show red counts. Currencies at a glance lists each currency's holdings, reserves, today's issuance, conservation gap and holders; the Full supply table has the rest.
 
 [h2]⚙️ Server settings[/h2]
 [list]
 [*] All options are changed live under Economy Administration - Settings, and audited.
-[*] catalog.json (shop) and whitelist.json (market) are in the server data folder; panel edits are written back. Press Reload after hand edits.
+[*] catalog.json (shop) and whitelist.json (Listing whitelist) are in the server data folder; panel edits are written back. Press Reload after hand edits.
 [*] [b]Shop entries[/b] can be deleted one at a time or several at once, with a required reason; sent mail and transaction records are kept, and re-adding the same ID continues its purchase counts. Delisting only stops sales: also turn off buyback, or delete the entry, to retire it. The entry cap is under Settings - System shop (default 200, up to 1000).
-[*] Drag an item from your bag onto the admin shop page to create an entry, or onto the whitelist page to pick it for a rule; the item right-click "Economy" menu has "Add as a shop item" and "Add a whitelist rule" too.
+[*] Drag an item from your bag onto the admin Shop page to create an entry, or onto the Listing whitelist page to pick it for a rule; the item right-click "Economy" menu has "Add as a shop item" and "Add a whitelist rule" too.
 [*] [b]Whitelist categories closed by default[/b]: Clothing, ProtectiveGear and Accessory for clothing; Bag and Container for bags, Security for keys, Furniture for picked-up furniture, Memento for pocket watches. Household (alarm clocks), Literature (hollow books) and the few movables in Camping, Gardening and Material are open by default, so they become listable with 0.7.0; exclude them if you don't want that. Maps and live animals can never be listed; bags and key rings must be empty.
 [*] [b]Buyback[/b] takes only items as good as new; food only needs to be uneaten (cooked, burnt, frozen or stale is fine). Cat Coin buyback limits default to 0 (off).
 [/list]
@@ -30,12 +33,12 @@ Player features and FAQ: [url=https://steamcommunity.com/workshop/filedetails/di
 [h2]💸 Player transfers[/h2]
 [list]
 [*] [b]Off by default.[/b] Settings - Player transfers: master switch, sending away from a terminal or ATM (off), fee (5%, paid by the sender and burned), per-transfer and daily limits, and the wait for new accounts (3 days; accounts older than the update are exempt).
-[*] Also enable each transferable currency under Currency settings, and each other mod that may transfer on the Integrations page.
+[*] Also enable each transferable currency on the Currencies page, and each other mod that may transfer on the Integration sources page.
 [/list]
 
 [h2]🏧 Terminals and market radio[/h2]
 [list]
-[*] [b]Map ATMs[/b]: Settings - General has "Use map ATMs as terminals" (on) and "Allow players to remove map ATMs" (off).
+[*] [b]Map ATMs[/b]: Settings - General has "Use map ATMs as terminals" (on) and "Allow players to remove map ATMs" (off). When on, the server remembers map ATMs in areas it has loaded; players' Guide me includes them and, with MiniMap, they show on the minimap and world map.
 [*] [b]Custom terminals[/b] (machine or catgirl, build menu - Furniture) cannot be destroyed; only admins build or remove them. Right-click to register as an economy terminal: ATM (no radio) or trade station (market radio); to switch, unregister first. Registered cabinets are locked too.
 [*] [b]Market summaries[/b]: trade stations broadcast them on a timer in each player's language; interval 0 stops only the summary. ATMs never broadcast.
 [*] [b]Voice pickup[/b] (Settings - Market radio) is [b]off by default[/b]; it follows server voice settings, and nearby or lower-floor devices may hear it.
@@ -89,9 +92,9 @@ The interface and order flow exist, but it is [b]not subscribe-and-go[/b]: you n
 
 [h2]❓ FAQ[/h2]
 [list]
-[*] [b]A protection limit appeared and items cannot move.[/b] Usually companion is not running or no world save has happened yet; start it, wait for a normal save and check the System page.
+[*] [b]A protection limit appeared and items cannot move.[/b] Usually companion is not running or no world save has happened yet; start it, wait for a normal save and check Needs attention on Overview or the System page.
 [*] [b]A player sees "Identity not verified".[/b] Check conflicts and alerts on the Identity page. A second login of one Steam account is refused by default; borrowed login names and split-screen players never can.
-[*] [b]A new shop item still can't be listed.[/b] Shop catalog and market whitelist are separate; allow it on the whitelist. Only maps and live animals never can; the player's picker names each item's category and why it is refused.
+[*] [b]A new shop item still can't be listed.[/b] Shop catalog and Listing whitelist are separate; allow it on the Listing whitelist page. Only maps and live animals never can; the player's picker names each item's category and why it is refused.
 [/list]
 
 [h2]💬 How to report[/h2]

@@ -9,7 +9,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h2]🚀 Quick start[/h2]
 [olist]
 [*] Open the [b]Economy Center[/b] with the "[" key (rebindable in Key Bindings) or the floating button
-[*] Away from a terminal you can only browse. To trade, list or claim items, walk up to a map ATM or an admin-built terminal and right-click [b]Use economy terminal[/b]
+[*] Away from a terminal you can only browse; the top bar points to the nearest terminal or ATM, and [b]Guide me[/b] shows the way. To trade, list or claim items, walk up to a map ATM or an admin-built terminal and right-click [b]Use economy terminal[/b]
 [*] Claim your daily online reward on the Rewards page to start earning Survivor Coins
 [*] Buy and sell in the shop, market or auctions; items arrive in your Mailbox and can be claimed at any terminal
 [/olist]
@@ -19,13 +19,13 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [h3]Wallet[/h3]
 [list]
 [*] [b]Two currencies[/b]: Survivor Coin and Cat Coin show available and reserved amounts; the server can rename them and change icons.
-[*] [b]Statement[/b]: search loaded records by type, date and keyword; the Fee column shows transfer fees and sales tax.
-[*] [b]Player ID[/b]: your login account (not your character name) is shown at the top of every page; click it to copy it for an admin. Merged logins of one Steam account show "main account (login ...)" and share one wallet.
+[*] [b]Statement[/b]: one filter row (period, keyword, type, custom dates); click Time or Amount to sort. Fees and sales tax follow the note.
+[*] [b]Player ID[/b]: your login account (not your character name) sits at the bottom of the navigation rail, red while unverified; click it to copy it for an admin. Merged logins of one Steam account show "main account (login ...)" and share one wallet.
 [/list]
 
 [h3]Player transfers (server option)[/h3]
 [list]
-[*] When allowed, the wallet page has a Transfer button. By default you must be at a terminal or ATM.
+[*] When allowed, the wallet page has a gold Transfer button; by default it only works at a terminal or ATM.
 [*] Before you confirm, the screen shows the fee (paid by the sender), the total, your balance afterwards and today's remaining limit.
 [*] The recipient box lists online players and recent recipients; for offline players type the full account name, matching case.
 [*] The recipient is notified. A resend never charges twice and [b]a sent transfer cannot be undone[/b]; limits and the new-account wait are set by the server.
@@ -36,36 +36,38 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]Map ATMs[/b]: vanilla floor and wall ATMs work within 2 tiles on the same floor, no registration needed (the server can turn this off).
 [*] [b]Custom terminals[/b] (machine, catgirl or supported cabinets) are registered by an admin as an ATM or a trade station; only trade stations have the market radio.
 [*] [b]One shared market[/b]: list at station A, someone buys at station B, you collect at station C.
+[*] [b]Guide me[/b]: away from terminals the top bar shows the nearest terminal or ATM's direction and distance; Guide me shows a golden arrow that stops on arrival (or press Stop). Without remote opening, the hotkey or floating button points the arrow instead.
+[*] [b]On the map[/b]: the server remembers map ATMs in areas it has loaded. With MiniMap, the minimap and world map show terminals and known ATMs; without it, the target is circled on the vanilla maps.
 [*] [b]Protection[/b]: machine and catgirl terminals cannot be destroyed; players cannot remove registered cabinets or supported map ATMs.
 [/list]
 
 [h3]System shop[/h3]
 [list]
-[*] Buy at fixed server prices, with per-player or server-wide daily limits.
-[*] When buyback is enabled you can sell items as good as new back to the server; food only needs to be uneaten (cooked, burnt, frozen or stale is fine). The sell window lists the other copies it won't take and why. An entry the admin took off sale but still buys back shows as "Not for sale": you can sell it, not buy it.
+[*] Buy at fixed server prices, with per-player or server-wide daily limits. The title bar shows today's sell-back allowance and limit reset; use each row's own button. The buy window shows the total, your balance after and whether it fits your bag; more under Details and limits.
+[*] When buyback is enabled you can sell items as good as new back to the server; food only needs to be uneaten (cooked, burnt, frozen or stale is fine). The sell window lists the other copies it won't take and why. An entry the admin took off sale but still buys back shows "Buyback only": you can sell it, not buy it.
 [*] Survivor Coin and Cat Coin prices are set per entry; each trade uses the currency you choose, and [b]no quote never means free[/b].
 [/list]
 
 [h3]Player market[/h3]
 [list]
-[*] List items from your bag at a fixed price at a terminal; identical items can go in one lot. Browse, search, filter and sort every listing and buy.
+[*] At a terminal, press List an item to sell from your bag at a fixed price; identical items can go in one lot. The Browse, My listings and History tabs let you search, filter, sort and buy.
 [*] [b]Drag items in[/b]: drag an item from your bag, a container or the floor onto the market, auction or shop page of the Economy Center to open the listing, auction or sell window with that item already picked. While you drag, the window says what will happen or why it cannot take the item. Items outside the top level of your main inventory are moved there first with the vanilla action.
 [*] [b]Item right-click "Economy"[/b]: "List on the market", "Start an auction", and "Sell to the shop" for items the shop buys back. Unavailable entries are greyed out and explain why on hover.
 [*] [b]Heavy items[/b] such as generators can be listed, auctioned or sold while held in both hands; a standing generator's right-click menu has the same entries and picks it up with the vanilla action first.
 [*] Rows show the item's key state (condition, blade head, sharpness, ammo, charge, freshness, clothing holes…); details show the full state at listing time.
 [*] The seller pays the sales tax; listing fees are not refunded; unsold listings return to your mailbox.
-[*] Type part of a name to pick a seller from the list. Tax and fee are shown under the market title; "Fees and rules" has the full text.
+[*] One search box finds items and suggests sellers (a removable "Seller: name" filter). Tax and fee sit beside the title; Rules has the full text.
 [/list]
 
 [h3]Auction house[/h3]
 [list]
 [*] Choose a starting price and duration (6-72 hours by default).
-[*] Bids reserve funds and being outbid releases them. The winner gets the items, the seller gets the price after tax, and unsold items return. Every auction has a bid history.
+[*] Bids reserve funds and being outbid releases them. The winner gets the items, the seller gets the price after tax, and unsold items return. Every auction has a bid history; My auctions and My bids are listed separately.
 [/list]
 
 [h3]Mailbox[/h3]
 [list]
-[*] Purchases, wins, cancellations and returns arrive here; claim one by one or with "Claim all".
+[*] Purchases, wins, cancellations and returns arrive here; claim one by one or with "Claim all". The title bar shows Waiting and Slots.
 [*] If your bag cannot take a whole letter, the pieces that fit are handed over and the rest waits; the message says how much room you need.
 [*] Heavy items skip the bag: one per claim, straight into both hands. If your hands already hold a heavy item, the letter waits until you put it down.
 [*] Unclaimed items survive your character's death. Unclaimed mail plus your listings and auctions count towards the mailbox limit.
@@ -73,9 +75,9 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 
 [h3]Rewards, seasons and leaderboards[/h3]
 [list]
-[*] [b]Daily online rewards[/b]: unlock with connected time that day; collecting late never delays the next one.
-[*] [b]Survival milestones[/b]: paid once per milestone per account per season, from one character's survival.
-[*] [b]Holdings board[/b]: ranked per currency; by default only your own amount is shown exactly.
+[*] [b]Daily online rewards[/b]: unlock with connected time that day; collecting late never delays the next one. A progress bar shows today's minutes; a gold "Ready" beside Rewards means one can be claimed.
+[*] [b]Survival milestones[/b]: paid once per milestone per account per season, from one character's survival; a track shows reached and next milestones.
+[*] [b]Holdings board[/b]: ranked per currency, with your rank on top and "Go to my rank"; by default only your own amount is shown exactly.
 [*] [b]Survival board[/b]: the longest single life this season; finished seasons can be browsed.
 [/list]
 
@@ -88,7 +90,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 
 [h3]Interface and controls[/h3]
 [list]
-[*] Clicking a row only opens a floating detail view; it never buys, cancels or bids.
+[*] Clicking a row only opens a floating detail view; it never buys, cancels or bids. Full rules sit under each page's Rules button.
 [*] Keyboard (Tab, arrows, Enter, Esc) and controller (A, B, LB/RB) work on every page.
 [/list]
 
@@ -97,7 +99,7 @@ Supporting mods (Vehicle Manager first) can sell permanent or rented extra slots
 
 [h2]❓ FAQ[/h2]
 [list]
-[*] [b]Why are the buttons greyed out?[/b] You are not at a terminal; walk within 2 tiles of a map ATM or registered terminal on the same floor.
+[*] [b]Why are the buttons greyed out?[/b] You are not at a terminal; press Guide me and walk within 2 tiles of a map ATM or registered terminal on the same floor.
 [*] [b]Why can't I list my item?[/b] Listing needs the server whitelist plus supported item types and state checks, so [b]not every modded item can be traded[/b]. The picker shows each item's category and why it is refused; ask an admin to open a closed category. Maps and live animals can never be listed; neither can rotten food, equipped or broken items, bags or key rings with something inside, written or locked notes, poisoned food, fertilized eggs, mixed fluids or devices holding a disc.
 [*] [b]Why won't the shop buy my item?[/b] It only buys items as good as new: full condition, unused, never repaired, not renamed, clothing without holes or dirt; food only needs to be uneaten and not rotten. The sell window lists what it won't take and why.
 [*] [b]Can I list clothing, watches, bags, keys or furniture?[/b] Yes, once the server opens their categories (watches are Accessories; bags, keys, furniture and pocket watches are closed by default). Holes, patches, blood, dirt, colour, alarms, key IDs, a padlock's key count and a lamp's bulb and colour are kept; empty bags and key rings first. Take clothing off first: the picker marks "Wearing" and "In hand". A patch sewn over a hole cannot be kept: remove it, or at Tailoring 8+ remove it and repair the hole with the same fabric.

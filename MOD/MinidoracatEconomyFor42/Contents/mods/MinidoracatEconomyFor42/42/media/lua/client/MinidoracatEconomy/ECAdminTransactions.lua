@@ -80,13 +80,12 @@ C.AdminTransactions = P
 local PAD, T = U.PAD, U.T
 local CARD_TITLE_H = U.CARD_TITLE_H
 local fontH = U.fontH
-local fill, text, textWidth, fitText, textRight = U.fill, U.text, U.textWidth, U.fitText, U.textRight
+local fill, text, textWidth, fitText = U.fill, U.text, U.textWidth, U.fitText
 local stampText, amountText, signedText, card = U.stampText, U.amountText, U.signedText, U.card
 local accountName, reasonText, dateText = U.accountName, U.reasonText, U.dateText
 local Button = U.Button
 local newEntry, entryText, setEntryText, setEntryEditable = U.newEntry, U.entryText, U.setEntryText, U.setEntryEditable
 local errorText, currencyName, itemName = U.adminErrorText, U.currencyName, U.itemName
-local newReader = U.newReader
 
 -- The sources the server sorts every committed transaction into: a fixed enumeration, never what
 -- a reply happened to carry, so a search that matched nothing still offers every other source to
@@ -169,7 +168,8 @@ end
 local function txAccountsText(accounts)
     if type(accounts) ~= "table" or #accounts == 0 then return "-" end
     local out = accountName(accounts[1])
-    for i = 2, #accounts do out = out .. ", " .. accountName(accounts[i]) end
+    local sep = tr("Admin_Set_ListSep")
+    for i = 2, #accounts do out = out .. sep .. accountName(accounts[i]) end
     return out
 end
 
@@ -194,14 +194,15 @@ local function txPostingLines(out, index, p)
 end
 
 -- One chip row of the card. The slot is budgeted, never natural: a long translation truncates
--- its own label instead of pushing a chip out of the card. `skip` is the chip this size of card
--- does not offer at all.
-local function txButtonRow(buttons, visible, x, y, width, height, skip)
-    local count = #buttons - (skip and 1 or 0)
+-- its own label instead of pushing a chip out of the card. `skipA` / `skipB` are the chips this
+-- size of card does not offer at all.
+local function txButtonRow(buttons, visible, x, y, width, height, skipA, skipB)
+    local count = #buttons - (skipA and 1 or 0) - (skipB and 1 or 0)
     local cap = math.max(24, (width - math.max(0, count - 1) * 6) / math.max(1, count))
     for _, button in ipairs(buttons) do
-        button:setVisible(visible and button ~= skip)
-        if button ~= skip then
+        local offered = button ~= skipA and button ~= skipB
+        button:setVisible(visible and offered)
+        if offered then
             local bw = math.min(textWidth(button.fullTitle) + 20, cap)
             button:setX(x); button:setY(y); button:setWidth(bw); button:setHeight(height)
             U.setButtonTitle(button, button.fullTitle)
@@ -215,11 +216,12 @@ local Page = ISPanel:derive("MinidoracatEconomyAdminTxPage")
 
 -- ----- controls -----
 
--- The list view is five rows of conditions over one read-only list: the keyword and its match
--- mode, the exact account and the exact item, the currencies, the fixed sources, and the shared
--- date / sort / page row. A picked row is spelled out in the summary band under the note; the
--- whole record is the row's own button and opens the detail view, a second read on its own
--- command so the two can never overwrite each other's answer.
+-- The list view is one row of everyday conditions over one read-only list: the keyword, then the
+-- shared filter row (the source, the days, the sort, the page). The advanced conditions -- the
+-- exact account and the exact item, the currency, the keyword's match mode and the account
+-- class -- fold behind one "more filters" chip under it, and the standing notes behind one help
+-- chip that opens the shared detail window. A picked row opens its record in that same window,
+-- a second read on its own command so the two can never overwrite each other's answer.
 function Page:createChildren()
     self.txEntry = newEntry(240, entryH(), { maxLen = TX_QUERY_CHARS, clear = true,
         placeholder = tr("Admin_Tx_Search") })
@@ -262,19 +264,24 @@ function Page:createChildren()
     accountCombo:setWidthToOptions(110)
     self.txAccountCombo = accountCombo
     self:addChild(accountCombo)
-    -- the shared filter row (UI.FilterBar, rev 11): the source and the days are the server's own
+    -- the shared filter row (UI.FilterBar): the source and the days are the server's own
     -- conditions (no field: the bar keeps the state and this page sends it), the sort and the
-    -- page are local over the page the server sent
-    self.txF = U.framework.FilterBar.new({
+    -- page are local over the page the server sent. A rev-12 framework folds the sources into
+    -- one dropdown and the days behind a "custom dates..." chip, so the row fits beside the
+    -- keyword; a rev-11 framework keeps its chips and the row goes under the keyword.
+    local fw = U.framework
+    self.txOneRow = (fw.API_REVISION or 0) >= 12 and fw.CAPABILITIES.filterBarModes == true
+    self.txF = fw.FilterBar.new({
         parent = self, target = self, theme = U.theme, height = math.max(22, fontH.small + 8),
         pager = "inline",
         kinds = { label = txGroupText, title = tr("Admin_Tx_Group") },
         dates = {},
         sorts = { { id = "time", label = tr("Filter_Sort_time"), field = "ord" } },
+        dateToggle = self.txOneRow, kindsDropdown = self.txOneRow,
         onChange = function(page) page:onTxFilterChanged(); page:updateEnabled() end,
         onLayout = function(page) page:layout() end,
     })
-    self.txF:addControl(accountCombo, tr("Admin_Tx_AccountClass"), "combo")
+    -- the account class is an advanced condition: the page places the combo itself
     self.txAccountW = accountCombo.width
     -- the source chips are an enumeration, not whatever a reply happened to carry: a search that
     -- matched nothing still offers every other source to switch to
@@ -300,7 +307,11 @@ function Page:createChildren()
     self.txClearButton = chip(tr("Admin_Tx_Clear"), Page.onTxClear, "clear")
     self.txRetryButton = chip(tr("Admin_Tx_Retry"), Page.onTxRetry, "retry")
     self.txFilterButton = chip(tr("Admin_Tx_Filters"), Page.onTxFilters, "filters")
-    self.txActionButtons = { self.txFilterButton, self.txClearButton, self.txRetryButton }
+    -- the advanced conditions open and close under this one chip; it counts the ones that are set
+    self.txMoreButton = chip(tr("Admin_Tx_More"), Page.onTxMore, "more")
+    self.txHelpButton = chip(tr("Admin_Help"), Page.onTxHelp, "help")
+    self.txActionButtons = { self.txFilterButton, self.txMoreButton, self.txClearButton,
+        self.txRetryButton, self.txHelpButton }
     -- the compact card hides the filter row: these two turn the local page from the action row
     self.txPrevButton = chip(tr("Market_Prev"), Page.onTxPage, -1)
     self.txNextButton = chip(tr("Market_Next"), Page.onTxPage, 1)
@@ -309,10 +320,6 @@ function Page:createChildren()
     self.txAccountClearButton = chip(tr("Admin_Tx_AccountClear"), Page.onTxAccountClear, "accountClear")
     self.txItemButton = chip(tr("Admin_Pick_Title"), Page.onTxItemPick, "itemPick")
     self.txItemClearButton = chip(tr("Admin_Tx_ItemClear"), Page.onTxItemClear, "itemClear")
-    -- the note over the list: one read-only, scrolling surface, and it says what the *read* is
-    -- doing. A record is never spelled out here -- that is the detail window's -- so the card
-    -- never trades rows for a band.
-    self.txNotesBox = newReader(self, 240, lineH() * 2)
     -- The filter sheet's own scrollbar. A short window folds the conditions into a viewport;
     -- every control in it is still positioned by layout(), so this bar only moves the page's own
     -- offset (getYScroll / setYScroll answer it) and the engine's scroll is never used.
@@ -619,8 +626,7 @@ function Page:onTxCurrency(button)
     self.txF:setPage(1)
     self.txDirty = true
     self.txQueryAt = nil
-    self:updateEnabled()
-    self:rebuildTxNotes()
+    self:layout()   -- the "more filters" chip counts it
 end
 
 -- 'contains' or 'exact', and it is the keyword's mode only: the account and the item are exact
@@ -635,8 +641,7 @@ function Page:onTxMatchMode(button)
     self.txNamesDirty = true
     self.txItemTypesError = nil
     self.txQueryAt = nil
-    self:updateEnabled()
-    self:rebuildTxNotes()
+    self:layout()
 end
 
 function Page:onTxAccountClass(combo)
@@ -647,8 +652,7 @@ function Page:onTxAccountClass(combo)
     self.txF:setPage(1)
     self.txDirty = true
     self.txQueryAt = nil
-    self:updateEnabled()
-    self:rebuildTxNotes()
+    self:layout()
 end
 
 -- ----- the exact account -----
@@ -739,6 +743,34 @@ function Page:onTxFilters()
     self.scrollOffset = 0
     self:layout()
     if C.Keyboard then C.Keyboard.invalidate(self.owner.owner) end
+end
+
+-- The advanced conditions open and close under their chip. Closing them keeps every one that is
+-- set (the chip counts them); a row that is folded away keeps neither focus nor a popup.
+function Page:onTxMore()
+    closeCombo(self.txAccountCombo)
+    self.txAccountPicker:close()
+    self.txAdvOpen = not self.txAdvOpen
+    self:layout()
+    if C.Keyboard and C.Keyboard.invalidate then pcall(C.Keyboard.invalidate, self.owner.owner) end
+end
+
+-- How many advanced conditions narrow the read right now: the "more filters" chip shows the
+-- count and lights up, so a folded condition never narrows the list unseen.
+function Page:updateTxMore()
+    local n = (self.txAccount ~= nil and 1 or 0) + (self.txItem ~= nil and 1 or 0)
+        + (self.txCurrency ~= nil and 1 or 0) + (self.txAccountClass ~= nil and 1 or 0)
+        + ((self.txMatchMode or "contains") ~= "contains" and 1 or 0)
+    local b = self.txMoreButton
+    b.fullTitle = n > 0 and getText(T .. "Admin_Tx_MoreCount", tostring(n)) or tr("Admin_Tx_More")
+    b.active = n > 0
+end
+
+-- The standing notes (what a row is, the range rule, where the advanced conditions are) and
+-- the read's full status -- every MOD the name index could not read included -- in the shared
+-- detail window, where they wrap, scroll and copy whole.
+function Page:onTxHelp()
+    Detail.open(self, "tx:help", tr("Admin_Tx_Title"), self.txNotesText or "")
 end
 
 -- The body of a row reads: the pick is held by tx id, so a page turn or a fresh read still
@@ -954,6 +986,8 @@ function Page:show(group, filters)
     self.txSelectedTx = txId
     self.txSelected = nil
     self.txFiltersOpen = false
+    -- an exact account or item is an advanced condition: the jump shows the row that holds it
+    if self.txAccount ~= nil or self.txItem ~= nil then self.txAdvOpen = true end
     self:rebuildTransactions()
     if txId ~= nil then
         local from = day ~= "" and U.framework.Date.dayStart(day, self.offsetMin) or nil
@@ -986,10 +1020,10 @@ end
 
 -- ----- keyboard targets (C.Keyboard walks these; this page owns no key dispatch) -----
 
--- The controls of the money view that is open, in the order a keyboard should reach them: every
--- chip, both pickers, the summary band and the selected row's own action button. The controller
--- answers with an empty table while another sub page is up, so the root only ever offers what is
--- on screen.
+-- The controls of the money view that is open, in the order a keyboard should reach them: the
+-- keyword and the shared row, the action chips (more filters and help among them), the advanced
+-- conditions while they are open, then the list. The controller answers with an empty table
+-- while another sub page is up, so the root only ever offers what is on screen.
 function Page:keyboardTargets()
     if self.itemPicker:isOpen() then return self.itemPicker:keyboardTargets() end
     local out = {}
@@ -1011,17 +1045,22 @@ function Page:keyboardTargets()
             focusable = false }
     end
     add("entry", tr("Admin_Tx_SearchLabel"), self.txEntry)
-    group(tr("Admin_Tx_Match"), self.txModeButtons)
-    for _, desc in ipairs(self.txAccountPicker:keyboardTargets()) do out[#out + 1] = desc end
-    group(tr("Admin_Tx_AccountExact"), { self.txAccountClearButton })
-    group(tr("Admin_Tx_Item"), { self.txItemButton, self.txItemClearButton })
-    group(tr("Admin_Tx_Currency"), self.txCurButtons)
-    -- the shared row: sources, both days with their calendar buttons, the sort, the account
-    -- class combo and the page chips (UI.FilterBar); the compact card's own page chips after it
+    -- the shared row: the source (dropdown or chips), the days (chip or boxes with their calendar
+    -- buttons), the sort and the page chips (UI.FilterBar); the compact card's own page chips
     f:appendTargets(out)
     group(tr("Filter_PageNav"), { self.txPrevButton, self.txNextButton })
     group(tr("Admin_Tx_Actions"), self.txActionButtons)
-    add("scroll", tr("Admin_Tx_Title"), self.txNotesBox)
+    -- the advanced conditions, in the order they are drawn
+    if self.txAccountClearButton:getIsVisible() then
+        for _, desc in ipairs(self.txAccountPicker:keyboardTargets()) do out[#out + 1] = desc end
+    end
+    group(tr("Admin_Tx_AccountExact"), { self.txAccountClearButton })
+    group(tr("Admin_Tx_Item"), { self.txItemButton, self.txItemClearButton })
+    group(tr("Admin_Tx_Currency"), self.txCurButtons)
+    group(tr("Admin_Tx_Match"), self.txModeButtons)
+    if self.txAccountCombo:getIsVisible() then
+        add("combo", tr("Admin_Tx_AccountClass"), self.txAccountCombo)
+    end
     add("list", tr("Admin_Tx_Title"), self.txList)
     return out
 end
@@ -1156,10 +1195,6 @@ end
 
 -- ----- data normalisation (data or geometry changes only) -----
 
-function Page:updateTxText()
-    U.setWrappedText(self.txNotesBox, self.txNotesText, self.txNotesBox.width)
-end
-
 -- One transaction: "kind / item xN" over "time / tx id / the accounts it touched", and the
 -- per-currency movement on the right. The row carries no control at all -- picking it is what
 -- opens the record -- so every pixel of the width is text.
@@ -1175,9 +1210,7 @@ function Page:transactionRow(e, lh, width)
     local meta = stampText(e.ts, self.offsetMin) .. " / " .. getText(T .. "Admin_Tx_Id", tostring(e.txId or "-"))
     local accounts = e.accounts
     if type(accounts) == "table" and #accounts > 0 then
-        local names = accountName(accounts[1])
-        for i = 2, #accounts do names = names .. ", " .. accountName(accounts[i]) end
-        meta = meta .. " / " .. tr("Admin_Tx_Account") .. " " .. names
+        meta = meta .. " / " .. tr("Admin_Tx_Account") .. " " .. txAccountsText(accounts)
     end
     if type(e.sourceMod) == "string" and e.sourceMod ~= "" then
         meta = meta .. " / " .. getText(T .. "Admin_Tx_Source", txSourceName(e))
@@ -1336,30 +1369,52 @@ function Page:txDetailNoteText(state)
     return tr("Admin_Tx_NotFound")
 end
 
--- Every wrapped block the two views draw. Wrapping happens here -- on a layout, and when a
--- reply changes what a block says -- so the card can reserve exactly the room each block needs
--- and the painters only draw. Never per frame (the file's painting rule). The blocks are painted
--- by the native read-only boxes, which carry one text colour: the state is in the words.
+-- What the read is doing, in two places. The status band over the rows says it in at most two
+-- lines (the state, the 200-row cut, an incomplete name index); the help window holds all of it
+-- -- every MOD the index could not read, named, so the list is never cut and Ctrl+C copies it
+-- whole -- followed by the standing notes. Wrapping happens here, on a layout or when a reply
+-- changes what the band says, never per frame (the file's painting rule). A band that needs a
+-- different number of lines than the card reserved asks for one layout.
 function Page:rebuildTxNotes()
     local snap = self.transactions
-    local cut = snap ~= nil and snap.truncated == true
     local state = self:txListStatus()
-    local status = state ~= "ready" and self:txStatusText(state) or ""
-    local note = tr(cut and "Admin_Tx_Truncated" or "Admin_Tx_Note")
-    self.txNotesText = (status ~= "" and (status .. "\n") or "") .. note
-    -- The keyword this snapshot was read with was resolved against an index that could not read
-    -- every MOD. Every one of them is named -- the box scrolls and Ctrl+C copies it whole, so
-    -- the list is never cut -- and the warning says what an empty result does not prove.
+    local parts = {}
+    -- a finished read with no rows is the empty state over the list (render), not a band line
+    self.txEmpty = state == "empty"
+    if state ~= "ready" and state ~= "empty" then parts[#parts + 1] = self:txStatusText(state) end
+    local warn = state ~= "ready" and state ~= "loading" and state ~= "empty"
+    if snap ~= nil and snap.truncated == true then
+        parts[#parts + 1] = tr("Admin_Tx_Truncated")
+        warn = true
+    end
+    -- the keyword this snapshot was read with was resolved against an index that could not read
+    -- every MOD: the warning says what an empty result does not prove
     local gaps = self.txSnapGaps
     if gaps ~= nil then
-        local lines = { tr("Admin_Tx_NamesIncomplete") }
-        for _, gap in ipairs(gaps) do
-            lines[#lines + 1] = gap.modId .. ": " .. errorText(gap.reason)
-        end
-        lines[#lines + 1] = self.txNotesText
-        self.txNotesText = table.concat(lines, "\n")
+        parts[#parts + 1] = tr("Admin_Tx_NamesIncomplete")
+        warn = true
     end
-    self:updateTxText()
+    local help = {}
+    for _, part in ipairs(parts) do help[#help + 1] = part end
+    if gaps ~= nil then
+        for _, gap in ipairs(gaps) do help[#help + 1] = gap.modId .. ": " .. errorText(gap.reason) end
+    end
+    if #help > 0 then help[#help + 1] = "" end
+    help[#help + 1] = tr("Admin_Tx_Note")
+    help[#help + 1] = tr("Admin_Tx_RangeHint")
+    help[#help + 1] = tr("Admin_Tx_MoreHelp")
+    self.txNotesText = table.concat(help, "\n")
+    local g = self.g
+    local width = g and g.txStatusW or self.width
+    local lines = {}
+    for _, part in ipairs(parts) do
+        if #lines >= 2 then break end
+        for _, line in ipairs(U.wrapText(part, width, 2 - #lines)) do lines[#lines + 1] = line end
+    end
+    self.txStatusLines = lines
+    self.txStatusToken = warn and "warn" or "textMuted"
+    Detail.update(self, "tx:help", tr("Admin_Tx_Title"), self.txNotesText)
+    if g ~= nil and self.txInLayout ~= true and #lines ~= (g.txStatusN or 0) then self:layout() end
 end
 
 -- The picked transaction, spelled out from the row the server already sent: the whole amount of
@@ -1498,14 +1553,13 @@ function Page:updateEnabled()
     for _, b in ipairs(self.txModeButtons) do b:setEnable(txRead) end
     self.txClearButton:setEnable(txRead)
     self.txFilterButton:setEnable(txRead)
+    self.txMoreButton:setEnable(txRead)
     self.txRetryButton:setEnable(txRead and not self.isPending("admin.transactions"))
     self.txAccountClearButton:setEnable(txRead and self.txAccount ~= nil)
     self.txItemButton:setEnable(txRead)
     self.txItemClearButton:setEnable(txRead and self.txItem ~= nil)
     -- a dialog owns the panel: the box greys out and the candidate list must not hang over it
     self.txAccountPicker:setEditable(txRead)
-    -- the note box is set read-only once, in createChildren, and never touched here: every pass
-    -- through this function would otherwise drop the keyboard out of it mid-scroll
 end
 
 -- ----- the filter sheet's viewport -----
@@ -1548,100 +1602,129 @@ end
 -- does not fit the viewport whole is off the sheet, and a row that is off it keeps neither the
 -- engine's text focus nor a popup.
 
--- The keyword and the mode it is matched with: the mode sits with the keyword, never with the
--- exact conditions beside it.
-function Page:layoutTxKeyword(visible, y, w, eh, ch)
+-- The everyday row: the keyword, then the shared filter row (UI.FilterBar) -- the source (a
+-- fixed enumeration fed once in createChildren, so a search that matched nothing still offers
+-- every other source), the days, the sort and the page chips. A rev-12 bar flows on beside the
+-- keyword (its custom days open as a band of their own under it); a rev-11 bar keeps its chips
+-- and starts under the keyword. `w` is the row's own width (the sheet keeps a gutter for its
+-- scrollbar); returns the height. A hidden row blurs its day boxes and closes its calendar and
+-- dropdown -- so a measuring pass passes the visibility the row has (FilterBar:layout(false)
+-- blurs).
+function Page:layoutTxMain(visible, y, w)
     local g = self.g
+    local f = self.txF
+    local eh = entryH()
     g.txSearchLabelY = y + math.floor((eh - fontH.small) / 2)
     local x = PAD + textWidth(tr("Admin_Tx_SearchLabel")) + 6
     if not visible and self.txEntry:isFocused() then self.txEntry:unfocus() end
     self.txEntry:setVisible(visible)
     self.txEntry:setX(x); self.txEntry:setY(y)
-    self.txEntry:setWidth(math.min(240, math.floor(w * 0.28))); self.txEntry:setHeight(eh)
-    g.txModeLabelX = x + self.txEntry.width + PAD
-    local modeX = g.txModeLabelX + textWidth(tr("Admin_Tx_Match")) + 6
-    for _, button in ipairs(self.txModeButtons) do
-        button:setVisible(visible)
-        button:setWidth(math.min(textWidth(button.fullTitle) + 20, math.max(24, math.floor(w * 0.14))))
-        button:setHeight(ch); button:setX(modeX); button:setY(y + math.floor((eh - ch) / 2))
-        U.setButtonTitle(button, button.fullTitle)
-        modeX = modeX + button.width + 4
+    -- room for the whole placeholder (clear button included), up to 40% of the row
+    local searchW = math.max(math.min(240, math.floor(w * 0.3)), textWidth(tr("Admin_Tx_Search")) + 36)
+    self.txEntry:setWidth(math.min(searchW, math.floor(w * 0.4))); self.txEntry:setHeight(eh)
+    local right = PAD + w
+    if self.txOneRow then
+        local bx = x + self.txEntry.width + PAD
+        local bottom = f:layout(bx, y + math.floor((eh - f.height) / 2), math.max(bx + 60, right), visible)
+        return math.max(eh, bottom - y)
     end
-    return eh
+    return f:layout(PAD, y + eh + 4, right, visible) - y
 end
 
--- Every currency this server runs, with "all" in the first slot.
-function Page:layoutTxCurrency(visible, y, w, ch)
-    local g = self.g
-    g.txCurTextY = y + math.floor((ch - fontH.small) / 2)
-    g.txCurLabelX = PAD
-    local x = PAD + textWidth(tr("Admin_Tx_Currency")) + 6
-    for _, button in ipairs(self.txCurButtons) do
-        button:setVisible(visible)
-        button:setWidth(math.min(textWidth(button.fullTitle) + 20, math.max(24, math.floor(w * 0.14))))
-        button:setHeight(ch); button:setX(x); button:setY(y)
-        U.setButtonTitle(button, button.fullTitle)
-        x = x + button.width + 4
-    end
-    return ch
+-- The advanced conditions, under the action row while they are open: the exact account and the
+-- exact item on one row, then the currency, the keyword's match mode and the account class,
+-- wrapped onto as many rows as the width forces. `w` is the page's width (less the sheet's
+-- gutter); returns the height.
+function Page:layoutTxAdvanced(visible, y, w, eh)
+    local critH = self:layoutTxCriteria(visible, y, w, eh)
+    return critH + 4 + self:layoutTxOptions(visible, y + critH + 4, w, eh)
 end
 
--- The shared filter row (UI.FilterBar): the source chips -- a fixed enumeration (setKinds is fed
--- once, in createChildren), so a search that matched nothing still offers every other source --
--- then both days, the sort, the account-class combo and the page chips, wrapped into as many
--- bands as the width forces; returns its height. The range hint sits on its right, so the flow
--- stops short of it. `w` is the row's own width: the sheet keeps a gutter for its scrollbar, so
--- the hint never lands under it. A hidden row blurs its day boxes and closes its calendar.
-function Page:layoutTxFilter(visible, y, w)
+-- Each segment is a muted label and its controls, kept whole: one that does not fit what is
+-- left of the row starts the next one. Chips keep their whole label (a segment that does not
+-- fit wraps instead); only a chip wider than the whole row is cut, and reads whole in its tooltip.
+function Page:layoutTxOptions(visible, y, w, eh)
     local g = self.g
-    local f = self.txF
-    g.txRangeHintY = y + math.floor((f.height - fontH.small) / 2)
-    g.txHintRight = PAD + w
-    -- the combo is this page's control: its width and height are set here, the bar places it
+    local ch = chipH()
+    local right = w - PAD
+    local cap = math.max(24, right - PAD)
+    local x, rowY = PAD, y
+    local function segment(labelKey, width)
+        local labelW = textWidth(tr(labelKey)) + 6
+        if x > PAD and x + labelW + width > right then x, rowY = PAD, rowY + eh + 4 end
+        local at = x
+        x = x + labelW + width + PAD
+        return at, at + labelW, rowY + math.floor((eh - fontH.small) / 2)
+    end
+    local function chips(buttons, labelKey)
+        local width = 0
+        for i, b in ipairs(buttons) do
+            width = width + math.min(textWidth(b.fullTitle) + 20, cap) + (i > 1 and 4 or 0)
+        end
+        local labelX, cx, labelY = segment(labelKey, width)
+        for _, b in ipairs(buttons) do
+            b:setVisible(visible)
+            b:setWidth(math.min(textWidth(b.fullTitle) + 20, cap)); b:setHeight(ch)
+            b:setX(cx); b:setY(rowY + math.floor((eh - ch) / 2))
+            U.setButtonTitle(b, b.fullTitle)
+            cx = cx + b.width + 4
+        end
+        return labelX, labelY
+    end
+    g.txCurLabelX, g.txCurTextY = chips(self.txCurButtons, "Admin_Tx_Currency")
+    g.txModeLabelX, g.txModeTextY = chips(self.txModeButtons, "Admin_Tx_Match")
     local combo = self.txAccountCombo
-    combo:setWidth(math.min(self.txAccountW or combo.width, math.max(110, w)))
-    combo:setHeight(f.height)
-    combo.baseHeight = f.height
+    local fh = self.txF.height
+    combo:setWidth(math.min(self.txAccountW or combo.width, math.max(110, w - PAD * 2)))
+    combo:setHeight(fh)
+    combo.baseHeight = fh
+    local comboX
+    g.txClassLabelX, comboX, g.txClassTextY = segment("Admin_Tx_AccountClass", combo.width)
+    combo:setX(comboX); combo:setY(rowY + math.floor((eh - fh) / 2))
     if not visible then closeCombo(combo) end
-    return f:layout(PAD, y, PAD + math.max(60, w - (g.txHintW or 0) - PAD), visible) - y
+    combo:setVisible(visible)
+    return rowY + eh - y
 end
 
 -- The exact-account row: the shared player picker's box (its candidate list drops over whatever
 -- is under it) with its clear chip, then the item picker's button with its own. Both conditions
 -- read as what they are -- the account and the item currently locked -- and neither is ever
 -- changed by the keyword next to them. `w` is the width the row shares out: the page's own,
--- less the sheet's scrollbar gutter while that is what the row sits in.
+-- less the sheet's scrollbar gutter while that is what the row sits in. Every chip keeps its
+-- whole label: when the item group does not fit beside the account group it starts a second
+-- row instead of cutting "Clear account" to "Clear ac...". Returns the height it took.
 function Page:layoutTxCriteria(visible, y, w, eh)
     local g = self.g
     local ch = chipH()
-    local chipY = y + math.floor((eh - ch) / 2)
-    g.txAccountLabelY = y + math.floor((eh - fontH.small) / 2)
-    -- the row is budgeted, never natural: the two labels and the four gaps come off the card
-    -- first, and what is left is shared out, so a long translation shortens a control instead of
-    -- pushing one off the card
+    local avail = w - PAD * 2
     local accountLabelW = textWidth(tr("Admin_Tx_AccountExact")) + 6
     local itemLabelW = textWidth(tr("Admin_Tx_Item")) + 6
-    local budget = math.max(120, w - PAD * 2 - accountLabelW - itemLabelW - 12 - PAD)
+    local budget = math.max(120, avail - accountLabelW - itemLabelW - 12 - PAD)
     local pickW = math.max(60, math.floor(budget * 0.34))
-    local clearW = math.min(textWidth(self.txAccountClearButton.fullTitle) + 20,
-        math.max(24, math.floor(budget * 0.16)))
-    local itemClearW = math.min(textWidth(self.txItemClearButton.fullTitle) + 20,
-        math.max(24, math.floor(budget * 0.16)))
+    local clearW = textWidth(self.txAccountClearButton.fullTitle) + 20
+    local itemClearW = textWidth(self.txItemClearButton.fullTitle) + 20
     -- the button says which item is locked, so the condition is readable without opening it
     local label = self.txItem ~= nil and getText(T .. "Admin_Tx_ItemPicked", itemName(self.txItem))
         or tr("Admin_Pick_Title")
-    local itemW = math.min(textWidth(label) + 20,
-        math.max(48, budget - pickW - clearW - itemClearW))
+    local itemNat = textWidth(label) + 20
+    local accountW = accountLabelW + pickW + 6 + clearW
+    local wrap = accountW + PAD + itemLabelW + itemNat + 6 + itemClearW > avail
+    -- a picked item's name is the one label that may still be longer than a whole row
+    local itemW = math.max(48, math.min(itemNat, avail - itemLabelW - 6 - itemClearW))
+    local itemY = wrap and (y + eh + 4) or y
+    g.txAccountLabelY = y + math.floor((eh - fontH.small) / 2)
+    g.txItemLabelY = itemY + math.floor((eh - fontH.small) / 2)
     local x = PAD + accountLabelW
     self.txAccountPicker:setVisible(visible)
     -- the candidate list may use everything under the box; the page is the only clip
     self.txAccountPicker:layout(x, y, pickW, math.max(eh, self.height - y - PAD))
     x = x + pickW + 6
     self.txAccountClearButton:setVisible(visible)
-    self.txAccountClearButton:setX(x); self.txAccountClearButton:setY(chipY)
+    self.txAccountClearButton:setX(x); self.txAccountClearButton:setY(y + math.floor((eh - ch) / 2))
     self.txAccountClearButton:setWidth(clearW); self.txAccountClearButton:setHeight(ch)
     U.setButtonTitle(self.txAccountClearButton, self.txAccountClearButton.fullTitle)
-    x = x + clearW + PAD
+    x = wrap and PAD or (x + clearW + PAD)
+    local chipY = itemY + math.floor((eh - ch) / 2)
     g.txItemLabelX = x
     x = x + itemLabelW
     self.txItemButton.fullTitle = label
@@ -1654,8 +1737,8 @@ function Page:layoutTxCriteria(visible, y, w, eh)
     self.txItemClearButton:setX(x); self.txItemClearButton:setY(chipY)
     self.txItemClearButton:setWidth(itemClearW); self.txItemClearButton:setHeight(ch)
     U.setButtonTitle(self.txItemClearButton, self.txItemClearButton.fullTitle)
-    -- what is actually locked, on the right of the row: a picked account is a fact about the
-    -- read, not a hint in a box the admin may have typed over since. It is dropped only when
+    -- what is actually locked, on the right of the item group: a picked account is a fact about
+    -- the read, not a hint in a box the admin may have typed over since. It is dropped only when
     -- the card has no room for it at all -- the summary band and the rows still name the
     -- account, so nothing is lost by not painting a two-letter stub here.
     local restW = w - PAD - (x + itemClearW + PAD)
@@ -1663,9 +1746,12 @@ function Page:layoutTxCriteria(visible, y, w, eh)
     g.txLockedText = (self.txAccount ~= nil and restW >= 40)
         and fitText(getText(T .. "Admin_Tx_AccountPicked", self.txAccount), restW)
         or nil
+    return itemY + eh - y
 end
 
--- Short windows use a filter sheet; results and complete information keep real viewports.
+-- The card: the everyday row, the action row (more filters, clear, retry, help), the advanced
+-- conditions while they are open, the status band, then the rows. Short windows fold the
+-- conditions into a filter sheet; results and complete information keep real viewports.
 function Page:layout()
     local w, h = self.width, self.height
     local lh, eh = lineH(), entryH()
@@ -1673,75 +1759,74 @@ function Page:layout()
     local lstW = math.max(160, w - PAD * 2)
     local g = {}
     self.g = g
+    self.txInLayout = true
     -- the window owns the zone; the calendar popup reads it off whichever panel attached the box
     self.offsetMin = self.owner.offsetMin
     local on = self:getIsVisible()
     local txTop, txBottom = CARD_TITLE_H + 4, h
-    local infoH = fontH.small * 2 + 8
-    g.txHintW = math.min(textWidth(tr("Admin_Tx_RangeHint")), math.floor(w * 0.3))
-    -- the first pass only decides whether the card is a compact one: four condition rows
-    -- (keyword, the two exact conditions, the currencies) over the shared filter row
-    local barY = txTop + eh * 2 + pageH + 12
-    local probeH = self:layoutTxFilter(on, barY, lstW)
-    local fullActionY = barY + probeH + 4
-    self.txCompact = txBottom - lh - fullActionY - pageH - infoH - 12 < listRowH() * 2
+    local adv = self.txAdvOpen == true
+    self:updateTxMore()
+    -- the status band is wrapped first: the rows start under exactly the lines it needs
+    g.txStatusW = lstW
+    self:rebuildTxNotes()
+    g.txStatusN = #self.txStatusLines
+    local statusH = g.txStatusN > 0 and (g.txStatusN * lh + 4) or 0
+    -- the first pass only decides whether the card is a compact one; it passes the visibility
+    -- the rows have now, so measuring never blurs a day box the admin is typing in
+    local condH = self:layoutTxMain(on, txTop, lstW) + 4 + pageH + 4
+    if adv then condH = condH + self:layoutTxAdvanced(on, txTop, w, eh) + 4 end
+    self.txCompact = txBottom - lh - txTop - condH - statusH - 8 < listRowH() * 2
     local filterSheet = self.txCompact and self.txFiltersOpen == true
     local results = on and not filterSheet
     local showFilters = on and (not self.txCompact or filterSheet)
     self.txFilterButton.fullTitle = tr(filterSheet and "Admin_Tx_Results" or "Admin_Tx_Filters")
-    local actionY, pagerSpace = txTop, 0
+    local actionY, pagerSpace, statusY = txTop, 0, nil
     if filterSheet then
         -- The exit row is pinned to the bottom of the page: the way out of the sheet (and Clear
         -- and Retry with it) is a real button at every size, never something the conditions above
         -- it pushed past the page's edge. What is left is the viewport, and the conditions scroll
         -- inside it -- clamping them under the pinned row would only hide the last ones.
-        --
-        -- The shared row rides straight under the keyword here, ahead of the exact conditions and
-        -- the two chip sets: those narrow a question that already has a range and a page, and a
-        -- sheet whose primary controls need a scroll before they appear is a sheet an admin
-        -- cannot use.
         actionY = h - PAD - pageH
         local top = 4
         local viewH = math.max(pageH, actionY - 6 - top)
         local rowW = math.max(60, lstW - SHEET_GUTTER)
         local sheetW = math.max(120, w - SHEET_GUTTER)
         -- measured at the sheet's own width, which is the width it is placed at below
-        local rangeH = self:layoutTxFilter(true, top, rowW)
-        local contentH = eh * 2 + rangeH + pageH + 12
+        local mainH = self:layoutTxMain(showFilters, top, rowW)
+        local critH = adv and self:layoutTxCriteria(showFilters, top, sheetW, eh) or 0
+        local optH = adv and self:layoutTxOptions(showFilters, top, sheetW, eh) or 0
+        local contentH = mainH + (adv and (critH + 4 + optH + 4) or 0)
         self.sheetContentH, self.sheetViewH = contentH, viewH
         local maxOffset = math.max(0, contentH - viewH)
         local offset = math.max(0, math.min(self.scrollOffset or 0, maxOffset))
         self.scrollOffset = offset
         local bottom = top + viewH
         local y = top - offset
-        local shown = showFilters and y >= top and y + eh <= bottom
-        self:layoutTxKeyword(shown, y, sheetW, eh, pageH)
-        y = y + eh + 4
-        shown = showFilters and y >= top and y + rangeH <= bottom
-        self:layoutTxFilter(shown, y, rowW)
-        y = y + rangeH + 4
-        shown = showFilters and y >= top and y + eh <= bottom
-        self:layoutTxCriteria(shown, y, sheetW, eh)
-        y = y + eh + 4
-        shown = showFilters and y >= top and y + pageH <= bottom
-        self:layoutTxCurrency(shown, y, sheetW, pageH)
+        self:layoutTxMain(showFilters and y >= top and y + mainH <= bottom, y, rowW)
+        y = y + mainH + 4
+        self:layoutTxCriteria(adv and showFilters and y >= top and y + critH <= bottom, y, sheetW, eh)
+        y = y + critH + 4
+        self:layoutTxOptions(adv and showFilters and y >= top and y + optH <= bottom, y, sheetW, eh)
         local bar = self.txSheetBar
         bar:setVisible(showFilters and maxOffset > 0)
         bar:setX(w - PAD - 17); bar:setY(top)
         bar:setWidth(17); bar:setHeight(viewH)
     else
-        -- the card: the five condition rows top down, the shared row last, and the list under them
-        self:layoutTxKeyword(showFilters, txTop, w, eh, pageH)
-        self:layoutTxCriteria(showFilters, txTop + eh + 4, w, eh)
-        self:layoutTxCurrency(showFilters, txTop + eh * 2 + 8, w, pageH)
-        local rangeH = self:layoutTxFilter(showFilters, barY, lstW)
+        local mainH = self:layoutTxMain(showFilters, txTop, lstW)
         self.sheetContentH, self.sheetViewH = 0, 0
         self.txSheetBar:setVisible(false)
-        if showFilters then actionY = barY + rangeH + 4 end
+        if showFilters then actionY = txTop + mainH + 4 end
         pagerSpace = self.txCompact and (pageH * 2 + 12) or 0
+        statusY = actionY + pageH + 4
+        local advShown = adv and showFilters
+        local advH = self:layoutTxAdvanced(advShown, statusY, w, eh)
+        if advShown then statusY = statusY + advH + 4 end
     end
+    -- the compact card offers no advanced conditions (the sheet holds them); the full card needs
+    -- no sheet button
     txButtonRow(self.txActionButtons, on, PAD, actionY, lstW - pagerSpace, pageH,
-        not self.txCompact and self.txFilterButton or nil)
+        not self.txCompact and self.txFilterButton or nil,
+        (self.txCompact and not filterSheet) and self.txMoreButton or nil)
     -- the compact card hides the filter row, so its own two page chips sit on the action row
     local compactPager = on and self.txCompact and not filterSheet
     for i, button in ipairs({ self.txPrevButton, self.txNextButton }) do
@@ -1752,23 +1837,21 @@ function Page:layout()
             U.setButtonTitle(button, button.fullTitle)
         end
     end
-    local noteY = actionY + pageH + 4
+    statusY = statusY or (actionY + pageH + 4)
+    g.txStatusY = statusY
     g.txSelectY = txBottom - lh
-    self.txNotesBox:setVisible(results)
-    self.txNotesBox:setX(PAD); self.txNotesBox:setY(noteY)
-    self.txNotesBox:setWidth(lstW); self.txNotesBox:setHeight(infoH)
-    -- the rows get the whole workspace under the note: the record they describe is a window of
+    -- the rows get the whole workspace under the band: the record they describe is a window of
     -- its own, so nothing here has to be traded for it
-    local txListY = noteY + infoH + 4
+    local txListY = statusY + statusH
     local listH = g.txSelectY - 4 - txListY
     U.placeList(self.txList, results, PAD, txListY, lstW, math.max(1, listH))
 
     self.itemPicker:setX(0); self.itemPicker:setY(0)
     self.itemPicker:resize(w, h)
 
-    self:rebuildTxNotes()
     self:rebuildTransactions()
     self:updateEnabled()
+    self.txInLayout = false
 end
 
 -- The controller sizes the page on every one of its own layouts: the labels and the rows are
@@ -1814,11 +1897,20 @@ function Page:prerender()
     self:drawTxList()
 end
 
-function Page:render() end
+-- A finished read with no rows says so over the empty list, after the list has painted its own
+-- background. The next step is the action row's "clear filters"; the slot's measurement is
+-- cached per body and width, so this allocates nothing per frame.
+function Page:render()
+    local list = self.txList
+    if self.txEmpty ~= true or not list:getIsVisible() then return end
+    U.emptyState(self, "tx", list.x, list.y, list.width, list.height, tr("Admin_Tx_Empty"),
+        tr("Admin_Tx_EmptyBody"))
+    U.drawEmptyState(self, "tx")
+end
 
--- The note and the status line the list view draws above its rows, wrapped by rebuildTxNotes so
--- the card could reserve exactly the room they need: nothing important is ever fitted to one
--- line and cut. Seven states are told apart, so a first read that failed never reads as
+-- The labels of every condition row on screen and the status band over the rows, wrapped by
+-- rebuildTxNotes so the card could reserve exactly the lines it needs (the whole text is in the
+-- help window). Seven states are told apart, so a first read that failed never reads as
 -- "loading", a timeout never reads as "no matching transactions", a question this side could not
 -- ask yet says why, and rows that answer a question the admin has since changed say so instead
 -- of pretending to answer the new one.
@@ -1832,18 +1924,22 @@ function Page:drawTxList()
     f:draw(self)
     if self.txEntry:getIsVisible() then
         text(self, tr("Admin_Tx_SearchLabel"), PAD, g.txSearchLabelY, "textMuted")
-        text(self, tr("Admin_Tx_Match"), g.txModeLabelX, g.txSearchLabelY, "textMuted")
     end
     if self.txAccountClearButton:getIsVisible() then
         text(self, tr("Admin_Tx_AccountExact"), PAD, g.txAccountLabelY, "textMuted")
-        text(self, tr("Admin_Tx_Item"), g.txItemLabelX, g.txAccountLabelY, "textMuted")
-        if g.txLockedText then text(self, g.txLockedText, g.txLockedX, g.txAccountLabelY, "accent") end
+        text(self, tr("Admin_Tx_Item"), g.txItemLabelX, g.txItemLabelY, "textMuted")
+        if g.txLockedText then text(self, g.txLockedText, g.txLockedX, g.txItemLabelY, "accent") end
     end
     if self.txCurButtons[1]:getIsVisible() then
         text(self, tr("Admin_Tx_Currency"), g.txCurLabelX, g.txCurTextY, "textMuted")
+        text(self, tr("Admin_Tx_Match"), g.txModeLabelX, g.txModeTextY, "textMuted")
+        text(self, tr("Admin_Tx_AccountClass"), g.txClassLabelX, g.txClassTextY, "textMuted")
     end
-    if f:isShown() then
-        textRight(self, fitText(tr("Admin_Tx_RangeHint"), g.txHintW), g.txHintRight, g.txRangeHintY, "textMuted")
+    if self.txList:getIsVisible() then
+        local lines, lh = self.txStatusLines, lineH()
+        for i = 1, #lines do
+            text(self, lines[i], PAD, g.txStatusY + (i - 1) * lh, self.txStatusToken)
+        end
     end
     if self.txList:getIsVisible() then
         local hint = tr("Admin_Tx_Select")
@@ -1901,6 +1997,7 @@ end
 -- the controller says reading is allowed once more.
 function Page:clear()
     self.transactions = nil
+    self.txEmpty = false
     self:clearTxDetail()
     self.txDetailRequestId = nil
     self.txRequestId = nil

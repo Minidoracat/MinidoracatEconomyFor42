@@ -116,9 +116,13 @@ end
 
 -- ---------- buy dialog ----------
 -- Same shape as the admin write dialog (ECAdminPanel Dialog): a panel added to the window,
--- centred over the band the window gave it, swallowing the clicks of the page underneath. Head,
--- one scrolling reader, the count stepper, the buttons -- the reader is what gives way when the
--- font grows, so the trade never runs past the window.
+-- centred over the band the window gave it, swallowing the clicks of the page underneath. What
+-- the player decides on is stated outright -- the item line, the server's word, the currency, the
+-- count, what the cap leaves, the totals and a confirm that names the consequence -- and every
+-- other value of the trade (fullType, limit scope, quotes per currency, weights...) sits in one
+-- scrolling reader behind the "spec" chip, collapsed by default. When the band cannot hold the
+-- stated lines (a 1000x560 window at the largest UI font) the reader carries all of them, so
+-- nothing is ever cut and the trade never runs past the window.
 local BuyDialog = ISPanel:derive("MinidoracatEconomyBuyDialog")
 
 function BuyDialog:createChildren()
@@ -141,9 +145,13 @@ function BuyDialog:createChildren()
     -- choice over from another order, and no page silently spends the wallet the sku happens
     -- to be cheapest in.
     self.currencyButtons = newCurrencyChips(self, BuyDialog.onCurrency)
-    -- every value of the trade, scrolling: a 1000x560 window at the largest UI font has no room
-    -- to stack them as lines, and none of them may be cut
+    -- every other value of the trade, scrolling: shown behind the spec chip, or carrying the
+    -- whole summary when the band is too small for the stated lines
     self.summaryBox = newReader(self, 240, fontH.small * 2 + 12)
+    local spec = getText(T .. "Shop_Spec")
+    self.specButton = Button.create(0, 0, textWidth(spec) + 22, math.max(CHIP_H, fontH.small + 8), spec,
+        self, BuyDialog.onSpec, "chip")
+    self:addChild(self.specButton)
 end
 
 -- This sku's quote in the currency the order is being made in.
@@ -299,40 +307,94 @@ function BuyDialog:onConfirm()
     if self.sell then self.panel:submitSell(self) else self.panel:submitBuy(self) end
 end
 
--- Every value of this trade, in reading order. The server's refusal comes first: the reader
--- scrolls back to the top whenever its text changes, so it is the line the player lands on.
+function BuyDialog:onSpec()
+    self.specOpen = not self.specOpen
+    self.panel:layoutBuy()
+end
+
+-- The values the dialog states outright, rebuilt by every layout and never per frame: the item
+-- line, the server's word, what the cap (or the backpack) leaves, the totals block and the
+-- confirm label that repeats the consequence. A total that is unknown is said to be unknown.
+function BuyDialog:buildFacts(width)
+    local row, sell, cur, c = self.row, self.sell == true, self.currency, self.cand
+    local unit = sell and self:unitBid() or self:unitPrice()
+    local total = self:total()
+    local available = self:available()
+    self.subText = getText(T .. (sell and "Shop_SellUnitLine" or "Shop_UnitLine"),
+        tostring(math.max(1, math.floor(tonumber(row.qty) or 1))), moneyText(unit, cur))
+    self.msgLines = self.message and U.wrapText(self.message, width, 4) or {}
+    local remain = nil
+    if sell then
+        if not c then remain = getText(T .. "Wallet_Loading")
+        elseif (tonumber(c.count) or 0) < 1 then remain = getText(T .. "Shop_SellNone")
+        else
+            remain = getText(T .. "Shop_SellHave", tostring(math.floor(tonumber(c.count) or 0)),
+                tostring(math.floor(tonumber(c.unitQty) or 1)), amountOrDash(unit))
+        end
+    elseif row.dailyCap > 0 and row.remaining ~= nil then
+        remain = getText(T .. "Shop_Left_" .. row.dailyCapScope, tostring(math.max(0, math.floor(row.remaining))))
+    end
+    self.remainLines = remain and U.wrapText(remain, width, 2) or {}
+    -- a sale also says, on its face, how many copies the server will not take and why (wrapped,
+    -- never cut): the reason a backpack full of apples sells only five is not a spec detail
+    if sell and c and type(c.refused) == "table" then
+        local refused = {}
+        W.sellRefusedLines(c.refused, refused)
+        for _, line in ipairs(refused) do
+            for _, part in ipairs(U.wrapText(line, width, math.huge)) do self.remainLines[#self.remainLines + 1] = part end
+        end
+    end
+    local totals = {}
+    local function add(labelKey, value, token, coin, full)
+        local label = getText(T .. labelKey)
+        totals[#totals + 1] = { label = label, value = value, valueW = textWidth(value), token = token,
+            coin = coin, full = getText(T .. "Detail_Line", label, full) }
+    end
+    local after = total and (sell and available + total or available - total) or available
+    add(sell and "Shop_SellTotal" or "Shop_Total", total and amountText(total) or getText(T .. "Shop_NoQuote"),
+        total and "accent" or "textFaint", total and cur or nil, moneyText(total, cur))
+    add("Shop_AfterBalance", amountText(after), after < 0 and "negative" or "text", nil, moneyText(after, cur))
+    local p = (not sell) and self.preview or nil
+    if p ~= nil then
+        -- the backpack line is an estimate (the server re-checks): what does not fit is mailed,
+        -- which never blocks the purchase
+        local value, token = getText(T .. "Shop_BagUnknown"), "textMuted"
+        if p.known == true and p.willMail == true then value, token = getText(T .. "Shop_BagMail"), "warn"
+        elseif p.known == true and p.heavy == true then value, token = getText(T .. "Shop_BagHands"), "text"
+        elseif p.known == true then
+            value, token = getText(T .. "Shop_BagFits", string.format("%.1f", tonumber(p.totalWeight) or 0),
+                string.format("%.1f", math.floor((tonumber(p.freeCapacity) or 0) * 10 + 1e-6) / 10)), "positive"
+        end
+        add("Shop_Bag", value, token, nil, value)
+    end
+    self.totals = totals
+    if sell then
+        self.confirmLabel = (total ~= nil and c ~= nil) and getText(T .. "Shop_SellFor",
+            tostring(self.count * math.max(1, math.floor(tonumber(c.unitQty) or 1))), moneyText(total, cur))
+            or getText(T .. "Shop_SellConfirm")
+    else
+        self.confirmLabel = total ~= nil and getText(T .. "Shop_BuyFor", moneyText(total, cur))
+            or getText(T .. "Shop_Buy")
+    end
+end
+
+-- Every other value of this trade, in reading order: what the spec reader holds. The server's
+-- word, the count and the totals are stated above it (buildFacts) and only join the reader in
+-- the compact layout.
 function BuyDialog:summaryLines()
     local out, row, sell = {}, self.row, self.sell == true
     local cur = self.currency
     local curName = currencyLabel(cur)
     local c = self.cand
-    if self.message then out[#out + 1] = self.message; out[#out + 1] = "" end
     out[#out + 1] = row.name
     if row.altName and row.altName ~= row.name then out[#out + 1] = row.altName end
-    out[#out + 1] = tostring(row.item)
     out[#out + 1] = detailLine("Trade_Currency", curName)
     local unit = sell and self:unitBid() or self:unitPrice()
-    local total = self:total()
-    local available = self:available()
     if sell then
-        -- what the backpack holds, in the server's words (only canonical copies count), and how
-        -- many other copies it will not take and why
-        if not c then out[#out + 1] = getText(T .. "Wallet_Loading")
-        elseif (tonumber(c.count) or 0) < 1 then
-            -- what is missing, the copies that are there but refused, then the rule that decides it
-            out[#out + 1] = getText(T .. "Shop_SellNone")
-            W.sellRefusedLines(c.refused, out)
-            out[#out + 1] = getText(T .. "Shop_SellRule")
-        else
-            out[#out + 1] = getText(T .. "Shop_SellHave", tostring(math.floor(tonumber(c.count) or 0)),
-                tostring(math.floor(tonumber(c.unitQty) or 1)), amountOrDash(unit))
-            W.sellRefusedLines(c.refused, out)
-        end
+        -- what the backpack holds and the copies refused are on the dialog's face (buildFacts);
+        -- with nothing sellable the spec adds the rule that decides it
+        if c and (tonumber(c.count) or 0) < 1 then out[#out + 1] = getText(T .. "Shop_SellRule") end
         out[#out + 1] = detailLine("Shop_Col_Bid", moneyText(unit, cur))
-        out[#out + 1] = detailLine("Shop_SellUnits", tostring(self.count))
-        out[#out + 1] = detailLine("Shop_SellTotal", moneyText(total, cur))
-        out[#out + 1] = detailLine("Shop_AfterBalance",
-            moneyText(total and (available + total) or available, cur))
         if c then
             local room = sellRoom(c, cur)
             out[#out + 1] = getText(T .. "Shop_SellRoom", amountOrDash(room.account),
@@ -344,17 +406,13 @@ function BuyDialog:summaryLines()
     else
         out[#out + 1] = row.qtyText
         out[#out + 1] = detailLine("Shop_Col_Price", moneyText(unit, cur))
-        out[#out + 1] = detailLine("Shop_Col_Remaining", row.remainText)
+        out[#out + 1] = detailLine("Shop_Col_Remaining", row.remainFull)
         -- a limited sku says which count it is limited by and how much of that count is
         -- already spent, so an order is never confirmed against a number the row had to cut
         if row.dailyCap > 0 then
             out[#out + 1] = detailLine("Shop_CapScope", row.capScopeText)
             out[#out + 1] = detailLine("Shop_Used", row.usedText)
         end
-        out[#out + 1] = detailLine("Shop_Count", tostring(self.count))
-        out[#out + 1] = detailLine("Shop_Total", moneyText(total, cur))
-        out[#out + 1] = detailLine("Shop_AfterBalance",
-            moneyText(total and (available - total) or available, cur))
         capacityLines(out, self.preview)
     end
     -- every currency this sku is quoted in, so the choice above is made with both prices in view
@@ -369,48 +427,73 @@ function BuyDialog:summaryLines()
     return out
 end
 
--- Cheap guard first: while none of the values the summary names has moved, prerender does no
--- work at all. layoutInside writes the summary itself, so a fresh row or candidate is always
--- on the box before this ever runs.
-function BuyDialog:syncSummary()
+-- The values the layout was built from: while none of them has moved, prerender does no work at
+-- all; when one has, the dialog is laid out again (the stated lines can change their count).
+function BuyDialog:watchMoved()
     local c = self.cand
     local d, e = self.mailRequired == true, nil
     if self.sell then
         -- the reply itself: a new one may move the refused copies without moving the count
         d, e = c or -1, c and c.bidPrice or nil
     end
-    if not summaryMoved(self, self.count, self:available(), self.message, d, e)
-        and self.sumCur == self.currency then return end
+    local moved = summaryMoved(self, self.count, self:available(), self.message, d, e)
+    if self.sumCur ~= self.currency then moved = true end
     self.sumCur = self.currency
-    self:refreshPreview()
-    setSummary(self, self:summaryLines())
+    return moved
+end
+
+function BuyDialog:syncSummary()
+    if self:watchMoved() then self.panel:layoutBuy() end
 end
 
 function BuyDialog:layoutInside(maxW, maxH)
     local step = self.minusButton.height
     local w = math.max(340, math.min(maxW, 520))
-    local y = PAD
-    self.headY = y
-    self.headH = math.max(ITEM_ICON, fontH.medium)
-    self.titleY = y + math.floor((self.headH - fontH.medium) / 2)
-    y = y + self.headH + PAD
+    local innerW = w - PAD * 2
+    local lh = fontH.small + 4
+    self.lineH = lh
+    self:refreshPreview()
+    self:buildFacts(innerW)
+    self.headY = PAD
+    self.headH = math.max(ITEM_ICON, fontH.medium + 2 + fontH.small)
+    self.titleY = PAD + math.floor((self.headH - fontH.medium - 2 - fontH.small) / 2)
+    self.subY = self.titleY + fontH.medium + 2
+    local top = PAD + self.headH + PAD
     -- the currency chips: only the currencies this order can really be made in
     local chipsX = PAD + textWidth(getText(T .. "Trade_Currency")) + PAD
     for _, b in ipairs(self.currencyButtons) do b:setVisible(self:offers(b.internal)) end
     local chipsH = chipsHeight(self.currencyButtons, chipsX, w - PAD)
     if chipsH > 0 then chipsH = chipsH + 8 end
-    -- the fixed tail is the currency row, the stepper row and the buttons; the reader takes what
-    -- is left, and never more than its own text needs (so the estimate is on the dialog before
-    -- it is measured)
-    self:refreshPreview()
+    local buttonsH = self.confirmButton.height + PAD
+    local msgH = #self.msgLines > 0 and (#self.msgLines * lh + 6) or 0
+    local totalsH = #self.totals * lh + 10
+    local specH = self.specButton.height + 8
+    local stated = top + msgH + chipsH + step + 6 + #self.remainLines * lh + totalsH + specH + buttonsH
+    local minBox = fontH.small + 12
     local lines = self:summaryLines()
-    local boxW = w - PAD * 2
-    local room = maxH - y - (PAD + chipsH + step + 8 + self.confirmButton.height + PAD)
+    self.compact = stated > maxH or (self.specOpen == true and stated + minBox + 6 > maxH)
     local box = self.summaryBox
-    box:setX(PAD); box:setY(y); box:setWidth(boxW)
-    box:setHeight(math.max(fontH.small + 12, math.min(readerHeight(lines, boxW), room)))
-    setSummary(self, lines)
-    y = y + box.height + PAD
+    box:setX(PAD); box:setWidth(innerW)
+    local y = top
+    if self.compact then
+        -- the band is too small for the stated lines: the reader carries them, first, ahead of
+        -- the spec, and only the controls stay outside it
+        local all = {}
+        for _, s in ipairs(self.msgLines) do all[#all + 1] = s end
+        if self.message then all[#all + 1] = "" end
+        for _, s in ipairs(self.remainLines) do all[#all + 1] = s end
+        for _, t in ipairs(self.totals) do all[#all + 1] = t.full end
+        all[#all + 1] = ""
+        for _, s in ipairs(lines) do all[#all + 1] = s end
+        lines = all
+        local room = maxH - y - (PAD + chipsH + step + 8 + buttonsH)
+        box:setY(y)
+        box:setHeight(math.max(minBox, math.min(readerHeight(lines, innerW), room)))
+        y = y + box.height + PAD
+    else
+        self.msgY = y
+        y = y + msgH
+    end
     self.curY = nil
     if chipsH > 0 then
         self.curY = y
@@ -427,37 +510,64 @@ function BuyDialog:layoutInside(maxW, maxH)
     self.minusButton:setX(self.numX - self.minusButton.width)
     self.minusButton:setY(y)
     self.countLabelW = math.max(0, self.minusButton.x - PAD * 2)
-    y = y + step + 8
+    y = y + step + 6
+    local spec = self.specButton
+    spec:setVisible(not self.compact)
+    spec.active = self.specOpen == true
+    if self.compact then
+        y = y + 2
+    else
+        self.remainY = y
+        y = y + #self.remainLines * lh
+        self.totalsY = y + 6
+        y = y + totalsH
+        spec:setX(PAD); spec:setY(y)
+        y = y + specH
+        if self.specOpen == true then
+            box:setY(y)
+            box:setHeight(math.max(minBox, math.min(readerHeight(lines, innerW), maxH - y - buttonsH - 6)))
+            y = y + box.height + 8
+        end
+    end
+    local showBox = self.compact or self.specOpen == true
+    if not showBox then pcall(function() box:unfocus() end) end
+    box:setVisible(showBox)
+    setSummary(self, lines)
     self.buttonY = y
     self:setWidth(w)
-    self:setHeight(y + self.confirmButton.height + PAD)
-    self.confirmButton:setX(w - PAD - self.confirmButton.width)
-    self.confirmButton:setY(self.buttonY)
-    self.cancelButton:setX(self.confirmButton.x - 8 - self.cancelButton.width)
+    self:setHeight(y + buttonsH)
+    -- the confirm repeats what the press does ("Buy for 12 coins"); it gives way to the cancel
+    -- chip before it would ever run past the dialog, and a cut label keeps its tooltip
+    local confirm = self.confirmButton
+    confirm:setWidth(math.max(120, math.min(textWidth(self.confirmLabel, UIFont.Medium) + 40,
+        w - PAD * 3 - self.cancelButton.width)))
+    U.setButtonTitle(confirm, self.confirmLabel, UIFont.Medium)
+    confirm:setX(w - PAD - confirm.width)
+    confirm:setY(self.buttonY)
+    self.cancelButton:setX(confirm.x - 8 - self.cancelButton.width)
     self.cancelButton:setY(self.buttonY)
-    self:syncSummary()      -- the text is already written: this only primes the change guard
+    self:watchMoved()      -- prime the change guard with the values this layout was built from
 end
 
 function BuyDialog:keyboardTargets()
-    return {
-        -- the reader holds every value of the trade: the ring scrolls it, and never focuses it
-        { kind = "scroll", control = self.summaryBox, focusable = false, label = getText(T .. "Kb_Detail") },
-        { kind = "group", controls = { self.minusButton, self.plusButton }, label = getText(T .. "Market_Col_Qty") },
+    local out = {
         { kind = "group", controls = self.currencyButtons, label = getText(T .. "Trade_Currency") },
-        { kind = "group", controls = { self.confirmButton, self.cancelButton }, label = getText(T .. "Kb_Dialog_Actions") },
+        { kind = "group", controls = { self.minusButton, self.plusButton }, label = getText(T .. "Market_Col_Qty") },
     }
+    if self.specButton:getIsVisible() then
+        out[#out + 1] = { kind = "button", control = self.specButton, label = getText(T .. "Shop_Spec") }
+    end
+    -- the reader holds the rest of the trade: the ring scrolls it, and never focuses it
+    if self.summaryBox:getIsVisible() then
+        out[#out + 1] = { kind = "scroll", control = self.summaryBox, focusable = false, label = getText(T .. "Kb_Detail") }
+    end
+    out[#out + 1] = { kind = "group", controls = { self.confirmButton, self.cancelButton }, label = getText(T .. "Kb_Dialog_Actions") }
+    return out
 end
 
 function BuyDialog:prerender()
     local row = self.row
-    local w, h = self.width, self.height
     local sell = self.sell == true
-    fill(self, 0, 0, w, h, "surface")
-    border(self, 0, 0, w, h, "accent")
-    drawIcon(self, row.texture, PAD, self.headY + math.floor((self.headH - ITEM_ICON) / 2), ITEM_ICON)
-    local tx = PAD + ITEM_ICON + PAD
-    text(self, fitText(getText(T .. (sell and "Shop_SellTitle" or "Shop_BuyTitle"), row.name),
-        w - tx - PAD, UIFont.Medium), tx, self.titleY, "text", UIFont.Medium)
     local max = self:maxCount()
     -- A cut is a change to the order, so it goes through clampCount (which says so and asks
     -- for the confirm again). While the allowance is unknown -- a sale whose candidates have
@@ -465,6 +575,32 @@ function BuyDialog:prerender()
     if max >= 1 then
         self:clampCount()
         if self.count < 1 then self.count = 1 end
+    end
+    -- a moved value lays the dialog out again before anything of it is painted
+    self:syncSummary()
+    local w, h = self.width, self.height
+    fill(self, 0, 0, w, h, "surface")
+    border(self, 0, 0, w, h, "accent")
+    drawIcon(self, row.texture, PAD, self.headY + math.floor((self.headH - ITEM_ICON) / 2), ITEM_ICON)
+    local tx = PAD + ITEM_ICON + PAD
+    text(self, fitText(getText(T .. (sell and "Shop_SellTitle" or "Shop_BuyTitle"), row.name),
+        w - tx - PAD, UIFont.Medium), tx, self.titleY, "text", UIFont.Medium)
+    text(self, fitText(self.subText, w - tx - PAD), tx, self.subY, "textMuted")
+    local lh = self.lineH
+    if not self.compact then
+        for i = 1, #self.msgLines do text(self, self.msgLines[i], PAD, self.msgY + (i - 1) * lh, "warn") end
+        for i = 1, #self.remainLines do
+            text(self, self.remainLines[i], PAD, self.remainY + (i - 1) * lh, "textMuted")
+        end
+        fill(self, PAD, self.totalsY - 5, w - PAD * 2, 1, "border")
+        local coinS = fontH.small
+        for i = 1, #self.totals do
+            local t = self.totals[i]
+            local ty = self.totalsY + (i - 1) * lh
+            text(self, t.label, PAD, ty, "textMuted")
+            textRight(self, t.value, w - PAD, ty, t.token)
+            if t.coin then U.drawCoin(self, t.coin, w - PAD - t.valueW - coinS - 4, ty, coinS) end
+        end
     end
     local stepH = self.minusButton.height
     if self.curY then
@@ -475,7 +611,6 @@ function BuyDialog:prerender()
         PAD, self.countY + math.floor((stepH - fontH.small) / 2), "textMuted")
     textCentre(self, tostring(self.count), self.numX + self.numW / 2,
         self.countY + math.floor((stepH - fontH.medium) / 2), "text", UIFont.Medium)
-    self:syncSummary()
     local total = self:total()
     local after = total and (sell and (self:available() + total) or (self:available() - total)) or nil
     local pending = self.panel.buyPending ~= nil
@@ -825,7 +960,6 @@ function MarketDialog:summaryLines()
         local row = self.row
         out[#out + 1] = row.lotName
         if row.altName and row.altName ~= row.name then out[#out + 1] = row.altName end
-        out[#out + 1] = tostring(row.item)
         if row.statusText then out[#out + 1] = row.statusText end
         out[#out + 1] = getText(T .. "Market_BuyFrom", row.seller)
         out[#out + 1] = detailLine("Market_Col_Qty", tostring(row.qty))
@@ -836,14 +970,12 @@ function MarketDialog:summaryLines()
     elseif mode == "cancel" then
         local row = self.row
         out[#out + 1] = row.nameText
-        out[#out + 1] = tostring(row.item)
         out[#out + 1] = detailLine("Market_Col_Qty", tostring(row.qty))
         out[#out + 1] = detailLine("Market_Col_LotPrice", row.priceText .. " " .. cur)
         out[#out + 1] = getText(T .. "Market_CancelConfirm", row.name)
     elseif mode == "acancel" then
         local row = self.row
         out[#out + 1] = row.nameText
-        out[#out + 1] = tostring(row.item)
         out[#out + 1] = detailLine("Auction_Col_Bid", row.priceText .. " " .. cur)
         out[#out + 1] = detailLine("Auction_Col_Bids", row.bidsText)
         out[#out + 1] = detailLine("Auction_Col_Ends", row.expiresText)
@@ -854,7 +986,6 @@ function MarketDialog:summaryLines()
         local reserve = self:bidReserve(amount)
         out[#out + 1] = row.nameText
         if row.altName and row.altName ~= row.name then out[#out + 1] = row.altName end
-        out[#out + 1] = tostring(row.item)
         if row.statusText then out[#out + 1] = row.statusText end
         out[#out + 1] = detailLine("Auction_Col_Bid", row.priceText .. " " .. cur)
         out[#out + 1] = detailLine("Auction_Col_Bids", row.bidsText)
@@ -870,28 +1001,26 @@ function MarketDialog:summaryLines()
         local count = self:lotCount()
         local price = self:priceValue() or 0
         out[#out + 1] = count > 1 and (tostring(cand.name) .. " " .. tostring(cand.qtyText)) or tostring(cand.name)
-        if cand.altName and cand.altName ~= cand.name then out[#out + 1] = cand.altName end
-        out[#out + 1] = tostring(cand.item)
-        if cand.detailText and cand.detailText ~= "" then out[#out + 1] = cand.detailText end
-        out[#out + 1] = detailLine("Market_Qty", tostring(self:qtyValue() or 0))
+        -- the candidate's detail line already starts with "name (alias)"
+        if cand.detailText and cand.detailText ~= "" then out[#out + 1] = cand.detailText
+        elseif cand.altName and cand.altName ~= cand.name then out[#out + 1] = cand.altName end
+        -- each value carries its allowed range in brackets: one label, one meaning
+        local qtyText = tostring(self:qtyValue() or 0)
+        if count > 1 then qtyText = qtyText .. " (" .. getText(T .. "Market_QtyHint", tostring(count), tostring(count)) .. ")" end
+        out[#out + 1] = detailLine("Market_Qty", qtyText)
+        local range = getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax))
         out[#out + 1] = detailLine(mode == "auction" and "Auction_StartPrice" or "Market_Price",
-            amountText(price) .. " " .. cur)
+            amountText(price) .. " " .. cur .. " (" .. range .. ")")
         out[#out + 1] = detailLine("Shop_AfterBalance",
             amountText(self:available() - listingFee(price, info.feePercent)) .. " " .. cur)
-        if count > 1 then
-            out[#out + 1] = detailLine("Market_Qty", getText(T .. "Market_QtyHint", tostring(count), tostring(count)))
-        end
-        local range = getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax))
         if mode == "auction" then
             local hours = panel.auctionInfo or {}
-            out[#out + 1] = detailLine("Auction_StartPrice", range)
             out[#out + 1] = detailLine("Auction_Duration",
                 (self.hours and getText(T .. "Auction_Hours", tostring(self.hours)) or "-")
                 .. " (" .. getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0),
                     tostring(hours.maxHours or 0)) .. ")")
             out[#out + 1] = detailLine("Market_Fee", amountText(listingFee(price, info.feePercent)) .. " " .. cur)
         else
-            out[#out + 1] = detailLine("Market_Price", range)
             out[#out + 1] = detailLine("Market_Fee", amountText(listingFee(price, info.feePercent)) .. " " .. cur)
             out[#out + 1] = detailLine("Market_YouGet",
                 amountText(price - ceilPercent(price, info.taxPercent)) .. " " .. cur)
@@ -1227,7 +1356,9 @@ function D.transferGate()
     if not any then return nil end
     if C.wallet and C.wallet.frozen then return getText(T .. "Transfer_Error_account_frozen") end
     if C.option("TransferRemote") ~= true and not C.nearTerminal() then
-        return getText(T .. "Transfer_Error_not_at_terminal")
+        -- read every frame (Panel:syncTransfer): no reply-shaped table, and withHint is cached
+        local s = getText(T .. "Transfer_Error_not_at_terminal")
+        return C.Navigate and C.Navigate.withHint(s) or s
     end
     return false
 end
@@ -1250,6 +1381,8 @@ function D.transferError(args, currency)
             U.stampText(tonumber(args.availableAt), U.localOffsetMinutes()))
     end
     local s = getTextOrNull(T .. "Transfer_Error_" .. code)
+    -- away from every terminal: the way to the nearest one goes with it (ECNavigate)
+    if s and code == "not_at_terminal" and C.Navigate then return C.Navigate.withHint(s) end
     if s then return s end
     U.logUnknown("transfer error", code)
     return getText(T .. "Transfer_Error_other")
@@ -1636,18 +1769,27 @@ function TransferDialog:layoutInside(maxW, maxH)
     setSummary(self, lines)
     y = y + box.height + PAD
     -- The primary button states the consequence on the confirm step: "Send <account> <total>
-    -- <currency>". A name too long for the row is cut on the button (the tooltip keeps it whole)
-    -- and is spelled out in full in the reader above it.
+    -- <currency>". A name too long for the row is cut on the button -- the name, never the total
+    -- and currency -- while fullTitle (the tooltip) and the reader above keep it whole.
+    local room2 = w - PAD * 3 - self.cancelButton.width
     local label = getText(T .. "Transfer_Next")
+    local shown = label
     if not fillStep then
         local amount = self:amountValue()
         local fee = self:fee(amount)
-        label = getText(T .. "Transfer_ConfirmButton", self:recipient(),
-            amountOrDash(amount and fee and (amount + fee) or nil), currencyLabel(self.currency))
+        local name = self:recipient()
+        local total, unit = amountOrDash(amount and fee and (amount + fee) or nil), currencyLabel(self.currency)
+        label = getText(T .. "Transfer_ConfirmButton", name, total, unit)
+        shown = label
+        local over = textWidth(label, UIFont.Medium) + 40 - room2
+        if over > 0 then
+            shown = getText(T .. "Transfer_ConfirmButton",
+                fitText(name, textWidth(name, UIFont.Medium) - over, UIFont.Medium), total, unit)
+        end
     end
-    local room2 = w - PAD * 3 - self.cancelButton.width
-    self.confirmButton:setWidth(math.max(120, math.min(room2, textWidth(label, UIFont.Medium) + 40)))
-    U.setButtonTitle(self.confirmButton, label, UIFont.Medium)
+    self.confirmButton:setWidth(math.max(120, math.min(room2, textWidth(shown, UIFont.Medium) + 40)))
+    U.setButtonTitle(self.confirmButton, shown, UIFont.Medium)
+    self.confirmButton.fullTitle = label
     self.buttonY = y
     self:setWidth(w)
     self:setHeight(y + buttonH + PAD)

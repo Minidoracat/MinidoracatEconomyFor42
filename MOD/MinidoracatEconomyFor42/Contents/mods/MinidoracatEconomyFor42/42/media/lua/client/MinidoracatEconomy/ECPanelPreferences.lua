@@ -207,8 +207,10 @@ end
 function PrefsPopover:keyboardTargets()
     local out = {}
     for _, row in ipairs(self.rows) do
+        -- the row's own title sits right above its -/+ pair; a caption under the stepper would
+        -- cover the hint line below it (rev 12 captionSide)
         out[#out + 1] = { kind = "group", controls = { row.minus, row.plus },
-            label = getText(T .. row.labelKey) }
+            label = getText(T .. row.labelKey), captionSide = "none" }
     end
     out[#out + 1] = { kind = "button", control = self.closeButton, label = getText(T .. "Prefs_Close") }
     return out

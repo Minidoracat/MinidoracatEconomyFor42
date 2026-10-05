@@ -11,9 +11,11 @@
 --       Methods: refresh(), resize(w, h), tick(now), layout(), updateEnabled(), keyboardTargets(),
 --       matchesReply(args), onReply(args), onTimeout(), sendRebind(reason, dlg), clear(), dispose().
 --
--- Two views. The overview reads like a report, what needs a decision first: a binding file the
--- server cannot read, the conflicts the rebind button confirms, the one-account policy and the
--- merge plan as counts, the alerts, then the imports. The logins list is a table of every login
+-- Two views. The overview puts its numbers in pills (Steam mode, conflicts, alerts, bindings and
+-- imports, the one-account policy, the merge plan) and under them reads like a report, what needs
+-- a decision first: a binding file the server cannot read, the conflicts the rebind button
+-- confirms, why merges wait, the alerts, the companion's file, the last import; the policy, the
+-- binding rule and the terms are spelled out in the help window. The logins list is a table of every login
 -- that shares a Steam account with another (one row each; the Steam account's main account is
 -- the row's second column): what the one-account policy makes of it and what the merge plan
 -- says, searched, filtered and paged BY THE SERVER (admin.identity logins = { query, filter,
@@ -63,6 +65,7 @@ local fill, text, fitText, textWidth = U.fill, U.text, U.fitText, U.textWidth
 local entryText, setEntryEditable = U.entryText, U.setEntryEditable
 
 local COMMAND = "admin.identity"
+local HELP_KEY = "identity-help"   -- not "identity:<name>": a login may be called "help"
 local SID_EXACT = "^7656119%d%d%d%d%d%d%d%d%d%d$"   -- the server's Id.SID_EXACT
 local USERS_TIMEOUT_MS = 15000
 local QUERY_DEBOUNCE_MS = 650   -- one read per pause in the search box (the server throttles at 500)
@@ -145,6 +148,7 @@ function Page:createChildren()
         chip(tr("Admin_Id_View_logins"), Page.onView, "chip", "logins"),
     }
     for _, b in ipairs(self.viewButtons) do b.active = b.internal == self.view end
+    self.helpButton = chip(tr("Admin_Help"), Page.onHelp, "chip")
     -- the import is routine (the companion does it on its own); confirming conflicts is the
     -- decision this page exists for, so that one carries the fill
     self.importButton = chip(tr("Admin_Id_Import"), Page.onImport, "normal")
@@ -428,8 +432,13 @@ function Page:onReply(args)
     elseif req.action == "rebind" then
         if open then self.owner:closeDialog() end
         local stale = type(args.stale) == "table" and args.stale or {}
-        local body = getText(T .. "Admin_Id_RebindDone", tostring(tonumber(args.rebound) or 0), tostring(#stale))
-        if #stale > 0 then body = body .. "\n" .. tr("Admin_Id_Stale") .. " " .. table.concat(stale, ", ") end
+        local rebound = tostring(tonumber(args.rebound) or 0)
+        -- the skipped part is only said when something was skipped, and then with the names
+        local body = getText(T .. "Admin_Id_RebindDoneAll", rebound)
+        if #stale > 0 then
+            body = getText(T .. "Admin_Id_RebindDone", rebound, tostring(#stale))
+                .. "\n" .. tr("Admin_Id_Stale") .. " " .. table.concat(stale, ", ")
+        end
         self.result = { text = body, error = #stale > 0 }
         self.owner.message = self.result
     end
@@ -461,6 +470,9 @@ end
 
 local function numText(v) return tostring(tonumber(v) or 0) end
 
+-- a blank line between two sections of the reader, never above the first
+local function gap(lines) if #lines > 0 then lines[#lines + 1] = "" end end
+
 -- status.merge.blocked reasons in reading order; a code this list lacks is still listed after them
 local MERGE_BLOCKERS = { "alias_online", "merge_failed", "frozen", "conflict", "reserved", "unknown_currency",
     "reserved_funds", "live_listing", "auction", "mail_pending", "canonical_moved" }
@@ -479,11 +491,12 @@ function Page:nameList(lines, key, names, count, truncated)
     if truncated then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Truncated", tostring(#names), tostring(count)) end
 end
 
--- status.conflicts: what the rebind button confirms, one per line.
+-- status.conflicts: what the rebind button confirms, one per line (the count is a pill).
 function Page:conflictLines(lines, s)
     local list = self:conflicts()
     local total = tonumber(s.conflictCount) or #list
-    lines[#lines + 1] = ""
+    if total <= 0 and #list == 0 then return end
+    gap(lines)
     lines[#lines + 1] = getText(T .. "Admin_Id_Conflicts", tostring(total))
     for _, c in ipairs(list) do lines[#lines + 1] = "  " .. self:conflictLine(c) end
     if s.conflictsTruncated then
@@ -503,18 +516,21 @@ function P.exportDetailText(r)
         return getText(T .. "Admin_Id_ExportDetail_import_failed", U.adminErrorText(r.error))
     end
     local key = T .. "Admin_Id_ExportDetail_" .. r.code
-    if getTextOrNull(key) == nil then return U.unknownText("identity export detail", r.code) end
+    -- one lookup with the arguments: probing a %1 key bare makes the Translator log it as missing
+    -- its arguments
     local args = {}
     for i, name in ipairs(EXPORT_DETAIL_ARGS[r.code] or {}) do args[i] = tostring(r[name] or "-") end
-    if #args == 2 then return getText(key, args[1], args[2]) end
-    if #args == 1 then return getText(key, args[1]) end
-    return getText(key)
+    local text
+    if #args == 2 then text = getTextOrNull(key, args[1], args[2])
+    elseif #args == 1 then text = getTextOrNull(key, args[1])
+    else text = getTextOrNull(key) end
+    return text or U.unknownText("identity export detail", r.code)
 end
 
 -- status.export: what the server made of the companion's whitelist file (identity/whitelist.json).
 function Page:exportLines(lines, e)
     if type(e) ~= "table" then return end
-    lines[#lines + 1] = ""
+    gap(lines)
     lines[#lines + 1] = getText(T .. "Admin_Id_Export", codeText("Admin_Id_Export_", e.status or "none"))
     if e.generatedAt ~= nil or e.count ~= nil then
         lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_ExportFile", self:stamp(e.generatedAt), numText(e.count))
@@ -533,33 +549,8 @@ local function optionLabel(key)
     return getTextOrNull("Sandbox_MinidoracatEconomy_" .. key) or U.unknownText("sandbox option", key)
 end
 
--- The one-account policy (IdentityMultiAccount) and status.multi as counts. The hint (enable
--- IdentityMultiAccount, or merge) also follows a one_account alert: before an import a refused
--- second login is never bound, so it is in no group and the alert is the only trace of it.
-function Page:multiLines(lines, s)
-    local option = optionLabel("IdentityMultiAccount")
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = getText(T .. (s.multiAccount == true and "Admin_Id_PolicyMulti" or "Admin_Id_PolicyOne"), option)
-    local refused = false
-    for _, a in ipairs(type(s.alerts) == "table" and s.alerts or {}) do
-        if a.kind == "one_account" then refused = true; break end
-    end
-    local m = type(s.multi) == "table" and s.multi or {}
-    local groups = tonumber(m.steamIds) or 0
-    if groups > 0 then
-        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_Multi", numText(m.steamIds), numText(m.logins), numText(m.blocked))
-    end
-    if groups > 0 or refused then
-        lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MultiHint", option, optionLabel("IdentityAutoMerge"))
-    end
-end
-
--- status.merge: the account merge plan's counts. With IdentityAutoMerge off it is a preview only.
-function Page:mergeLines(lines, m)
-    if type(m) ~= "table" then return end
-    local option = optionLabel("IdentityAutoMerge")
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = getText(T .. (m.enabled == true and "Admin_Id_MergeOn" or "Admin_Id_MergeOff"), option)
+-- status.merge.blocked: the waiting logins by reason, in reading order, and how many in all.
+local function mergeWaiting(m)
     local blocked = type(m.blocked) == "table" and m.blocked or {}
     local parts, listed, total = {}, {}, 0
     local function part(code, n)
@@ -573,20 +564,73 @@ function Page:mergeLines(lines, m)
     for code, n in pairs(blocked) do
         if not listed[code] then part(code, n) end
     end
-    lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeCounts", numText(m.groups), numText(m.aliases),
-        numText(m.merged), numText(m.ready), tostring(total), numText(m.ineligible))
-    if #parts > 0 then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergeBlocked", table.concat(parts, ", ")) end
-    if m.planAt ~= nil then lines[#lines + 1] = "  " .. getText(T .. "Admin_Id_MergePlanAt", self:stamp(m.planAt)) end
+    return parts, total
 end
 
--- status.alerts: the server's last identity alerts, newest first (this uptime only).
+-- The overview's numbers as pills, one row per topic in the order a host acts on them: what
+-- stops identities, the bindings and imports, the one-account policy, the merge plan. Built with
+-- the layout (which places them, wrapping a row instead of cutting a pill); prerender only draws.
+function Page:buildPills()
+    local pills, s = {}, self.status
+    self.pills = pills
+    if s == nil then return end
+    local row = 1
+    local function add(id, label, value, token)
+        pills[#pills + 1] = { id = id, row = row, label = label, value = value, token = token or "text" }
+    end
+    local conflicts = tonumber(s.conflictCount) or #self:conflicts()
+    local alerts = tonumber(s.alertCount) or 0
+    add("steam", tr("Admin_Id_Steam"), yesNo(s.steam == true))
+    add("conflicts", tr("Admin_Id_PillConflicts"), tostring(conflicts), conflicts > 0 and "warn" or nil)
+    add("alerts", tr("Admin_Id_PillAlerts"), tostring(alerts), alerts > 0 and "warn" or nil)
+    row = 2
+    add("bound", tr("Admin_Id_PillBound"), numText(s.bound))
+    add("reserved", tr("Admin_Id_PillReserved"), numText(s.reserved))
+    if s.imported then
+        add("imported", tr("Admin_Id_PillImported"),
+            getText(T .. "Admin_Id_PillWhen", self:stamp(s.importedAt), U.actorText(s.importedBy or "-")))
+        add("lastImport", tr("Admin_Id_PillLastImport"),
+            getText(T .. "Admin_Id_PillWhen", self:stamp(s.lastImportAt), U.actorText(s.lastImportBy or "-")))
+    else
+        add("imported", tr("Admin_Id_PillImported"), tr("Admin_Id_PillNever"), "warn")
+    end
+    row = 3
+    add("policy", tr("Admin_Id_PillPolicy"), tr(s.multiAccount == true and "Admin_Id_PillPolicyMulti" or "Admin_Id_PillPolicyOne"))
+    local m = type(s.multi) == "table" and s.multi or {}
+    if (tonumber(m.steamIds) or 0) > 0 then
+        local blocked = tonumber(m.blocked) or 0
+        add("multiSteam", tr("Admin_Id_PillMultiSteam"), numText(m.steamIds))
+        add("multiLogins", tr("Admin_Id_PillMultiLogins"), numText(m.logins))
+        add("multiBlocked", tr("Admin_Id_Policy_blocked"), tostring(blocked), blocked > 0 and "warn" or nil)
+    end
+    local g = s.merge
+    if type(g) ~= "table" then return end
+    row = 4
+    local _, waiting = mergeWaiting(g)
+    local ready = tonumber(g.ready) or 0
+    add("merge", tr("Admin_Id_PillMerge"), tr(g.enabled == true and "Admin_Id_PillMergeAuto" or "Admin_Id_PillMergePreview"))
+    add("mergeGroups", tr("Admin_Id_PillMergeGroups"), numText(g.groups))
+    add("merged", tr("Admin_Id_Merge_merged"), numText(g.merged))
+    add("ready", tr("Admin_Id_Merge_ready"), tostring(ready), ready > 0 and "positive" or nil)
+    add("waiting", tr("Admin_Id_Merge_blocked"), tostring(waiting), waiting > 0 and "warn" or nil)
+    add("ineligible", tr("Admin_Id_Merge_ineligible"), numText(g.ineligible))
+    if g.planAt ~= nil then add("planAt", tr("Admin_Id_PillPlanAt"), self:stamp(g.planAt)) end
+end
+
+-- The pills in one line, for the keyboard caption of the overview (a screen reader never sees
+-- the painted pills).
+function Page:pillsCaption()
+    local parts = {}
+    for _, p in ipairs(self.pills or {}) do parts[#parts + 1] = getText(T .. "Admin_Tx_Pair", p.label, p.value) end
+    return table.concat(parts, tr("Admin_Id_Sep"))
+end
+
+-- status.alerts: the server's last identity alerts, newest first (this uptime only; the count is
+-- a pill).
 function Page:alertLines(lines, s)
     local list = type(s.alerts) == "table" and s.alerts or {}
-    lines[#lines + 1] = ""
-    if #list == 0 then
-        lines[#lines + 1] = tr("Admin_Id_AlertsNone")
-        return
-    end
+    if #list == 0 then return end
+    gap(lines)
     lines[#lines + 1] = getText(T .. "Admin_Id_Alerts", numText(s.alertCount), tostring(#list))
     for _, a in ipairs(list) do
         local kind = codeText("Admin_Id_Alert_", a.kind)
@@ -596,24 +640,11 @@ function Page:alertLines(lines, s)
     end
 end
 
--- The imports: the first and the last, the bindings held, the companion's file and the last
--- import's summary with its name lists.
-function Page:importLines(lines, s)
-    lines[#lines + 1] = ""
-    if s.imported then
-        lines[#lines + 1] = getText(T .. "Admin_Id_Imported", self:stamp(s.importedAt), U.actorText(s.importedBy or "-"))
-        lines[#lines + 1] = getText(T .. "Admin_Id_LastImport", self:stamp(s.lastImportAt), U.actorText(s.lastImportBy or "-"))
-    else
-        lines[#lines + 1] = tr("Admin_Id_NotImported")
-    end
-    lines[#lines + 1] = getText(T .. "Admin_Id_Counts", tostring(s.bound or 0), tostring(s.reserved or 0))
-    self:exportLines(lines, s.export)
+-- This uptime's last import summary with its name lists, when there was one.
+function Page:lastImportLines(lines)
     local last = self.last
-    lines[#lines + 1] = ""
-    if last == nil then
-        lines[#lines + 1] = tr("Admin_Id_NoLast")
-        return
-    end
+    if last == nil then return end
+    gap(lines)
     lines[#lines + 1] = getText(T .. "Admin_Id_LastTitle", self:stamp(last.at), U.actorText(last.by or "-"))
     lines[#lines + 1] = getText(T .. "Admin_Id_LastCounts", tostring(last.rows or 0), tostring(last.bound or 0),
         tostring(last.same or 0), tostring(last.ignored or 0), tostring(last.conflicts or 0))
@@ -622,34 +653,64 @@ function Page:importLines(lines, s)
     self:nameList(lines, "Admin_Id_Collisions", last.collisions, last.collisionCount, last.collisionsTruncated)
 end
 
--- The overview, in the order a host acts on it: what stops identities, then the conflicts the
--- rebind button confirms, the policy and the merge plan, the alerts, the imports.
+-- The reader under the pills: only what has to be read whole, in the order a host acts on it --
+-- a binding file the server cannot read, the conflicts the rebind button confirms, why merges
+-- wait, the alerts, the companion's file, the last import. The policy and terms are in the help.
 function Page:overviewText()
     local lines = {}
-    if self.result ~= nil then
-        lines[#lines + 1] = self.result.text
-        lines[#lines + 1] = ""
-    end
+    if self.result ~= nil then lines[#lines + 1] = self.result.text end
     local s = self.status
     if s == nil then
+        gap(lines)
         lines[#lines + 1] = tr(self.timedOut and "Admin_Accounts_Timeout" or "Admin_Loading")
         return table.concat(lines, "\n")
     end
-    lines[#lines + 1] = getText(T .. "Admin_Id_Steam", yesNo(s.steam == true))
-    if s.unreadable then lines[#lines + 1] = tr("Admin_Id_Unreadable") end
-    if s.damaged then lines[#lines + 1] = tr("Admin_Id_Damaged") end
+    if s.unreadable then gap(lines); lines[#lines + 1] = tr("Admin_Id_Unreadable") end
+    if s.damaged then gap(lines); lines[#lines + 1] = tr("Admin_Id_Damaged") end
     self:conflictLines(lines, s)
-    self:multiLines(lines, s)
-    self:mergeLines(lines, s.merge)
+    if type(s.merge) == "table" then
+        local parts = mergeWaiting(s.merge)
+        if #parts > 0 then gap(lines); lines[#lines + 1] = getText(T .. "Admin_Id_MergeBlocked", table.concat(parts, tr("Admin_Id_Sep"))) end
+    end
     local multi = type(s.multi) == "table" and tonumber(s.multi.steamIds) or 0
     local merge = type(s.merge) == "table" and tonumber(s.merge.groups) or 0
     if (multi or 0) > 0 or (merge or 0) > 0 then
-        lines[#lines + 1] = ""
+        gap(lines)
         lines[#lines + 1] = getText(T .. "Admin_Id_SeeLogins", tr("Admin_Id_View_logins"))
     end
     self:alertLines(lines, s)
-    self:importLines(lines, s)
+    self:exportLines(lines, s.export)
+    self:lastImportLines(lines)
     return table.concat(lines, "\n")
+end
+
+-- The help window: the policy and merge mode in full sentences with their sandbox options, what
+-- to change for several accounts per person, how names are bound before an import, the terms.
+function Page:helpText()
+    local multi, merge = optionLabel("IdentityMultiAccount"), optionLabel("IdentityAutoMerge")
+    local s = self.status
+    local parts = {}
+    if s ~= nil then
+        parts[#parts + 1] = getText(T .. (s.multiAccount == true and "Admin_Id_PolicyMulti" or "Admin_Id_PolicyOne"), multi)
+        if type(s.merge) == "table" then
+            parts[#parts + 1] = getText(T .. (s.merge.enabled == true and "Admin_Id_MergeOn" or "Admin_Id_MergeOff"), merge)
+        end
+    end
+    parts[#parts + 1] = getText(T .. "Admin_Id_MultiHint", multi, merge)
+    parts[#parts + 1] = tr("Admin_Id_HelpBinding")
+    parts[#parts + 1] = tr("Admin_Id_HelpTerms")
+    return table.concat(parts, "\n\n")
+end
+
+function Page:onHelp()
+    if D.isOpen(self, HELP_KEY) then
+        D.close(self)
+    else
+        -- the shared window leaves the row it showed: a later reply must not touch it as a record
+        self.selectedName = nil
+        D.open(self, HELP_KEY, tr("Admin_Id_HelpTitle"), self:helpText())
+    end
+    self:invalidateKeyboard()
 end
 
 -- ----- the logins list -----
@@ -789,6 +850,7 @@ function Page:rebuild()
     U.setWrappedText(self.reader, self:overviewText(), self.reader.width)
     U.setButtonTitle(self.rebindButton, getText(T .. "Admin_Id_Rebind", tostring(#self:conflicts())))
     self:rebuildRows()
+    if D.isOpen(self, HELP_KEY) then D.update(self, HELP_KEY, tr("Admin_Id_HelpTitle"), self:helpText()) end
 end
 
 -- What the list area says when it has no row to show, as exactly one state.
@@ -854,8 +916,8 @@ function Page:layout()
     self.titleH = math.max(CARD_TITLE_H, fontH.medium + 8)
     local y = self.titleH + 4
     local inner = math.max(80, w - PAD * 2)
-    -- row 1: the two views at the leading edge, the page's two actions at the trailing one; no chip
-    -- takes more than a quarter of the row, so one long translation cannot push another off
+    -- row 1: the two views and the help at the leading edge, the page's two actions at the trailing
+    -- one; no chip takes more than a quarter of the row, so one long translation cannot push another off
     local quarter = math.max(40, math.floor((inner - 18) / 4))
     local function place(b, label, x)
         local bw = math.min(textWidth(label) + 24, quarter)
@@ -867,6 +929,7 @@ function Page:layout()
     end
     local x = PAD
     for _, b in ipairs(self.viewButtons) do x = x + place(b, b.fullTitle, x) + 6 end
+    place(self.helpButton, self.helpButton.fullTitle, x + 6)
     local rw = math.min(textWidth(getText(T .. "Admin_Id_Rebind", "000")) + 24, quarter)
     local iw = math.min(textWidth(self.importButton.fullTitle) + 24, quarter)
     place(self.rebindButton, getText(T .. "Admin_Id_Rebind", "000"), w - PAD - rw)
@@ -876,9 +939,19 @@ function Page:layout()
     local overview = self.view ~= "logins"
     self.reader:setVisible(visible and overview)
     if overview then
-        self.reader:setX(PAD); self.reader:setY(top)
+        -- the pills: a topic starts a new row, a pill that does not fit starts the next one
+        self:buildPills()
+        local px, py, row = PAD, top, nil
+        for _, p in ipairs(self.pills) do
+            p.w = U.pillWidth(p.label, p.value)
+            if row ~= nil and (p.row ~= row or px + p.w > w - PAD) then px, py = PAD, py + U.CHIP_H + 6 end
+            p.x, p.y, row = px, py, p.row
+            px = px + p.w + 6
+        end
+        local readerY = row ~= nil and py + U.CHIP_H + 8 or top
+        self.reader:setX(PAD); self.reader:setY(readerY)
         self.reader:setWidth(inner)
-        self.reader:setHeight(math.max(lineH() * 2, h - PAD - top))
+        self.reader:setHeight(math.max(lineH() * 2, h - PAD - readerY))
     end
 
     -- the logins list: search and the slice with the page chips, the filter chips, the table
@@ -951,7 +1024,16 @@ function Page:prerender()
     local w, h = self.width, self.height
     U.theme:fill(self, 0, 0, w, h, "surface", "rect", 1)
     U.card(self, 0, 0, w, h, fitText(tr("Admin_Tab_Identity"), math.max(20, w - PAD * 2), UIFont.Medium), self.titleH)
-    if self.view ~= "logins" or self.g == nil then return end
+    if self.view ~= "logins" then
+        local pills = self.pills
+        if pills == nil then return end
+        for i = 1, #pills do
+            local p = pills[i]
+            U.drawPill(self, p.x, p.y, p.label, p.value, p.token)
+        end
+        return
+    end
+    if self.g == nil then return end
     local g = self.g
     local summary = self:summaryText()
     if summary then text(self, fitText(summary, g.summaryW), g.summaryX, g.summaryY, "textFaint") end
@@ -996,6 +1078,7 @@ function Page:updateEnabled()
     self.importButton:setEnable(write and free)
     self.rebindButton:setEnable(write and free and #self:conflicts() > 0)
     for _, b in ipairs(self.viewButtons) do b:setEnable(live) end
+    self.helpButton:setEnable(not modal)
     setEntryEditable(self.searchEntry, live)
     for _, b in ipairs(self.filterButtons) do b:setEnable(live and not busy) end
     local pages = self.logins and math.max(1, math.floor(tonumber(self.logins.pages) or 1)) or 1
@@ -1008,10 +1091,13 @@ function Page:keyboardTargets()
     if not self:getIsVisible() then return {} end
     local out = {
         { kind = "group", label = tr("Admin_Id_Views"), controls = self.viewButtons },
-        { kind = "group", label = tr("Admin_Tab_Identity"), controls = { self.importButton, self.rebindButton } },
+        { kind = "group", label = tr("Admin_Tab_Identity"), controls = { self.helpButton, self.importButton, self.rebindButton } },
     }
     if self.view ~= "logins" then
-        out[#out + 1] = { kind = "scroll", label = tr("Admin_Id_View_overview"), control = self.reader, focusable = false }
+        local caption = tr("Admin_Id_View_overview")
+        local pills = self:pillsCaption()
+        if pills ~= "" then caption = caption .. "  " .. pills end
+        out[#out + 1] = { kind = "scroll", label = caption, control = self.reader, focusable = false }
         return out
     end
     out[#out + 1] = { kind = "entry", label = tr("Admin_Id_Search"), control = self.searchEntry }
@@ -1035,7 +1121,7 @@ function Page:clear()
     self.logins, self.loginsError, self.askedKey, self.timedOut = nil, nil, nil, false
     self.page, self.selectedName = 1, nil
     D.close(self)
-    self:rebuild()
+    self:layout()
 end
 
 function Page:dispose()

@@ -71,6 +71,8 @@ end
 
 -- The widest survival time a column has to hold: 999 days, 23 hours, 59 minutes.
 local SURVIVAL_SAMPLE = 999 * 1440 + 23 * 60 + 59
+-- the note band while there is nothing to say (a board on screen, no refusal)
+local NO_LINES = {}
 
 -- The server pages the board itself (20 per page); this side never re-sorts and never re-pages.
 local Page = {}
@@ -449,6 +451,8 @@ end
 -- ---------- geometry ----------
 
 -- The whole page inside the workspace the window handed over. Own card, own toolbar, own pager.
+-- Under the title: two pills (other players' amounts withheld, the time of the server's read),
+-- the note band only for a refusal or the first read, then the highlighted "my rank" card.
 function Page:layout(x, y, w, h)
     local right = x + w - PAD
     local bottom = y + h
@@ -458,20 +462,55 @@ function Page:layout(x, y, w, h)
     self.seasonCombo:setWidth(comboWidth(self.seasonCombo, 120, math.floor(w * 0.3)))
     local capH = fontH.small + 4
     local band = math.max(CHIP_H, self.kindCombo.height)
-    self.noteY = y + CARD_TITLE_H
-    -- The visible band stays short; the detail button keeps every date and error readable.
-    local note, token = self:noteText()
+    local snap = self.snapshot
+    -- the pills: beside the title when they fit, else on a row of their own (never cut)
+    local live = snap ~= nil and self.error == nil
+    self.pillHidden = live and self.kind ~= "survival" and snap.showAmounts ~= true
+    self.pillAt = (live and tonumber(snap.at)) and U.clockText(tonumber(snap.at), self.panel.offsetMin) or nil
+    local pillsW = 0
+    if self.pillHidden then
+        pillsW = U.pillWidth(getText(T .. "Leaderboard_PillOthers"), getText(T .. "Leaderboard_PillHidden")) + 6
+    end
+    if self.pillAt then pillsW = pillsW + U.pillWidth(getText(T .. "Leaderboard_PillAt"), self.pillAt) end
+    local top = y + CARD_TITLE_H
+    self.pillX = x + PAD + textWidth(self:title(), UIFont.Medium) + PAD
+    self.pillY = y + math.floor((CARD_TITLE_H - CHIP_H) / 2)
+    if pillsW > 0 and self.pillX + pillsW > right then
+        self.pillX, self.pillY = x + PAD, top + 6
+        top = top + CHIP_H + 6
+    end
+    self.noteY = top
     local lineH = fontH.small + 2
     -- Reserve the controls and list first; the full uncut note lives in the shared detail window.
     local selector = self.kind == "survival" and self.seasonCombo or self.curCombo
-    local items = { self.kindCombo, selector, self.refreshButton, self.selfButton, self.infoButton }
+    local items = { self.kindCombo, selector, self.refreshButton, self.infoButton }
     local toolH = placeRow(items, x + PAD, 0, right, band, capH + 6)
-    local reserve = CARD_TITLE_H + capH * 2 + toolH + 12 + ROW * 4
-    local maxNote = math.max(1, math.min(4, math.floor((h - reserve) / lineH)))
-    self.noteLines = U.wrapText(note, math.max(60, w - PAD * 2), maxNote)
-    self.noteToken = token
-    self.noteH = math.max(ROW, #self.noteLines * lineH + 6)
-    local toolY = self.noteY + self.noteH + capH
+    self.boxShown = snap ~= nil
+    self.boxH = self.boxShown and (math.max(fontH.medium, CHIP_H) + 12) or 0
+    if self.error ~= nil or snap == nil then
+        local note, token = self:noteText()
+        local reserve = CARD_TITLE_H + capH * 2 + toolH + 12 + ROW * 4 + self.boxH
+        local maxNote = math.max(1, math.min(4, math.floor((h - reserve) / lineH)))
+        self.noteLines = U.wrapText(note, math.max(60, w - PAD * 2), maxNote)
+        self.noteToken = token
+        self.noteH = math.max(ROW, #self.noteLines * lineH + 6)
+    else
+        self.noteLines, self.noteH = NO_LINES, 0
+    end
+    -- the player's own standing: big rank, one line (cut here, whole in the detail window) and
+    -- the jump to its page at the right
+    self.boxY = self.noteY + self.noteH + (self.boxShown and 6 or 0)
+    local sb = self.selfButton
+    if self.boxShown then
+        self.selfRank, self.selfText, self.selfToken = self:selfLine(snap)
+        sb:setX(right - PAD - sb.width)
+        sb:setY(self.boxY + math.floor((self.boxH - sb.height) / 2))
+        self.selfTextX = x + PAD * 2 + (self.selfRank and (textWidth(self.selfRank, UIFont.Medium) + PAD) or 0)
+        self.selfFit = fitText(self.selfText, math.max(0, sb.x - PAD - self.selfTextX))
+    else
+        sb:setVisible(false)
+    end
+    local toolY = self.boxY + self.boxH + capH + (self.boxShown and 6 or 0)
     for _, item in ipairs(items) do item:setY(item.y + toolY) end
     local listY = toolY + toolH + 6
     self.headerY = listY
@@ -521,52 +560,66 @@ function Page:seasonNote(snap)
     local closed = tonumber(meta.endedAt)
     local parts = { seasonLabel(meta),
         getText(T .. (closed ~= nil and "Season_Status_Closed" or "Season_Status_Current")) }
-    if meta.partial == true then parts[#parts + 1] = getText(T .. "Season_Partial") end
+    -- The first season (made when the mod was installed or migrated) is always marked partial: it
+    -- only knows survival from that moment on, which is normal. Only a later season that is
+    -- partial (its rotation could not re-anchor someone online) has records actually missing.
+    local olderSeason = false
+    for _, other in ipairs((self.seasonState and self.seasonState.seasons) or {}) do
+        if (tonumber(other.number) or 0) < (tonumber(meta.number) or 0) then olderSeason = true; break end
+    end
+    if meta.partial == true and olderSeason then parts[#parts + 1] = getText(T .. "Season_Partial") end
     local started = tonumber(meta.startedAt)
     if started ~= nil then
-        parts[#parts + 1] = getText(T .. "Season_StartAt") .. ": " .. U.stampText(started, off)
+        parts[#parts + 1] = getText(T .. "Detail_Line", getText(T .. "Season_StartAt"), U.stampText(started, off))
     end
     local ends = tonumber(meta.endsAt)
     if closed ~= nil then
-        parts[#parts + 1] = getText(T .. "Season_ClosedAt") .. ": " .. U.stampText(closed, off)
+        parts[#parts + 1] = getText(T .. "Detail_Line", getText(T .. "Season_ClosedAt"), U.stampText(closed, off))
     elseif ends ~= nil then
-        parts[#parts + 1] = getText(T .. "Season_EndAt") .. ": " .. U.stampText(ends, off)
+        parts[#parts + 1] = getText(T .. "Detail_Line", getText(T .. "Season_EndAt"), U.stampText(ends, off))
     else
         parts[#parts + 1] = getText(T .. "Season_Manual")
     end
     local ranked = tonumber(meta.participants)
     if ranked ~= nil then parts[#parts + 1] = getText(T .. "Season_Participants", tostring(ranked)) end
-    return table.concat(parts, "  ")
+    return table.concat(parts, "\n")
 end
 
--- The player's own standing on a survival board: the longest single life this season recorded
--- for them, and the life they are living now when the server sent one. No record at all is said
--- plainly - a life of zero minutes is a claim the server never made.
-function Page:survivalNote(snap)
+-- The player's own standing, for the highlighted card and the detail text: the big rank ("#N",
+-- nil while unranked), one line and its token. On a survival board that is the longest single
+-- life this season recorded for them plus the life they are living now when the server sent one;
+-- on a wealth board their rank and holding. No record, no rank and an unreadable figure each keep
+-- their own words - a life of zero minutes or a holding of 0 is a claim the server never made.
+function Page:selfLine(snap)
     local mine = snap.self or {}
     local rank = tonumber(mine.rank)
-    local note
-    if rank ~= nil then
-        note = getText(T .. "Leaderboard_SurvivalSelf", tostring(rank),
-            survivalText(tonumber(mine.survivalMinutes)))
-    else
-        note = getText(T .. "Leaderboard_SurvivalUnranked")
+    local rankText = rank and ("#" .. tostring(rank)) or nil
+    if self.kind == "survival" then
+        local line = rank and getText(T .. "Leaderboard_SurvivalSelf", tostring(rank),
+            survivalText(tonumber(mine.survivalMinutes))) or getText(T .. "Leaderboard_SurvivalUnranked")
+        local live = tonumber(mine.currentMinutes)
+        if live ~= nil then
+            line = line .. "  " .. getText(T .. "Leaderboard_SurvivalCurrent", survivalText(live))
+        end
+        return rankText, line, "text"
     end
-    local live = tonumber(mine.currentMinutes)
-    if live ~= nil then
-        note = note .. "  " .. getText(T .. "Leaderboard_SurvivalCurrent", survivalText(live))
+    local amount = tonumber(mine.amount)
+    if amount == nil then
+        -- The board only exists when every wallet of that currency could be read (the server
+        -- refuses the whole read otherwise, data_unreadable), so this is a malformed reply.
+        return nil, getText(T .. "Leaderboard_Error_data_unreadable"), "errorText"
     end
-    note = note .. "  " .. self:seasonNote(snap) .. "  " .. getText(T .. "Leaderboard_SurvivalNote")
-    -- the moment of the server's own read, not of this request
-    if tonumber(snap.at) then
-        note = note .. "  " .. getText(T .. "Leaderboard_At",
-            U.stampText(tonumber(snap.at), self.panel.offsetMin))
+    if rank then
+        return rankText, getText(T .. "Leaderboard_SelfRank", tostring(rank), amountText(amount),
+            currencyLabel(snap.currency)), "text"
     end
-    return note
+    return nil, getText(T .. "Leaderboard_SelfNone", amountText(amount), currencyLabel(snap.currency)), "text"
 end
 
--- What the page is, in one note band, most urgent first: a refusal (the board underneath stays,
--- marked), the first read of all, the public rule in force, and the player's own standing.
+-- What the page is, most urgent first: a refusal (the board underneath stays, marked), the first
+-- read of all, then the player's own standing, the public rule in force, the season and the
+-- exact moment of the server's own read. The page shows the first two in its note band and the
+-- rest as the card and the pills; the detail window carries all of it, uncut.
 function Page:noteText()
     if self.error ~= nil then
         local note = getTextOrNull(T .. "Leaderboard_Error_" .. self.error)
@@ -583,27 +636,16 @@ function Page:noteText()
     if snap == nil then
         return getText(T .. (C.leaderboardBusy() and "Wallet_Loading" or "Leaderboard_Empty")), "textMuted"
     end
-    if self.kind == "survival" then return self:survivalNote(snap), "textMuted" end
-    local mine = snap.self or {}
-    local rank = tonumber(mine.rank)
-    local amount = tonumber(mine.amount)
-    local note
-    if amount == nil then
-        -- The board only exists when every wallet of that currency could be read (the server
-        -- refuses the whole read otherwise, data_unreadable), so this is a malformed reply.
-        -- It is worded as the unreadable read it is: "0" would be a claim nobody made.
-        note = getText(T .. "Leaderboard_Error_data_unreadable")
-    elseif rank then
-        note = getText(T .. "Leaderboard_SelfRank", tostring(rank),
-            amountText(amount), currencyLabel(snap.currency))
-    else
-        note = getText(T .. "Leaderboard_SelfNone", amountText(amount), currencyLabel(snap.currency))
+    local _, note = self:selfLine(snap)
+    if self.kind == "survival" then
+        note = note .. "\n\n" .. self:seasonNote(snap) .. "\n\n" .. getText(T .. "Leaderboard_SurvivalNote")
+    elseif snap.showAmounts ~= true then
+        note = note .. "\n" .. getText(T .. "Leaderboard_AmountsHidden")
     end
-    if snap.showAmounts ~= true then note = note .. "  " .. getText(T .. "Leaderboard_AmountsHidden") end
     -- the moment of the server's own census, not of this request: paging inside that window
     -- reads one and the same board, so no rank jumps between two pages
     if tonumber(snap.at) then
-        note = note .. "  " .. getText(T .. "Leaderboard_At",
+        note = note .. "\n" .. getText(T .. "Leaderboard_At",
             U.stampText(tonumber(snap.at), self.panel.offsetMin))
     end
     return note, "textMuted"
@@ -611,15 +653,27 @@ end
 
 function Page:draw(owner)
     card(owner, self.cardX, self.cardY, self.cardW, self.cardH, self:title())
+    local px = self.pillX
+    if self.pillHidden then
+        px = px + U.drawPill(owner, px, self.pillY, getText(T .. "Leaderboard_PillOthers"),
+            getText(T .. "Leaderboard_PillHidden")) + 6
+    end
+    if self.pillAt then U.drawPill(owner, px, self.pillY, getText(T .. "Leaderboard_PillAt"), self.pillAt) end
     -- the band the layout measured: every line of it is painted, none is cut away
     local lineH = fontH.small + 2
-    local lines = self.noteLines
-    if lines == nil then
-        lines = U.wrapText((self:noteText()), math.max(60, self.cardW - PAD * 2), 3)
-    end
+    local lines = self.noteLines or NO_LINES
     for i = 1, #lines do
         text(owner, lines[i], self.cardX + PAD, self.noteY + 4 + (i - 1) * lineH,
             self.noteToken or "textMuted")
+    end
+    if self.boxShown then
+        local bx, by, bw, bh = self.cardX + PAD, self.boxY, self.cardW - PAD * 2, self.boxH
+        fill(owner, bx, by, bw, bh, "selected")
+        U.border(owner, bx, by, bw, bh, "accent")
+        if self.selfRank then
+            text(owner, self.selfRank, bx + PAD, by + math.floor((bh - fontH.medium) / 2), "accent", UIFont.Medium)
+        end
+        text(owner, self.selfFit, self.selfTextX, by + math.floor((bh - fontH.small) / 2), self.selfToken)
     end
     text(owner, getText(T .. "Leaderboard_Kind"), self.kindCombo.x,
         self.kindCombo.y - fontH.small - 2, "textMuted")

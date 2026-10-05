@@ -1047,7 +1047,13 @@ function Page:layoutPlans(g, w, h)
     local bodyH = math.max(ctrlH() * 3, h - top)
     local th = titleH()
     local lx, ly, lw, lh2, ex, ey, ew, eh
-    if w < 640 then
+    -- nothing registered at all: the one card takes the whole body and says so as an empty state,
+    -- instead of a narrow list beside three empty quarters of the page
+    local none = self.plans ~= nil and #self.plans == 0 and not self.plansError and not self.plansTimeout
+    if none then
+        lx, ly, lw, lh2 = 0, top, w, bodyH
+        ex, ey, ew, eh = 0, top + bodyH, w, 0
+    elseif w < 640 then
         lx, ly, lw = 0, top, w
         lh2 = math.max(th + rowH2() * 2 + 4, math.floor(bodyH * 0.3))
         ex, ey, ew, eh = 0, top + lh2 + PAD, w, math.max(ctrlH() * 3, bodyH - lh2 - PAD)
@@ -1059,12 +1065,14 @@ function Page:layoutPlans(g, w, h)
     g.listCard = { x = lx, y = ly, w = lw, h = lh2, title = fitText(tr("Ent_Products"), lw - PAD * 2, UIFont.Medium) }
     U.placeList(self.planList, true, lx + 1, ly + th + 1, lw - 2, math.max(rowH2(), lh2 - th - 2))
     g.listEmpty = {}
-    if self.plans == nil or #self.plans == 0 then
+    g.noPlans = none
+    if none then
+        U.emptyState(self, "plans", lx, ly + th, lw, lh2 - th, tr("Ent_NoProductsTitle"), tr("Ent_NoProducts"))
+    elseif self.plans == nil or #self.plans == 0 then
         local msg
         if self.plansTimeout then msg = tr("Ent_PlansTimeout")
         elseif self.plansError then msg = getText(T .. "Ent_PlansError", self:errorText(self.plansError))
-        elseif self.plans == nil then msg = tr("Admin_Loading")
-        else msg = tr("Ent_NoProducts") end
+        else msg = tr("Admin_Loading") end
         wrapInto(g.listEmpty, msg, lw - PAD * 2, self.plansError and "errorText" or "textMuted", 6)
     end
     g.listEmptyY = ly + th + PAD
@@ -1456,6 +1464,7 @@ function Page:prerender()
     if self.section == "plans" then
         local c = g.listCard
         card(self, c.x, c.y, c.w, c.h, c.title, titleH())
+        if g.noPlans then U.drawEmptyState(self, "plans") end
         for i, l in ipairs(g.listEmpty) do text(self, l.s, c.x + PAD, g.listEmptyY + (i - 1) * lh, l.token) end
         drawOps(self, g.ops)
         return

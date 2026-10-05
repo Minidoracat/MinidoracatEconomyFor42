@@ -548,6 +548,7 @@ handlers.hello = function(player, args)
         seasonState = S.Stats and S.Stats.seasonState() or nil,
         terminals = S.Terminal and S.Terminal.list() or nil,
         terminalRange = EC.TERMINAL_RANGE,
+        atms = S.AtmMap and S.AtmMap.flat() or nil,   -- map ATMs seen so far, flat x, y, z (ECAtmMap)
         unclaimed = S.Mailbox and S.Mailbox.unclaimed(account) or 0,   -- the float button badge
         radio = S.Radio and S.Radio.clientInfo() or nil,   -- channel name registration on the client
     })

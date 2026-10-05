@@ -105,8 +105,9 @@ end
 
 -- ---------- cells ----------
 
--- One account: the name over its state and per-currency holdings, the sorted currency's total
--- right aligned. Every string and x is computed once per rebuild (Page:accountRow), so the cell
+-- One account: the name over its state and per-currency holdings; while the sort is a currency,
+-- that currency's total right aligned (otherwise it would only repeat the holdings line).
+-- Every string and x is computed once per rebuild (Page:accountRow), so the cell
 -- only paints and a row never measures anything.
 local AccountCell = ISPanel:derive("MinidoracatEconomyAccountCell")
 
@@ -115,7 +116,7 @@ function AccountCell:render()
     if not e then return end
     local lit = U.framework.Table.rowBackground(self)
     text(self, e.nameText, PAD, e.line1Y, e.frozen and "warn" or "text")
-    textRight(self, e.amountText, self.width - PAD, e.line1Y, "accent")
+    if e.amountText then textRight(self, e.amountText, self.width - PAD, e.line1Y, "accent") end
     text(self, e.stateText, PAD, e.line2Y, lit and "text" or "textMuted")
     if e.holdText then
         textRight(self, e.holdText, self.width - PAD, e.line2Y, lit and "text" or "textFaint")
@@ -439,14 +440,15 @@ local function holdText(balances)
     return out
 end
 
--- The figure the rows are lined up by: the total of the currency the sort names, or -- while the
--- sort is an account property -- the first registered currency's. Always labelled with the
--- currency, so the column is never read as a sum of two units. A row the server could not read
--- says so here too: the server sorts those last in both directions, and a column that showed
--- them as 0 would put them among the empty wallets instead.
+-- The figure the rows are lined up by: the total of the currency the sort names. nil while the
+-- sort is an account property -- the holdings line already carries every total, and printing one
+-- of them a second time read as two different sums. Always labelled with the currency, so the
+-- column is never read as a sum of two units. A row the server could not read says so here too:
+-- the server sorts those last in both directions, and a column that showed them as 0 would put
+-- them among the empty wallets instead.
 function Page:amountFor(rec)
     local id = self.sort
-    if id == "username" or id == "online" or id == "frozen" then id = EC.CURRENCY_ORDER[1] end
+    if id == "username" or id == "online" or id == "frozen" then return nil end
     local b = type(rec.balances) == "table" and rec.balances[id] or nil
     if type(b) == "table" and b.unknown == true then
         return getText(T .. "Admin_Accounts_RowUnknown", currencyName(id))
@@ -479,7 +481,8 @@ function Page:rebuild()
                 frozen = rec.frozen == true,
                 balances = rec.balances,
                 amountText = amount,
-                nameText = fitText(rec.username, math.max(20, width - PAD * 2 - textWidth(amount) - PAD)),
+                nameText = fitText(rec.username,
+                    math.max(20, width - PAD * 2 - (amount and textWidth(amount) + PAD or 0))),
                 stateText = state,
                 holdText = (hold ~= nil and room > 20) and fitText(hold, math.min(holdW, room)) or nil,
                 line1Y = line1Y,

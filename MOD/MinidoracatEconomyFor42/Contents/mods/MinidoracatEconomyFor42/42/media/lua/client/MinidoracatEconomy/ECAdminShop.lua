@@ -319,15 +319,45 @@ local function skuStateText(sku)
     return tr(state)
 end
 
--- The row's price column: one entry per currency, "-" where there is no quote. Never a 0.
-local function rowPriceText(sku)
-    local parts = {}
+-- The row's price column, language-neutral: the coin and the amount of every currency that
+-- quotes this SKU (the currency order), packed right-aligned against `right`. What does not fit
+-- in `room` is counted as one "+N" -- the editor and the detail window carry the whole quote
+-- table -- and the first quote always shows whole. No quote at all reads "-", never a 0.
+-- Returns the segments ({ cur, text, coinX, textX }, plus `more` / `moreX`) and their width.
+local function rowPrices(sku, right, room, coin)
+    local all = {}
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
         local q = skuQuote(sku, cur)
         local price = q ~= nil and tonumber(q.price) or nil
-        parts[#parts + 1] = currencyName(cur) .. " " .. (price ~= nil and amountText(math.floor(price)) or "-")
+        if price ~= nil then
+            local s = { cur = cur, text = amountText(math.floor(price)) }
+            s.w = coin + 4 + textWidth(s.text)
+            all[#all + 1] = s
+        end
     end
-    return table.concat(parts, "  ")
+    local gap = 10
+    local out, used = {}, 0
+    for i, s in ipairs(all) do
+        local add = (i > 1 and gap or 0) + s.w
+        local rest = #all - i
+        local tail = rest > 0 and (gap + textWidth("+" .. rest)) or 0
+        if i > 1 and used + add + tail > room then break end
+        out[i], used = s, used + add
+    end
+    if #all == 0 then
+        out.more = "-"
+    elseif #out < #all then
+        out.more = "+" .. (#all - #out)
+        used = used + gap
+    end
+    if out.more then used = used + textWidth(out.more) end
+    local x = right - used
+    for _, s in ipairs(out) do
+        s.coinX, s.textX = x, x + coin + 4
+        x = x + s.w + gap
+    end
+    if out.more then out.moreX = right - textWidth(out.more) end
+    return out, used
 end
 
 -- ---------- the draft's shape ----------
@@ -448,7 +478,14 @@ function ShopCell:render()
     text(self, e.nameText, e.nameX, e.line1Y, e.listed and "text" or faint)
     if e.altText then text(self, e.altText, e.altX, e.line1Y, faint) end
     text(self, e.metaText, e.nameX, e.line2Y, faint)
-    textRight(self, e.priceText, e.rightX, e.line1Y, e.listed and "accent" or faint)
+    local priceToken = e.listed and "accent" or faint
+    local prices = e.prices
+    for i = 1, #prices do
+        local s = prices[i]
+        U.drawCoin(self, s.cur, s.coinX, e.coinY, e.coin)
+        text(self, s.text, s.textX, e.line1Y, priceToken)
+    end
+    if prices.more then text(self, prices.more, prices.moreX, e.line1Y, priceToken) end
     textRight(self, e.stateText, e.rightX, e.line2Y,
         e.listed and "positive" or (hot and "text" or "textMuted"))
     if e.buybackText then text(self, e.buybackText, e.buybackX, e.line2Y, e.buybackToken) end
@@ -771,6 +808,27 @@ function Page:createChildren()
 
     self:buildFields()
 
+    -- The standing rule behind six fields, as one small "?" beside its label instead of a block of
+    -- prose in the form: the title stays the glyph and fullTitle is the short rule, so the mouse
+    -- reads it as the button's tooltip and the keyboard ring as its caption (MinidoracatUI Focus
+    -- captionOf). Pressing it opens the detail window, which keeps every rule in full
+    -- (appendRuleText). A currency's two price rules sit on the first currency's columns: once,
+    -- beside the quote table's column titles, or beside the first stacked group's labels.
+    self.tips = {}
+    local function tip(key)
+        local b = formChip(tr("Admin_Shop_TipMark"), Page.onShowDetail)
+        b.fullTitle = tr(key)
+        self.tips[#self.tips + 1] = b
+        return b
+    end
+    local first = EC.CURRENCY_ORDER[1]
+    self.fieldByKey.qty.tip = tip("Admin_Shop_TipQty")
+    self.fieldByKey.enabled.tip = tip("Admin_Shop_TipEnabled")
+    self.fieldByKey.dailyCapScope.tip = tip("Admin_Shop_TipScope")
+    self.fieldByKey["q:" .. first .. ":price"].tip = tip("Admin_Shop_TipPrice")
+    self.fieldByKey["q:" .. first .. ":bidPrice"].tip = tip("Admin_Shop_TipBid")
+    self.batchTip = tip("Admin_Shop_TipBatch")
+
     -- every box the editor may make editable; the id is a new SKU's alone
     self.entryFields = { self.qtyEntry, self.capEntry, self.bcapEntry }
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
@@ -782,14 +840,15 @@ function Page:createChildren()
     -- of it in one pass
     self.formControls = { self.idEntry }
     for _, spec in ipairs(self.fields) do self.formControls[#self.formControls + 1] = spec.control end
+    for _, b in ipairs(self.tips) do self.formControls[#self.formControls + 1] = b end
 
     self.applyButton = chip(tr("Admin_Shop_Apply"), Page.onApply, "primary")
     self.cancelButton = chip(tr("Admin_Cancel"), Page.onCancelEdit)
     self.detailButton = chip(tr("Admin_Shop_Detail"), Page.onShowDetail)
     self.backButton = chip(tr("Admin_Shop_Back"), Page.onBack)
     -- the one irreversible action on this page: placed on the editor's title row (layout), never
-    -- beside Apply, and it only ever opens a confirmation
-    self.deleteButton = chip(tr("Admin_Shop_Delete"), Page.onDelete)
+    -- beside Apply, in the danger style, and it only ever opens a confirmation
+    self.deleteButton = chip(tr("Admin_Shop_Delete"), Page.onDelete, "danger")
     self.editorButtons = { self.applyButton, self.cancelButton, self.detailButton, self.backButton,
         self.deleteButton }
 
@@ -1422,7 +1481,7 @@ function Page:onDelete()
         confirm = tr("Admin_Shop_DeleteConfirm"),
         warn = table.concat(lines, "\n"),
         catalogIds = ids,
-        catalogRevision = self.catalog.revision,
+        catalogRevision = self.catalog.revision, danger = true,
     })
 end
 
@@ -1609,7 +1668,9 @@ end
 -- wants a 0 / an off" -- a column they disagree on starts empty and stays empty until it is set.
 -- Every value here is a string or a boolean, so nil can only ever mean "they disagree".
 function Page:batchBase(ids)
-    local base = { count = 0, missing = 0, values = {} }
+    -- `quoted[cur]`: does any picked row quote that currency at all? A currency none of them
+    -- quotes shows "not offered", the way the single editor does, not the switches' defaults.
+    local base = { count = 0, missing = 0, values = {}, quoted = {} }
     for _, id in ipairs(ids) do
         local sku = self:sku(id)
         if sku == nil then
@@ -1617,6 +1678,9 @@ function Page:batchBase(ids)
         else
             local row = draftFromSku(sku)
             base.count = base.count + 1
+            for _, cur in ipairs(EC.CURRENCY_ORDER) do
+                if skuQuote(sku, cur) ~= nil then base.quoted[cur] = true end
+            end
             for _, spec in ipairs(self.fields) do
                 local value = baseValue(row, spec)
                 if base.count == 1 then base.values[spec.key] = value
@@ -2171,6 +2235,9 @@ function Page:rebuildRows()
         local lh = lineH()
         local nameX = PAD + size + 8
         local rightX = width - PAD
+        -- the price coins, the same size as the admin market rows' price coin
+        local coin = math.max(12, math.min(fontH.small + 2, 20))
+        local coinY = 5 + math.floor((fontH.small - coin) / 2)
         for _, sku in ipairs(skus) do
             local name = itemName(sku.item)
             local alt = itemOriginal(sku.item)
@@ -2188,21 +2255,17 @@ function Page:rebuildRows()
                 if sku.enabled == false then stateText = tr("Shop_Disabled")
                 elseif not sell then stateText = tr("Admin_Shop_NoSale")
                 else stateText = tr("Admin_Shop_Listed") end
-                local priceText = rowPriceText(sku)
                 -- buyback that the master switch is holding shut says so in words, not only in
                 -- the colour, and reads exactly like the editor's own chip
                 local paused = buyback and self:masterState() == false
                 local buybackText = buyback
                     and tr(paused and "Admin_Shop_StatePaused" or "Admin_Shop_Buyback") or nil
                 -- The name is what a row is FOR: it gets the width first, and the price summary
-                -- is fitted into what is left over (never more than a third of the row, because
-                -- a long currency name in any language would otherwise cut the name to two
-                -- letters). The whole quote table is in the editor and in the detail window, so
-                -- nothing is lost by cutting it here.
+                -- is packed into what is left over (never more than a third of the row); quotes
+                -- that do not fit become "+N". The whole quote table is in the editor and in the
+                -- detail window, so nothing is lost by counting them here.
                 local room = math.max(40, rightX - nameX - PAD)
-                local priceRoom = math.min(textWidth(priceText), math.floor(room / 3))
-                priceText = fitText(priceText, priceRoom)
-                local priceW = textWidth(priceText)
+                local prices, priceW = rowPrices(sku, rightX, math.floor(room / 3), coin)
                 local nameW = math.max(40, room - priceW - PAD)
                 if alt then nameW = math.floor(nameW * 0.55) end
                 local item = {
@@ -2211,7 +2274,7 @@ function Page:rebuildRows()
                     iconY = math.max(0, math.floor(6 + lh - size / 2)),
                     nameText = fitText(name, nameW), nameX = nameX,
                     line1Y = 5, line2Y = 5 + lh, rightX = rightX,
-                    priceText = priceText,
+                    prices = prices, coin = coin, coinY = coinY,
                     stateText = stateText,
                     buybackText = buybackText,
                     buybackToken = paused and "warn" or "positive",
@@ -2367,7 +2430,7 @@ function Page:buildBatchText()
         if b.start[spec.key] == nil then mixed[#mixed + 1] = self:specLabel(spec) end
     end
     if #mixed > 0 then
-        lines[#lines + 1] = getText(T .. "Admin_Shop_BatchMixedFields", table.concat(mixed, ", "))
+        lines[#lines + 1] = getText(T .. "Admin_Shop_BatchMixedFields", table.concat(mixed, tr("Admin_Set_ListSep")))
     end
     local _, changes, blank = self:batchChanges()
     lines[#lines + 1] = tr("Admin_Shop_BatchSummaryHead")
@@ -2467,7 +2530,8 @@ function Page:formMetrics(quoteLabels)
     local labelW = textWidth(tr("Admin_Shop_Id"))
     for _, spec in ipairs(self.fields) do
         if quoteLabels or spec.currency == nil then
-            local w = textWidth(self:specLabel(spec))
+            -- a field with a "?" beside its label needs the marker's room in the label column too
+            local w = textWidth(self:specLabel(spec)) + (spec.tip and self:tipSize() + 4 or 0)
             if w > labelW then labelW = w end
         end
     end
@@ -2503,25 +2567,64 @@ function Page:quoteColumns()
     end
     chipW = chipW + 24
     local priceW = textWidth("1000000000") + 24
+    -- the two price titles carry the first currency's "?" markers
+    local tipW = self:tipSize() + 4
     local cols = {
         cur = curW,
         sell = math.max(chipW, textWidth(tr("Admin_Shop_QuoteSell"))),
-        price = math.max(priceW, textWidth(tr("Admin_Shop_Price"))),
+        price = math.max(priceW, textWidth(tr("Admin_Shop_Price")) + tipW),
         buy = math.max(chipW, textWidth(tr("Admin_Shop_QuoteBuy"))),
-        bid = math.max(priceW, textWidth(tr("Admin_Shop_BidPrice"))),
+        bid = math.max(priceW, textWidth(tr("Admin_Shop_BidPrice")) + tipW),
     }
     cols.total = cols.cur + cols.sell + cols.price + cols.buy + cols.bid + 8 * 4
     return cols
 end
 
--- One group's heading and the rule under it. Returns the y its first row starts at.
-function Page:placeHead(head, x, top, colW)
+-- The "?" marker's size: one line of small text tall, so it sits inside a label's own line.
+function Page:tipSize()
+    local h = fontH.small + 4
+    return math.max(h, textWidth(tr("Admin_Shop_TipMark")) + 12), h
+end
+
+-- One "?" marker at content y `cy`, recorded for Form:scrollTo whether it is inside the viewport
+-- or not, and shown only when it fits whole -- exactly like a field's control.
+function Page:placeTip(tip, x, cy)
+    local tw, th = self:tipSize()
+    tip.ecFormY, tip.ecFormH, tip.ecFormLabelY = cy, th, cy
+    local ay = cy - (self.form.scrollOffset or 0)
+    if ay >= 0 and ay + th <= self.form.height then
+        tip:setVisible(true)
+        tip:setX(x); tip:setY(ay)
+        tip:setWidth(tw); tip:setHeight(th)
+    end
+end
+
+-- A label fitted to `maxW` with the marker (if any) right after the words it explains. `ay` is
+-- where the label paints (nil: not inside the viewport), `cy` the marker's content y.
+function Page:placeLabel(label, tip, x, ay, cy, maxW)
+    local tipW = tip and self:tipSize() + 4 or 0
+    local shown = fitText(label, math.max(0, maxW - tipW))
+    if ay ~= nil then
+        local paint = self.form.paint
+        paint.labels[#paint.labels + 1] = { text = shown, x = x, y = ay }
+    end
+    if tip then self:placeTip(tip, x + textWidth(shown) + 4, cy) end
+end
+
+-- One group's heading and the rule under it, with the group's own marker after the words.
+-- Returns the y its first row starts at.
+function Page:placeHead(head, x, top, colW, tip)
     local paint = self.form.paint
     local scroll = self.form.scrollOffset or 0
     local headH = fontH.medium + 4
     local ay = top - scroll
+    local tipW, th = self:tipSize()
+    local shown = fitText(head, math.max(0, colW - (tip and tipW + 6 or 0)), UIFont.Medium)
     if ay >= 0 and ay + headH <= self.form.height then
-        paint.heads[#paint.heads + 1] = { text = fitText(head, colW, UIFont.Medium), x = x, y = ay, w = colW }
+        paint.heads[#paint.heads + 1] = { text = shown, x = x, y = ay, w = colW }
+    end
+    if tip then
+        self:placeTip(tip, x + textWidth(shown, UIFont.Medium) + 6, top + math.floor((headH - th) / 2))
     end
     return top + headH + 4
 end
@@ -2547,15 +2650,19 @@ function Page:placeQuoteTable(x, top, cols)
     local titleH = fontH.small + 4
     local y = top
     local ay = y - scroll
-    if ay >= 0 and ay + titleH <= h then
+    local titled = ay >= 0 and ay + titleH <= h
+    if titled then
         paint.labels[#paint.labels + 1] = { text = tr("Market_Col_Currency"),
             x = x, y = ay }
-        local cx = x + cols.cur + 8
-        for _, col in ipairs(QUOTE_COLUMNS) do
-            local w = cols[col.width]
-            paint.labels[#paint.labels + 1] = { text = tr(col.title), x = cx, y = ay }
-            cx = cx + w + 8
-        end
+    end
+    -- the column titles, the two price titles with the first currency's markers after them
+    local first = EC.CURRENCY_ORDER[1]
+    local tx = x + cols.cur + 8
+    for _, col in ipairs(QUOTE_COLUMNS) do
+        local w = cols[col.width]
+        local tip = self.fieldByKey["q:" .. first .. ":" .. col.leaf].tip
+        self:placeLabel(tr(col.title), tip, tx, titled and ay or nil, y, w)
+        tx = tx + w + 8
     end
     y = y + titleH
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
@@ -2593,7 +2700,7 @@ function Page:placeGroup(group, x, top, colW, labelW, valueW)
     local scroll = self.form.scrollOffset or 0
     local h = self.form.height
     local rowH = math.max(chipH(), entryH())
-    local y = self:placeHead(group.head, x, top, colW)
+    local y = self:placeHead(group.head, x, top, colW, group.tip)
     if group.quotes then return self:placeQuoteTable(x, y, self.quoteCols) + PAD end
     local ay
     -- a column too narrow to hold "label  control" side by side stacks them instead of squeezing
@@ -2622,9 +2729,7 @@ function Page:placeGroup(group, x, top, colW, labelW, valueW)
         elseif stacked then
             local control = row.control
             local labelH = fontH.small + 4
-            if ay >= 0 and ay + labelH <= h then
-                paint.labels[#paint.labels + 1] = { text = fitText(row.label, colW), x = x, y = ay }
-            end
+            self:placeLabel(row.label, row.tip, x, (ay >= 0 and ay + labelH <= h) and ay or nil, y, colW)
             y = y + labelH
             ay = y - scroll
             -- where this row sits in the content, scroll aside: recorded for every row, visible
@@ -2646,9 +2751,11 @@ function Page:placeGroup(group, x, top, colW, labelW, valueW)
             local control = row.control
             control.ecFormY, control.ecFormH = y, rowH
             control.ecFormLabelY = y
-            if ay >= 0 and ay + rowH <= h then
-                paint.labels[#paint.labels + 1] = { text = fitText(row.label, labelW),
-                    x = fieldX, y = ay + math.floor((rowH - fontH.small) / 2) }
+            local fits = ay >= 0 and ay + rowH <= h
+            local _, th = self:tipSize()
+            self:placeLabel(row.label, row.tip, fieldX,
+                fits and ay + math.floor((rowH - fontH.small) / 2) or nil, y + math.floor((rowH - th) / 2), labelW)
+            if fits then
                 control:setVisible(true)
                 control:setX(fieldX + labelW + 8)
                 control:setY(ay)
@@ -2740,7 +2847,7 @@ end
 
 function Page:fieldRow(key)
     local spec = self.fieldByKey[key]
-    return { label = self:specLabel(spec), control = spec.control, chip = spec.chip == true }
+    return { label = self:specLabel(spec), control = spec.control, chip = spec.chip == true, tip = spec.tip }
 end
 
 -- One currency's quote as four stacked rows: the two directions and the two prices. The narrow
@@ -2832,6 +2939,8 @@ function Page:appendRuleText(lines)
     if self.batch ~= nil then
         lines[#lines + 1] = tr("Admin_Shop_BatchScopeNote")
         lines[#lines + 1] = tr("Admin_Shop_BatchHint")
+        -- the batch form's "?" says how a set is picked in short; this is the whole rule
+        lines[#lines + 1] = tr("Admin_Shop_BatchSelectHint")
         lines[#lines + 1] = tr("Admin_Shop_BatchQuoteNote")
         lines[#lines + 1] = tr("Admin_Shop_QtyNote")
         lines[#lines + 1] = tr("Admin_Shop_QuoteHint")
@@ -2935,7 +3044,7 @@ function Page:batchGroups()
         end
     end
     local groups = {
-        { head = tr("Admin_Shop_BatchSummaryHead"), rows = head },
+        { head = tr("Admin_Shop_BatchSummaryHead"), rows = head, tip = self.batchTip },
         { head = tr("Admin_Shop_GroupItem"), paired = true, rows = {
             self:fieldRow("qty"), self:fieldRow("category"),
         } },
@@ -3021,7 +3130,15 @@ function Page:refreshEditorChips()
             local value
             if self.batch ~= nil then value = self:batchValue(spec) else value = self:draftValue(spec) end
             local title, token
-            if spec.currency ~= nil and self.batch == nil and not self:quoteOffered(spec.currency) then
+            local notOffered
+            if self.batch ~= nil then
+                -- untouched, and none of the picked rows quotes this currency
+                notOffered = spec.currency ~= nil and self.batch.base.quoted[spec.currency] ~= true
+                    and self.batch.value[spec.key] == nil
+            else
+                notOffered = spec.currency ~= nil and not self:quoteOffered(spec.currency)
+            end
+            if notOffered then
                 title, token = tr("Admin_Shop_QuoteNone"), "textFaint"
             elseif value == nil then
                 title, token = mixed, "warn"
@@ -3042,6 +3159,83 @@ function Page:refreshEditorChips()
         end
     end
     return paused
+end
+
+-- The header's facts as pills on one row that wraps instead of cutting a number: the catalog
+-- file's count against the host's limit and when it was read (or the file's error, which wins:
+-- the server is still running with the previous catalog), the buyback master switch with the chip
+-- that flips it (what the switch is, is the chip's tooltip), and the daily reset with its
+-- countdown. Run by layout, and again from the paint pass when the minute, the catalog request's
+-- pending state or the host's limit moves; the rows it took are what the search row sits under.
+function Page:placeHeader()
+    local g = self.g
+    local w = self.width
+    local snap = self.catalog
+    local file = type(snap) == "table" and type(snap.file) == "table" and snap.file or nil
+    local fileError = file and type(file.errorCode) == "string" and file.errorCode ~= ""
+        and (U.fileErrorDetail(file.errorDetail) or errorText(file.errorCode)) or nil
+    local pending = self.isPending("admin.catalog") and true or false
+    local pills = {}
+    if fileError then
+        pills[1] = { value = getText(T .. "Admin_Shop_FileError", fileError), token = "errorText" }
+    elseif file then
+        -- at or past the host's limit no item can be added: the figure says so in the warn colour
+        local count, limit = tonumber(file.count) or 0, tonumber(self:maxItems())
+        pills[1] = { label = tr("Admin_Shop_PillCatalog"), value = getText(T .. "Admin_Shop_PillCount",
+            tostring(count), tostring(limit or "-")), token = (limit ~= nil and count >= limit) and "warn" or "text" }
+        pills[2] = { label = tr("Admin_Shop_PillLoaded"),
+            value = stampText(file.loadedAt, self.owner.offsetMin), token = "textMuted" }
+    else
+        pills[1] = { label = tr("Admin_Shop_PillCatalog"),
+            value = pending and tr("Admin_Loading") or tr("Admin_Dash_Empty"), token = "textFaint" }
+    end
+    local state = self:masterState()
+    local master = { label = tr("Admin_Shop_MasterLabel"),
+        value = state == nil and tr("Admin_Loading") or tr(state and "Admin_Shop_StateOn" or "Admin_Shop_StateOff"),
+        token = state == nil and "textFaint" or (state and "positive" or "textMuted") }
+    pills[#pills + 1] = master
+    local ends = type(snap) == "table" and tonumber(snap.dayEndsMs) or nil
+    local off = self.owner.offsetMin
+    pills[#pills + 1] = { label = tr("Admin_Shop_PillReset"), token = "textMuted",
+        value = ends and getText(T .. "Admin_Shop_PillResetValue", dateText(ends, off), clockText(ends, off),
+            durationText(math.max(0, ends - EC.now()))) or "-" }
+
+    local mb = self.masterButton
+    mb.fullTitle = tr(state == true and "Admin_Shop_BuybackOff" or "Admin_Shop_BuybackOn")
+    mb.tooltip, mb.autoTooltip = tr("Admin_Shop_MasterHint"), nil
+    mb:setWidth(math.min(textWidth(mb.fullTitle) + 24, math.floor(w * 0.34)))
+    U.setButtonTitle(mb, mb.fullTitle)
+
+    local ch = chipH()
+    local rowH = math.max(ch, U.CHIP_H)
+    local maxW = math.max(40, w - PAD * 2)
+    local x, y, right, rows = PAD, g.headTop, g.headRight, 1
+    -- the first row ends at Add / Reload; a pill that does not fit starts the next full-width row
+    local function slot(iw)
+        if x + iw > right and (x > PAD or right < w - PAD) then
+            x, y, right, rows = PAD, y + rowH + 4, w - PAD, rows + 1
+        end
+        local at = x
+        x = x + iw + 6
+        return at
+    end
+    for _, p in ipairs(pills) do
+        local pw = U.pillWidth(p.label, p.value)
+        if pw > maxW then
+            -- only a file error is ever this long: the one pill fitted to a whole row
+            p.value = fitText(p.value, math.max(0, maxW - (pw - textWidth(p.value))))
+            pw = U.pillWidth(p.label, p.value)
+        end
+        p.x = slot(pw)
+        p.y = y + math.floor((rowH - U.CHIP_H) / 2)
+        if p == master then
+            mb:setVisible(true); mb:setHeight(ch)
+            mb:setX(slot(mb.width)); mb:setY(y + math.floor((rowH - ch) / 2))
+        end
+    end
+    g.pills, g.headRows, g.headBottom = pills, rows, y + rowH
+    self.headRows = rows
+    g.headMinute, g.headPending, g.headMax = math.floor(EC.now() / 60000), pending, self:maxItems()
 end
 
 function Page:layout()
@@ -3080,7 +3274,9 @@ function Page:layout()
     -- never by this gate reserving room for it.
     local minFormH = math.max(ch, eh) + fontH.small + 8
     local editorMinH = fontH.medium + 4 + lh * identCount + minFormH + ch + PAD * 2
-    local headerRoom = ch * 2 + eh + lh + 24
+    -- the pill rows the header took last pass (one unless a narrow window wrapped them) and the
+    -- search row under them
+    local headerRoom = (math.max(ch, U.CHIP_H) + 4) * (self.headRows or 1) + eh + 16
     local wide = w >= listMinW + editorMinW + PAD * 3
         and (not editing or h - PAD - (CARD_TITLE_H + 4 + headerRoom) >= editorMinH)
     local showList = on and (wide or not editing or self.view ~= "editor")
@@ -3090,7 +3286,6 @@ function Page:layout()
     local top = CARD_TITLE_H + 4
     local headerH = 0
     if showList then
-        g.statusY = top + math.floor((ch - fontH.small) / 2)
         local x = w - PAD
         for _, b in ipairs({ self.addButton, self.reloadButton }) do
             local bw = math.min(textWidth(b.fullTitle) + 24, math.floor(w * 0.34))
@@ -3099,33 +3294,12 @@ function Page:layout()
             U.setButtonTitle(b, b.fullTitle)
             x = x - bw - 6
         end
-        g.statusW = math.max(0, x - PAD * 2)
+        -- the catalog, the buyback master switch and the daily reset: one row of pills left of
+        -- Add / Reload, wrapping under them when it runs out (placeHeader)
+        g.headTop, g.headRight = top, x - PAD
+        self:placeHeader()
 
-        local masterY = top + ch + 6
-        g.masterY = masterY + math.floor((ch - fontH.small) / 2)
-        g.masterLabel = tr("Admin_Shop_MasterLabel")
-        local mx = PAD + textWidth(g.masterLabel) + 8
-        g.masterStateX = mx
-        local state = self:masterState()
-        g.masterStateText = state == nil and tr("Admin_Loading")
-            or (state and tr("Admin_Shop_StateOn") or tr("Admin_Shop_StateOff"))
-        g.masterStateToken = state == nil and "textFaint" or (state and "positive" or "textMuted")
-        U.setButtonTitle(self.masterButton, tr(state == true and "Admin_Shop_BuybackOff" or "Admin_Shop_BuybackOn"))
-        local mw = math.min(textWidth(self.masterButton.fullTitle) + 24, math.floor(w * 0.34))
-        local buttonX = mx + textWidth(g.masterStateText) + PAD
-        self.masterButton:setVisible(true)
-        self.masterButton:setWidth(mw); self.masterButton:setHeight(ch)
-        self.masterButton:setX(math.min(buttonX, math.max(PAD, w - PAD - mw))); self.masterButton:setY(masterY)
-        U.setButtonTitle(self.masterButton, self.masterButton.fullTitle)
-        g.masterHintX = self.masterButton.x + mw + PAD
-        g.masterHintW = math.max(0, w - PAD - g.masterHintX)
-
-        -- when today's share counts reset, in real local time: painted live, because it carries a
-        -- countdown, and reserved here so nothing else moves with it
-        g.resetY = masterY + ch + 4
-        g.resetW = math.max(0, w - PAD * 2)
-
-        local searchY = g.resetY + lh + 4
+        local searchY = g.headBottom + 6
         local sx = w - PAD
         -- right to left over the search row: the two money shortcuts, then the two chips the batch
         -- set is operated with (the count of picked rows is painted beside the row count)
@@ -3331,35 +3505,19 @@ function Page:prerender()
     if not g then return end
     card(self, 0, 0, self.width, self.height, tr("Admin_Shop_Title"))
     if self.searchEntry:getIsVisible() then
-        -- the file status: a parse error wins over the count, because it says the server is still
-        -- running with the previous catalog
-        local snap = self.catalog
-        local file = type(snap) == "table" and type(snap.file) == "table" and snap.file or nil
-        local status, token
-        -- an error the server named by code is read in the mod's own words, with what the file
-        -- got wrong when it said (U.fileErrorDetail). Either way the count is NOT shown instead:
-        -- the server is still running with the previous catalog and that is the thing to say.
-        local fileError = file and type(file.errorCode) == "string" and file.errorCode ~= ""
-            and (U.fileErrorDetail(file.errorDetail) or errorText(file.errorCode)) or nil
-        if fileError then
-            status, token = getText(T .. "Admin_Shop_FileError", fileError), "errorText"
-        elseif file then
-            -- the count beside the limit it may grow to, so a full catalog is read before Add says so
-            status, token = getText(T .. "Admin_Shop_File", tostring(file.count or 0),
-                stampText(file.loadedAt, self.owner.offsetMin), tostring(self:maxItems() or "-")), "textFaint"
-        else
-            status, token = self.isPending("admin.catalog") and tr("Admin_Loading") or tr("Admin_Dash_Empty"), "textFaint"
+        -- the header pills: placed again only when what they say moved (the reset countdown is
+        -- whole minutes), and a re-layout only when that changed how many rows they take
+        if math.floor(EC.now() / 60000) ~= g.headMinute or self:maxItems() ~= g.headMax
+            or (self.isPending("admin.catalog") and true or false) ~= g.headPending then
+            local rows = g.headRows
+            self:placeHeader()
+            if g.headRows ~= rows then
+                self:layout()
+                g = self.g
+            end
         end
-        text(self, fitText(status, g.statusW), PAD, g.statusY, token)
-
-        text(self, g.masterLabel, PAD, g.masterY, "textMuted")
-        text(self, g.masterStateText, g.masterStateX, g.masterY, g.masterStateToken)
-        if g.masterHintW > 0 then
-            text(self, fitText(tr("Admin_Shop_MasterHint"), g.masterHintW), g.masterHintX, g.masterY, "textFaint")
-        end
-        -- the reset line is recomputed every frame: it carries a countdown
-        if g.resetW > 0 then
-            text(self, fitText(self:resetNote(), g.resetW), PAD, g.resetY, "textMuted")
+        if g.pills then
+            for _, p in ipairs(g.pills) do U.drawPill(self, p.x, p.y, p.label, p.value, p.token) end
         end
         if g.countW > 0 then
             -- how many rows the filters left, and how many of them are in the batch set: the set
@@ -3407,7 +3565,16 @@ function Page:prerender()
         end
     elseif self.list:getIsVisible() and self.wide then
         local x = PAD * 2 + self.list.width
-        text(self, fitText(tr("Admin_Shop_Select"), math.max(0, self.width - PAD - x)), x, self.list.y + 4, "textFaint")
+        -- wrapped, never cut: the drag hint is its second half. Cached per width (no per-frame table).
+        local w = math.max(0, self.width - PAD - x)
+        if self.selectW ~= w then
+            self.selectW, self.selectLines = w, U.wrapText(tr("Admin_Shop_Select"), w, math.huge)
+        end
+        local y = self.list.y + 4
+        for _, line in ipairs(self.selectLines) do
+            text(self, line, x, y, "textFaint")
+            y = y + lineH()
+        end
     end
 end
 
@@ -3477,6 +3644,16 @@ function Page:keyboardTargets()
             out[#out + 1] = { kind = kind, label = label, control = control,
                 scrollOwner = self.form }
         end
+        -- a "?" marker is reached right before the field it explains, and only while the open
+        -- form placed it (placeTip records its row). Its caption is the short rule itself
+        -- (fullTitle), drawn under the ring and kept inside the window by the framework.
+        local function tip(b)
+            if b ~= nil and b.ecFormY ~= nil then
+                out[#out + 1] = { kind = "button", label = b.fullTitle, control = b,
+                    scrollOwner = self.form, captionSide = "below" }
+            end
+        end
+        tip(self.batchTip)
         if self.draft ~= nil and self.draft.isNew == true then
             field("entry", tr("Admin_Shop_Id"), self.idEntry)
         end
@@ -3485,6 +3662,7 @@ function Page:keyboardTargets()
         for _, spec in ipairs(self.fields) do
             local kind = "button"
             if spec.entry then kind = "entry" elseif spec.combo then kind = "combo" end
+            tip(spec.tip)
             field(kind, self:specLabel(spec), spec.control)
         end
         group(tr("Admin_Shop_Editor"), self.editorButtons)

@@ -1461,6 +1461,15 @@ function Id.exportStatus()
         acceptedAt = export.acceptedAt, reason = export.reason }
 end
 
+-- The admin overview's identity counts (ECAdmin A.attention, carried by admin.system): numbers
+-- and the export state only - no name, no SteamID - and none of Id.status's sorting or copying.
+function Id.attention()
+    local n = 0
+    for _ in pairs(conflicts or {}) do n = n + 1 end
+    return { steam = Id.steamMode(), unreadable = unreadable, damaged = damaged and importedAt == nil,
+        conflicts = n, alerts = alertTotal, export = export.status }
+end
+
 -- The last import's summary as a reply carries it: lists capped, counts complete.
 local function importView(res)
     if res == nil then return nil end

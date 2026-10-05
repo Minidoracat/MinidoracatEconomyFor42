@@ -70,7 +70,7 @@ local Nav = C.Navigation
 -- glyph on purpose: the framework ships neither a calendar nor a clock, and a season tab is
 -- about the turn from one period to the next rather than about a date.
 local ADMIN_ICONS = {
-    Player = "users", Recovery = "layers", Dashboard = "chart", Currencies = "coins", Sources = "plug",
+    Player = "users", Recovery = "layers", Dashboard = "gauge", Currencies = "coins", Sources = "plug",
     IntegrationPlans = "sliders",
     Shop = "shop", Whitelist = "shieldCheck", Identity = "lock", Listings = "tag", Auctions = "auction",
     Transactions = "transactions", Audit = "clipboardCheck", System = "server",
@@ -80,6 +80,7 @@ local PAD, T = U.PAD, U.T
 local fontH = U.fontH
 local color, fill, text, textWidth = U.color, U.fill, U.text, U.textWidth
 local Button = U.Button
+local drawBadge = C.PanelWidgets.drawBadge   -- the Economy Center's mail bubble (ECAdminPanel loads it)
 
 local EMPTY = {}
 
@@ -112,6 +113,20 @@ local function defaultSize()
     local w = math.min(sw, math.max(MIN_WIDTH, math.min(sw - 40, math.floor(sw * 0.84))))
     local h = math.min(sh, math.max(MIN_HEIGHT, math.min(sh - 40, math.floor(sh * 0.84))))
     return w, h
+end
+
+-- Centred; while the Economy Center stands at (nearly) the same height, cascaded down-right of it,
+-- so its title bar stays readable instead of a sliver of it peeking out above this window.
+local CASCADE = 40
+local function defaultPos(w, h)
+    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    local x, y = math.floor((sw - w) / 2), math.floor((sh - h) / 2)
+    local center = C.Panel and C.Panel.window
+    if center and center:getIsVisible() and math.abs(center.y - y) < CASCADE then
+        x = math.max(0, math.min(sw - w, center.x + CASCADE))
+        y = math.max(0, math.min(sh - h, center.y + CASCADE))
+    end
+    return x, y
 end
 
 -- Taller than vanilla so the Medium title fits; the vanilla close/pin/collapse buttons and the drag
@@ -214,12 +229,12 @@ end
 -- Title-bar chip, shown only while the size differs from the default. One setWidth/setHeight per
 -- axis (see RestoreLayout); ISLayoutManager saves the result.
 function Win:onResetSize()
-    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
     local w, h = defaultSize()
     self:setWidth(w)
     self:setHeight(h)
-    self:setX(math.floor((sw - w) / 2))
-    self:setY(math.floor((sh - h) / 2))
+    local x, y = defaultPos(w, h)
+    self:setX(x)
+    self:setY(y)
     self:layout()
 end
 
@@ -348,6 +363,20 @@ function Win:render()
     local h = self:getHeight()
     local th = self:titleBarHeight()
     if self.isCollapsed then h = th end
+    -- The attention counts on their rail rows (ECAdminPanel sets `navBadge` from the overview
+    -- read): painted here, after the rail's own render, so a hover fill cannot cover them, and
+    -- never over a dialog or a page overlay -- a count is not worth covering a confirm with.
+    local nav, admin = self.nav, self.adminPanel
+    if not self.isCollapsed and admin and not admin:isModal() and nav:getIsVisible() then
+        local size = math.max(18, fontH.small + 6)
+        for _, b in ipairs(nav.buttons) do
+            local n = b.navBadge
+            if n ~= nil and n > 0 and b:getIsVisible() then
+                local by = nav.collapsed and 1 or math.floor((b.height - size) / 2)
+                drawBadge(self, nav.x + b.x + b.width - (nav.collapsed and 2 or 4), nav.y + b.y + by, n)
+            end
+        end
+    end
     if not self.isCollapsed and self.resizable and self.resizeWidget:getIsVisible() then
         local rh = self:resizeWidgetHeight()
         local c = color("border")
@@ -419,7 +448,8 @@ end
 function Win.create()
     local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
     local w, h = defaultSize()
-    local o = ISCollapsableWindow:new(math.floor((sw - w) / 2), math.floor((sh - h) / 2), w, h)
+    local x, y = defaultPos(w, h)
+    local o = ISCollapsableWindow:new(x, y, w, h)
     setmetatable(o, Win)
     o.title = getText(T .. "Admin_Window_Title")
     o.resizable = true

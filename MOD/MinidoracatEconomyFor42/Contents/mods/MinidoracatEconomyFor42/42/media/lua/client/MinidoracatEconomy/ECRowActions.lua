@@ -48,7 +48,9 @@ function R.begin(cell)
     cell.ecActionCount = 0
 end
 
-function R.put(cell, id, label, x, y, width, height, enabled)
+-- `style` (optional): "danger" for an action that cannot be undone (delist, cancel an auction);
+-- any other value keeps the routine chip with its accent outline while enabled.
+function R.put(cell, id, label, x, y, width, height, enabled, style)
     local buttons = cell.ecRowButtons
     local button = buttons[id]
     local refit = not button or button.fullTitle ~= label or button.width ~= width
@@ -64,7 +66,8 @@ function R.put(cell, id, label, x, y, width, height, enabled)
     if button.height ~= height then button:setHeight(height) end
     if refit then U.setButtonTitle(button, label) end
     button:setEnable(enabled == true)
-    button.stateToken = enabled == true and "accent" or nil
+    button.style = style == "danger" and "danger" or "chip"
+    button.stateToken = (enabled == true and button.style == "chip") and "accent" or nil
     button:setVisible(true)
     button.ecSeenPass = cell.ecActionPass
     cell.ecActionCount = cell.ecActionCount + 1

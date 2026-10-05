@@ -112,7 +112,9 @@ function Page:createChildren()
         return b
     end
     self.applyButton = chip(tr("Season_ApplyDays"), Page.onApplyDays, "primary")
-    self.startButton = chip(tr("Season_StartNext"), Page.onStartNext, "primary")
+    -- closing a season cannot be undone: the red style, and still the controller's confirmation
+    self.startButton = chip(tr("Season_StartNext"), Page.onStartNext, "danger")
+    self.helpButton = chip(tr("Admin_Help"), Page.onHelp)
     self:layout()
 end
 
@@ -343,6 +345,16 @@ function Page:endText(meta, closed)
     return tr("Season_Manual")
 end
 
+-- `partial` has two causes on the server (ECSeasons): the season that was already running when
+-- the mod first started recording (Se.init -- nothing is listed before it), which is expected and
+-- not a fault, and a rotation that could not re-anchor an online player's survival (rotate),
+-- which is a real gap. History is never pruned and the server lists newest first, so the oldest
+-- listed season is the first kind. Only the second is flagged.
+function Page:recordGap(meta)
+    local metas = self.metas or {}
+    return meta.partial == true and meta ~= metas[#metas]
+end
+
 -- The whole season, as the reader window shows it: every field the server sent, nothing
 -- shortened. A field the reply does not carry is left out instead of printed as a value.
 function Page:seasonText(meta, closed)
@@ -364,7 +376,11 @@ function Page:seasonText(meta, closed)
     if people ~= nil then
         lines[#lines + 1] = getText(T .. "Season_Participants", tostring(people))
     end
-    if meta.partial == true then lines[#lines + 1] = tr("Season_Partial") end
+    if meta.partial == true then
+        lines[#lines + 1] = self:recordGap(meta)
+            and getText(T .. "Admin_Tx_Pair", tr("Season_RecordGap"), tr("Season_RecordGapNote"))
+            or tr("Season_RecordFromInstall")
+    end
     lines[#lines + 1] = ""
     -- the opaque identifier on its own line, after a translated label: it is what gets pasted into
     -- a ticket or read back to the server
@@ -378,6 +394,7 @@ function Page:rebuild()
     local rows, selected = {}, nil
     for _, meta in ipairs(self.metas or {}) do
         local closed = meta.id ~= currentId
+        local gap = self:recordGap(meta)
         local people = intOf(meta.participants)
         local row = {
             id = meta.id,
@@ -387,10 +404,10 @@ function Page:rebuild()
                 intOf(meta.startedAt) ~= nil and stampText(intOf(meta.startedAt), self.owner.offsetMin) or "-",
                 self:endText(meta, closed),
                 people ~= nil and getText(T .. "Season_Participants", tostring(people)) or "-",
-                meta.partial == true and tr("Season_Partial") or "-",
+                gap and tr("Season_RecordGap") or "-",
             },
             tokens = { "text", closed and "textMuted" or "text", "textMuted", "textMuted",
-                "textMuted", meta.partial == true and "negative" or "textFaint" },
+                "textMuted", gap and "warn" or "textFaint" },
             detailText = self:seasonText(meta, closed),
         }
         rows[#rows + 1] = row
@@ -418,11 +435,28 @@ function Page:onRow(item)
     D.open(self, "season:" .. tostring(item.id), tr("Season_History"), item.detailText)
 end
 
+-- ----- the help reader -----
+
+-- Everything that explains rather than reports lives here, not in the band: the length rule,
+-- what a rotation does, and what the record column means.
+function Page:onHelp()
+    if D.isOpen(self, "seasons:help") then
+        D.close(self)
+    else
+        D.open(self, "seasons:help", tr("Season_Title"), tr("Season_DaysHint") .. "\n\n"
+            .. tr("Season_HelpRotate") .. "\n\n"
+            .. getText(T .. "Admin_Tx_Pair", tr("Season_RecordGap"), tr("Season_RecordGapNote")) .. "\n\n"
+            .. tr("Season_RecordFromInstall"))
+    end
+    self:layout()
+end
+
 -- ----- the summary band -----
 
--- What the band says about the season that is running, rebuilt when the state, the permission,
--- the command or the minute moves -- never per frame.
-function Page:refreshSummary()
+-- What the band says about the season that is running: one status line, and the numbers that
+-- move as pills. Rebuilt when the state, the permission, the command or the minute moves --
+-- never per frame. Outside layout a rebuilt band is laid out again (the pills are placed there).
+function Page:refreshSummary(fromLayout)
     local state = self.state
     local busy = self.isPending(COMMAND)
     local manage = self.owner:manageAllowed()
@@ -430,46 +464,40 @@ function Page:refreshSummary()
     if self.sumState == state and self.sumBusy == busy and self.sumManage == manage
         and self.sumMinute == minute and self.summary ~= nil then return end
     self.sumState, self.sumBusy, self.sumManage, self.sumMinute = state, busy, manage, minute
-    local lines = {}
+    local lines, pills = {}, {}
     local meta = self:currentMeta()
     if meta ~= nil then
-        local head = tr("Season_Current") .. "  " .. numberText(meta) .. "  " .. tr("Season_Status_Current")
-        if meta.partial == true then head = head .. "  " .. tr("Season_Partial") end
-        lines[#lines + 1] = head
+        lines[1] = tr("Season_Current") .. "  " .. numberText(meta) .. "  " .. tr("Season_Status_Current")
         local started = intOf(meta.startedAt)
         if started ~= nil then
-            lines[#lines + 1] = tr("Season_StartAt") .. "  " .. stampText(started, self.owner.offsetMin)
+            pills[#pills + 1] = { label = tr("Season_StartAt"), value = stampText(started, self.owner.offsetMin) }
         end
         local ends = intOf(meta.endsAt)
-        local endLine = tr("Season_EndAt") .. "  "
-            .. (ends ~= nil and stampText(ends, self.owner.offsetMin) or tr("Season_Manual"))
-        if ends ~= nil then
-            local left = ends - EC.now()
-            -- a deadline that has already passed is not counted down: the server closes the
-            -- season, and a negative remainder would read as a season that is still running
-            if left > 0 then
-                endLine = endLine .. "  " .. getText(T .. "Season_Remaining", U.realDurationText(left))
-            end
+        pills[#pills + 1] = { label = tr("Season_EndAt"),
+            value = ends ~= nil and stampText(ends, self.owner.offsetMin) or tr("Season_Manual") }
+        -- a deadline that has already passed is not counted down: the server closes the
+        -- season, and a negative remainder would read as a season that is still running
+        if ends ~= nil and ends - EC.now() > 0 then
+            pills[#pills + 1] = { value = getText(T .. "Season_Remaining", U.realDurationText(ends - EC.now())) }
         end
-        lines[#lines + 1] = endLine
-        lines[#lines + 1] = tr("Season_Duration") .. "  " .. daysText(meta.durationDays)
+        -- the saved length (the running season always carries the setting); the box below may
+        -- hold an unsent draft, so the two are never the same field
+        pills[#pills + 1] = { label = tr("Season_Duration"), value = daysText(meta.durationDays) }
         local people = intOf(meta.participants)
         if people ~= nil then
-            lines[#lines + 1] = getText(T .. "Season_Participants", tostring(people))
+            pills[#pills + 1] = { value = getText(T .. "Season_Participants", tostring(people)) }
         end
+        if self:recordGap(meta) then pills[#pills + 1] = { value = tr("Season_RecordGap"), token = "warn" } end
     elseif state ~= nil then
-        lines[#lines + 1] = tr("Season_Empty")
+        lines[1] = tr("Season_Empty")
     elseif self.readError ~= nil then
-        lines[#lines + 1] = U.adminErrorText(self.readError)
+        lines[1] = U.adminErrorText(self.readError)
     else
-        lines[#lines + 1] = busy and tr("Admin_Loading") or tr("Season_Empty")
+        lines[1] = busy and tr("Admin_Loading") or tr("Season_Empty")
     end
-    -- Keep the saved setting separate from an unsent draft. Missing is not the manual value 0.
-    lines[#lines + 1] = tr("Season_ConfigDays") .. "  " .. daysText(self:configuredDays())
-    lines[#lines + 1] = tr("Season_DaysHint")
     if not manage then lines[#lines + 1] = tr("Admin_Set_ManageOnly") end
-    self.summary = lines
-    if self.layoutW ~= nil and math.max(1, #lines) ~= self.summaryLines then self:layout() end
+    self.summary, self.pills = lines, pills
+    if not fromLayout and self.layoutW ~= nil then self:layout() end
 end
 
 -- ----- geometry -----
@@ -481,11 +509,11 @@ function Page:columns(inner)
     local stamp = math.max(textWidth(U.STAMP_SAMPLE), textWidth(tr("Season_StartAt")),
         textWidth(tr("Season_EndAt")), textWidth(tr("Season_Manual")))
     local specs = {
-        math.max(textWidth(tr("Season_Title")), textWidth(getText(T .. "Season_Number", "99"))),
+        math.max(textWidth(tr("Field_season")), textWidth(getText(T .. "Season_Number", "99"))),
         math.max(textWidth(tr("Season_Status_Current")), textWidth(tr("Season_Status_Closed"))),
         stamp, stamp,
         textWidth(getText(T .. "Season_Participants", "9999")),
-        textWidth(tr("Season_Partial")),
+        textWidth(tr("Season_RecordGap")),
     }
     local need = 0
     for _, value in ipairs(specs) do need = need + value + PAD end
@@ -518,17 +546,39 @@ function Page:layout()
     local bandRow = math.max(eh, ch)
     local controlsH = (oneRow and bandRow or (bandRow * 2 + 4)) + 6
 
-    self:refreshSummary()
+    -- the help chip sits at the right end of the card's title bar
+    local helpW = textWidth(self.helpButton.fullTitle) + 24
+    self.helpButton:setVisible(visible)
+    self.helpButton:setWidth(helpW)
+    self.helpButton:setHeight(ch)
+    self.helpButton:setX(math.max(PAD, w - PAD - helpW))
+    self.helpButton:setY(math.floor((title - ch) / 2))
+    self.helpButton.active = D.isOpen(self, "seasons:help")
+    U.setButtonTitle(self.helpButton, self.helpButton.fullTitle)
+
+    self:refreshSummary(true)
     local bandY = title + 2
     self.bandY = bandY
     -- the band never eats the rows: it takes only what is left over a minimum list height, down
-    -- to no line at all, and the controls under it are never the thing that gives way
+    -- to no line at all, and the controls under it are never the thing that gives way. Status
+    -- lines first, then as many pill rows as still fit; a pill row that does not fit is hidden
+    -- whole (a pill is never cut), and every value is in the season's reader anyway.
     local headerH = lh + 2
     local roomH = h - PAD - bandY - controlsH - headerH - self.list.rowHeight
-    local bandMax = roomH > 0 and math.floor(roomH / lh) or 0
-    self.summaryLines = math.max(1, #(self.summary or {}))
-    self.bandLines = math.min(self.summaryLines, bandMax)
-    local bandH = self.bandLines > 0 and (lh * self.bandLines + 4) or 0
+    self.bandLines = math.min(#(self.summary or {}), roomH > 0 and math.floor(roomH / lh) or 0)
+    local pillY = bandY + lh * self.bandLines
+    local pillRowH = U.CHIP_H + 4
+    local pillRows = math.max(0, math.floor((roomH - lh * self.bandLines) / pillRowH))
+    local px, row, used = PAD, 0, 0
+    for _, p in ipairs(self.pills or {}) do
+        local pw = U.pillWidth(p.label, p.value)
+        if px > PAD and px + pw > w - PAD then px, row = PAD, row + 1 end
+        p.x, p.y, p.shown = px, pillY + row * pillRowH, row < pillRows
+        if p.shown then used = row + 1 end
+        px = px + pw + 6
+    end
+    local bandH = lh * self.bandLines + used * pillRowH
+    if bandH > 0 then bandH = bandH + 4 end
 
     local rowY = bandY + bandH
     self.labelX, self.labelY = PAD, rowY + math.floor((math.max(eh, ch) - fontH.small) / 2)
@@ -563,6 +613,8 @@ function Page:layout()
     U.placeList(self.list, visible, PAD, listY, listW, listH)
     self.listY = listY
     self.list.cols = self:columns(math.max(80, listW - GUTTER))
+    -- the header labels, kept here so the paint allocates nothing
+    self.headers = { tr("Field_season"), "", tr("Season_StartAt"), tr("Season_EndAt"), "", "" }
     self.layoutW, self.layoutH = w, h
     self:updateEnabled()
 end
@@ -580,7 +632,10 @@ function Page:prerender()
     -- an opaque surface: this page is read against stamps and counts, and nothing behind it must
     -- show through the rows they are compared with
     U.theme:fill(self, 0, 0, w, h, "surface", "rect", 1)
-    card(self, 0, 0, w, h, fitText(tr("Season_Title"), math.max(20, w - PAD * 2), UIFont.Medium), self.titleH)
+    -- lit only while its window is up: the window's own close button never re-runs layout
+    self.helpButton.active = D.isOpen(self, "seasons:help")
+    card(self, 0, 0, w, h, fitText(tr("Season_Title"), math.max(20, self.helpButton.x - PAD * 2), UIFont.Medium),
+        self.titleH)
 
     self:refreshSummary()
     local lh = lineH()
@@ -592,6 +647,9 @@ function Page:prerender()
         y = y + lh
         shown = shown + 1
     end
+    for _, p in ipairs(self.pills or {}) do
+        if p.shown then U.drawPill(self, p.x, p.y, p.label, p.value, p.token) end
+    end
 
     text(self, fitText(tr("Season_ConfigDays"), math.max(20, self.daysEntry.x - PAD)),
         self.labelX or PAD, self.labelY or 0, "text")
@@ -601,8 +659,7 @@ function Page:prerender()
     local cols = self.list.cols
     local hy = self.headerY or 0
     U.fill(self, PAD, hy, self.list.width, lh, "well", "rect")
-    local headers = { tr("Season_Title"), "", tr("Season_StartAt"), tr("Season_EndAt"), "", "" }
-    for i, label in ipairs(headers) do
+    for i, label in ipairs(self.headers or {}) do
         local col = cols[i]
         if col ~= nil and label ~= "" then
             text(self, fitText(label, col.width), self.list.x + col.x, hy + 1, "textMuted")
@@ -652,7 +709,7 @@ function Page:keyboardTargets()
     local out = {}
     out[#out + 1] = { kind = "entry", label = tr("Season_ConfigDays"), control = self.daysEntry }
     local chips = {}
-    for _, b in ipairs({ self.applyButton, self.startButton }) do
+    for _, b in ipairs({ self.applyButton, self.startButton, self.helpButton }) do
         if b:getIsVisible() then chips[#chips + 1] = b end
     end
     if #chips > 0 then
@@ -693,7 +750,7 @@ function Page:clear()
     self.updatedAt = nil
     self.sentRead = nil
     self.selectedId = nil
-    self.summary, self.sumState, self.sumMinute = nil, nil, nil
+    self.summary, self.pills, self.sumState, self.sumMinute = nil, nil, nil, nil
     self.draftDirty = nil
     -- the length write this desk was waiting for belonged to the data that is now gone: a
     -- reply for it must not come back and clear a draft typed after the right returned

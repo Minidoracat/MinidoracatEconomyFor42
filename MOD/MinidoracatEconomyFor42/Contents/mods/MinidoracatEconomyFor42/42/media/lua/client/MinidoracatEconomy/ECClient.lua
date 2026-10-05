@@ -142,6 +142,7 @@ handlers["hello.ack"] = function(args)
     setUnclaimed(args)
     C.currencies = args.currencies or C.currencies
     if type(args.terminals) == "table" then C.terminals = args.terminals end
+    C.setMapAtms(args.atms)
     applyRadio(type(args.radio) == "table" and args.radio or nil)
     EC.log("session epoch=" .. tostring(args.epoch) .. " loadedSeq=" .. tostring(args.loadedSeq)
         .. " server=" .. tostring(args.version) .. " remoteReadOnly=" .. tostring(args.remoteReadOnly)
@@ -470,6 +471,23 @@ function C.terminalAt(x, y, z)
     return nil
 end
 
+-- Map ATMs the server has seen (ECAtmMap), from hello.ack and the `atms` push: flat
+-- {x1, y1, z1, x2, ...} on the wire, kept as { {x, y, z, kind = "map_atm"}, ... }. Navigation
+-- targets only: the trade gate never reads this list (EC.nearMapAtm asks the square).
+C.mapAtms = {}
+function C.setMapAtms(flat)
+    if type(flat) ~= "table" then return end
+    local list = {}
+    for i = 1, #flat - 2, 3 do
+        local x, y, z = flat[i], flat[i + 1], flat[i + 2]
+        if type(x) == "number" and type(y) == "number" and type(z) == "number" then
+            list[#list + 1] = { x = x, y = y, z = z, kind = "map_atm" }
+        end
+    end
+    C.mapAtms = list
+end
+handlers["atms"] = function(args) C.setMapAtms(args.list) end
+
 -- Client-side mirror of the server gate (ECTerminal.near) for enabling buttons; the server
 -- re-checks every write. Chebyshev distance on the player's level, EC.TERMINAL_RANGE tiles.
 function C.nearTerminal()
@@ -705,7 +723,9 @@ function C.deliveryText(args)
     if code == "delivery_partial" then
         local text = getText(key .. "Delivery_Partial", tostring(math.floor(done or 0)),
             tostring(math.floor(tonumber(args.remainingQty) or 0)), left)
-        if need ~= nil and need > 0 then text = text .. " " .. getText(key .. "Delivery_FreeToFinish", C.weightText(need, "up")) end
+        if need ~= nil and need > 0 then
+            text = text .. getText(key .. "Text_SentenceSep") .. getText(key .. "Delivery_FreeToFinish", C.weightText(need, "up"))
+        end
         return text
     end
     if code == "delivery_failed" then
@@ -866,25 +886,25 @@ end
 handlers["market.notice"] = function(args)
     setUnclaimed(args)
     local kind = tostring(args.kind or "")
-    local key = getTextOrNull("IGUI_MinidoracatEconomy_Market_Notice_" .. kind)
-    if key then
-        local money = C.UI and C.UI.amountText or tostring
-        local currency = args.currency ~= nil and C.currencyName(args.currency)
-            or getText("IGUI_MinidoracatEconomy_Market_CurrencyUnknown")
-        local name = C.itemLabel(args.item)
-        local qty = tostring(math.max(1, math.floor(tonumber(args.qty) or 1)))
-        local third = ""
-        if kind == "sold" or kind == "auction_sold" then
-            local price, tax = tonumber(args.price), tonumber(args.tax)
-            third = price and tax and (money(price - tax) .. " " .. currency) or "-"
-        elseif kind == "delisted" or kind == "auction_cancelled" then
-            third = (type(args.reason) == "string" and args.reason ~= "") and args.reason or "-"
-        elseif kind == "auction_bid" or kind == "auction_outbid" or kind == "auction_won"
-            or kind == "auction_refund" then
-            local price = tonumber(args.price)
-            third = price and (money(price) .. " " .. currency) or "-"
-        end
-        C.toast(getText("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, name, qty, third))
+    local money = C.UI and C.UI.amountText or tostring
+    local currency = args.currency ~= nil and C.currencyName(args.currency)
+        or getText("IGUI_MinidoracatEconomy_Market_CurrencyUnknown")
+    local third = ""
+    if kind == "sold" or kind == "auction_sold" then
+        local price, tax = tonumber(args.price), tonumber(args.tax)
+        third = price and tax and (money(price - tax) .. " " .. currency) or "-"
+    elseif kind == "delisted" or kind == "auction_cancelled" then
+        third = (type(args.reason) == "string" and args.reason ~= "") and args.reason or "-"
+    elseif kind == "auction_bid" or kind == "auction_outbid" or kind == "auction_won"
+        or kind == "auction_refund" then
+        local price = tonumber(args.price)
+        third = price and (money(price) .. " " .. currency) or "-"
+    end
+    -- the args go in the one lookup: probing the key bare makes the engine warn about %1
+    local text = getTextOrNull("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, C.itemLabel(args.item),
+        tostring(math.max(1, math.floor(tonumber(args.qty) or 1))), third)
+    if text then
+        C.toast(text)
         local note = C.deliveryText(args)
         if note then C.toast(note) end
     end
@@ -1095,9 +1115,31 @@ end
 -- Toast through the UI framework when present (family rule: capability probe, never a hard call).
 -- Notifications: three lines at most (rev 5 maxLines; an older framework ignores it and
 -- truncates), held for the player's ToastSeconds option.
+-- While the Economy Center is on screen the stack moves below the window's top band (rev 12
+-- toastAvoid): title bar, the location row with the balances, and the page's first row of actions
+-- (market / auction: the tab row and the card title). The whole window cannot be avoided - at its
+-- default size nothing fits below or beside it - and a toast over the right end of a table for a
+-- few seconds is better than one over the balances or the claim-all button. Registered once; the
+-- window is only looked up, never created, and nothing is allocated per frame.
+local toastAvoidSet = false
+local function economyWindowRect()
+    local w = C.Panel and C.Panel.window
+    if w == nil or not w:getIsVisible() then return nil end
+    local g, titleH = w.g, (C.UI and C.UI.CARD_TITLE_H) or 36
+    local band = w.height
+    if g ~= nil and g.contentY ~= nil then
+        band = g.contentY + titleH
+        if w.tab == "Market" and g.marketCardY then band = g.marketCardY + titleH
+        elseif w.tab == "Auction" and g.auctionCardY then band = g.auctionCardY + titleH end
+    end
+    return w:getAbsoluteX(), w:getAbsoluteY(), w.width, math.min(w.height, band)
+end
 function C.toast(message)
     local ui = MinidoracatUI and MinidoracatUI.v1
     if ui and ui.API_MAJOR == 1 and ui.CAPABILITIES and ui.CAPABILITIES.toast == true then
+        if not toastAvoidSet and (ui.API_REVISION or 0) >= 12 and ui.CAPABILITIES.toastAvoid == true then
+            toastAvoidSet = pcall(ui.Toast.setAvoid, "MinidoracatEconomyFor42", economyWindowRect)
+        end
         local hold = EC.Options and EC.Options.toastHoldMs() or 5000
         pcall(ui.Toast.show, { title = getText("IGUI_MinidoracatEconomy_Toast_Title"), message = message, holdMs = hold, maxLines = 3 })
     end
@@ -1203,6 +1245,7 @@ local function onGameStart()
     C.marketHistory = nil
     C.auctionHistory = nil
     C.terminals = {}
+    C.mapAtms = {}
     Events.OnTick.Add(firstTick)
 end
 

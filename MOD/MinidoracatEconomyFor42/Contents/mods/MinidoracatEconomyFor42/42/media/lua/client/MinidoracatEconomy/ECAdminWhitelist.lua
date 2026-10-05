@@ -78,11 +78,10 @@ local function lineH() return fontH.small + 6 end
 local function entryH() return math.max(26, fontH.small + 12) end
 local function chipH() return math.max(24, fontH.small + 6) end
 
--- DisplayCategory name the way the vanilla inventory paints it (ISInventoryPane.lua:2533): the
--- engine's own IGUI_ItemCat_* key, falling back to the raw script category.
+-- DisplayCategory name the way the vanilla inventory paints it (U.itemCategoryText: the engine's
+-- IGUI_ItemCat_* key, its misspelt VehicleMantenance included, else the raw script category).
 local function itemCategoryName(category)
-    local key = tostring(category or "-")
-    return getTextOrNull("IGUI_ItemCat_" .. key) or key
+    return U.itemCategoryText(category)
 end
 
 local function paintIcon(cell, e)
@@ -91,12 +90,22 @@ local function paintIcon(cell, e)
     if not ok then e.icon = nil end
 end
 
--- The checkbox of a category row. A box, and a filled core when the category is allowed; the word
--- beside it says the same thing, so the state never depends on reading a shape.
+-- The checkbox of a category row: a square box with vanilla's tick (ISTickBox) when the category is
+-- allowed -- a multi-select, never a radio dot; the word beside it says the same thing, so the
+-- state never depends on reading a shape. The texture is cached on P (no top-level local).
 local function paintCheck(el, x, y, size, on, off)
-    fill(el, x, y, size, size, on and "selected" or "well", "round")
-    border(el, x, y, size, size, off and "border" or "accent", "round")
-    if on then fill(el, x + 4, y + 4, math.max(2, size - 8), math.max(2, size - 8), "accent", "round") end
+    fill(el, x, y, size, size, on and "selected" or "well", "rect")
+    border(el, x, y, size, size, off and "border" or "accent", "rect")
+    if not on then return end
+    if P.tickTexture == nil then
+        P.tickTexture = getTexture("media/ui/inventoryPanes/Tickbox_Tick.png") or false
+    end
+    local c = U.color(off and "textFaint" or "accent")
+    if P.tickTexture and c then
+        el:drawTextureScaled(P.tickTexture, x + 2, y + 2, size - 4, size - 4, c.a or 1, c.r, c.g, c.b)
+    else
+        fill(el, x + 4, y + 4, math.max(2, size - 8), math.max(2, size - 8), "accent", "rect")
+    end
 end
 
 -- ---------- the rules themselves (pure; no UI, no engine) ----------
@@ -695,6 +704,13 @@ function Page:rebuildCats()
                 or string.find(string.lower(cat), query, 1, true) ~= nil then
                 picked[#picked + 1] = { cat = cat, label = label, count = n }
             end
+        end
+        -- two engine categories can read the same (vanilla's misspelt VehicleMantenance beside
+        -- VehicleMaintenance): each is its own rule, so a shared name carries its id
+        local seen = {}
+        for _, e in ipairs(picked) do seen[e.label] = (seen[e.label] or 0) + 1 end
+        for _, e in ipairs(picked) do
+            if seen[e.label] > 1 then e.label = e.label .. " (" .. e.cat .. ")" end
         end
         EC.sortSafe(picked, function(a, b) return a.label < b.label end)
         self.catMatched = #picked

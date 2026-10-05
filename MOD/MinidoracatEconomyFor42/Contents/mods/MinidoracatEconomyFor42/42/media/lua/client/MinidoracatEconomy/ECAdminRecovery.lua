@@ -83,6 +83,9 @@ local newEntry, entryText, setEntryText = U.newEntry, U.entryText, U.setEntryTex
 
 -- Stable action order; each batch uses only selected records permitting that action.
 local DECISIONS = { "approve", "restore", "remove", "discard" }
+-- The decisions that destroy (the held items, or the claim itself) and cannot be undone: their
+-- buttons use the danger style. Both still go through the owner's confirmation with a reason.
+P.DANGER = { remove = true, discard = true }
 
 local ROW_ACTION_GAP = 6
 local QUERY_DEBOUNCE_MS = 650   -- the account filter asks once the typing stops, never per key
@@ -334,7 +337,7 @@ function RecoveryCell:render()
     -- dialog); the row's own `actions` flags decide which decisions exist at all
     local write = list.optionsDisabled ~= true
     for _, a in ipairs(e.actions) do
-        R.put(self, a.id, a.label, a.x, a.y, a.w, a.h, write)
+        R.put(self, a.id, a.label, a.x, a.y, a.w, a.h, write, a.style)
     end
     R.finish(self)
 end
@@ -420,9 +423,11 @@ function Page:createChildren()
 
     self.pickPageButton = chip(tr("Admin_Rec_PickPage"), Page.onPickPage)
     self.clearPicksButton = chip(tr("Admin_Rec_ClearPicks"), Page.onClearPicks)
+    -- one gold button per view: the re-check (whole server or this account; only one of the two is
+    -- ever on the strip). Destroying decisions (remove / discard) cannot be undone and are danger.
     self.batchButtons = {}
     for _, id in ipairs(DECISIONS) do
-        local b = chip(decisionLabel(id), Page.onBatch, "primary")
+        local b = chip(decisionLabel(id), Page.onBatch, P.DANGER[id] and "danger" or "chip")
         b.internal = id
         self.batchButtons[#self.batchButtons + 1] = b
     end
@@ -436,6 +441,11 @@ function Page:createChildren()
     self.prevButton.internal = -1
     self.nextButton = chip(tr("Market_Next"), Page.onPage)
     self.nextButton.internal = 1
+    -- the title row's "help" chip (the policy and the operating hints) and the empty list's one
+    -- next step; the latter is placed, titled and shown by the paint, hidden whenever rows exist
+    self.helpButton = chip(tr("Admin_Help"), Page.onHelp)
+    self.emptyButton = chip(tr("Admin_Refresh"), Page.onEmptyAction)
+    self.emptyButton:setVisible(false)
     self:layout()
 end
 
@@ -591,6 +601,31 @@ function Page:onBack()
     if self.scope == "all" then return end
     self.owner.message = nil
     self:showAll()
+end
+
+-- The "help" chip: what the page holds, what each number counts, how picking works, and the
+-- save watermark as the last read stated it. One page line stays on screen; the rest is here.
+function Page:onHelp()
+    self:refreshStatus()
+    local lines = { tr("Admin_Rec_HelpIntro"), tr("Admin_Rec_AccountsHint"), tr("Admin_Rec_Hint"),
+        tr("Admin_Rec_BatchHint") }
+    if self.durableLine ~= nil then lines[#lines + 1] = self.durableLine end
+    if self.noWatermark then lines[#lines + 1] = tr("Recovery_NoWatermark") end
+    D.open(self, "recovery:help", tr("Admin_Help"), table.concat(lines, "\n\n"))
+end
+
+-- The empty list's one next step: an account view goes back to the whole server, a filter that
+-- matched nothing is cleared, and an empty server is asked again.
+function Page:onEmptyAction()
+    if self.owner.dialog ~= nil or self.job ~= nil then return end
+    if self.scope ~= "all" then return self:onBack() end
+    self.owner.message = nil
+    if self.query ~= nil then
+        setEntryText(self.searchEntry, "")
+        self:applyQuery()
+        return
+    end
+    self:refresh()
 end
 
 -- Escape: the queue answers first. Nothing else on this page is a popup, so the key is handed
@@ -1220,6 +1255,8 @@ function Page:statusDetails()
     local lines = {}
     local message = self.owner.message
     if message and message.text then lines[#lines + 1] = message.text end
+    for _, p in ipairs(self.pills or {}) do lines[#lines + 1] = getText(T .. "Admin_Tx_Pair", p.label, p.value) end
+    if self.durableLine ~= nil then lines[#lines + 1] = self.durableLine end
     for _, line in ipairs(self.statusText or {}) do lines[#lines + 1] = line end
     for _, account in ipairs(self.snapshot and self.snapshot.accounts or {}) do
         local name = tostring(account.username) .. " (" .. tr(account.online and "Admin_Player_Online" or "Admin_Player_Offline") .. ")"
@@ -1258,7 +1295,7 @@ function Page:rowStrip(rec, width, height, pickW)
             local label = decisionLabel(id)
             local bw = math.min(textWidth(label) + 20, cap)
             x = x - bw
-            out[#out + 1] = { id = id, label = label, x = x, y = y, w = bw, h = h }
+            out[#out + 1] = { id = id, label = label, x = x, y = y, w = bw, h = h, style = P.DANGER[id] and "danger" or nil }
             x = x - ROW_ACTION_GAP
         end
     end
@@ -1270,7 +1307,9 @@ function Page:recordRow(rec, width, rowHeight, pickW, labels)
     local lh = lineH()
     local actions, limit, pick = self:rowStrip(rec, width, rowHeight, pickW)
     local qty, present = intOf(rec.qty), intOf(rec.presentQty)
-    local qtyText = qty ~= nil and amountText(qty) or "-"
+    -- a record without a quantity (a money receipt, an unread inventory) shows no figure: a lone
+    -- accent dash at the row's end reads as a value
+    local qtyText = qty ~= nil and amountText(qty) or (present ~= nil and "-" or "")
     if present ~= nil and present ~= qty then
         qtyText = qtyText .. " / " .. amountText(present)
     end
@@ -1584,7 +1623,8 @@ function Page:rebuild()
         end
     end
     if not anchorFound then self.pickAnchor = nil end
-    if self.selected or D.isOpen(self, "recovery:report") or D.isOpen(self, "recovery:status") then return end
+    if self.selected or D.isOpen(self, "recovery:report") or D.isOpen(self, "recovery:status")
+        or D.isOpen(self, "recovery:help") then return end
     D.close(self)
 end
 
@@ -1655,6 +1695,14 @@ function Page:layout()
     self.searchEntry:setHeight(eh)
     self.searchEntry:setX(math.max(0, w - PAD - searchW))
     self.searchEntry:setY(math.max(0, math.floor((title - eh) / 2)))
+    -- the "help" chip sits left of the filter (or at the right edge when there is none)
+    local help = self.helpButton
+    help:setWidth(textWidth(help.fullTitle or "") + 24)
+    help:setHeight(ch)
+    help:setX(math.max(0, (all and self.searchEntry.x or w - PAD) - (all and 6 or 0) - help.width))
+    help:setY(math.max(0, math.floor((title - ch) / 2)))
+    help:setVisible(visible)
+    if not visible then self.emptyButton:setVisible(false) end
 
     local counts = self:decisionCounts()
     for _, b in ipairs(self.batchButtons) do
@@ -1682,16 +1730,25 @@ function Page:layout()
     self.footY = footY
     self.pagerY = footY - lh - 4
 
-    -- Status band under the title: the server-wide totals, the selection, a queue in progress,
-    -- the save watermark and, when they apply, the offline / read-only / read-failure limits. The
-    -- band never eats the rows: it takes only what is left over a minimum list height, down to no
-    -- line at all, and its lines are ordered so the hints are what a very large font drops first.
-    local bandY = title + 2
+    -- The numbers first: one row of pills under the title (refreshStatus fills self.pills), wrapped
+    -- onto further rows when the window is narrow, never cut. Then the band: a queue in progress,
+    -- the selection and, when they apply, the offline / read-only / read-failure limits, closing on
+    -- the one operating hint. The band never eats the rows: it takes only what is left over a
+    -- minimum list height, down to no line at all, and the hint is the last line to be dropped.
+    local px, py, pillsH = PAD, title + 4, 0
+    for _, p in ipairs(self.pills or {}) do
+        local pw = U.pillWidth(p.label, p.value)
+        if px > PAD and px + pw > PAD + inner then px, py = PAD, py + U.CHIP_H + 4 end
+        p.x, p.y = px, py
+        px = px + pw + 6
+        pillsH = py + U.CHIP_H + 4 - title
+    end
+    local bandY = title + 2 + pillsH
     local roomH = self.pagerY - 8 - bandY - self.list.rowHeight
     local bandMax = roomH > 0 and math.floor(roomH / lh) or 0
     -- `statusLines` is what the band asked for, `bandLines` what it got: refreshStatus compares
     -- against the former, so one relayout settles it and a capped band never loops
-    self.statusLines = math.max(2, #(self.statusText or {}))
+    self.statusLines = math.max(1, #(self.statusText or {}))
     self.bandLines = math.min(self.statusLines, bandMax)
     local bandH = self.bandLines > 0 and (lh * self.bandLines + 4) or 0
     self.bandY = bandY
@@ -1743,47 +1800,65 @@ function Page:refreshStatus()
     if (self.staleDropped or 0) > 0 then
         lines[#lines + 1] = getText(T .. "Admin_Rec_StaleDropped", tostring(self.staleDropped))
     end
+    -- The numbers, each a pill named by what it really counts. "Accounts" is every account the
+    -- server named: holding a record OR online with a transfer still waiting for a save, so it
+    -- may be above zero while the record count (and the list) is zero.
+    local pills = {}
+    local function pill(key, value, token)
+        pills[#pills + 1] = { label = tr(key), value = value, token = token or "text" }
+    end
+    local unknown = tr("Admin_Rec_QuantityUnknown")
     local summary = self:summary()
+    local status = snap and type(snap.status) == "table" and snap.status or nil
     if summary ~= nil then
-        lines[#lines + 1] = getText(T .. "Admin_Rec_SumHeld",
-            tostring(intOf(summary.accounts) or 0), tostring(intOf(summary.held) or 0))
-        lines[#lines + 1] = getText(T .. "Admin_Rec_SumOnline",
-            tostring(intOf(summary.onlineAccounts) or 0), tostring(intOf(summary.offlineAccounts) or 0))
+        local held = intOf(summary.held) or 0
         local open = intOf(summary.open)
-        if open ~= nil then
-            lines[#lines + 1] = getText(T .. "Admin_Rec_SumOpen", tostring(open))
+        pill("Admin_Rec_PillAccounts", tostring(intOf(summary.accounts) or 0))
+        pill("Admin_Rec_PillHeld", tostring(held), held > 0 and "warn" or "text")
+        pill("Admin_Rec_PillOnline", tostring(intOf(summary.onlineAccounts) or 0) .. " / "
+            .. tostring(intOf(summary.offlineAccounts) or 0))
+        pill("Admin_Rec_PillOpen", open ~= nil and tostring(open) or unknown)
+    elseif status ~= nil then
+        local held = intOf(status.held)
+        local open, maximum = intOf(status.open), intOf(status.max)
+        pill("Admin_Rec_PillHeld", held ~= nil and tostring(held) or unknown, (held or 0) > 0 and "warn" or "text")
+        -- an offline account's save is not in memory: its open transfers are unknown, not 0
+        if open ~= nil and maximum ~= nil and self:online() then
+            pill("Admin_Rec_PillOpen", tostring(open) .. " / " .. tostring(maximum), open >= maximum and "warn" or "text")
         else
-            lines[#lines + 1] = tr("Admin_Rec_SumOpenUnknown")
+            pill("Admin_Rec_PillOpen", unknown)
         end
     end
-    local status = snap and type(snap.status) == "table" and snap.status or nil
-    if status then
-        local held = intOf(status.held)
-        if held ~= nil and self.scope ~= "all" then
-            lines[#lines + 1] = getText(T .. "Admin_Player_Recovery", tostring(held))
-        end
-        local open, maximum = intOf(status.open), intOf(status.max)
-        if open and maximum and open > 0 then
-            lines[#lines + 1] = getText(T .. "Recovery_WaitingSave", tostring(open), tostring(maximum))
-        end
+    self.durableLine, self.noWatermark = nil, false
+    if status ~= nil then
         local seq = intOf(status.durableSeq)
-        local durable = pair("Admin_Sys_Durable", seq ~= nil and amountText(seq) or tr("Admin_Sys_DurableNone"))
-        if str(status.durableStatus) then durable = durable .. "  " .. durableText(status.durableStatus) end
-        lines[#lines + 1] = durable
-        if status.durableSource ~= "companion" then lines[#lines + 1] = tr("Recovery_NoWatermark") end
+        local seqText = seq ~= nil and amountText(seq) or tr("Admin_Sys_DurableNone")
+        local state = str(status.durableStatus)
+        -- with no sequence yet the status alone says it ("no save confirmation file"), not "none  none"
+        local stateText = state and (seq ~= nil and (seqText .. "  " .. durableText(state)) or durableText(state)) or seqText
+        self.durableLine = pair("Admin_Sys_Durable", stateText)
+        self.noWatermark = status.durableSource ~= "companion"
+        if self.noWatermark then
+            pill("Admin_Rec_PillWatermark", tr("Admin_Rec_WatermarkNone"), "warn")
+        elseif state ~= nil and state ~= "confirmed" then
+            pill("Admin_Rec_PillWatermark", stateText, "warn")
+        else
+            pill("Admin_Rec_PillWatermark", seqText)
+        end
     elseif busy then
         lines[#lines + 1] = tr("Admin_Loading")
     end
+    self.pills = pills
     if snap ~= nil and self.scope ~= "all" and snap.online ~= true then
         lines[#lines + 1] = tr("Admin_Rec_Offline")
     end
     if self:anyReadError() then lines[#lines + 1] = tr("Admin_Rec_ReadErrorNote") end
     if not perm then lines[#lines + 1] = tr("Admin_Rec_ReadOnlyNote") end
-    if self.scope == "all" then lines[#lines + 1] = tr("Admin_Rec_AccountsHint") end
-    lines[#lines + 1] = tr("Admin_Rec_Hint")
-    lines[#lines + 1] = tr("Admin_Rec_BatchHint")
+    lines[#lines + 1] = tr("Admin_Rec_ClickHint")
     self.statusText = lines
-    if self.layoutW ~= nil and math.max(2, #lines) ~= self.statusLines then self:layout() end
+    -- the pills and the band both shape the page: one relayout places them (layout never calls
+    -- back in here, so this cannot loop)
+    if self.layoutW ~= nil then self:layout() end
 end
 
 function Page:anyReadError()
@@ -1802,34 +1877,51 @@ function Page:prerender()
     if self.scope ~= "all" then
         heading = getText(T .. "Admin_Rec_Title", tostring(self.username or "-"))
     end
-    local right = self.searchEntry:getIsVisible() and self.searchEntry.x or w
+    local right = self.helpButton:getIsVisible() and self.helpButton.x or w
     card(self, 0, 0, w, h, fitText(heading, math.max(20, right - PAD * 2), UIFont.Medium), self.titleH)
 
     self:refreshStatus()
+    for _, p in ipairs(self.pills or {}) do
+        if p.x ~= nil then U.drawPill(self, p.x, p.y, p.label, p.value, p.token) end
+    end
     local lh = lineH()
     local y = self.bandY or (CARD_TITLE_H + 2)
     local shown = 0
     for _, line in ipairs(self.statusText or {}) do
-        if shown >= (self.bandLines or 2) or y + lh > (self.listY or h) then break end
+        if shown >= (self.bandLines or 1) or y + lh > (self.listY or h) then break end
         text(self, fitText(line, math.max(20, w - PAD * 2)), PAD, y, "textMuted")
         y = y + lh
         shown = shown + 1
     end
 
+    -- An empty answer says what belongs here and offers its one next step (render paints it over
+    -- the list); loading and a failed read stay one line, because neither is an empty list.
+    local empty = false
     if #(self.rows or {}) == 0 then
-        local body
-        if self.readError ~= nil then
-            body = U.adminErrorText(self.readError)
-        elseif self.isPending("admin.recovery") or self.snapshot == nil then
-            body = tr("Admin_Loading")
-        elseif self.scope == "all" then
-            body = self.query ~= nil and getText(T .. "Admin_Rec_NoMatch", self.query)
-                or tr("Admin_Rec_EmptyAll")
+        if self.readError ~= nil or self.isPending("admin.recovery") or self.snapshot == nil then
+            local body = self.readError ~= nil and U.adminErrorText(self.readError) or tr("Admin_Loading")
+            text(self, fitText(body, math.max(20, w - PAD * 2)), PAD * 2, (self.listY or 0) + 4, "textFaint")
         else
-            body = tr("Admin_Rec_Empty")
+            empty = true
+            local title, body, label = tr("Admin_Rec_EmptyTitle"), tr("Admin_Rec_EmptyBody"), tr("Admin_Refresh")
+            if self.scope ~= "all" then
+                body, label = tr("Admin_Rec_Empty"), tr("Admin_Rec_Back")
+            elseif self.query ~= nil then
+                title, body = tr("Admin_Rec_NoMatchTitle"), getText(T .. "Admin_Rec_NoMatch", self.query)
+                label = tr("Market_ClearFilters")
+            end
+            local list, b = self.list, self.emptyButton
+            local by = U.emptyState(self, "list", list.x, list.y, list.width, list.height, title, body)
+            if b.fullTitle ~= label then
+                b:setWidth(textWidth(label) + 24)
+                U.setButtonTitle(b, label)
+            end
+            b:setX(list.x + math.floor((list.width - b.width) / 2))
+            b:setY(by)
         end
-        text(self, fitText(body, math.max(20, w - PAD * 2)), PAD * 2, (self.listY or 0) + 4, "textFaint")
     end
+    self.emptyShown = empty
+    if self.emptyButton:getIsVisible() ~= empty then self.emptyButton:setVisible(empty) end
 
     local snap = self.snapshot
     local label = getText(T .. "Filter_Page", tostring(self.page or 1), tostring(self:pageCount()))
@@ -1839,7 +1931,9 @@ function Page:prerender()
     textRight(self, label, w - PAD, self.pagerY or 0, "textMuted")
 end
 
-function Page:render() end
+function Page:render()
+    if self.emptyShown then U.drawEmptyState(self, "list") end
+end
 
 -- Nothing behind this page is clickable while it is up: every mouse event that reaches its own
 -- surface stops here (the children are asked first, so the list and the chips still work).
@@ -1886,6 +1980,8 @@ function Page:updateEnabled()
     local page = self.page or 1
     self.prevButton:setEnable(read and not busy and not job and page > 1)
     self.nextButton:setEnable(read and not busy and not job and page < pages)
+    self.helpButton:setEnable(not modal)
+    self.emptyButton:setEnable(read and not busy and not job)
 end
 
 function Page:keyboardTargets()
@@ -1894,11 +1990,14 @@ function Page:keyboardTargets()
     if self.searchEntry:getIsVisible() then
         out[#out + 1] = { kind = "entry", label = tr("Admin_Rec_SearchHint"), control = self.searchEntry }
     end
+    out[#out + 1] = { kind = "button", label = tr("Admin_Help"), control = self.helpButton }
     out[#out + 1] = { kind = "list", label = tr("Admin_Rec_List"), control = self.list }
     local actions = R.targets(self.list)
     if #actions > 0 then
         out[#out + 1] = { kind = "group", label = tr("Admin_Rec_Actions"), controls = actions }
     end
+    -- the empty list's next step; shown and hidden by the paint, and the ring skips it while hidden
+    out[#out + 1] = { kind = "button", label = self.emptyButton.fullTitle, control = self.emptyButton }
     local chips = {}
     for _, b in ipairs(self:footChips()) do
         if b:getIsVisible() then chips[#chips + 1] = b end

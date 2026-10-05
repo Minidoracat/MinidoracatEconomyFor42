@@ -62,6 +62,7 @@ local EDGE = 10             -- icon inset of an expanded row
 local MIN_ROW = 24          -- hit-area floor
 local ROW_GAP = 4
 local UTIL_GAP = 14         -- the break above the utility group
+local GROUP_GAP = 9         -- a group's room on the rail (and on a strip too short for captions)
 local ACTIVE_BAR = 3
 local TOGGLE_ICON = 16
 
@@ -89,6 +90,9 @@ local function rowRender(b)
     else
         token = "textMuted"
     end
+    -- an entry that reports a state of its own (the player window's unverified identity) says it
+    -- in that colour; the selection band and the disabled shade still win
+    if b.stateToken and not b.active then token = b.stateToken end
     if not b.enable then token = "textFaint" end
 
     local collapsed = nav.collapsed
@@ -135,12 +139,22 @@ local function toggleRender(b)
     for i = 0, 2 do b:drawRect(bx, by + i * 4, bw, 2, c.a, c.r, c.g, c.b) end
 end
 
--- The one thing the strip paints for itself: the hairline above the utility group, so "settings
--- and the other window" read as a group of their own instead of two more pages.
+-- What the strip paints for itself: the group captions (a hairline on the narrow rail) and the
+-- hairline above the utility group, so "settings and the other window" read as a group of their
+-- own instead of two more pages. Neither is a control: the keyboard walks the rows only.
 function Nav:prerender()
+    local c = color("border")
+    local heads = self.heads
+    for i = 1, self.headCount do
+        local head = heads[i]
+        if head.label then
+            text(self, head.label, EDGE, head.y + head.h - fontH.small - 2, "textFaint", UIFont.Small)
+        elseif head.y > 0 then
+            self:drawRect(PAD, head.y + math.floor(head.h / 2), math.max(0, self.width - PAD * 2), 1, c.a, c.r, c.g, c.b)
+        end
+    end
     local y = self.utilLine
     if y == nil then return end
-    local c = color("border")
     self:drawRect(PAD, y, math.max(0, self.width - PAD * 2), 1, c.a, c.r, c.g, c.b)
 end
 
@@ -190,12 +204,14 @@ end
 -- Collapsed is a constant; expanded is measured from the labels that are actually visible, so a
 -- permission the player does not hold never widens the strip. Bounded both ways: a language with
 -- short words still gets a strip that reads as one, a long one never eats the table beside it.
+-- A row that may carry a count (`navBadgeSlot`, painted by the owner after the strip) keeps the
+-- widest bubble's room clear of its label: N.badgeRoom().
 function Nav:widthFor(windowWidth)
     if O.navigationCollapsed(self.preference) then return RAIL_W end
     local widest = 0
     for _, b in ipairs(self.buttons) do
         if b:getIsVisible() then
-            local tw = textWidth(b.navTitle, b.font)
+            local tw = textWidth(b.navTitle, b.font) + (b.navBadgeSlot and N.badgeRoom() or 0)
             if tw > widest then widest = tw end
         end
     end
@@ -214,7 +230,8 @@ function Nav:place(b, y, w, rowH)
     if self.collapsed then
         b:setTitle("")   -- icon only; fullTitle keeps the words for the tooltip and the caption
     else
-        b:setTitle(fitText(b.navTitle, w - (EDGE + ICON + ICON_GAP) - PAD, b.font))
+        b:setTitle(fitText(b.navTitle, w - (EDGE + ICON + ICON_GAP) - PAD
+            - (b.navBadgeSlot and N.badgeRoom() or 0), b.font))
     end
 end
 
@@ -230,28 +247,50 @@ function Nav:layout(width, height)
     self.collapsed = O.navigationCollapsed(self.preference)
     self:syncToggle()
     self.utilLine = nil
+    self.headCount = 0
 
+    -- `navGroup` (a caption) on a row starts a group there; a strip without any is laid out
+    -- exactly as before
     local main, util = {}, {}
+    local groups = 0
     for _, b in ipairs(self.buttons) do
         if b:getIsVisible() then
             if b.navUtility then util[#util + 1] = b else main[#main + 1] = b end
+            if b.navGroup and not b.navUtility then groups = groups + 1 end
         end
     end
     local n = #main + #util
     if n == 0 then return end
 
     local split = (#main > 0 and #util > 0) and UTIL_GAP or 0
+    local captions = groups > 0 and not self.collapsed
+    local headH = captions and (fontH.small + 6) or (groups > 0 and GROUP_GAP or 0)
     local gap = ROW_GAP
-    local room = math.floor((h - gap * (n - 1) - split) / n)
+    local room = math.floor((h - gap * (n - 1) - split - groups * headH) / n)
     if room < MIN_ROW then
         gap = 0
-        room = math.floor((h - split) / n)
+        room = math.floor((h - split - groups * headH) / n)
+    end
+    -- too short for captions: the groups keep a hairline and the rows keep their hit area
+    if room < MIN_ROW and captions then
+        captions, headH = false, GROUP_GAP
+        room = math.floor((h - split - groups * headH) / n)
     end
     local rowH = math.max(MIN_ROW, math.min(fontH.small + 12, room))
     if rowH > room then rowH = math.max(1, room) end
 
     local y = 0
+    local heads = self.heads
     for _, b in ipairs(main) do
+        if b.navGroup then
+            local k = self.headCount + 1
+            local head = heads[k] or {}
+            heads[k] = head
+            head.y, head.h = y, headH
+            head.label = captions and fitText(b.navGroup, w - EDGE - PAD, UIFont.Small) or nil
+            self.headCount = k
+            y = y + headH
+        end
         self:place(b, y, w, rowH)
         y = y + rowH + gap
     end
@@ -287,18 +326,29 @@ function Nav:keyboardTargets()
         if b:getIsVisible() and b.navUtility then controls[#controls + 1] = b end
     end
     if #controls > 0 then
-        out[#out + 1] = { kind = "group", controls = controls, label = self.groupLabel }
+        -- The caption under a focused row would cover the next row's icon (rev 12 captionSide):
+        -- the narrow rail names the page beside the icon, the wide one already shows the word.
+        out[#out + 1] = { kind = "group", controls = controls, label = self.groupLabel,
+            captionSide = O.navigationCollapsed(self.preference) and "right" or "none" }
     end
     return out
 end
 
 -- ---------- module API ----------
 
+-- The room a count bubble (ECPanelWidgets drawBadge, "99+" at most) takes at a row's right end.
+function N.badgeRoom()
+    return math.max(18, fontH.small + 6, textWidth("99+") + 8) + 4
+end
+
 -- create(owner, buttons, iconById, preference) -> the strip, initialised and instantiated but not
 -- added: the owner adds it where it wants it and calls layout(width, height) from its own.
 --
 --   buttons     existing button instances, in the order they should read. `navUtility = true`
---               moves one into the bottom group without changing its order within it.
+--               moves one into the bottom group without changing its order within it;
+--               `navGroup = "<caption>"` starts a group at that row (a caption above it on the wide
+--               strip, a hairline on the rail; never focusable); `navBadgeSlot = true` keeps
+--               N.badgeRoom() of the row clear for a count the owner paints.
 --   iconById    button.internal -> framework icon key. A missing entry is not an error.
 --   preference  "player" or "admin" — which of the two saved collapse states this strip follows.
 --
@@ -310,6 +360,7 @@ function N.create(owner, buttons, iconById, preference)
     nav.owner = owner
     nav.preference = preference == "admin" and "admin" or "player"
     nav.buttons = {}
+    nav.heads, nav.headCount = {}, 0   -- the group captions, laid out by layout()
     nav.groupLabel = getText(T .. "Kb_Group_Nav")
     nav:initialise()
     nav:instantiate()   -- it adopts children of its own, so it needs its java object now
