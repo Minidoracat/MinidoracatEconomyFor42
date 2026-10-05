@@ -1,7 +1,8 @@
--- MinidoracatEconomyFor42 — floating entry button (client), thin wrapper over
--- MinidoracatUI.v1.FloatButton (capability probe; no framework -> no button, the hotkey still works).
--- Position persists through ISLayoutManager (layout.ini): saved the moment a drag is released,
--- and re-applied per resolution when the screen size changes.
+-- MinidoracatEconomyFor42 — entry button (client). With the framework's family toolbar
+-- (MinidoracatUI.v1 CAPABILITIES.dock, rev 13) the entry is one Dock slot and no button of our own
+-- exists; otherwise a thin wrapper over MinidoracatUI.v1.FloatButton (no framework -> no button,
+-- the hotkey still works). The fallback button's position persists through ISLayoutManager
+-- (layout.ini): saved the moment a drag is released, re-applied per resolution on a screen change.
 
 require "ISUI/ISLayoutManager"
 
@@ -85,6 +86,37 @@ function F.tooltip()
     return getText("IGUI_MinidoracatEconomy_Float_Tooltip")
 end
 
+-- Dock slot. Callbacks run every frame (framework pcall): no tables, module lookups at call time.
+local function unclaimed() return math.floor(tonumber(C.unclaimed) or 0) end
+F.dockSpec = {
+    id = "economy",
+    order = 30,
+    label = function() return getText("IGUI_MinidoracatEconomy_Title") end,
+    bind = "MinidoracatEconomy_Toggle",
+    icon = ICON_PATH,
+    onClick = function() C.Panel.toggle() end,
+    isActive = function()
+        local win = C.Panel and C.Panel.window
+        return win ~= nil and win:getIsVisible() == true
+    end,
+    getBadge = unclaimed,
+    getStatus = function()
+        local n = unclaimed()
+        if n > 0 then return getText("IGUI_MinidoracatEconomy_Float_TooltipMail", tostring(n)) end
+        return nil
+    end,
+    -- Same policy that decides whether the fallback button exists: multiplayer clients only.
+    isAvailable = function() return isClient() end,
+}
+
+-- Registered at load (the framework loads first: require= and Mods= order). A false register or an
+-- older framework keeps the FloatButton path below unchanged.
+do
+    local ui = MinidoracatUI and MinidoracatUI.v1
+    F.docked = ui ~= nil and ui.API_MAJOR == 1 and ui.CAPABILITIES ~= nil and ui.CAPABILITIES.dock == true
+        and ui.Dock ~= nil and ui.Dock.register(F.dockSpec) == true
+end
+
 -- Reject non-finite saved coordinates; the widget clamps finite out-of-bounds values.
 local function coord(value)
     local number = tonumber(value)
@@ -147,7 +179,7 @@ function F.onResolutionChange()
 end
 
 local function onGameStart()
-    if not isClient() then return end
+    if F.docked or not isClient() then return end
     F.ensure()
 end
 Events.OnGameStart.Add(onGameStart)

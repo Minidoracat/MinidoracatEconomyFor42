@@ -1109,6 +1109,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: map ATMs (scenario NA: 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText cuts Chinese / Japanese at the character, English at the space (TX-1b)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the admin overview's counts on admin.system (scenario 51: equal to the reconciliation summary, none on a refusal; FS: identity counts equal the identity page's status)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText never starts a line with closing punctuation (TX-1c)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the family toolbar (scenario DK: one Dock entry and no button of our own, badge and mail status, open state / click / MP-only, the FloatButton fallback without the capability or on a refused register)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20451,6 +20452,81 @@ worldObjects["110,100,0"] = nil
 require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
 getPlayer, getWorldMarkers, getTexture, MinidoracatMiniMapAPI = saved.getPlayer, saved.getWorldMarkers, saved.getTexture, saved.api
 ISWorldMap_instance, getPlayerMiniMap = saved.world, saved.mini
+end)()
+
+-- DK: the entry button joins the framework's family toolbar (MinidoracatUI rev 13 Dock) when the
+-- capability is there and registration succeeds; otherwise the standalone FloatButton is unchanged.
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client, events = Events,
+    isClient = isClient, getTexture = getTexture, getCore = getCore, layout = ISLayoutManager, ui = MinidoracatUI }
+local added = {}   -- the module's own handlers, kept off the shared event lists
+Events = setmetatable({}, { __index = function(_, name) return { Add = function(fn) added[name] = fn end } end })
+local dict = EC.jsonDecode(io.open(MEDIA .. "/shared/Translate/EN/IG_UI.json", "rb"):read("*a"))
+getTextOrNull = function(key, ...)
+    local s, args = dict[key], { ... }
+    return s and (string.gsub(s, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end)) or nil
+end
+getText = function(key, ...) return getTextOrNull(key, ...) or key end
+require = function() end
+getTexture = function(path) return { path = path } end
+getCore = function() return { getScreenWidth = function() return 1920 end, getScreenHeight = function() return 1080 end } end
+local mp = true
+isClient = function() return mp end
+local layouts = 0
+ISLayoutManager = { RegisterWindow = function() layouts = layouts + 1 end, TryRestore = function() end, OnPostSave = function() end }
+local regs, buttons, accept = {}, 0, true
+local function framework(dock)
+    local button = { setVisible = function() end, setPosition = function() end }
+    MinidoracatUI = { v1 = { API_MAJOR = 1, CAPABILITIES = { floatButton = true, dock = dock },
+        Theme = { create = function() return { colors = {} } end },
+        FloatButton = { new = function() buttons = buttons + 1; return button end },
+        Dock = { register = function(spec) regs[#regs + 1] = spec; return accept end } } }
+end
+local toggles = 0
+local function loadButton()
+    EC.Client = { unclaimed = 0, Panel = { toggle = function() end } }
+    if not pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECFloatButton.lua") then return nil end
+    added.OnGameStart(); added.OnCreatePlayer(0)
+    return EC.Client.FloatButton
+end
+
+framework(true)
+local F = loadButton()
+local spec = regs[1]
+if F then F.onResolutionChange() end
+check(F and F.docked == true and #regs == 1 and buttons == 0 and layouts == 0 and F.instance == nil
+    and spec.id == "economy" and spec.order == 30 and spec.bind == "MinidoracatEconomy_Toggle"
+    and spec.icon == EC.CURRENCIES.survivor.iconDefault and spec.label() == "Economy Center",
+    "DK-1: with the Dock the entry registers once by name, hotkey and coin icon, and no button or layout of its own exists")
+local C = EC.Client
+local idle = spec and spec.getBadge() == 0 and spec.getStatus() == nil
+C.unclaimed = 3.6
+check(idle and spec.getBadge() == 3 and spec.getStatus() == "3 item(s) waiting in your mailbox",
+    "DK-2: the badge counts the mail waiting and the status says so; nothing pending shows neither")
+local closed = spec and spec.isActive() == false
+C.Panel.window = { visible = true, getIsVisible = function(self) return self.visible end }
+local open = spec and spec.isActive() == true
+C.Panel.window.visible = false
+C.Panel.toggle = function() toggles = toggles + 1 end
+if spec then spec.onClick() end
+mp = false
+local single = spec and spec.isAvailable() == false
+mp = true
+check(closed and open and spec.isActive() == false and toggles == 1 and single and spec.isAvailable() == true,
+    "DK-3: open while the window shows, a click toggles the window looked up then, and only a multiplayer client shows the entry")
+
+framework(nil)
+local old = loadButton()
+local oldButtons, oldRegs = buttons, #regs
+framework(true)
+accept = false
+local refused = loadButton()
+check(old and old.docked == false and oldRegs == 1 and oldButtons == 1 and old.instance ~= nil
+    and refused and refused.docked == false and #regs == 2 and buttons == 2 and refused.instance ~= nil and layouts == 2,
+    "DK-4: without the Dock capability, or when the Dock refuses the entry, the standalone button is built as before")
+require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
+isClient, getTexture, getCore, ISLayoutManager, MinidoracatUI = saved.isClient, saved.getTexture, saved.getCore, saved.layout, saved.ui
+Events = saved.events
 end)()
 
 io.write("\n")
