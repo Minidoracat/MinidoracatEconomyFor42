@@ -17,7 +17,7 @@
 -- upgrade never locks existing players out.
 --
 -- The integration half (src.transfer / E.transfer) lives in ECIntegration and calls Tr.execute;
--- this file raises the facade to rev 3 once it has loaded.
+-- this file raises the facade to at least rev 3 once it has loaded.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Entitlements then
     require "MinidoracatEconomy/ECEntitlements"
@@ -394,10 +394,10 @@ S.Transfer = Tr
 S.onInit(Tr.init)
 
 -- The facade grows to rev 3 only now that the transfer half is loaded (ECEntitlements, required
--- above, has already made it rev 2).
-G.API_REVISION = 3
+-- above, has already made it rev 4, which includes this one).
+G.API_REVISION = math.max(G.API_REVISION, 3)
 if EC.v1 then
-    EC.v1.API_REVISION = 3
+    EC.v1.API_REVISION = G.API_REVISION
     EC.v1.CAPABILITIES.transfer = true
     EC.v1.transfer = G.transfer
 end

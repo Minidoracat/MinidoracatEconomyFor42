@@ -204,7 +204,8 @@ function P.remainingText(ms)
 end
 
 -- "#n, k slots, <state>": active with its end and what is left, in grace with the grace end,
--- expired, or (a product that waits for the save) a new rental not confirmed yet.
+-- expired, frozen (its product's mod is missing: what was left when it froze), or (a product that
+-- waits for the save) a new rental not confirmed yet.
 function P.rentalLine(i, r, now, offsetMin)
     local n, q = tostring(i), num(r.quantity)
     local state, paid = r.state, tonumber(r.paidUntil)
@@ -213,6 +214,11 @@ function P.rentalLine(i, r, now, offsetMin)
     end
     if state == "expired" then return getText(T .. "Ent_RentalLine_expired", n, q) end
     if state == "pending" or paid == nil then return getText(T .. "Ent_RentalLine_pending", n, q) end
+    if state == "frozen" then
+        -- the server shows a frozen rental's times as if it came back now: what is left stays put
+        if paid > now then return getText(T .. "Ent_RentalLine_frozen", n, q, P.remainingText(paid - now)) end
+        return getText(T .. "Ent_RentalLine_frozenGrace", n, q, P.remainingText((tonumber(r.graceUntil) or now) - now))
+    end
     return getText(T .. "Ent_RentalLine_active", n, q, U.stampText(paid, offsetMin), P.remainingText(paid - now))
 end
 

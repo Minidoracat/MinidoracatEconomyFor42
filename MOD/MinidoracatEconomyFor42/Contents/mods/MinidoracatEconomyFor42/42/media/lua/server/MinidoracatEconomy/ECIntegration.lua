@@ -29,6 +29,8 @@
 -- moves money player -> player through the same rules as a player transfer (minus the terminal
 -- and the memo), only for a source the host marked allowTransfer. Still not here: no
 -- client-originated third-party commands.
+-- Rev 4 (ECEntitlements, CAPABILITIES.freeze): registerProduct{ freezeWhenAbsent = true } - a product
+-- missing at start has its rentals frozen until it registers again.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Rewards then
     require "MinidoracatEconomy/ECRewards"

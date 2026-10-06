@@ -64,6 +64,15 @@
 -- first attempt at paidUntil, insufficient funds retried every hour until grace ends (then the
 -- consent lapses), other errors paused and retried without touching the consent. A server that was
 -- down for several periods charges one period and starts it at activation - no arrears.
+--
+-- Frozen products (registerProduct{ freezeWhenAbsent = true }, API rev 4): the flag is kept on the
+-- plan row. A flagged product that is not registered in this process stands still - no expiry, no
+-- grace, no reminder, no renewal charge, no activation - from start until it registers again; one
+-- still missing when FREEZE_WINDOW_MS after start have passed gets frozenAt = the start time and its
+-- rentals read `frozen`. Registering it again moves every lease of the product (and the earlier
+-- periods a refund would go back to) by the time it stood still, so each rental keeps the time it
+-- had left; consents stay as they were. frozenAt sits in Global ModData: a crash before the save
+-- loses at most the frozen time since that save.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Admin then
     require "MinidoracatEconomy/ECAdmin"
@@ -107,6 +116,9 @@ E.DAY_MS = 86400000
 -- ponytail: a fixed ring of quotes closed unpaid, the only "not paid" proof getOrder has for this
 -- epoch; past it an old quote reads unknown. Grow it if clients look orders up much later.
 E.CLOSED_KEEP = 256
+-- ponytail: a fixed wait for late registrations before an absent product counts as frozen; one that
+-- registers inside it is never frozen, and the wait counts against its leases like any other time.
+E.FREEZE_WINDOW_MS = 60000
 
 local root, ent = nil, nil          -- ModData root, root.entitlements
 local quotes = {}                    -- orderId -> live quote (RAM, this process only)
@@ -121,6 +133,14 @@ local listeners = {}                 -- modId -> { fn, ... }
 local journal = { state = "ok", lines = 0, needSeq = 0, readAt = 0 }
 local lastStep, lastW, dirty = 0, nil, false
 local saveMinutes = false            -- false = not read yet, nil = unknown
+local startedAt, windowOpen = 0, true   -- E.init time; registrations are still awaited
+
+-- A product that asked to stand still while absent and is not registered in this process: nothing
+-- runs for its rentals (before the window closes as well, so a late registration finds them as is).
+local function standsStill(modId, productId)
+    local pr = P.row(modId, productId)
+    return pr ~= nil and pr.freeze == true and P.product(modId, productId) == nil
+end
 
 -- ---------- small helpers ----------
 
@@ -637,13 +657,19 @@ local function autoStateOf(r, planRow, w, blocked, over, instant, owed)
 end
 
 -- What the contract says: the terms of the period it runs (or is paid for), and the money terms its
--- auto-renew consent was given for.
-local function rentalView(r, planRow, now, w, blocked, over, ref, instant)
+-- auto-renew consent was given for. `shift`: the product is frozen (`now` is its frozenAt) and this
+-- long ago it froze; a rental not over then reads `frozen`, its times as if it thawed now.
+local function rentalView(r, planRow, now, w, blocked, over, ref, instant, shift)
     local lease, pend, auto = r.lease, r.pend, r.auto
     local t = lease or pend
     local owed = instant and offOwed[rentalKey(ref, r.id)] == true
-    return { id = r.id, quantity = r.q, state = rentalState(r, planRow.values, now, blocked, over),
-        paidUntil = lease and lease.paidUntil or nil, graceUntil = lease and (lease.paidUntil + lease.G) or nil,
+    local state = rentalState(r, planRow.values, now, blocked, over)
+    local paidUntil = lease and lease.paidUntil
+    if shift and state ~= "expired" then
+        state, paidUntil = "frozen", paidUntil and paidUntil + shift
+    end
+    return { id = r.id, quantity = r.q, state = state,
+        paidUntil = paidUntil or nil, graceUntil = paidUntil and (paidUntil + lease.G) or nil,
         autoRenew = auto ~= nil and auto.on == true, autoRenewState = autoStateOf(r, planRow, w, blocked, over, instant, owed),
         termsRevision = t and t.tr or nil,
         terms = t and { price = t.price, amount = t.amt, currency = t.cur, days = t.D / E.DAY_MS,
@@ -653,7 +679,7 @@ local function rentalView(r, planRow, now, w, blocked, over, ref, instant)
         pendingOrderId = pend and pend.o or nil, autoPending = (pend and pend.auto) or nil }
 end
 
-local function entitlementView(row, planRow, now, ds, blocked, ref, instant)
+local function entitlementView(row, planRow, now, ds, blocked, ref, instant, shift)
     local w = ds.seq
     local out = { revision = 0, permanent = 0, rental = 0, usable = 0, state = "none", pendingQuantity = 0,
         rentalCommitted = 0, rentalsMax = E.RENTALS_MAX, rentals = {},
@@ -671,7 +697,7 @@ local function entitlementView(row, planRow, now, ds, blocked, ref, instant)
         elseif r.pend then
             pendRent = pendRent + r.q
         end
-        out.rentals[i] = rentalView(r, planRow, now, w, blocked, over, ref, instant)
+        out.rentals[i] = rentalView(r, planRow, now, w, blocked, over, ref, instant, shift)
     end
     out.revision, out.permanent, out.rental, out.usable = row.rev or 0, perm, rental, perm + rental
     out.rentalCommitted, out.pendingQuantity = held, pendPerm + pendRent
@@ -709,14 +735,18 @@ local function snapshot(modId, username, productId)
     local instant = spec ~= nil and spec.instant
     local blocked = systemBlock(modId, spec)
     local plan = planRow.values
-    local now, ds = EC.now(), S.durableStatus()
+    local ds, clock = S.durableStatus(), EC.now()
+    -- a frozen product's clock stands at frozenAt: units, limits and states as they were then
+    local frozenAt = planRow.frozenAt
+    local now, shift = frozenAt or clock, frozenAt and math.max(0, clock - frozenAt)
     local row = rowOf(modId, username, productId)
     local env = { ok = true, sourceMod = modId, productId = productId, nameKey = planRow.nameKey,
         instant = instant or nil,
         available = spec ~= nil and blocked ~= "source_disabled" and blocked ~= "unloaded" and not planRow.provisional
             and (plan.permanentEnabled or plan.rentalEnabled),
         plan = P.copy(planRow),
-        entitlement = entitlementView(row, planRow, now, ds, blocked, { m = modId, u = username, p = productId }, instant),
+        entitlement = entitlementView(row, planRow, now, ds, blocked, { m = modId, u = username, p = productId }, instant,
+            shift),
         balances = balancesOf(username, plan), orders = {} }
     for _, o in ipairs(row and row.orders or {}) do env.orders[#env.orders + 1] = orderView(o, ds.seq, ds, row) end
     return env
@@ -1253,11 +1283,82 @@ function E.refund(modId, username, productId, orderId, opts)
     return withSnapshot({ ok = true, orderId = orderId, txId = res.txId, duplicate = false }, modId, username, productId)
 end
 
+-- ---------- frozen products (header) ----------
+
+-- fn(username, row) for every row of one product.
+local function eachRow(modId, productId, fn)
+    for username, byProduct in pairs(ent.rows[modId] or {}) do
+        if byProduct[productId] then fn(username, byProduct[productId]) end
+    end
+end
+
+-- The registration window closed: a flagged product still not registered stands still from start.
+-- Idempotent: one that froze in an earlier start keeps that frozenAt.
+local function freezeAbsent()
+    for modId, bySource in pairs(ent.plans) do
+        for productId, pr in pairs(bySource) do
+            if pr.frozenAt == nil and standsStill(modId, productId) then
+                pr.frozenAt = startedAt
+                local n = 0
+                eachRow(modId, productId, function(username)
+                    n = n + 1
+                    changed(modId, username, productId)
+                end)
+                EC.log("entitlement product " .. modId .. "/" .. productId .. " not registered: rentals frozen ("
+                    .. n .. " accounts)")
+                X.emit("entitlement.freeze", { sourceMod = modId, productId = productId, frozenAt = startedAt, accounts = n })
+                X.audit({ action = "entitlement.freeze", target = modId .. "/" .. productId, admin = "SYSTEM",
+                    frozenAt = startedAt, accounts = n })
+            end
+        end
+    end
+end
+
+local function shifted(lease, d)
+    local out = copyTable(lease)
+    out.start, out.paidUntil = lease.start and lease.start + d, lease.paidUntil + d
+    return out
+end
+
+-- The product registered again: every period of its rentals (and each earlier one a refund goes back
+-- to) moves by the time it stood still, so each rental keeps the time it had left. Consents, reminders
+-- and phases stay as they were. A clock set back moves nothing.
+local function thaw(modId, productId)
+    local pr = P.row(modId, productId)
+    if not (pr and pr.frozenAt) then return end
+    local frozenAt, n = pr.frozenAt, 0
+    local d = math.max(0, EC.now() - frozenAt)
+    pr.frozenAt = nil
+    eachRow(modId, productId, function(username, row)
+        for _, r in ipairs(row.rentals or {}) do
+            if r.lease then r.lease = shifted(r.lease, d) end
+        end
+        for i, o in ipairs(row.orders or {}) do
+            if o.prev then
+                local c = copyTable(o)
+                c.prev = shifted(o.prev, d)
+                row.orders[i] = c
+            end
+        end
+        n = n + 1
+        changed(modId, username, productId)
+    end)
+    dirty = true             -- an activation held while it was absent runs on the next tick
+    EC.log("entitlement product " .. modId .. "/" .. productId .. " registered again: rentals moved by "
+        .. d .. " ms (" .. n .. " accounts)")
+    X.emit("entitlement.thaw", { sourceMod = modId, productId = productId, frozenAt = frozenAt, shiftMs = d, accounts = n })
+    X.audit({ action = "entitlement.thaw", target = modId .. "/" .. productId, admin = "SYSTEM",
+        frozenAt = frozenAt, shiftMs = d, accounts = n })
+end
+
 -- ---------- registration and the source's plan (bound to a source by the handle) ----------
 
 function E.registerProduct(modId, spec)
     local res = P.register(modId, spec)
-    if res.ok and ent then rowsOf(modId) end
+    if res.ok and ent then
+        rowsOf(modId)
+        thaw(modId, spec.id)
+    end
     return res
 end
 
@@ -1369,6 +1470,7 @@ end
 local function visitLease(ref, now, w)
     local row = rowOf(ref.m, ref.u, ref.p)
     if not row or not row.rentals or #row.rentals == 0 then return false end
+    if standsStill(ref.m, ref.p) then return true end   -- frozen, or not registered yet: kept as is
     local spec = P.product(ref.m, ref.p)
     local instant = spec ~= nil and spec.instant
     -- a renewal replaces the row: walk the ids and read the row again for each
@@ -1433,7 +1535,9 @@ local function settleWaiting(now, w)
             if row.pp and verdict(row.pp, w) == "confirmed" then row.pp = nil end
             for _, r in ipairs(row.rentals or {}) do
                 if offOwed[rentalKey(ref, r.id)] then consentOff(ref, row, r, nil, now) end   -- the owed `off` line, again
-                if r.pend and verdict(r.pend, w) == "confirmed" then startPeriod(ref, row, r, now) end
+                if r.pend and verdict(r.pend, w) == "confirmed" and not standsStill(ref.m, ref.p) then
+                    startPeriod(ref, row, r, now)
+                end
             end
             if not hasPending(row, w) then waiting[k] = nil end
             changed(ref.m, ref.u, ref.p)
@@ -1448,6 +1552,10 @@ function E.onTick()
     local now = EC.now()
     if now - lastStep < E.STEP_MS then return end
     lastStep = now
+    if windowOpen and now - startedAt >= E.FREEZE_WINDOW_MS then
+        windowOpen = false
+        freezeAbsent()
+    end
     local w = S.durableStatus().seq
     if journal.state ~= "ok" and now - journal.readAt >= E.JOURNAL_RETRY_MS and loadJournal(now) then dirty = true end
     if w ~= lastW or dirty then
@@ -1485,6 +1593,7 @@ function E.init(r)
     leaseRefs, leaseSet, cursor, nextRetry, cooldown = {}, {}, 1, {}, {}
     journal = { state = "ok", lines = 0, needSeq = 0, readAt = 0 }
     lastStep, lastW, dirty, saveMinutes = 0, nil, true, false
+    startedAt, windowOpen = EC.now(), true
     P.init(ent)
     for modId in pairs(ent.plans) do rowsOf(modId) end
     for modId, byUser in pairs(ent.rows) do
@@ -1504,6 +1613,12 @@ function E.init(r)
         end
     end
     loadJournal(EC.now())
+    -- products registered before ModData was ready come back here (registerProduct thaws the others)
+    for modId, bySource in pairs(ent.plans) do
+        for productId in pairs(bySource) do
+            if P.product(modId, productId) then thaw(modId, productId) end
+        end
+    end
 end
 
 -- Diagnostics for the E2E runner and the admin page. peek returns the live row: read only.
@@ -1705,13 +1820,16 @@ Events.OnTickEvenPaused.Add(E.onTick)
 -- The facade grows to rev 2 only now that the entitlement half is loaded; `rentals` marks the
 -- independent-rentals model (a row holds any number of rentals, see the header); `setPlan` marks
 -- source-owned plans (setPlan / getPlan / setPlanSource), instant products and no sandbox mirror.
-G.API_REVISION = 2
+-- Rev 4 (`freeze`): registerProduct takes freezeWhenAbsent and rentals can read `frozen` (header).
+-- Rev 3 is ECTransfer's; it loads after this file and keeps the higher number.
+G.API_REVISION = 4
 if EC.v1 then
-    EC.v1.API_REVISION = 2
+    EC.v1.API_REVISION = 4
     EC.v1.CAPABILITIES.entitlements = true
     EC.v1.CAPABILITIES.subscriptions = true
     EC.v1.CAPABILITIES.rentals = true
     EC.v1.CAPABILITIES.setPlan = true
+    EC.v1.CAPABILITIES.freeze = true
 end
 
 return E

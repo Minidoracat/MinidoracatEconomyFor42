@@ -1274,14 +1274,15 @@ end)
 -- the wallet snapshot this UI already holds and, from rev 2, the entitlement transport
 -- (ECEntitlementClient: state / quote / purchase / auto-renew consent / order lookup, all priced
 -- and decided by the server). CAPABILITIES.rentals: quote and auto-renew name a rental id (each
--- rental order is its own lease). API_MAJOR lives on the server table on purpose: probing
--- `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
+-- rental order is its own lease). CAPABILITIES.freeze (rev 3): a rental can read `frozen` (its
+-- product's mod is missing on the server; times shown as if it came back now). API_MAJOR lives on
+-- the server table on purpose: probing `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
 require "MinidoracatEconomy/ECEntitlementClient"
 EC.v1 = EC.v1 or {}
 EC.v1.Client = {
     API_MAJOR = 1,
-    API_REVISION = 2,
-    CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true },
+    API_REVISION = 3,
+    CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true, freeze = true },
     getWallet = function() return C.wallet end,
     onWalletChanged = C.onWallet,
     Entitlements = C.Entitlements,

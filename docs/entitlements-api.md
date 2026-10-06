@@ -1,4 +1,4 @@
-# 通用名額權益 API（API major 1、revision 2）
+# 通用名額權益 API（API major 1、revision 2；缺席凍結需要 revision 4）
 
 此介面供其他 **dedicated server MOD** 販售買斷名額與定期租用名額。Economy 管錢包、幣別與收費流程（報價、扣款、退款、租約、自動續租、同意條款、即時生效）；**方案**（價格、幣別、上限、天數、開關）歸使用名額的 MOD，由它用 `setPlan` 交給 Economy 驗證保存；名額代表什麼也由它決定。VehicleManager 是第一個實際消費端；安全屋可用另一個來源／產品接入，本文件不代表安全屋已完成整合。
 
@@ -10,6 +10,8 @@
 - `setPlan` 表示 handle 有 `setPlan`／`getPlan`／`setPlanSource`、`registerProduct` 接受 `instant`，而且沒有沙盒同步。沒有這個能力的 Economy 由舊的管理頁編輯方案並同步沙盒，消費端不能自己管方案。
 
 既有 `post/credit/debit` 行為不變；舊 `CAPABILITIES.subscribe=false` 不改為新能力的別名。
+
+要用「MOD 缺席時凍結租約」（`registerProduct{ freezeWhenAbsent = true }`）時，另外確認 `API_REVISION >= 4` 與 `CAPABILITIES.freeze`，見「缺席時凍結」。
 
 Economy 是選用整合的消費端不必加 `require=MinidoracatEconomyFor42`。Economy 缺席、版本過舊或查詢失敗時，消費端必須明示付費服務不可用，不猜測可用名額。
 
@@ -50,7 +52,7 @@ local result = source.registerProduct({
 
 交易紀錄的原因：`entitlement_purchase`／`entitlement_renewal`／`entitlement_refund` 由 Economy 翻譯；來源自訂的其他 `reasonCodes` Economy 沒有譯文，管理台顯示成「其他模組的原因：<代碼>」（`Reason_custom`），代碼本身照原樣。
 
-註冊帶 `sandbox` 欄位回 `{ ok = false, error = "invalid_args", field = "sandbox" }`：沙盒同步已移除，Economy 不讀寫任何沙盒選項。`instant` 不是 boolean 時回 `field = "instant"`。
+註冊帶 `sandbox` 欄位回 `{ ok = false, error = "invalid_args", field = "sandbox" }`：沙盒同步已移除，Economy 不讀寫任何沙盒選項。`instant` 不是 boolean 時回 `field = "instant"`；`freezeWhenAbsent` 不是 boolean 時回 `field = "freezeWhenAbsent"`（舊 Economy 不認得這個欄位、不會報錯，所以先看能力旗標）。
 
 方案欄位：
 
@@ -70,7 +72,7 @@ local result = source.registerProduct({
 
 | 方法 | 用途 |
 |---|---|
-| `registerProduct(spec)` | 登錄產品、初始方案、是否即時生效（`instant`）及購買驗證回呼 |
+| `registerProduct(spec)` | 登錄產品、初始方案、是否即時生效（`instant`）、缺席時是否凍結（`freezeWhenAbsent`，rev 4）及購買驗證回呼 |
 | `setPlan(productId, values, opts)` | 交付完整方案，見「方案」 |
 | `getPlan(productId)` | 讀目前生效的方案、最後修改與來源狀態 |
 | `setPlanSource(productId, info)` | 告訴 Economy 方案從哪個檔案來、有沒有錯誤（只給管理台唯讀總覽顯示） |
@@ -87,7 +89,7 @@ local result = source.registerProduct({
 - `sourceMod/productId/nameKey/available/plan`；即時生效商品另有 `instant = true`。
 - `entitlement.revision/permanent/rental/usable/pendingQuantity/pendingOrderId/lastOrderId/state`：`rental` 是所有有效租約的名額總和；`pendingQuantity` 是待確認的買斷加上還沒生效、正在等付款確認的租約名額；`pendingOrderId` 只列玩家自己發起、還沒確認的最新訂單（自動續租產生的不算）；`state` 為 `active`（usable > 0）、`pending`（只有待確認）或 `none`。即時生效商品沒有待確認：`pendingQuantity = 0`，不出 `pendingOrderId`、`wait`。
 - `entitlement.rentalCommitted`：計入 `rentalLimit` 的名額，即有效租約加上有待確認付款的租約。`entitlement.rentalsMax`：每個帳號最多幾張租約（伺服器固定 10）。
-- `entitlement.rentals`：依建立順序的租約清單，每張 `{ id, quantity, state, paidUntil?, graceUntil?, terms?, autoRenew, autoRenewState, autoTerms?, termsRevision?, pendingOrderId?, autoPending? }`。`id` 是建立它的訂單 id；`state` 為 `pending/active/grace/expired/paused_terms/paused_system`（條款改變、租用合計超過 `rentalLimit` 或租用停售時為 `paused_terms`）；`autoRenewState` 為 `off/pending_on/on/pending_off/paused_terms/paused_system`，其中 `paused_terms` 表示目前方案的租金、幣別或每期天數和同意時記下的不同（或租用合計超過上限），要玩家重新同意；`autoPending=true` 表示這張的待確認付款是自動續租發起的。即時生效商品的租約不會是 `pending`，同意直接是 `on`。
+- `entitlement.rentals`：依建立順序的租約清單，每張 `{ id, quantity, state, paidUntil?, graceUntil?, terms?, autoRenew, autoRenewState, autoTerms?, termsRevision?, pendingOrderId?, autoPending? }`。`id` 是建立它的訂單 id；`state` 為 `pending/active/grace/expired/paused_terms/paused_system/frozen`（條款改變、租用合計超過 `rentalLimit` 或租用停售時為 `paused_terms`；`frozen` 只出現在 `freezeWhenAbsent` 商品缺席時，見「缺席時凍結」）；`autoRenewState` 為 `off/pending_on/on/pending_off/paused_terms/paused_system`，其中 `paused_terms` 表示目前方案的租金、幣別或每期天數和同意時記下的不同（或租用合計超過上限），要玩家重新同意；`autoPending=true` 表示這張的待確認付款是自動續租發起的。即時生效商品的租約不會是 `pending`，同意直接是 `on`。
 - `rentals[i].terms = { price, amount, currency, days, graceHours }`：這張租約正在跑（或已付款待生效）的那一期的條款，`price` 是每個名額的租金、`amount` 是該期總額。`rentals[i].autoTerms = { price, currency, days }`：自動續租開啟時，玩家同意的條款。
 - `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`（`notice.rental` 指出是哪張租約）。
 - `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id），排程自動續租的訂單帶 `auto=true`，已生效的訂單帶 `activatedAt`。每筆另帶付款交易 `txId` 與退款判斷（見「管理台」）：`refundable`、`refundEffect?`、`previousUntil?`、`rentalNo?`。
@@ -219,6 +221,31 @@ local result = source.registerProduct({
 
 `lease_quantity_changed` 已刪除。
 
+## 缺席時凍結（revision 4，`CAPABILITIES.freeze`）
+
+提供名額的 MOD 可能被服主移除（例如地圖錶第三方槽位的 MOD）。註冊時帶 `freezeWhenAbsent = true` 的商品，在 MOD 缺席期間租約凍結：不扣租金、不退費，MOD 裝回來後租約接著算。
+
+```lua
+local E = MinidoracatEconomy and MinidoracatEconomy.v1
+local canFreeze = E and E.API_MAJOR == 1 and E.API_REVISION >= 4 and E.CAPABILITIES.freeze == true
+local result = source.registerProduct({
+    id = "watch_slot_acme", nameKey = "IGUI_MyMod_Slot", instant = true, defaults = defaults,
+    freezeWhenAbsent = canFreeze or nil,     -- 舊 Economy：省略，租約照絕對時間走
+})
+```
+
+- **旗標持久化**：`freezeWhenAbsent` 存在該商品的方案列（Global ModData），下次開機商品沒註冊時 Economy 仍知道它要凍結。之後以不帶旗標的方式註冊會清掉旗標。
+- **註冊窗口**：每次開機後 `E.FREEZE_WINDOW_MS`（60 秒）內註冊的商品不算缺席，不凍結；這段時間照常計入租期。窗口內還沒註冊的旗標商品，排程先不處理它的租約（不到期、不移除、不扣款）。
+- **凍結**：窗口結束時仍沒註冊的旗標商品記 `frozenAt`＝本次開機時間（已凍結的保留原本的 `frozenAt`，重開多次也只凍結一次）。凍結期間：不到期、不進寬限、不發提醒、不扣自動續租、不啟用待確認的付款、不移除租約；自動續租同意保留（玩家仍可取消）。購買照舊回 `product_unavailable`；管理員退款仍可用。
+- **snapshot**：凍結商品以 `frozenAt` 當時間算名額、上限與狀態；當時還沒結束的租約 `state = "frozen"`，`paidUntil`／`graceUntil` 以「現在解凍」換算（剩餘時間停在凍結時），已過寬限的維持 `expired`。`autoRenewState` 是 `paused_system`。客戶端 facade（`v1.Client`）rev 3 起帶 `CAPABILITIES.freeze`，`getState` 收到的就是這份投影。
+- **解凍**：商品再次註冊（開機時或之後）時，該商品所有租約的 `paidUntil`（與 `start`、各訂單退款會退回的上一期）加上 `now - frozenAt`，清掉 `frozenAt`，排程恢復；每張租約剩下的時間與寬限和凍結時相同。時鐘倒退時不移動（位移以 0 計）。重複註冊不會再移動。
+- **紀錄**：凍結與解凍各寫一行稽核（`entitlement.freeze`／`entitlement.thaw`，管理台稽核頁可見）、一筆事件與伺服器 log；解凍帶 `shiftMs`。
+- **限制**：
+  - 凍結以商品為單位，只看商品有沒有註冊；整個來源 MOD 缺席時它的旗標商品也一樣凍結。沒帶旗標的商品行為不變（缺席時照絕對時間到期，只是不扣款）。
+  - 崩潰界線：`frozenAt` 在 Global ModData，崩潰回滾到上次存檔時，最多少凍結一段未存檔的時間（下次開機重新以開機時間凍結）。
+  - Economy 本身缺席時沒有凍結（租約照絕對時間走）。
+  - 買斷名額不會過期，本來就不受影響。
+
 ## 管理台
 
 Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action = "plans"`（讀取權）回 `plans[i] = { sourceMod, productId, nameKey, sourceNameKey?, sourceName?, loaded, instant, plan, lastChange, source }`，顯示各產品目前的條款、最後從哪裡修改、設定檔有沒有錯誤（`source` 是 `setPlanSource` 存的那份，沒有就省略；`sourceName` 是來源的 `displayName`，來源本次沒載入時兩個名稱欄位都省略）。方案編輯、`action = "apply"` 與沙盒同步已移除。
@@ -248,7 +275,7 @@ Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action 
 
 ## 客戶端 API
 
-能力探測位於 `MinidoracatEconomy.v1.Client`（不是客戶端的 `.v1.API_MAJOR`）。確認 major 1、rev >= 2、`CAPABILITIES.entitlements` 與 `CAPABILITIES.rentals` 後取 `.Entitlements`：
+能力探測位於 `MinidoracatEconomy.v1.Client`（不是客戶端的 `.v1.API_MAJOR`）。確認 major 1、rev >= 2、`CAPABILITIES.entitlements` 與 `CAPABILITIES.rentals` 後取 `.Entitlements`（rev 3 起另有 `CAPABILITIES.freeze`：租約可能是 `frozen`）：
 
 `requestState/getState/quote/purchase/setAutoRenew/getOrder/onChanged` 對應上述用途；送出方法回 requestId，若回 `nil, reason` 代表本機未送出且不會呼叫 callback。逾時 callback 包含 unknown 與原付款識別。客戶端只保存投影，不自行授權。
 

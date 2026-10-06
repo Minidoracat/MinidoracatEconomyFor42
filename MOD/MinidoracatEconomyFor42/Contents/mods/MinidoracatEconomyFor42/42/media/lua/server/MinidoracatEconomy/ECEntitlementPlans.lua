@@ -5,7 +5,9 @@
 --     rentalEnabled, rentalCurrency, rentalPrice, rentalLimit, rentalDays,
 --     graceHours, reminderHours, autoRenewAllowed }
 -- Global ModData is the financial truth: md.entitlements.plans[modId][productId] =
---   { revision, values, nameKey, provisional?, lastChange = { actor, origin, at, reason?, revision } }
+--   { revision, values, nameKey, provisional?, freeze?, frozenAt?, lastChange = { actor, origin, at, reason?, revision } }
+-- `freeze` remembers the registration's freezeWhenAbsent across restarts (the product may not register
+-- next time); `frozenAt` is when ECEntitlements froze its rentals because it did not.
 -- Any change of any field is revision + 1. A quote carries the revision it was priced at and a
 -- purchase refuses another one; an auto-renew consent records the money terms it agreed to and
 -- pauses while the plan offers other ones (ECEntitlements). Existing paid periods keep their own
@@ -61,7 +63,7 @@ local FIELD = {}
 for _, f in ipairs(P.FIELDS) do FIELD[f.key] = f end
 
 local md = nil          -- md.entitlements
-local products = {}     -- modId -> productId -> { modId, id, nameKey, defaults, instant, validatePurchase }
+local products = {}     -- modId -> productId -> { modId, id, nameKey, defaults, instant, freezeWhenAbsent, validatePurchase }
 local sources = {}      -- modId \1 productId -> { file?, problem?, at } (setPlanSource, this process only)
 
 local function isInt(v)
@@ -162,7 +164,7 @@ function P.reconcile(modId, productId)
     end
     local row = bySource[productId]
     if row == nil then
-        row = { revision = 1, values = spec.defaults, nameKey = spec.nameKey }
+        row = { revision = 1, values = spec.defaults, nameKey = spec.nameKey, freeze = spec.freezeWhenAbsent or nil }
         row.lastChange = { actor = "system", origin = "defaults", at = EC.now(), revision = 1 }
         bySource[productId] = row
         X.emit("entitlement.plan", { sourceMod = modId, productId = productId, revision = 1,
@@ -170,13 +172,15 @@ function P.reconcile(modId, productId)
         return
     end
     row.nameKey = spec.nameKey
+    row.freeze = spec.freezeWhenAbsent or nil
     row.applies = nil           -- receipts of the removed admin editor
     if not P.validate(row.values, nil) then row.values, row.provisional = spec.defaults, true end
 end
 
--- spec = { id, nameKey, defaults = <plan without revision>, instant?, validatePurchase? }. Callable
--- before ModData is ready; the plan row is then created by P.init. Re-registering a product
+-- spec = { id, nameKey, defaults = <plan without revision>, instant?, freezeWhenAbsent?, validatePurchase? }.
+-- Callable before ModData is ready; the plan row is then created by P.init. Re-registering a product
 -- replaces its runtime spec. `instant`: payments take effect in the paying commit (ECEntitlements).
+-- `freezeWhenAbsent`: a start that does not register the product freezes its rentals (ECEntitlements).
 function P.register(modId, spec)
     local src = G.source(modId)
     if not src then return { ok = false, error = "unknown_source" } end
@@ -202,6 +206,9 @@ function P.register(modId, spec)
     if spec.instant ~= nil and type(spec.instant) ~= "boolean" then
         return { ok = false, error = "invalid_args", field = "instant" }
     end
+    if spec.freezeWhenAbsent ~= nil and type(spec.freezeWhenAbsent) ~= "boolean" then
+        return { ok = false, error = "invalid_args", field = "freezeWhenAbsent" }
+    end
     if spec.validatePurchase ~= nil and type(spec.validatePurchase) ~= "function" then
         return { ok = false, error = "invalid_args", field = "validatePurchase" }
     end
@@ -211,7 +218,7 @@ function P.register(modId, spec)
         products[modId] = bySource
     end
     bySource[id] = { modId = modId, id = id, nameKey = nameKey, defaults = defaults, instant = spec.instant == true,
-        validatePurchase = spec.validatePurchase }
+        freezeWhenAbsent = spec.freezeWhenAbsent == true, validatePurchase = spec.validatePurchase }
     if md then P.reconcile(modId, id) end
     EC.log("entitlement product registered: " .. modId .. "/" .. id)
     return { ok = true, product = { sourceMod = modId, id = id, nameKey = nameKey } }

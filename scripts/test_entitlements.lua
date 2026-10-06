@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+109 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+118 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1199,6 +1199,145 @@ do
         and type(rowE.refund) == "table" and type(rowE.refund.durable) == "table" and rowE.refund.durable.status ~= "confirmed"
         and instantRefunded ~= nil and instantRefunded.refund ~= nil and instantRefunded.refund.durable == nil,
         "a refund carries its own save state apart from the payment's; an instant product's refund carries none")
+end
+
+-- 13. products that stand still while their mod is missing (2026-10-06, API rev 4): a start that does
+-- not register a freezeWhenAbsent product freezes its rentals once the registration window closes;
+-- registering it again moves every lease by the frozen time. A start without a product is a reload
+-- of ECEntitlementPlans (its registry is process memory) and OnServerStarted. Shared state in `fz`.
+local fz = {}
+do
+    fz.src = V.registerSource({ modId = "TestWatch", currencies = { "survivor" }, reasonCodes = REASONS })
+    fz.register = function(id)
+        return fz.src.registerProduct({ id = id, nameKey = "K", defaults = defaults(), instant = true,
+            freezeWhenAbsent = id == "frz_slot" or nil })
+    end
+    fz.restart = function(products)            -- a new process: only `products` register, before the start
+        dofile(ctx.media .. "/server/MinidoracatEconomy/ECEntitlementPlans.lua")
+        for _, id in ipairs(products) do fz.register(id) end
+        fire("OnServerStarted")
+    end
+    fz.tick = function(ms)
+        advance(ms or 1000)
+        fire("OnTickEvenPaused")
+    end
+    fz.ent = function(u) return fz.src.getEntitlement(u, "frz_slot").entitlement end
+    fz.lease = function(u)
+        local row = E.peek("TestWatch", u, "frz_slot")
+        return row and row.rentals[1] and row.rentals[1].lease
+    end
+    fz.rent = function(u, p)
+        L.credit(u, "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-frz-" .. u, reasonCode = "t" })
+        fz.tick()
+        return fz.src.purchase(u, fz.src.quote(u, p or "frz_slot", "rental").quote.id)
+    end
+    fz.audits = function(action)
+        local n = 0
+        for _, a in ipairs(EC.Export.auditEntries()) do
+            if a.action == action and a.target == "TestWatch/frz_slot" and a.admin == "SYSTEM" then n = n + 1 end
+        end
+        return n
+    end
+    local bad = fz.src.registerProduct({ id = "frz_slot", nameKey = "K", defaults = defaults(), freezeWhenAbsent = "yes" })
+    local reg = fz.register("frz_slot")
+    check(bad.field == "freezeWhenAbsent" and reg.ok and P.row("TestWatch", "frz_slot").freeze == true
+        and fz.register("plain_slot").ok and P.row("TestWatch", "plain_slot").freeze == nil
+        and V.API_REVISION >= 4 and V.CAPABILITIES.freeze == true,
+        "freezeWhenAbsent must be a boolean and is kept on the plan row; the facade is rev 4 with freeze")
+end
+do
+    fz.rent("fz2")                             -- fz2 will be an hour into grace when the mod goes
+    advance(6 * DAY + 12 * HOUR)
+    local r = fz.rent("fz1")                   -- fz1: a renewed rental under a consent, and a bought unit
+    fz.tick()
+    fz.src.purchase("fz1", fz.src.quote("fz1", "frz_slot", "rental", nil, r.orderId).quote.id)
+    fz.tick()
+    local s = fz.src.getEntitlement("fz1", "frz_slot")
+    fz.src.setAutoRenew("fz1", "frz_slot", true, s.entitlement.revision, s.plan.revision, r.orderId)
+    fz.tick()
+    fz.src.purchase("fz1", fz.src.quote("fz1", "frz_slot", "permanent", 1).quote.id)
+    fz.rent("fz3", "plain_slot")               -- an unflagged product, missing too
+    ctx.setNow(fz.lease("fz2").paidUntil + HOUR)
+    fz.tick()
+    fz.bal, fz.orders = L.getBalance("fz1", "survivor").available, #E.peek("TestWatch", "fz1", "frz_slot").orders
+    fz.p1, fz.p2, fz.g2 = fz.lease("fz1").paidUntil, fz.lease("fz2").paidUntil, fz.lease("fz2").paidUntil + 24 * HOUR
+    fz.prev = E.peek("TestWatch", "fz1", "frz_slot").orders[2].prev.paidUntil
+    fz.t1 = ctx.now()
+    fz.restart({})                             -- neither product registers
+    fz.tick(30000)
+    check(P.row("TestWatch", "frz_slot").frozenAt == nil and #E.peek("TestWatch", "fz2", "frz_slot").rentals == 1
+        and fz.lease("fz2").phase == "grace" and fz.lease("fz1").paidUntil == fz.p1,
+        "inside the registration window a missing flagged product is not frozen yet, and nothing runs for it")
+end
+do
+    fz.tick(31000)                             -- the window closes
+    local d = ctx.now() - fz.t1
+    local e1, e2 = fz.ent("fz1"), fz.ent("fz2")
+    check(P.row("TestWatch", "frz_slot").frozenAt == fz.t1 and P.row("TestWatch", "plain_slot").frozenAt == nil
+        and rent1(e1).state == "frozen" and rent1(e2).state == "frozen" and rent1(e1).paidUntil == fz.p1 + d
+        and rent1(e2).graceUntil == fz.g2 + d and e1.permanent == 1 and rent1(e1).autoRenew == true
+        and fz.audits("entitlement.freeze") == 1 and #eventsOf("entitlement.freeze") == 1,
+        "after the window it is frozen from the start: rentals read frozen with their times as if back now, one audit line")
+end
+do
+    for _ = 1, 30 do fz.tick(DAY) end
+    local row1, row2 = E.peek("TestWatch", "fz1", "frz_slot"), E.peek("TestWatch", "fz2", "frz_slot")
+    check(L.getBalance("fz1", "survivor").available == fz.bal and #row1.orders == fz.orders
+        and row1.rentals[1].lease.paidUntil == fz.p1 and row1.rentals[1].lease.reminded == nil
+        and (row1.notice or {}).code ~= "renewal_due" and #row2.rentals == 1 and row2.rentals[1].lease.paidUntil == fz.p2
+        and #E.peek("TestWatch", "fz3", "plain_slot").rentals == 0,
+        "30 frozen days: nothing expires, is charged or reminded; a missing product without the flag runs out as before")
+end
+do
+    fz.restart({})
+    fz.tick(61000)
+    check(P.row("TestWatch", "frz_slot").frozenAt == fz.t1 and rent1(fz.ent("fz1")).state == "frozen"
+        and fz.audits("entitlement.freeze") == 1,
+        "frozen across another start without the product, still from the first one")
+end
+do
+    local t2 = ctx.now()
+    local reg = fz.register("frz_slot")        -- late: after the window
+    local again = fz.register("frz_slot")
+    local s1 = fz.src.getEntitlement("fz1", "frz_slot")
+    local e1, e2 = s1.entitlement, fz.ent("fz2")
+    check(reg.ok and again.ok and P.row("TestWatch", "frz_slot").frozenAt == nil
+        and rent1(e1).state == "active" and rent1(e1).paidUntil - t2 == fz.p1 - fz.t1 and rent1(e1).autoRenewState == "on"
+        and e1.usable == 2 and rent1(e2).state == "grace" and rent1(e2).graceUntil - t2 == fz.g2 - fz.t1
+        and s1.orders[2].previousUntil == fz.prev + (t2 - fz.t1) and fz.audits("entitlement.thaw") == 1
+        and #eventsOf("entitlement.thaw") == 1,
+        "registered again, every lease (and the period a refund goes back to) moves by the frozen time, once; the consent stays")
+end
+do
+    local due = fz.lease("fz1").paidUntil
+    ctx.setNow(due - HOUR)
+    fz.tick()
+    local reminded = (E.peek("TestWatch", "fz1", "frz_slot").notice or {}).code
+    ctx.setNow(due + 1000)
+    fz.tick()
+    check(reminded == "renewal_due" and fz.bal - L.getBalance("fz1", "survivor").available == 250
+        and fz.lease("fz1").paidUntil == due + 7 * DAY and #E.peek("TestWatch", "fz2", "frz_slot").rentals == 0,
+        "the schedule runs again: the reminder, one renewal from the moved paidUntil, the rental in grace ends")
+end
+do
+    fz.restart({})
+    fz.tick(30000)
+    local before = fz.lease("fz1").paidUntil
+    local reg = fz.register("frz_slot")        -- inside the window
+    fz.tick(61000)
+    check(reg.ok and P.row("TestWatch", "frz_slot").frozenAt == nil and fz.lease("fz1").paidUntil == before
+        and rent1(fz.ent("fz1")).state == "active",
+        "a product that registers inside the window is never frozen and its leases do not move")
+end
+do
+    fz.restart({})
+    fz.tick(61000)
+    local frozenAt, before = P.row("TestWatch", "frz_slot").frozenAt, fz.lease("fz1").paidUntil
+    ctx.setNow(frozenAt - HOUR)                -- the clock went back
+    fz.restart({ "frz_slot", "plain_slot" })   -- registered before ModData is ready: E.init thaws
+    check(frozenAt ~= nil and P.row("TestWatch", "frz_slot").frozenAt == nil and fz.lease("fz1").paidUntil == before,
+        "a product registered before the start thaws there; a clock set back moves nothing")
+    ctx.setNow(frozenAt + DAY)
 end
 
 ctx.setOnline({})

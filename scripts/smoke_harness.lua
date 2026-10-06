@@ -1114,6 +1114,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the family toolbar (scen
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the item menu before any window and MOD name files with a trailing comma (scenario IM: a player's menu has no admin entry, no framework raises nothing and disables the admin entries, an administrator's first right-click offers both; IN: a comma before the closing brace reads in full, a doubled comma stays that MOD's gap)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 25   -- +25: money flows and the admin report (scenario RP: St.flows classification (2), the daily breakdown per kind / SKU / buyback and the day's opening supply (2), a failed breakdown write marks the day and the money still moves, admin.system issuedDaily and its sum (2), admin.report gate / argument codes / summary shape / wealth / shop rows / periods (6), the market scan before and after a refresh, rolled-back trades left out, the 7-day view and the refresh throttle, priceRef from the cache only and its item check (6), admin.transactions totals over every match past 200, rolled-back rows out of the totals, per-row flow / payer / payee / fee (3), the scheduled scan after a restart on an empty server (2), the 60-day trim with the breakdown (1))
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a commit while the server is still starting, before the stats module is up (RP-26: no error, the money moves, the next commit takes the day's supply)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: products frozen while their mod is missing (scripts/test_entitlements.lua scenario 13: the flag and rev 4, nothing runs inside the window, frozen from the start with moved times and one audit line, 30 frozen days without expiry / charge / reminder while an unflagged product runs out, frozen across another start, the thaw moves every lease and refund period once, the schedule resumes, a registration inside the window, a clock set back)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -15222,7 +15223,8 @@ do
             now = function() return nowMs end, setNow = function(v) nowMs = v end,
             files = function() return files end, clearFiles = function() files = {} end,
             writerDeny = function() return writerDeny end, clearSent = function() sentCommands = {} end,
-            setOnline = function(list) onlinePlayers = list end, store = function() return modDataStore end })
+            setOnline = function(list) onlinePlayers = list end, store = function() return modDataStore end,
+            media = MEDIA })
     end
 end
 
@@ -15278,9 +15280,9 @@ local function refused(res, code, before)
     return res ~= nil and res.ok == false and res.error == code and state() == before
 end
 
-check(V.API_REVISION == 3 and V.CAPABILITIES.transfer == true and type(V.transfer) == "function"
+check(V.API_REVISION >= 3 and V.CAPABILITIES.transfer == true and type(V.transfer) == "function"
     and V.CAPABILITIES.entitlements == true and V.CAPABILITIES.post == true,
-    "the facade is rev 3 with transfer once ECTransfer has loaded; rev 1 and rev 2 capabilities stay")
+    "the facade is at least rev 3 with transfer once ECTransfer has loaded; rev 1 and rev 2 capabilities stay")
 
 -- 1. 遷移：這一版第一次開機前經濟已知的帳號（錢包、領獎紀錄、凍結紀錄）一律視為夠老
 L.credit("xf-ann", "survivor", 2000, "SYSTEM_MINT", { requestId = "xf-seed-ann", reasonCode = "t" })
