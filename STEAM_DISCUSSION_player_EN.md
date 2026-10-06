@@ -99,7 +99,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [/list]
 
 [h3]Paid slots for other mods[/h3]
-Supporting mods (Vehicle Manager first) can sell permanent or rented extra slots for economy currency; auto-renewal is opt-in and cancellable.
+Supporting mods (Vehicle Manager first) can sell permanent or rented extra slots for economy currency; auto-renewal is opt-in and cancellable. If the server removes the mod that provides your slots and that mod supports freezing, your rental shows as frozen and its time stops, with no rent charged; once the mod is back it continues from the time it had left.
 
 [h2]❓ FAQ[/h2]
 [list]

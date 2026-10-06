@@ -12,15 +12,15 @@
 
 格式基於 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循 `{PZ版本}-{主版本}.{次版本}.{修訂}` 格式。
 
-## [Unreleased]
+## [42.21.0-0.11.0] - 2026-10-06
 
 ### 新增
 
 - **付費名額的租約可以在提供它的 MOD 被移除時凍結**：其他 MOD 註冊名額商品時可以選擇這個行為。伺服器開機時這個商品沒有出現，租約就停在當下：不會到期、不扣租金、不發提醒，自動續租的同意也保留；MOD 裝回來後，租約從凍結時剩下的天數接著算。管理台帳號頁的租約顯示「凍結中」與剩餘時間，稽核紀錄會記下凍結與解凍。買斷的名額本來就不會過期，不受影響。
 
-> 技術要點：整合 API 升到 revision 4（`CAPABILITIES.freeze`），`registerProduct` 新增 `freezeWhenAbsent`；客戶端 facade 升到 revision 3。開機後約 1 分鐘內註冊的商品不算缺席；伺服器崩潰回滾時，最多少算上次存檔之後的凍結時間。未設定這個選項的商品行為不變。
+> 技術要點：整合 API 升到 revision 4（`CAPABILITIES.freeze`），`registerProduct` 新增 `freezeWhenAbsent`；客戶端 facade 自 revision 3 起帶 `CAPABILITIES.freeze`（本版發布時為 revision 4）。開機後約 1 分鐘內註冊的商品不算缺席；伺服器崩潰回滾時，最多少算上次存檔之後的凍結時間。未設定這個選項的商品行為不變。
 
-- **其他 MOD 可以把自己的物品送到商店頁變成草稿**：例如地圖錶的「到經濟中心上架」按鈕。管理員按下後，經濟管理視窗會開到商店頁，商店還沒在賣的物品逐筆成為新商品草稿：填好價格按「套用變更」就上架並開下一筆，按「取消」略過這筆。已經在賣的物品不會重複建立，頁面會列出略過了哪些。只建立草稿，不會自動上架或定價；沒有管理權限的玩家不會開出任何東西。
+- **其他 MOD 可以把自己的物品送到商店頁變成草稿**：例如之後推出的地圖錶 MOD 的「到經濟中心上架」按鈕。管理員按下後，經濟管理視窗會開到商店頁，商店還沒在賣的物品逐筆成為新商品草稿：填好價格按「套用變更」就上架並開下一筆，按「取消」略過這筆。已經在賣的物品不會重複建立，頁面會列出略過了哪些。只建立草稿，不會自動上架或定價；沒有管理權限的玩家不會開出任何東西。
 
 > 技術要點：客戶端 facade（`MinidoracatEconomy.v1.Client`）升到 revision 4，新增 `CAPABILITIES.shopAdd` 與 `openAdminShop(sourceModId, items)`（最多 64 個物品類型；回 `ok, err`，`err` 為 `invalid_args`／`forbidden`／`unavailable`）。規格見 `docs/entitlements-api.md`「到商店上架」。
 
