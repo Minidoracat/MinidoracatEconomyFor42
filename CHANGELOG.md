@@ -20,6 +20,10 @@
 
 > 技術要點：整合 API 升到 revision 4（`CAPABILITIES.freeze`），`registerProduct` 新增 `freezeWhenAbsent`；客戶端 facade 升到 revision 3。開機後約 1 分鐘內註冊的商品不算缺席；伺服器崩潰回滾時，最多少算上次存檔之後的凍結時間。未設定這個選項的商品行為不變。
 
+- **其他 MOD 可以把自己的物品送到商店頁變成草稿**：例如地圖錶的「到經濟中心上架」按鈕。管理員按下後，經濟管理視窗會開到商店頁，商店還沒在賣的物品逐筆成為新商品草稿：填好價格按「套用變更」就上架並開下一筆，按「取消」略過這筆。已經在賣的物品不會重複建立，頁面會列出略過了哪些。只建立草稿，不會自動上架或定價；沒有管理權限的玩家不會開出任何東西。
+
+> 技術要點：客戶端 facade（`MinidoracatEconomy.v1.Client`）升到 revision 4，新增 `CAPABILITIES.shopAdd` 與 `openAdminShop(sourceModId, items)`（最多 64 個物品類型；回 `ok, err`，`err` 為 `invalid_args`／`forbidden`／`unavailable`）。規格見 `docs/entitlements-api.md`「到商店上架」。
+
 ## [42.21.0-0.10.0] - 2026-10-05
 
 ### 新增

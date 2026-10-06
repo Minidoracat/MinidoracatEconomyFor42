@@ -1275,14 +1275,16 @@ end)
 -- (ECEntitlementClient: state / quote / purchase / auto-renew consent / order lookup, all priced
 -- and decided by the server). CAPABILITIES.rentals: quote and auto-renew name a rental id (each
 -- rental order is its own lease). CAPABILITIES.freeze (rev 3): a rental can read `frozen` (its
--- product's mod is missing on the server; times shown as if it came back now). API_MAJOR lives on
--- the server table on purpose: probing `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
+-- product's mod is missing on the server; times shown as if it came back now).
+-- CAPABILITIES.shopAdd (rev 4): openAdminShop. API_MAJOR lives on the server table on purpose:
+-- probing `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
 require "MinidoracatEconomy/ECEntitlementClient"
 EC.v1 = EC.v1 or {}
 EC.v1.Client = {
     API_MAJOR = 1,
-    API_REVISION = 3,
-    CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true, freeze = true },
+    API_REVISION = 4,
+    CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true, freeze = true,
+        shopAdd = true },
     getWallet = function() return C.wallet end,
     onWalletChanged = C.onWallet,
     Entitlements = C.Entitlements,
@@ -1292,6 +1294,14 @@ EC.v1.Client = {
         local AW = C.AdminWindow
         if AW == nil or AW.openPlans == nil then return false end
         return AW.openPlans(sourceMod, productId) == true
+    end,
+    -- Opens the admin window's shop page with every listed full type the catalog does not sell
+    -- yet as a new SKU draft (at most 64; repeats and unknown types skipped). The admin prices
+    -- and applies each one. true, or false and invalid_args / forbidden / unavailable.
+    openAdminShop = function(sourceMod, items)
+        local AW = C.AdminWindow
+        if AW == nil or AW.openShop == nil then return false, "unavailable" end
+        return AW.openShop(sourceMod, items)
     end,
 }
 

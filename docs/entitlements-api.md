@@ -284,3 +284,39 @@ Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action 
 - 租約 id 與其他 id 同規則（1–96 字元字串、不含控制字元），不合格時本機回 `nil, "invalid_args"`。
 
 `Client.openAdminPlans(sourceMod?, productId?)` 開啟管理台的唯讀方案總覽並選到該產品；讀取權限仍由伺服器重新驗證。
+
+### 到商店上架（客戶端 rev 4，`CAPABILITIES.shopAdd`）
+
+提供物品的 MOD 可以在自己的介面放「到經濟中心上架」按鈕，把一批物品交給 Economy 管理視窗的商店頁變成草稿。只開草稿：價格、分類、每份件數、限購都由管理員填，按「套用變更」後才走商店既有流程寫 `catalog.json`；Economy 不會自動上架、不會自動定價。
+
+```lua
+local EC = MinidoracatEconomy and MinidoracatEconomy.v1 and MinidoracatEconomy.v1.Client
+local canShop = EC and EC.API_MAJOR == 1 and (EC.API_REVISION or 0) >= 4
+    and EC.CAPABILITIES and EC.CAPABILITIES.shopAdd == true
+if canShop then
+    local ok, err = EC.openAdminShop("MyMod", { "MyMod.Widget", "MyMod.WidgetPart", "Base.Battery" })
+    if not ok then --[[ err: "invalid_args" / "forbidden" / "unavailable" ]] end
+end
+```
+
+`Client.openAdminShop(sourceModId, items)` → `ok, err?`
+
+| 參數 | 規則 |
+|---|---|
+| `sourceModId` | 呼叫端的 Mod ID，與伺服器 `registerSource` 同規則（1–64 字元，英數、底線、連字號）；只用來在商店頁標示「誰要求上架」，不寫進 `catalog.json`（商品列沒有來源欄位） |
+| `items` | 完整物品類型的陣列（例如 `"MyMod.Widget"`），最多 64 個；重複、非字串、遊戲沒載入的類型與隱藏／淘汰的物品略過 |
+
+| 回傳 | 意義 |
+|---|---|
+| `true` | 管理視窗已開到商店頁（有未套用的編輯時先問要不要放棄；選留下就不會排入） |
+| `false, "invalid_args"` | Mod ID 不合規則、`items` 不是表，或超過 64 個 |
+| `false, "forbidden"` | 本機玩家沒有 Economy 的管理寫入權（`AdminRoles`，與物品右鍵「新增商品」同一道檢查）；伺服器在每次套用時仍重新驗證 |
+| `false, "unavailable"` | 管理視窗開不了（沒有 UI 框架） |
+
+商店頁的行為：
+
+- 讀到商品目錄後，目錄裡任何一列已經在賣的物品類型略過；其餘依傳入順序成為新商品草稿，一次開一筆。頁尾一行說明「建立了幾筆草稿、幾件已在商店」，草稿的提示列寫出來源 Mod ID、後面還有幾筆，以及略過的物品名稱。
+- 套用成功（新增一列）就開下一筆；按「取消」略過這筆、開下一筆。點目錄裡的商品、批次編輯、自己用搜尋新增或返回列表，都會結束這份清單（剩下的不再開）。
+- 新草稿的預設與手動新增相同：分類 `other`、每份 1 件、上架開關開、沒有任何貨幣報價、收購關閉；商品 ID 由物品類型產生，可在套用前修改。
+- 目錄已達服主的商品上限（`ShopMaxItems`）時不開草稿，頁尾顯示上限說明。
+- 再次呼叫會取代尚未開完的清單。

@@ -1091,6 +1091,7 @@ function Page:startEdit(id)
     local d = draftFromSku(sku)
     self.batch = nil          -- one editor at a time: the batch form is not a second draft
     self.batchSent = nil
+    self.queue = nil          -- opening a saved row ends another mod's list of drafts
     self.draft = d
     self.draftBase = draftFromSku(sku)
     self.draftRevision = self.catalog.revision
@@ -1150,6 +1151,7 @@ function Page:dropDraft()
     self.draftRevision = nil
     self.batch = nil
     self.batchSent = nil
+    self.queue = nil
     self.baseMoved = false
     self.saveError = nil
     self.view = "list"
@@ -1486,8 +1488,85 @@ function Page:onDelete()
 end
 
 function Page:onPicked(record)
+    self.queue = nil
     self:startNew(record)
     self:layout()
+end
+
+-- ----- another mod's list (EC.v1.Client.openAdminShop, through AW.openShop) -----
+
+P.WANTED_MAX = 64
+
+-- The call's own checks, before any window opens: the source's mod id (the server's
+-- registerSource rule), at most WANTED_MAX entries, and the local admin write right the item menu
+-- reads too (the server re-checks every write). Repeats and non-strings are dropped. Returns the
+-- full types, or nil and "invalid_args" / "forbidden".
+function P.wanted(sourceMod, items)
+    if type(sourceMod) ~= "string" or #sourceMod > 64 or string.match(sourceMod, "^[A-Za-z0-9_%-]+$") == nil
+        or type(items) ~= "table" or #items > P.WANTED_MAX then
+        return nil, "invalid_args"
+    end
+    if not (C.AdminPanel and C.AdminPanel.canWrite()) then return nil, "forbidden" end
+    local out, seen = {}, {}
+    for _, fullType in ipairs(items) do
+        if type(fullType) == "string" and not seen[fullType] then
+            seen[fullType] = true
+            out[#out + 1] = fullType
+        end
+    end
+    return out
+end
+
+-- Every type the catalog does not sell yet becomes a new SKU draft, opened one after another: a
+-- save or a Cancel opens the next, any other navigation ends the list. A type some row already
+-- carries is skipped and named; one the item universe leaves out (unknown, hidden) is dropped.
+-- Nothing is written until the admin applies each draft. Waits for the first catalog read.
+function Page:queueItems(sourceMod, types)
+    self.incoming = { source = sourceMod, types = types }
+    self:takeIncoming()
+end
+
+function Page:takeIncoming()
+    local inc = self.incoming
+    if inc == nil or self.catalog == nil then return end
+    self.incoming = nil
+    local listed = {}
+    for _, sku in ipairs(self:skus() or {}) do listed[sku.item] = true end
+    local byType = Picker.universe().byType
+    local records, skipped = {}, {}
+    for _, fullType in ipairs(inc.types) do
+        if listed[fullType] then skipped[#skipped + 1] = itemName(fullType)
+        elseif byType[fullType] ~= nil then records[#records + 1] = byType[fullType] end
+    end
+    self.owner.message = { text = getText(T .. "Admin_Shop_QueueSummary", inc.source, tostring(#records), tostring(#skipped)) }
+    self.queue = { source = inc.source, records = records, listed = #skipped > 0 and table.concat(skipped, ", ") or nil }
+    if not self:nextQueued() then self:layout() end
+end
+
+-- Opens the next queued draft; false (and the list ended) when none is left or a new SKU is refused.
+function Page:nextQueued()
+    local q = self.queue
+    if q == nil or #q.records == 0 then
+        self.queue = nil
+        return false
+    end
+    local refusal = self:addRefusal()
+    if refusal then
+        self.owner.message = { text = refusal, error = true }
+        self.queue = nil
+        return false
+    end
+    self:startNew(table.remove(q.records, 1))
+    self:layout()
+    return true
+end
+
+function Page:queueText()
+    local q = self.queue
+    local s = #q.records > 0 and getText(T .. "Admin_Shop_QueueNote", q.source, tostring(#q.records))
+        or getText(T .. "Admin_Shop_QueueLast", q.source)
+    if q.listed then s = s .. " " .. getText(T .. "Admin_Shop_QueueListed", q.listed) end
+    return s
 end
 
 function Page:onPickCancelled()
@@ -1617,6 +1696,8 @@ function Page:onCancelEdit()
         return
     end
     local d = self.draft
+    -- a queued new draft put aside: the next one of the list opens instead
+    if d ~= nil and d.isNew and self:nextQueued() then return end
     if d == nil or d.isNew or not self:startEdit(d.id) then self:dropDraft()
     else self:layout() end
 end
@@ -1710,6 +1791,7 @@ function Page:startBatch(ids)
     self.draftBase = nil
     self.draftRevision = nil
     self.batchSent = nil
+    self.queue = nil
     self.selectedId = nil     -- no single row is being edited: the set is what is on screen
     local start = {}
     for _, spec in ipairs(self.fields) do start[spec.key] = base.values[spec.key] end
@@ -2192,7 +2274,9 @@ function Page:onReply(kind, args, req)
             -- the write landed: the editor re-reads the SKU from the catalog the server just sent,
             -- so the form is pristine against the new base (and a new SKU is the one selected)
             local id = (type(args.id) == "string" and args.id) or (self.draft and self.draft.id) or nil
-            if id ~= nil and self:sku(id) ~= nil then
+            if req ~= nil and req.action == "add" and self:nextQueued() then
+                -- a queued draft landed: the next one of the list is open
+            elseif id ~= nil and self:sku(id) ~= nil then
                 self:startEdit(id)
             else
                 self:dropDraft()
@@ -2205,6 +2289,7 @@ function Page:onReply(kind, args, req)
         elseif self.draft ~= nil and self.draftRevision ~= args.revision then
             self.baseMoved = true
         end
+        self:takeIncoming()
     end
     self:layout()
 end
@@ -2854,6 +2939,7 @@ function Page:refreshNote()
         if self.saveError ~= nil then note, token = self.saveError, "errorText"
         elseif self.saveRequestId ~= nil then note, token = tr("Admin_Shop_Saving"), "textFaint"
         elseif self.baseMoved then note, token = tr("Admin_Shop_Changed"), "warn"
+        elseif self.queue ~= nil and self.draft ~= nil and self.draft.isNew then note, token = self:queueText(), "accent"
         elseif self:isDirty() then note, token = tr("Admin_Shop_Dirty"), "accent" end
     end
     local width = g.noteW or self.width
@@ -3783,6 +3869,7 @@ function Page:clear()
     self.draftRevision = nil
     self.batch = nil
     self.batchSent = nil
+    self.queue, self.incoming = nil, nil
     self.batchRevision = nil
     self:clearPicks()
     self:clearCategoryFilter()

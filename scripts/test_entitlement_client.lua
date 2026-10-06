@@ -652,5 +652,73 @@ end)()
         "an import failure names its error in words; an unknown code is the unknown word; a sentence is never echoed")
 end)()
 
+-- ---------- another mod's "put these up for sale" (v1.Client.openAdminShop, rev 4) ----------
+;(function()
+    local classes = {}
+    ISPanel = { derive = function(_, name)
+        local class = {}
+        class.__index = class
+        classes[name] = class
+        return class
+    end }
+    for _, m in ipairs({ "ISUI/ISPanel", "ISUI/ISScrollBar", "ISUI/ISComboBox", "MinidoracatEconomy/ECWidgets",
+        "MinidoracatEconomy/ECItemPicker", "MinidoracatEconomy/ECDetailWindow" }) do package.loaded[m] = true end
+    local T = "IGUI_MinidoracatEconomy_"
+    C.UI = { T = T, fontH = { small = 16, medium = 20 }, itemName = function(t) return "name:" .. t end }
+    local universe = { byType = { ["Watch.A"] = { fullType = "Watch.A" }, ["Watch.B"] = { fullType = "Watch.B" },
+        ["Watch.C"] = { fullType = "Watch.C" }, ["Base.Battery"] = { fullType = "Base.Battery" } } }
+    C.ItemPicker = { universe = function() return universe end }
+    MinidoracatEconomy.CURRENCY_ORDER = { "survivor" }
+    local admin = false
+    C.AdminPanel = { canWrite = function() return admin end }
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminShop.lua")
+    local S, Page = C.AdminShop, classes.MinidoracatEconomyAdminShopPage
+
+    local types, err = S.wanted("MinidoracatWatch", { "Watch.A" })
+    check(types == nil and err == "forbidden", "a player without the admin write right is refused before any window")
+    admin = true
+    local many = {}
+    for i = 1, S.WANTED_MAX + 1 do many[i] = "Watch.X" .. i end
+    check(select(2, S.wanted("Bad Mod", {})) == "invalid_args" and select(2, S.wanted("M", "Watch.A")) == "invalid_args"
+        and select(2, S.wanted("M", many)) == "invalid_args" and select(2, S.wanted(nil, {})) == "invalid_args",
+        "a malformed mod id, a non-table list and more than 64 entries are refused")
+    types = S.wanted("MinidoracatWatch", { "Watch.A", 7, "Watch.A", "Base.Battery", "Watch.B", "No.Such", "Watch.C" })
+    check(#types == 5 and types[1] == "Watch.A" and types[2] == "Base.Battery" and types[3] == "Watch.B"
+        and types[4] == "No.Such" and types[5] == "Watch.C", "repeats and non-strings are dropped, the order is kept")
+
+    -- the page: a catalog that already sells the battery
+    local opened = {}
+    local p = setmetatable({ owner = {}, catalog = nil, picked = {}, pickedCount = 0, form = {} }, Page)
+    p.layout, p.fillEntries, p.unfocusFields = function() end, function() end, function() end
+    p.addRefusal = function() return nil end
+    p.startNew = function(self, rec) self.draft = { isNew = true, item = rec.fullType }; opened[#opened + 1] = rec.fullType end
+    p:queueItems("MinidoracatWatch", types)
+    check(#opened == 0 and p.incoming ~= nil, "before the first catalog read the list waits")
+    local catalog = { ok = true, revision = "r1", items = { { id = "battery", item = "Base.Battery" } } }
+    p:onReply("catalog", catalog)
+    check(#opened == 1 and opened[1] == "Watch.A" and p.incoming == nil
+        and p.owner.message.text == T .. "Admin_Shop_QueueSummary|MinidoracatWatch|3|1",
+        "the catalog read opens the first draft; the summary counts three drafts and one already in the shop")
+    check(p:queueText() == T .. "Admin_Shop_QueueNote|MinidoracatWatch|2 " .. T .. "Admin_Shop_QueueListed|name:Base.Battery",
+        "the draft's note says how many follow and names the item already sold")
+    p.saveRequestId = "s1"
+    p:onReply("catalog", { ok = true, requestId = "s1", id = "a", revision = "r2",
+        items = { { id = "battery", item = "Base.Battery" }, { id = "a", item = "Watch.A" } } }, { action = "add" })
+    check(#opened == 2 and opened[2] == "Watch.B", "a saved draft opens the next")
+    p:onCancelEdit()
+    check(#opened == 3 and opened[3] == "Watch.C" and p:queueText() == T .. "Admin_Shop_QueueLast|MinidoracatWatch "
+        .. T .. "Admin_Shop_QueueListed|name:Base.Battery", "Cancel puts a draft aside and opens the next; the last one says so")
+    p:onCancelEdit()
+    check(#opened == 3 and p.draft == nil and p.queue == nil, "Cancel on the last draft ends the list")
+    p:queueItems("MinidoracatWatch", { "Base.Battery", "Watch.A" })
+    check(#opened == 3 and p.queue == nil and p.owner.message.text == T .. "Admin_Shop_QueueSummary|MinidoracatWatch|0|2",
+        "a list the shop already sells opens nothing and says so")
+    p:queueItems("MinidoracatWatch", { "Watch.B", "Watch.C" })
+    p:startEdit("battery")
+    p.saveRequestId = "s2"
+    p:onReply("catalog", { ok = true, requestId = "s2", id = "battery", revision = "r3", items = catalog.items }, { action = "set" })
+    check(#opened == 4 and p.queue == nil and p.draft.id == "battery", "opening a saved row ends the list")
+end)()
+
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

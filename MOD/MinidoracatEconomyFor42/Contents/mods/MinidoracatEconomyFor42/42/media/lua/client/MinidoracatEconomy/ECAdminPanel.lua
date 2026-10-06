@@ -2327,6 +2327,15 @@ function Admin:addItem(tab, item)
     end)
 end
 
+-- Another mod's list (EC.v1.Client.openAdminShop): the shop page, through the same draft guard,
+-- with the types queued as new SKU drafts (ECAdminShop Page:queueItems).
+function Admin:queueShopItems(sourceMod, types)
+    self:requestClose(function()
+        self:setTab("Shop")
+        self.shopPage:queueItems(sourceMod, types)
+    end)
+end
+
 -- Where the drop layer lies: the whole page, on the two pages that take an item.
 function Admin:dropRect()
     if not (self.tab == "Shop" or self.tab == "Whitelist") or not self:readAllowed() then return nil end

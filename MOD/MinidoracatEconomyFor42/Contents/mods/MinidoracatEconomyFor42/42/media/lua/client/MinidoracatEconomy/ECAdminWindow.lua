@@ -499,6 +499,20 @@ function AW.addItem(tab, item)
     return true
 end
 
+-- The consumer mods' "put these up for sale" (EC.v1.Client.openAdminShop): the window, on the shop
+-- page, with every type the catalog does not sell yet queued as a new SKU draft. Nothing is
+-- written until the admin applies each draft. true, or false and invalid_args / forbidden /
+-- unavailable (no admin window: no UI framework).
+function AW.openShop(sourceMod, items)
+    local types, err = C.AdminShop.wanted(sourceMod, items)
+    if types == nil then return false, err end
+    local win = AW.open()
+    local admin = win and win.adminPanel
+    if admin == nil then return false, "unavailable" end
+    admin:queueShopItems(sourceMod, types)
+    return true
+end
+
 -- Session reset (a new world): the page is disposed for real here — this is the one place that
 -- forces it — and the window is rebuilt against the new server state on the next open.
 function AW.reset()
