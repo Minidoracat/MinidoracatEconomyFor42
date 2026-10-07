@@ -12,6 +12,14 @@
 
 格式基於 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循 `{PZ版本}-{主版本}.{次版本}.{修訂}` 格式。
 
+## [Unreleased]
+
+### 新增
+
+- **MiniMap 齒輪設定多了「經濟中心」分類**：搭配新版 MiniMap 時，設定視窗「擴充功能」底下有經濟中心分類，可以分別開關小地圖與世界地圖上的終端與 ATM 圖標，並調整圖標大小。導航中的目標不受這些設定影響，一律會畫出來。MiniMap 還沒更新時，地圖標記和以前一樣。
+
+> 技術要點：需要 MiniMap `settingsApiVersion` ≥ 5 且 `markerApiVersion` ≥ 3；終端與 ATM 標記帶圖層 `terminals`，開關與大小由 MiniMap 保存，本 MOD 不寫任何設定。MiniMap 拒收這個分類時，標記照舊不帶圖層。
+
 ## [42.21.0-0.11.0] - 2026-10-06
 
 ### 新增

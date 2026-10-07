@@ -1115,6 +1115,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the item menu before any
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 25   -- +25: money flows and the admin report (scenario RP: St.flows classification (2), the daily breakdown per kind / SKU / buyback and the day's opening supply (2), a failed breakdown write marks the day and the money still moves, admin.system issuedDaily and its sum (2), admin.report gate / argument codes / summary shape / wealth / shop rows / periods (6), the market scan before and after a refresh, rolled-back trades left out, the 7-day view and the refresh throttle, priceRef from the cache only and its item check (6), admin.transactions totals over every match past 200, rolled-back rows out of the totals, per-row flow / payer / payee / fee (3), the scheduled scan after a restart on an empty server (2), the 60-day trim with the breakdown (1))
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a commit while the server is still starting, before the stats module is up (RP-26: no error, the money moves, the next commit takes the day's supply)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: products frozen while their mod is missing (scripts/test_entitlements.lua scenario 13: the flag and rev 4, nothing runs inside the window, frozen from the start with moved times and one audit line, 30 frozen days without expiry / charge / reminder while an unflagged product runs out, frozen across another start, the thaw moves every lease and refund period once, the schedule resumes, a registration inside the window, a clock set back)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the MiniMap terminals layer (scenario NA-8b: marker API 2 keeps no section and no layer; NA-12: a refused or throwing section leaves the markers untagged; NA-13: settings API 5 + marker API 3 registers the section, tags terminals and ATMs, leaves the target untagged)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20382,7 +20383,11 @@ getPlayer = function() return player end
 getWorldMarkers = function() return { addDirectionArrow = function() return { remove = function() end } end } end
 getTexture = function(path) return { path = path } end
 local registered = nil
-MinidoracatMiniMapAPI = { markerApiVersion = 2, registerMarkerProvider = function(owner, fn) registered = { owner = owner, fn = fn } end }
+local sections = {}
+-- markerApiVersion 2 with a v5 settings API: the old path, no section and no layer
+MinidoracatMiniMapAPI = { markerApiVersion = 2, settingsApiVersion = 5,
+    registerSettingsSection = function(owner, spec) sections[#sections + 1] = { owner = owner, spec = spec }; return true end,
+    registerMarkerProvider = function(owner, fn) registered = { owner = owner, fn = fn } end }
 local terminal = { id = "t1", x = 100, y = 60, z = 0, kind = "atm" }
 local east = { x = 110, y = 100, z = 0, kind = "map_atm" }
 local south = { x = 100, y = 130, z = 0, kind = "map_atm" }
@@ -20418,6 +20423,8 @@ check(mok and registered.owner == "MinidoracatEconomyFor42" and a == b and #a.ma
     and a.markers[1].texture.path == "media/ui/MinidoracatEconomy/terminal_icon.png" and a.markers[2].texture.path ~= a.markers[1].texture.path
     and focus.x == 110.5 and focus.scale > 1 and focus.ring ~= nil and focus.badge.texture ~= nil and focus.label == "10 tiles east",
     "NA-8: the provider draws every place and the target on top, ringed and labelled with its way, and answers each surface from one cached table")
+check(a and #sections == 0 and M.layer == nil and a.markers[1].layer == nil and a.markers[2].layer == nil and focus.layer == nil,
+    "NA-8b: a MiniMap older than marker API 3 gets no settings section and no marker layer, even with settings API 5")
 local rev = a and a.revision
 N.stop()
 local c = fn and fn(0, "mini")
@@ -20454,6 +20461,37 @@ N.stop()
 M.tick()
 check(placed and #world.removed == 1 and world.removed[1] == world.added[1] and #mini.removed == 1 and #M.placed == 0,
     "NA-11: without MiniMap the target gets one vanilla marker on each map and only that marker is removed when navigation ends")
+
+-- MiniMap settings API 5 + marker API 3: one section with the terminals layer; a refused or throwing
+-- registration keeps the markers untagged and the provider registered
+local function miniMap(answer)
+    sections, registered = {}, nil
+    MinidoracatMiniMapAPI = { markerApiVersion = 3, settingsApiVersion = 5,
+        registerSettingsSection = function(owner, spec) sections[#sections + 1] = { owner = owner, spec = spec }; return answer() end,
+        registerMarkerProvider = function(owner, fn) registered = { owner = owner, fn = fn } end }
+    M.registered = false
+    M.register()
+    return registered and registered.fn(0, "mini")
+end
+N.start()
+local refused = miniMap(function() return false end)
+local thrown = select(2, pcall(miniMap, function() error("boom") end))
+check(refused and #sections == 1 and M.layer == nil and refused.markers[1].layer == nil
+    and type(thrown) == "table" and registered ~= nil and thrown.markers[1].layer == nil,
+    "NA-12: a refused or throwing settings registration leaves the markers untagged and the provider registered")
+local v5 = miniMap(function() return true end)
+local spec = sections[1] and sections[1].spec
+local layer = spec and spec.layers and spec.layers[1]
+local top = v5 and v5.markers[#v5.markers]
+check(spec and sections[1].owner == "MinidoracatEconomyFor42" and spec.label == "IGUI_MinidoracatEconomy_Title"
+    and spec.icon == "coins" and spec.group == "addon" and spec.order == 30 and #spec.layers == 1
+    and layer.id == "terminals" and layer.label == "IGUI_MinidoracatEconomy_MapLayer_Terminals" and layer.size == 16
+    and layer.names == nil and layer.sample.texture.path == "media/ui/MinidoracatEconomy/terminal_icon.png"
+    and #v5.markers == 3 and v5.markers[1].layer == "terminals" and v5.markers[2].layer == "terminals"
+    and top.id == "target" and top.layer == nil,
+    "NA-13: with settings API 5 and marker API 3 the section registers the terminals layer, terminals and ATMs carry it and the target stays untagged")
+N.stop()
+M.layer = nil
 worldObjects["110,100,0"] = nil
 require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
 getPlayer, getWorldMarkers, getTexture, MinidoracatMiniMapAPI = saved.getPlayer, saved.getWorldMarkers, saved.getTexture, saved.api

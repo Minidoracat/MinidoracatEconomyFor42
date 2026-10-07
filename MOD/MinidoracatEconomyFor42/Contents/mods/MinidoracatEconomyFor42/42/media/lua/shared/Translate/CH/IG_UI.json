@@ -2464,6 +2464,7 @@
   "IGUI_MinidoracatEconomy_Nav_Arrived": "已抵達終端，可以交易了",
   "IGUI_MinidoracatEconomy_Nav_Lost": "目標終端已移除，導航結束",
   "IGUI_MinidoracatEconomy_Nav_Retarget": "目標終端已移除，改帶你去下一個地點。%1",
+  "IGUI_MinidoracatEconomy_MapLayer_Terminals": "終端與 ATM",
   "IGUI_MinidoracatEconomy_Nav_Claimable": "可領",
   "IGUI_MinidoracatEconomy_Toast_NeedTerminalNav": "經濟中心只能在終端旁開啟。已指向最近的終端（%1）",
   "IGUI_MinidoracatEconomy_Wallet_FeeIncluded": "（含手續費 %1）",

@@ -2464,6 +2464,7 @@
   "IGUI_MinidoracatEconomy_Nav_Arrived": "ターミナルに着きました。取引できます",
   "IGUI_MinidoracatEconomy_Nav_Lost": "目的のターミナルが削除されたため、案内を終了しました",
   "IGUI_MinidoracatEconomy_Nav_Retarget": "目的のターミナルが削除されたため、次の場所へ案内します。%1",
+  "IGUI_MinidoracatEconomy_MapLayer_Terminals": "ターミナルと ATM",
   "IGUI_MinidoracatEconomy_Nav_Claimable": "受取可",
   "IGUI_MinidoracatEconomy_Toast_NeedTerminalNav": "経済センターはターミナルの近くでのみ開けます。最寄りのターミナル（%1）を矢印で示しました",
   "IGUI_MinidoracatEconomy_Wallet_FeeIncluded": "（手数料 %1 込み）",

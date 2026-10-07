@@ -3,6 +3,9 @@
 -- With MinidoracatMiniMap (its docs/addon-api.md 3.14, markerApiVersion >= 1): one marker provider
 -- draws every registered terminal and every known map ATM on its minimap and world map, and the
 -- navigation target once more on top, larger, ringed (v2) and labelled with its way.
+-- With settingsApiVersion >= 5 and markerApiVersion >= 3 it also registers a gear-window section
+-- whose "terminals" layer (show / size per map, owned and stored by MiniMap) the terminal and ATM
+-- markers carry; the target stays untagged so it is always drawn. Older MiniMap: as above, no layer.
 -- Without it: only the navigation target, as a vanilla map marker on the world map and on the
 -- vanilla minimap. Each UIWorldMap keeps its own markers in memory (UIWorldMap.java:68, 190;
 -- WorldMapMarkersV1.java:19-35 via UIWorldMapV1.getMarkersAPI :54-60) and the two maps are separate
@@ -53,7 +56,7 @@ function M.build(list, target)
     for i, t in ipairs(list) do
         local atm = t.kind == N.MAP_ATM
         markers[#markers + 1] = { id = atm and ("atm" .. i) or ("t:" .. tostring(t.id)), x = t.x + 0.5, y = t.y + 0.5,
-            texture = texture(atm and ATM_TEX or TERMINAL_TEX), state = "live" }
+            texture = texture(atm and ATM_TEX or TERMINAL_TEX), state = "live", layer = M.layer }
     end
     local focus = nil
     if target ~= nil then
@@ -129,6 +132,25 @@ function M.tick()
 end
 Events.OnTick.Add(M.tick)
 
+-- MiniMap v5 settings + v3 marker layers: one section, one layer. M.layer is set only when MiniMap
+-- accepted the section, so a refused or throwing registration leaves the markers as before.
+M.LAYER = "terminals"
+local function registerSection(API)
+    if not (type(API.settingsApiVersion) == "number" and API.settingsApiVersion >= 5
+        and API.markerApiVersion >= 3 and type(API.registerSettingsSection) == "function") then return end
+    local tex = texture(TERMINAL_TEX)
+    local ok, res = pcall(API.registerSettingsSection, M.OWNER, {
+        label = "IGUI_MinidoracatEconomy_Title", icon = "coins", group = "addon", order = 30,
+        layers = { { id = M.LAYER, label = "IGUI_MinidoracatEconomy_MapLayer_Terminals", size = 16,
+            sample = tex and { id = "sample", x = 0, y = 0, texture = tex, state = "live" } or nil } } })
+    if ok and res == true then
+        M.layer = M.LAYER
+        EC.log("map markers: MiniMap settings section registered")
+    else
+        EC.log("map markers: MiniMap refused the settings section; markers keep no layer")
+    end
+end
+
 -- MiniMap is not a require of this mod, so its API is looked up once every client file has loaded.
 function M.register()
     M.placed, placedTarget, built = {}, nil, {}
@@ -136,6 +158,7 @@ function M.register()
     local API = MinidoracatMiniMapAPI
     if API and type(API.markerApiVersion) == "number" and API.markerApiVersion >= 1
         and type(API.registerMarkerProvider) == "function" then
+        registerSection(API)
         API.registerMarkerProvider(M.OWNER, M.provider)
         M.registered = true
         EC.log("map markers: MiniMap marker provider registered")

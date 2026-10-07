@@ -2464,6 +2464,7 @@
   "IGUI_MinidoracatEconomy_Nav_Arrived": "You reached a terminal. You can trade now.",
   "IGUI_MinidoracatEconomy_Nav_Lost": "The terminal was removed. Navigation stopped.",
   "IGUI_MinidoracatEconomy_Nav_Retarget": "The terminal was removed. Guiding you to the next place instead. %1",
+  "IGUI_MinidoracatEconomy_MapLayer_Terminals": "Terminals and ATMs",
   "IGUI_MinidoracatEconomy_Nav_Claimable": "Ready",
   "IGUI_MinidoracatEconomy_Toast_NeedTerminalNav": "The Economy Center only opens next to a terminal. The arrow points to the nearest one (%1).",
   "IGUI_MinidoracatEconomy_Wallet_FeeIncluded": " (incl. fee %1)",
