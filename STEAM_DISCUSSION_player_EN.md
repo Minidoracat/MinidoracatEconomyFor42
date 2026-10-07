@@ -97,6 +97,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] Clicking a row opens a floating card (movable, copyable, as tall as its content); the row itself never buys, cancels or bids, so use the buttons on the row or the card. Item codes and IDs sit under Technical info at the bottom of the card.
 [*] Full rules sit under each page's Rules button, one short heading and one line per rule.
 [*] Keyboard (Tab, arrows, Enter, Esc) and controller (A, B, LB/RB) work on every page.
+[*] [b]Hide the Economy Center button[/b]: the button (the coin icon in the family toolbar, or a floating button without one) is shown by default. To hide it, untick [b]Show Economy Center button[/b] under Options > MODS > Minidoracat Economy and apply: it disappears at once and stays hidden after respawning or rejoining; tick it again to bring it back. While hidden, open the Economy Center with its hotkey, rebindable under Options > Key Bindings (default "[" key).
 [/list]
 
 [h3]Paid slots for other mods[/h3]
