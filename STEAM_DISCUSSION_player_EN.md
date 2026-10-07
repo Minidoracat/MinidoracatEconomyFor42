@@ -39,6 +39,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]One shared market[/b]: list at station A, someone buys at station B, you collect at station C.
 [*] [b]Guide me[/b]: away from terminals the top bar shows the nearest terminal or ATM's direction and distance; Guide me shows a golden arrow that stops on arrival (or press Stop). Without remote opening, the hotkey or toolbar icon points the arrow instead.
 [*] [b]On the map[/b]: the server remembers map ATMs in areas it has loaded. With MiniMap, the minimap and world map show terminals and known ATMs; without it, the target is circled on the vanilla maps.
+[*] [b]Map icon settings[/b]: with the latest MiniMap, the minimap gear's [b]Map Display Settings[/b] has an [b]Economy Center[/b] category under Add-ons: turn terminal and ATM icons on or off separately for the minimap and the world map, and change their size. The target you are being guided to is always drawn.
 [*] [b]Protection[/b]: machine and catgirl terminals cannot be destroyed; players cannot remove registered cabinets or supported map ATMs.
 [/list]
 
