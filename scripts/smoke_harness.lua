@@ -1116,6 +1116,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 25   -- +25: money flows and the adm
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a commit while the server is still starting, before the stats module is up (RP-26: no error, the money moves, the next commit takes the day's supply)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: products frozen while their mod is missing (scripts/test_entitlements.lua scenario 13: the flag and rev 4, nothing runs inside the window, frozen from the start with moved times and one audit line, 30 frozen days without expiry / charge / reminder while an unflagged product runs out, frozen across another start, the thaw moves every lease and refund period once, the schedule resumes, a registration inside the window, a clock set back)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the MiniMap terminals layer (scenario NA-8b: marker API 2 keeps no section and no layer; NA-12: a refused or throwing section leaves the markers untagged; NA-13: settings API 5 + marker API 3 registers the section, tags terminals and ATMs, leaves the target untagged)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the player's "show button" option (scenario DK-5..8: the toolbar entry follows Accept at once, a stored "off" holds from game start, the fallback button never comes back through respawn / game start / resolution, single player still shows none)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20502,7 +20503,8 @@ end)()
 -- capability is there and registration succeeds; otherwise the standalone FloatButton is unchanged.
 ;(function()
 local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client, events = Events,
-    isClient = isClient, getTexture = getTexture, getCore = getCore, layout = ISLayoutManager, ui = MinidoracatUI }
+    isClient = isClient, getTexture = getTexture, getCore = getCore, layout = ISLayoutManager, ui = MinidoracatUI,
+    pzapi = PZAPI, options = EC.Options }
 local added = {}   -- the module's own handlers, kept off the shared event lists
 Events = setmetatable({}, { __index = function(_, name) return { Add = function(fn) added[name] = fn end } end })
 local dict = EC.jsonDecode(io.open(MEDIA .. "/shared/Translate/EN/IG_UI.json", "rb"):read("*a"))
@@ -20518,19 +20520,35 @@ local mp = true
 isClient = function() return mp end
 local layouts = 0
 ISLayoutManager = { RegisterWindow = function() layouts = layouts + 1 end, TryRestore = function() end, OnPostSave = function() end }
-local regs, buttons, accept = {}, 0, true
+local regs, buttons, accept, refreshes = {}, 0, true, 0
+local button
 local function framework(dock)
-    local button = { setVisible = function() end, setPosition = function() end }
+    button = { visible = false, tips = 0, setPosition = function() end,
+        setVisible = function(self, v) self.visible = v end, hideTooltip = function(self) self.tips = self.tips + 1 end }
     MinidoracatUI = { v1 = { API_MAJOR = 1, CAPABILITIES = { floatButton = true, dock = dock },
         Theme = { create = function() return { colors = {} } end },
         FloatButton = { new = function() buttons = buttons + 1; return button end },
-        Dock = { register = function(spec) regs[#regs + 1] = spec; return accept end } } }
+        Dock = { register = function(spec) regs[#regs + 1] = spec; return accept end,
+            refresh = function() refreshes = refreshes + 1 end } } }
 end
+-- The player's ModOptions page as the engine keeps it: show.value is the stored "ShowButton" tick.
+local function tick(v) return { value = v, getValue = function(o) return o.value end, setValue = function(o, x) o.value = x end } end
+local show, page = tick(true), nil
+PZAPI = { ModOptions = { create = function()
+    page = { dict = {} }
+    function page:addSlider(id, _, _, _, _, v) self.dict[id] = tick(v) end
+    function page:addTickBox(id, _, v) self.dict[id] = id == "ShowButton" and show or tick(v) end
+    function page:getOption(id) return self.dict[id] end
+    return page
+end } }
+EC.Options = nil
+local okOptions = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECOptions.lua")
+local optionsStart = added.OnGameStart   -- its game-start read, registered before the button's (require order)
 local toggles = 0
 local function loadButton()
     EC.Client = { unclaimed = 0, Panel = { toggle = function() end } }
-    if not pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECFloatButton.lua") then return nil end
-    added.OnGameStart(); added.OnCreatePlayer(0)
+    if not okOptions or not pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECFloatButton.lua") then return nil end
+    optionsStart(); added.OnGameStart(); added.OnCreatePlayer(0)
     return EC.Client.FloatButton
 end
 
@@ -20568,9 +20586,52 @@ local refused = loadButton()
 check(old and old.docked == false and oldRegs == 1 and oldButtons == 1 and old.instance ~= nil
     and refused and refused.docked == false and #regs == 2 and buttons == 2 and refused.instance ~= nil and layouts == 2,
     "DK-4: without the Dock capability, or when the Dock refuses the entry, the standalone button is built as before")
+
+-- DK-5..8: the player's "show button" option (ModOptions ShowButton, default on). Accept applies at
+-- once; nothing else (game start, respawn, a resolution change) brings a hidden entry back.
+framework(true)
+accept = true
+local docked = loadButton()
+spec = regs[#regs]
+local before = refreshes
+local shownByDefault = spec and spec.isAvailable() == true
+show.value = false; page:apply()
+local off = spec and spec.isAvailable() == false and refreshes == before + 1
+show.value = true; page:apply()
+check(docked and docked.docked and shownByDefault and off and spec.isAvailable() == true and refreshes == before + 2
+    and docked.instance == nil,
+    "DK-5: with the Dock the entry shows by default, Accept with the option off hides it at once and Accept with it on brings it back, no button of its own")
+show.value = false
+local stored = loadButton()
+spec = regs[#regs]
+check(stored and stored.docked and spec.isAvailable() == false,
+    "DK-6: a stored \"off\" holds from game start: the toolbar entry never shows")
+framework(nil)
+local made = buttons
+local fb = loadButton()
+local notBuilt = fb and fb.instance == nil and buttons == made
+if fb then added.OnCreatePlayer(0); fb.onResolutionChange() end
+notBuilt = notBuilt and fb.instance == nil and buttons == made
+show.value = true; page:apply()
+local built = fb and fb.instance == button and button.visible == true and buttons == made + 1
+show.value = false; page:apply()
+local hidden = button.visible == false and button.tips == 1
+if fb then added.OnCreatePlayer(0); added.OnGameStart(); optionsStart(); fb.onResolutionChange() end
+local stays = button.visible == false
+show.value = true; page:apply()
+check(notBuilt and built and hidden and stays and button.visible == true and buttons == made + 1,
+    "DK-7: without the Dock a stored \"off\" builds no button through game start, respawn and a resolution change; Accept on builds and shows it, Accept off hides it and closes its tip, and respawn / game start / resolution keep it hidden until Accept on shows the same button")
+mp = false
+made = buttons
+local single = loadButton()
+framework(true)
+local singleDock = loadButton()
+spec = regs[#regs]
+check(single and single.instance == nil and buttons == made and singleDock.docked and spec.isAvailable() == false,
+    "DK-8: single player with the option on: no fallback button and no toolbar entry")
 require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
 isClient, getTexture, getCore, ISLayoutManager, MinidoracatUI = saved.isClient, saved.getTexture, saved.getCore, saved.layout, saved.ui
-Events = saved.events
+Events, PZAPI, EC.Options = saved.events, saved.pzapi, saved.options
 end)()
 
 -- IM / IN: the item menu before any window, and MOD name files with a comma before the closing

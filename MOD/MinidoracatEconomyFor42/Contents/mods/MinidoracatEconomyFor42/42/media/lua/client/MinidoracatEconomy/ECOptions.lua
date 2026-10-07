@@ -7,6 +7,8 @@
 --   NavCollapsed*  one per window (player / admin): is the navigation strip a narrow icon rail
 --                  instead of icons with words (default off, i.e. expanded). The strip's own
 --                  toggle writes the same option, so the two ways of saying it never disagree.
+--   ShowButton     does the Economy Center entry show (the family toolbar slot, or the fallback
+--                  floating button without one); default on. Off leaves the hotkey as the way in.
 --
 -- Engine: PZAPI/ModOptions.lua (client) - create/addSlider/addTickBox/getOption/getValue/
 -- setValue/save; the MiniMap does the same for its own knobs. A tick box answers a boolean, so
@@ -132,6 +134,24 @@ function O.setNavigationCollapsed(preference, collapsed)
     return O.flush()
 end
 
+-- ---------- entry button ----------
+--
+-- Cached because the toolbar asks every frame. Read at game start (the engine has loaded
+-- ModOptions.ini by then) and on "Accept"; no ModOptions or no stored value = shown.
+O.showButton = true
+
+local function readShowButton()
+    local opt = option("ShowButton")
+    O.showButton = opt == nil or opt:getValue() ~= false
+end
+
+local function accept()
+    apply()
+    readShowButton()
+    local F = EC.Client and EC.Client.FloatButton
+    if F then F.sync() end
+end
+
 if PZAPI and PZAPI.ModOptions then
     options = PZAPI.ModOptions:create("MinidoracatEconomy", "UI_MinidoracatEconomy_Options")
     options:addSlider("ToastSeconds", "UI_MinidoracatEconomy_ToastSeconds", O.TOAST_MIN, O.TOAST_MAX, 1, O.TOAST_DEFAULT,
@@ -144,7 +164,9 @@ if PZAPI and PZAPI.ModOptions then
         "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip")
     options:addTickBox("NavCollapsedAdmin", "UI_MinidoracatEconomy_NavCollapsedAdmin", false,
         "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip")
-    options.apply = apply   -- the options screen calls this after "Accept"
+    options:addTickBox("ShowButton", "UI_MinidoracatEconomy_ShowButton", true,
+        "UI_MinidoracatEconomy_ShowButton_tooltip")
+    options.apply = accept   -- the options screen calls this after "Accept"
 end
 
 -- No ModOptions (stub / very old build): the slider still works for the session.
@@ -153,4 +175,7 @@ if not options then
 end
 
 Events.OnGameStart.Add(apply)
+-- Before ECFloatButton's own game-start handler (it requires this file first), so it reads the
+-- stored choice, not the default.
+Events.OnGameStart.Add(readShowButton)
 return O

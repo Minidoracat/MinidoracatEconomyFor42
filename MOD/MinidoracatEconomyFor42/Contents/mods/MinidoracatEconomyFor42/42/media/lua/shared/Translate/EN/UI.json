@@ -10,5 +10,7 @@
   "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Checked: the left navigation folds into a narrow icon rail. Unchecked: icons with words. The window's own toggle writes this same setting, and each window remembers its own.",
   "UI_MinidoracatEconomy_NavCollapsedAdmin": "Admin window: icon-only navigation",
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Checked: the admin window's left navigation folds into a narrow icon rail and gives the width back to the tables. Unchecked: icons with words. The title-bar toggle writes this same setting.",
+  "UI_MinidoracatEconomy_ShowButton": "Show Economy Center button",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "The on-screen Economy Center button: click it to open or close the Economy Center. It sits in the family toolbar when available; otherwise it is a floating button you can hold and drag to reposition. When hidden, open the Economy Center with its hotkey (Options › Key Bindings › Minidoracat Economy Center).",
   "UI_MinidoracatEconomy_PreferencesSaveFailed": "Settings applied for this session, but saving ModOptions.ini failed. Check its write permissions."
 }

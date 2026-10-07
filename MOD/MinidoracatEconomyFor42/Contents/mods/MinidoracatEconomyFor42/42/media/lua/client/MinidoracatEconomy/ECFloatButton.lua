@@ -3,14 +3,17 @@
 -- exists; otherwise a thin wrapper over MinidoracatUI.v1.FloatButton (no framework -> no button,
 -- the hotkey still works). The fallback button's position persists through ISLayoutManager
 -- (layout.ini): saved the moment a drag is released, re-applied per resolution on a screen change.
+-- Either way the entry shows only on a multiplayer client whose player left ECOptions' ShowButton on.
 
 require "ISUI/ISLayoutManager"
+require "MinidoracatEconomy/ECOptions" -- first, so its game-start read of ShowButton runs before ours
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEconomy.Client.Panel then
     require "MinidoracatEconomy/ECPanel"
 end
 local EC = MinidoracatEconomy
 local C = EC.Client
+local O = EC.Options
 
 local F = {}
 C.FloatButton = F
@@ -105,16 +108,20 @@ F.dockSpec = {
         if n > 0 then return getText("IGUI_MinidoracatEconomy_Float_TooltipMail", tostring(n)) end
         return nil
     end,
-    -- Same policy that decides whether the fallback button exists: multiplayer clients only.
-    isAvailable = function() return isClient() end,
+    -- Same policy as the fallback button (F.sync): multiplayer clients whose player kept it shown.
+    isAvailable = function() return isClient() and O.showButton end,
 }
 
 -- Registered at load (the framework loads first: require= and Mods= order). A false register or an
 -- older framework keeps the FloatButton path below unchanged.
+local dock
 do
     local ui = MinidoracatUI and MinidoracatUI.v1
-    F.docked = ui ~= nil and ui.API_MAJOR == 1 and ui.CAPABILITIES ~= nil and ui.CAPABILITIES.dock == true
-        and ui.Dock ~= nil and ui.Dock.register(F.dockSpec) == true
+    if ui ~= nil and ui.API_MAJOR == 1 and ui.CAPABILITIES ~= nil and ui.CAPABILITIES.dock == true
+            and ui.Dock ~= nil and ui.Dock.register(F.dockSpec) == true then
+        dock = ui.Dock
+    end
+    F.docked = dock ~= nil
 end
 
 -- Reject non-finite saved coordinates; the widget clamps finite out-of-bounds values.
@@ -178,13 +185,24 @@ function F.onResolutionChange()
     ISLayoutManager.TryRestore(LAYOUT_NAME)
 end
 
-local function onGameStart()
-    if F.docked or not isClient() then return end
-    F.ensure()
+-- Game start, a respawn and the options screen's "Accept" (ECOptions) all land here. Nothing else
+-- shows the fallback button, so a button the player switched off stays off.
+function F.sync()
+    if dock then
+        dock.refresh() -- isAvailable decides; recount now instead of at the next poll
+        return
+    end
+    if not isClient() then return end
+    if O.showButton then
+        F.ensure()
+    elseif F.instance then
+        F.instance:hideTooltip() -- a hidden button stops its prerender, which is what closes the tip
+        F.instance:setVisible(false)
+    end
 end
-Events.OnGameStart.Add(onGameStart)
+Events.OnGameStart.Add(F.sync)
 Events.OnCreatePlayer.Add(function(playerNum)
-    if playerNum == 0 then onGameStart() end
+    if playerNum == 0 then F.sync() end
 end)
 Events.OnResolutionChange.Add(F.onResolutionChange)
 

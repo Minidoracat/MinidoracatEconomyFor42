@@ -10,5 +10,7 @@
   "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "オン＝左側のナビゲーションを細いアイコン列に折りたたむ。オフ＝アイコンと文字。ウィンドウのボタンも同じ設定を書き換え、各ウィンドウが個別に記憶します。",
   "UI_MinidoracatEconomy_NavCollapsedAdmin": "管理ウィンドウ：ナビゲーションをアイコンのみに",
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "オン＝管理ウィンドウの左ナビゲーションを細いアイコン列に折りたたみ、幅を表に返します。オフ＝アイコンと文字。タイトルバーのボタンも同じ設定を書き換えます。",
+  "UI_MinidoracatEconomy_ShowButton": "経済センターボタンを表示",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "画面上の経済センターボタン。クリックで経済センターを開閉します。ファミリーツールバーがある場合はその中に表示され、ない場合はフローティングボタンとなり、長押しドラッグで移動できます。非表示にしてもホットキーで開けます（オプション ￫ キーバインド ￫ Minidoracat 経済センター）。",
   "UI_MinidoracatEconomy_PreferencesSaveFailed": "設定は今回のゲームに適用されましたが、ModOptions.ini に保存できません。書き込み権限を確認してください。"
 }

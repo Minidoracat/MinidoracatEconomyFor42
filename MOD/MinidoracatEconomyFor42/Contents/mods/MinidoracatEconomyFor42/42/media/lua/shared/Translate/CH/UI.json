@@ -10,5 +10,7 @@
   "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "勾選＝左側導覽收合成窄圖示列，取消＝圖示加文字。視窗標題列的收合鈕改的是同一個設定，兩個視窗各自記住。",
   "UI_MinidoracatEconomy_NavCollapsedAdmin": "管理視窗：導覽只顯示圖示",
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "勾選＝管理視窗左側導覽收合成窄圖示列，把寬度讓給表格；取消＝圖示加文字。標題列的收合鈕改的是同一個設定。",
+  "UI_MinidoracatEconomy_ShowButton": "顯示經濟中心按鈕",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "畫面上的經濟中心按鈕，點擊即可開關經濟中心。有家族工具列時放在工具列裡；沒有時是浮動按鈕，按住拖曳可移動位置。隱藏後仍可用快捷鍵開啟（選項 ￫ 按鍵綁定 ￫ Minidoracat 經濟中心）。",
   "UI_MinidoracatEconomy_PreferencesSaveFailed": "設定已在本次遊戲套用，但無法寫入 ModOptions.ini；請檢查設定檔的寫入權限。"
 }
