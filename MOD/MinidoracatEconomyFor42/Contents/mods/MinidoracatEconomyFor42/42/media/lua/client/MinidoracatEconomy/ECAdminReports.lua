@@ -1002,14 +1002,9 @@ function Page:layoutHeader(w, on)
     if not shown[self.currency] then self.currency = ids[1]; self.curTabs:setSelected(ids[1], true) end
     local curOn = on and #ids > 1
     self.curTabs:setVisible(curOn)
-    if curOn then
-        self.curTabs:setX(x); self.curTabs:setY(y)
-        x = x + self.curTabs.width + 8
-    end
     local refresh = self.refreshButton
     refresh:setVisible(on)
     refresh:setX(w - PAD - refresh.width); refresh:setY(y + math.floor((rowH - refresh.height) / 2))
-    local right = refresh.x - 8
     local meta = self.rangeText
     if meta and self.updatedAt then
         meta = getText(T .. "Report_UpdatedAt", meta, U.clockText(self.updatedAt, self.owner.offsetMin))
@@ -1017,29 +1012,32 @@ function Page:layoutHeader(w, on)
     g.meta = meta
     local metaW = meta and textWidth(meta) or 0
     local custom = self.period == "custom"
-    local row2 = y + rowH + 6
-    local bottom = y + rowH
-    -- the custom days: beside the tabs when they fit, else on a row of their own
-    local dw = self.fromField.width
-    local tildeW = textWidth("~") + 12
-    local datesW = dw * 2 + tildeW
-    local dx, dy = x, y
-    if custom and x + datesW + (metaW > 0 and metaW + 12 or 0) > right then dx, dy = PAD, row2 end
+    -- After the period tabs each piece stays on the current row while it fits before the refresh
+    -- button (first row) or the right edge (rows below), else it starts the next row at the left:
+    -- long currency names (German, Spanish...) in a narrow window take a row of their own.
+    local ry, right = y, refresh.x - 8
+    if curOn then
+        if x > PAD and x + self.curTabs.width > right then x, ry, right = PAD, ry + rowH + 6, w - PAD end
+        self.curTabs:setX(x); self.curTabs:setY(ry)
+        x = x + self.curTabs.width + 8
+    end
     self.fromField:setVisible(on and custom); self.toField:setVisible(on and custom)
     if custom then
-        self.fromField:setX(dx); self.fromField:setY(dy)
-        self.toField:setX(dx + dw + tildeW); self.toField:setY(dy)
-        g.tildeX, g.tildeY = dx + dw + 6, dy + math.floor((rowH - fontH.small) / 2)
-        x = dx + datesW + 12
-        bottom = math.max(bottom, dy + rowH)
+        -- the custom days keep room for the range text beside them
+        local dw = self.fromField.width
+        local tildeW = textWidth("~") + 12
+        local datesW = dw * 2 + tildeW
+        if x > PAD and x + datesW + (metaW > 0 and metaW + 12 or 0) > right then x, ry, right = PAD, ry + rowH + 6, w - PAD end
+        self.fromField:setX(x); self.fromField:setY(ry)
+        self.toField:setX(x + dw + tildeW); self.toField:setY(ry)
+        g.tildeX, g.tildeY = x + dw + 6, ry + math.floor((rowH - fontH.small) / 2)
+        x = x + datesW + 12
     end
     if meta then
-        local my = (dy == y) and y or dy
-        if (my == y and x + metaW > right) then my = row2 end
-        g.metaX = (my == y) and (right - metaW) or (w - PAD - metaW)
-        g.metaY = my + math.floor((rowH - fontH.small) / 2)
-        bottom = math.max(bottom, my + rowH)
+        if x > PAD and x + metaW > right then x, ry, right = PAD, ry + rowH + 6, w - PAD end
+        g.metaX, g.metaY = right - metaW, ry + math.floor((rowH - fontH.small) / 2)
     end
+    local bottom = ry + rowH
     if self.statusText and self.flowSeries ~= nil then
         g.statusY = bottom + 4
         g.statusLine = fitText(self.statusText, w - PAD * 2)

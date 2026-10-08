@@ -429,6 +429,35 @@ end
 U.NO_LINE_START = { [12289] = true, [12290] = true, [65292] = true, [65294] = true, [65289] = true,
     [12301] = true, [12303] = true, [12305] = true, [12297] = true, [12299] = true, [65306] = true,
     [65307] = true, [65281] = true, [65311] = true, [12539] = true }
+-- Code point of the character that starts at i / ends at n. Kahlua's strings are UTF-16 code units
+-- (a surrogate stands for an astral character); standard Lua's are UTF-8 and get decoded here, so
+-- the offline harness runs the same rule.
+local function codeAt(s, i)
+    local b = string.byte(s, i)
+    if utf16 or not b or b < 192 then return b end
+    local len = b >= 240 and 4 or (b >= 224 and 3 or 2)
+    local cp = b - (len == 4 and 240 or (len == 3 and 224 or 192))
+    for k = 1, len - 1 do cp = cp * 64 + (string.byte(s, i + k) or 128) - 128 end
+    return cp
+end
+local function codeBefore(s, n)
+    if not utf16 then
+        while n > 1 do
+            local b = string.byte(s, n)
+            if b < 128 or b >= 192 then break end
+            n = n - 1
+        end
+    end
+    return codeAt(s, n)
+end
+-- CJK, kana, Hangul and fullwidth forms put no space between words, so a line may end beside any of
+-- them; Latin with diacritics, Cyrillic and the rest break at a space like English. The ranges of
+-- MinidoracatUI TextWrap's ideographic(), plus the UTF-16 surrogates Kahlua hands back.
+local function ideographic(c)
+    return (c >= 0x2E80 and c <= 0x9FFF) or (c >= 0xAC00 and c <= 0xD7AF) or (c >= 0xD800 and c <= 0xDFFF)
+        or (c >= 0xF900 and c <= 0xFAFF) or (c >= 0xFE30 and c <= 0xFE4F) or (c >= 0xFF00 and c <= 0xFFEF)
+        or c >= 0x10000
+end
 function U.wrapText(s, w, maxLines)
     maxLines = maxLines or math.huge   -- nil: as many lines as the text needs
     local out, rest = {}, tostring(s or "")
@@ -443,12 +472,12 @@ function U.wrapText(s, w, maxLines)
                 out[#out + 1] = cut
                 rest = ""
             else
-                -- English breaks at the last space; Chinese / Japanese break at any character, so
-                -- a cut touching a non-ASCII character is taken as it is (a space beside a number
-                -- or "ATM" in a CJK sentence must not push the rest of the line down)
+                -- A cut inside a word moves back to the word's last space. Beside a CJK character
+                -- it stays where it is: CJK breaks at any character, and a space beside a number or
+                -- "ATM" in a CJK sentence must not push the rest of the line down.
                 local space = nil
-                local a, b = string.byte(rest, n), string.byte(rest, n + 1)
-                if a and b and a < 128 and b < 128 and a ~= 32 and b ~= 32 then
+                local a, b = codeBefore(rest, n), codeAt(rest, n + 1)
+                if a and b and a ~= 32 and b ~= 32 and not ideographic(a) and not ideographic(b) then
                     for i = n, math.floor(n / 3) + 1, -1 do
                         if string.byte(rest, i) == 32 then space = i; break end
                     end

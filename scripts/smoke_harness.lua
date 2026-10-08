@@ -1110,6 +1110,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: map ATMs (scenario NA: 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText cuts Chinese / Japanese at the character, English at the space (TX-1b)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the admin overview's counts on admin.system (scenario 51: equal to the reconciliation summary, none on a refusal; FS: identity counts equal the identity page's status)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText never starts a line with closing punctuation (TX-1c)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: wrapText breaks Latin with diacritics and Cyrillic at a space, not inside a word (TX-1d)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the family toolbar (scenario DK: one Dock entry and no button of our own, badge and mail status, open state / click / MP-only, the FloatButton fallback without the capability or on a refused register)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the item menu before any window and MOD name files with a trailing comma (scenario IM: a player's menu has no admin entry, no framework raises nothing and disables the admin entries, an administrator's first right-click offers both; IN: a comma before the closing brace reads in full, a doubled comma stays that MOD's gap)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 25   -- +25: money flows and the admin report (scenario RP: St.flows classification (2), the daily breakdown per kind / SKU / buyback and the day's opening supply (2), a failed breakdown write marks the day and the money still moves, admin.system issuedDaily and its sum (2), admin.report gate / argument codes / summary shape / wealth / shop rows / periods (6), the market scan before and after a refresh, rolled-back trades left out, the 7-day view and the refresh throttle, priceRef from the cache only and its item check (6), admin.transactions totals over every match past 200, rolled-back rows out of the totals, per-row flow / payer / payee / fee (3), the scheduled scan after a restart on an empty server (2), the 60-day trim with the breakdown (1))
@@ -20031,6 +20032,19 @@ do
     getTextManager, UIFont = savedTM, savedFont
     check(lines[1] == "abcde" and lines[2] == "f.ghij",
         "TX-1c: wrapText moves the character before closing punctuation down with it (" .. tostring(lines[1]) .. " / " .. tostring(lines[2]) .. ")")
+end
+-- TX-1d: only CJK breaks at any character. German or Russian text whose cut lands beside a
+-- non-ASCII letter (a diacritic, a Cyrillic letter) still goes back to the last space.
+do
+    local savedTM, savedFont = getTextManager, UIFont
+    UIFont = UIFont or { Small = 1 }
+    getTextManager = function() return { MeasureStringX = function(_, _, s) return #s * 6 end } end
+    local de = call(U.wrapText, "Gegenst\195\164nde k\195\182nnen nicht", 114, 9) or {}
+    local ru = call(U.wrapText, "\208\159\209\128\208\184\208\178\208\181\209\130 \208\188\208\184\209\128", 108, 9) or {}
+    getTextManager, UIFont = savedTM, savedFont
+    check(de[1] == "Gegenst\195\164nde" and de[2] == "k\195\182nnen nicht"
+        and ru[1] == "\208\159\209\128\208\184\208\178\208\181\209\130" and ru[2] == "\208\188\208\184\209\128",
+        "TX-1d: wrapText breaks German and Russian at a space, not inside a word (" .. tostring(de[1]) .. " / " .. tostring(ru[1]) .. ")")
 end
 -- TX-2: one of this mod's own codes reads as words alone, the raw code not appended; a reason code
 -- another mod registered is that mod's identifier, shown inside a translated frame and logged
