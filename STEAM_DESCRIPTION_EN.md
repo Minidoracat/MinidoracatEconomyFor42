@@ -9,6 +9,8 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 [list]
 [*] Required UI framework: [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library for B42[/url]
 [*] The server and every player need both mods at the same version; after an update, restart both the server and the game
+[*] [b]Add/remove mid-save:[/b] safe to add; read the Server Setup & Administration guide before removing it
+[*] [b]Languages:[/b] 繁體中文, 简体中文, English, 日本語
 [/list]
 
 [h2]🚀 Quick start[/h2]
