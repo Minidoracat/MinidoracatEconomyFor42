@@ -1,0 +1,16 @@
+{
+  "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Ekonomi Merkezi'ni aç/kapat",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Bildirim süresi (saniye)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "Ekonomi bildirimlerinin (satışlar, ilandan kaldırmalar, teslim almalar...) ekranda kalma süresi",
+  "UI_MinidoracatEconomy_PanelOpacity": "Pencere opaklığı (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Ekonomi penceresi arka planının opaklığı; kenar çubuğundaki Ayarlar'dan değiştirin",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Ekonomi Merkezi: yalnızca simgeli gezinme",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "İşaretli: soldaki gezinme dar bir simge şeridine katlanır. İşaretsiz: simgeler ve yazılar. Pencerenin kendi düğmesi bu aynı ayarı yazar ve her pencere kendi ayarını hatırlar.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Yönetici penceresi: yalnızca simgeli gezinme",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "İşaretli: yönetici penceresinin soldaki gezinmesi dar bir simge şeridine katlanır ve genişliği tablolara geri verir. İşaretsiz: simgeler ve yazılar. Başlık çubuğundaki düğme bu aynı ayarı yazar.",
+  "UI_MinidoracatEconomy_ShowButton": "Ekonomi Merkezi düğmesini göster",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "Ekrandaki Ekonomi Merkezi düğmesi: Ekonomi Merkezi'ni açmak veya kapatmak için tıklayın. Mümkünse aile araç çubuğunda durur; değilse basılı tutup sürükleyerek yerini değiştirebileceğiniz yüzen bir düğmedir. Gizliyken Ekonomi Merkezi'ni kısayol tuşuyla açın (Seçenekler › Tuş Ayarları › Minidoracat Economy Center).",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Ayarlar bu oturum için uygulandı ama ModOptions.ini kaydedilemedi. Yazma izinlerini kontrol edin."
+}

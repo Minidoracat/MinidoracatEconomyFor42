@@ -1,0 +1,16 @@
+{
+  "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Afficher/masquer le Centre économique",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Durée des notifications (secondes)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "Durée d'affichage à l'écran des notifications économiques (ventes, retraits, récupérations...)",
+  "UI_MinidoracatEconomy_PanelOpacity": "Opacité de la fenêtre (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Opacité du fond de la fenêtre économique ; réglable depuis Réglages dans la barre latérale",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Centre économique : navigation en icônes seules",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Coché : la navigation de gauche se replie en une étroite colonne d'icônes. Décoché : icônes avec texte. Le bouton de la fenêtre écrit ce même réglage, et chaque fenêtre mémorise le sien.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Fenêtre admin : navigation en icônes seules",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Coché : la navigation de gauche de la fenêtre admin se replie en une étroite colonne d'icônes et rend la largeur aux tableaux. Décoché : icônes avec texte. Le bouton de la barre de titre écrit ce même réglage.",
+  "UI_MinidoracatEconomy_ShowButton": "Afficher le bouton du Centre économique",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "Le bouton du Centre économique à l'écran : cliquez dessus pour ouvrir ou fermer le Centre économique. Il se place dans la barre d'outils de la famille si elle est disponible ; sinon c'est un bouton flottant que vous pouvez maintenir et glisser pour le déplacer. S'il est masqué, ouvrez le Centre économique avec son raccourci (Options › Configuration des touches › Minidoracat Economy Center).",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Réglages appliqués pour cette session, mais l'enregistrement de ModOptions.ini a échoué. Vérifiez ses permissions d'écriture."
+}

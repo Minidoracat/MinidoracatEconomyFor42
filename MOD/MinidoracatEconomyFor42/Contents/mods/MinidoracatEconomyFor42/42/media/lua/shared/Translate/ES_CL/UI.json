@@ -1,0 +1,16 @@
+{
+  "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Mostrar/ocultar Centro Económico",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Duración de los avisos (segundos)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "Cuánto tiempo permanecen en pantalla los avisos de economía (ventas, retiradas, reclamaciones...)",
+  "UI_MinidoracatEconomy_PanelOpacity": "Opacidad de la ventana (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Opacidad del fondo de la ventana de economía; ajústala desde Configuración en la barra lateral",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Centro Económico: navegación solo con iconos",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Marcado: la navegación izquierda se pliega en una barra estrecha de iconos. Sin marcar: iconos con texto. El interruptor de la propia ventana modifica esta misma configuración, y cada ventana guarda la suya.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Ventana de administración: navegación solo con iconos",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Marcado: la navegación izquierda de la ventana de administración se pliega en una barra estrecha de iconos y deja más espacio para las tablas. Sin marcar: iconos con texto. El interruptor de la barra de título modifica esta misma configuración.",
+  "UI_MinidoracatEconomy_ShowButton": "Mostrar el botón del Centro Económico",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "El botón del Centro Económico en pantalla: haz clic en él para abrir o cerrar el Centro Económico. Se coloca en la barra de herramientas de la familia si está disponible; si no, es un botón flotante que puedes mantener pulsado y arrastrar para moverlo. Si está oculto, abre el Centro Económico con su tecla rápida (Opciones › Configuración de teclas › Minidoracat Economy Center).",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Configuración aplicada para esta sesión, pero falló el guardado de ModOptions.ini. Revisa sus permisos de escritura."
+}

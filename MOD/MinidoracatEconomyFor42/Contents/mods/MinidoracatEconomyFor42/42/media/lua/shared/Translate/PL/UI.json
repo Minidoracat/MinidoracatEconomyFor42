@@ -1,0 +1,16 @@
+{
+  "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Przełącz Centrum Ekonomii",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Czas wyświetlania powiadomień (sekundy)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "Jak długo powiadomienia ekonomii (sprzedaże, wycofania, odbiory...) pozostają na ekranie",
+  "UI_MinidoracatEconomy_PanelOpacity": "Krycie okna (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Krycie tła okna ekonomii; możesz je zmienić w Ustawieniach na pasku bocznym",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Centrum Ekonomii: nawigacja tylko z ikonami",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Zaznaczone: lewa nawigacja zwija się do wąskiego paska ikon. Odznaczone: ikony z napisami. Przełącznik w samym oknie zapisuje to samo ustawienie, a każde okno pamięta własne.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Okno administratora: nawigacja tylko z ikonami",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Zaznaczone: lewa nawigacja okna administratora zwija się do wąskiego paska ikon i oddaje szerokość tabelom. Odznaczone: ikony z napisami. Przełącznik na pasku tytułu zapisuje to samo ustawienie.",
+  "UI_MinidoracatEconomy_ShowButton": "Pokaż przycisk Centrum Ekonomii",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "Przycisk Centrum Ekonomii na ekranie: kliknij, aby otworzyć lub zamknąć Centrum Ekonomii. Gdy to możliwe, znajduje się na pasku narzędzi modów Minidoracat; w przeciwnym razie jest pływającym przyciskiem, który można przytrzymać i przeciągnąć. Gdy jest ukryty, otwórz Centrum Ekonomii skrótem klawiszowym (Opcje > Przypisanie klawiszy > Minidoracat Economy Center).",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Ustawienia zastosowano w tej sesji, ale zapis ModOptions.ini nie powiódł się. Sprawdź jego uprawnienia zapisu."
+}

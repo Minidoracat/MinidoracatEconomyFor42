@@ -10,7 +10,7 @@ Build 42 の[b]マルチプレイ専用サーバー[/b]向け経済システム�
 [*] 必須 UI フレームワーク：[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library for B42[/url]
 [*] サーバーと全プレイヤーに両方の MOD を同じバージョンで導入してください。更新後はサーバーとゲームの両方を再起動してください
 [*] [b]途中追加・削除：[/b]追加は可能。削除する前に「Economy Server Setup & Administration」ガイドをお読みください
-[*] [b]対応言語：[/b]繁體中文、简体中文、English、日本語
+[*] [b]対応言語：[/b]繁體中文、简体中文、English、日本語、한국어、Русский、Español、Português、Türkçe、Français、Polski、Deutsch（中国語・英語・日本語以外は AI 翻訳です。誤りがあればお知らせください）
 [/list]
 
 [h2]🚀 はじめ方[/h2]

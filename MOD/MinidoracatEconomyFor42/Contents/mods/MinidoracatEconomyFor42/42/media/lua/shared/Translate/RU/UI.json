@@ -1,0 +1,16 @@
+{
+  "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Открыть/закрыть Экономический центр",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Длительность уведомлений (секунды)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "Сколько уведомления экономики (продажи, снятия с продажи, получения...) остаются на экране",
+  "UI_MinidoracatEconomy_PanelOpacity": "Непрозрачность окна (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Непрозрачность фона окна экономики; меняется в Настройках на боковой панели",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Экономический центр: только значки в навигации",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Отмечено: левая навигация сворачивается в узкую полосу значков. Не отмечено: значки с подписями. Переключатель в самом окне меняет эту же настройку, и каждое окно помнит свою.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Окно админа: только значки в навигации",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Отмечено: левая навигация окна админа сворачивается в узкую полосу значков и отдаёт ширину таблицам. Не отмечено: значки с подписями. Переключатель в заголовке меняет эту же настройку.",
+  "UI_MinidoracatEconomy_ShowButton": "Показывать кнопку Экономического центра",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "Кнопка Экономического центра на экране: нажмите, чтобы открыть или закрыть Экономический центр. Она находится на общей панели модов Minidoracat, если та доступна; иначе это плавающая кнопка, которую можно зажать и перетащить. Если кнопка скрыта, открывайте Экономический центр горячей клавишей (Настройки > Назначение клавиш > Minidoracat Economy Center).",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Настройки применены на эту сессию, но сохранить ModOptions.ini не удалось. Проверьте права на запись."
+}

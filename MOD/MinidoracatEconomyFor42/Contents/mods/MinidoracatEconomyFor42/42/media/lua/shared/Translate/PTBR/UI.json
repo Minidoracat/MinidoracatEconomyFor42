@@ -1,0 +1,16 @@
+{
+  "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Alternar Central Econômica",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Duração das notificações (segundos)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "Quanto tempo as notificações da economia (vendas, remoções, resgates...) ficam na tela",
+  "UI_MinidoracatEconomy_PanelOpacity": "Opacidade da janela (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Opacidade do fundo da janela da economia; ajuste em Configurações na barra lateral",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Central Econômica: navegação só com ícones",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Marcado: a navegação à esquerda se recolhe em uma faixa estreita de ícones. Desmarcado: ícones com texto. O botão da própria janela grava esta mesma configuração, e cada janela lembra a sua.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Janela de administração: navegação só com ícones",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Marcado: a navegação à esquerda da janela de administração se recolhe em uma faixa estreita de ícones e devolve a largura às tabelas. Desmarcado: ícones com texto. O botão da barra de título grava esta mesma configuração.",
+  "UI_MinidoracatEconomy_ShowButton": "Mostrar botão da Central Econômica",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "O botão da Central Econômica na tela: clique nele para abrir ou fechar a Central Econômica. Ele fica na barra de ferramentas da família quando disponível; senão, é um botão flutuante que você pode segurar e arrastar para reposicionar. Quando oculto, abra a Central Econômica pela tecla de atalho (Opções > Atribuição de Teclas > Minidoracat Economy Center).",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Configurações aplicadas nesta sessão, mas falhou ao salvar o ModOptions.ini. Verifique as permissões de gravação dele."
+}

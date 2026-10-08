@@ -1,0 +1,16 @@
+{
+  "UI_optionscreen_binding_MinidoracatEconomy": "Minidoracat Economy Center",
+  "UI_optionscreen_binding_MinidoracatEconomy_Toggle": "Wirtschaftszentrum umschalten",
+  "UI_MinidoracatEconomy_Options": "Minidoracat Economy",
+  "UI_MinidoracatEconomy_ToastSeconds": "Benachrichtigungsdauer (Sekunden)",
+  "UI_MinidoracatEconomy_ToastSeconds_tooltip": "Wie lange Wirtschaftsbenachrichtigungen (Verkäufe, Rückzüge, Abholungen...) auf dem Bildschirm bleiben",
+  "UI_MinidoracatEconomy_PanelOpacity": "Fensterdeckkraft (%%)",
+  "UI_MinidoracatEconomy_PanelOpacity_tooltip": "Deckkraft des Hintergrunds des Wirtschaftsfensters; stelle sie unter Einstellungen in der Seitenleiste ein",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer": "Wirtschaftszentrum: Navigation nur mit Symbolen",
+  "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip": "Aktiviert: Die linke Navigation klappt zu einer schmalen Symbolleiste ein. Deaktiviert: Symbole mit Text. Der eigene Schalter des Fensters schreibt dieselbe Einstellung, und jedes Fenster merkt sich seine eigene.",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin": "Adminfenster: Navigation nur mit Symbolen",
+  "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Aktiviert: Die linke Navigation des Adminfensters klappt zu einer schmalen Symbolleiste ein und gibt die Breite an die Tabellen zurück. Deaktiviert: Symbole mit Text. Der Schalter in der Titelleiste schreibt dieselbe Einstellung.",
+  "UI_MinidoracatEconomy_ShowButton": "Schaltfläche Wirtschaftszentrum anzeigen",
+  "UI_MinidoracatEconomy_ShowButton_tooltip": "Die Bildschirm-Schaltfläche des Wirtschaftszentrums: Klicke sie, um das Wirtschaftszentrum zu öffnen oder zu schließen. Sie sitzt in der Familien-Werkzeugleiste, wenn vorhanden; sonst ist sie eine schwebende Schaltfläche, die du gedrückt halten und verschieben kannst. Wenn ausgeblendet, öffne das Wirtschaftszentrum mit seinem Tastenkürzel (Einstellungen › Tastaturbelegung › Minidoracat Economy Center).",
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Einstellungen für diese Sitzung angewendet, aber das Speichern von ModOptions.ini ist fehlgeschlagen. Prüfe die Schreibrechte."
+}
