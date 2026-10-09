@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "공간이 부족해 우편함으로 보내집니다. 한 번 더 확인하세요",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "인계에 실패해 모든 아이템이 회수되었습니다. 우편은 아직 우편함에 있으니 다시 수령하세요",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "수령 가능",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "지금은 메모를 저장할 수 없습니다. 메모 없이 역제안하거나 나중에 다시 시도하세요",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "대기 %1, 등록 %2, 경매 %3, 구매 주문 %4",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "계정별",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "서버 전체",

@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "Not enough room: this will go to your mailbox. Confirm once more",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "The handover failed and every item was taken back; the letter is still in the mailbox, so claim it again",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "Ready",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "The note cannot be saved right now: send the ask without a note, or try again later",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "%1 waiting, %2 listed, %3 auctions, %4 buy orders",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "Per account",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "Server-wide",

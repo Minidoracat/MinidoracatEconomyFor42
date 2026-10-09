@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "バックパックに空きがありません。郵便受けに預かります。もう一度確認してください",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "受け渡しに失敗し、アイテムはすべて回収されました。郵便物は受信箱に残っているので、もう一度受け取ってください",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "受取可",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "今はメモを保存できません。メモなしで提示するか、後でもう一度お試しください",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "未受取 %1、出品 %2、オークション %3、買い注文 %4",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "アカウント毎",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "サーバー全体",

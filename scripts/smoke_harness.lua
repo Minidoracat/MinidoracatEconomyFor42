@@ -1130,6 +1130,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 74   -- +74: player buy orders (scri
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: buy-order review fixes (scripts/test_wanted.lua: W-R7a/b a lot and a goods-paid fill partly returned twice keep their original kind; W-1b2 / W-3j2 / W-5g2 / W-6a2 resends of create, fill, raise and cancel answer the first result, a cancel id reused for another order is request_conflict; W-9 an offer under a merged login is the account's; W-10 a buy-order fill is in the market report scan)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: localized buy-order search (scripts/test_wanted.lua W-11a..c: the client's resolved item types widen the query, matched before paging, bounded list)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: localized item search on every board (scripts/test_wanted.lua W-12a..f: market.browse, auction.browse, admin.listings, admin.auctions and admin.wanted match the client's item types before paging, Mk.typesOf bounds; scenario 35: auction.history / admin.auctions history match them before the tail limit, bounded)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: player free text out of Global ModData: an adjust reason in neither ring nor idempotency record, an older ring entry stripped at load, the transfer record keeps a memo digest (another memo is request_conflict) and converts an older record at load, no memo or API reasonText anywhere under the root (the ring checks of transfer and API receipts now assert no text, the statement's receipt files keep it); scripts/test_wanted.lua W-13a..g offer memos in a private file: not in ModData, read back after a restart, pruned after a rollback, dropped on dismiss / raise / delivery / close, an older offer's memo moved out at load, a refused write and an unreadable file
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1917,6 +1918,15 @@ check(okAdj.ok == true and okAdj.balance == 600 and L.getBalance("SYSTEM_ADJUST"
 local again = adjust(boss, { username = "joe", currency = "survivor", delta = 500, reason = "compensation for lost order", requestId = "r8", expectedRev = 1 })
 check(again.ok == true and again.duplicate == true and L.getBalance("joe", "survivor").available == 600, "same requestId is idempotent (no double payment)")
 check(lastSent("wallet.changed") ~= nil and lastSent("wallet.changed").player == joe and lastSent("wallet.changed").args.kind == "admin_adjust", "target player receives wallet.changed for the adjustment")
+do
+    local ring, leaked = L.receipts("joe"), false
+    for _, e in ipairs(ring) do if e.reasonText ~= nil then leaked = true end end
+    for _, rec in pairs(S.modData().idempotency.map) do
+        for _, v in pairs(rec.meta or {}) do if v == "compensation for lost order" then leaked = true end end
+    end
+    check(ring[#ring].kind == "admin_adjust" and not leaked,
+        "an adjust reason is in neither the receipt ring nor the idempotency record (Global ModData)")
+end
 
 -- 每管理員每日加／減各自上限＋全服上限
 check(adjust(boss, { username = "joe", currency = "survivor", delta = 5000, reason = "big correction number one", requestId = "r9", expectedRev = 2 }).ok == true, "5,000 fits the admin daily add cap (500 + 5000 <= 10000)")
@@ -2395,8 +2405,8 @@ check(L.getBalance("joe", "survivor").available == 380 and L.getBalance("MOD:Min
     "the MOD account holds what the mod burned")
 local rc = L.receipts("joe")
 local last = rc[#rc]
-check(last.kind == "mod" and last.sourceMod == "MinidoracatMiniMapFor42" and last.reasonText == "GPS 2026-09" and last.amount == -120,
-    "the receipt ring names the mod and its wording")
+check(last.kind == "mod" and last.sourceMod == "MinidoracatMiniMapFor42" and last.reasonText == nil and last.amount == -120,
+    "the receipt ring names the mod; its wording stays out of Global ModData (the receipt file carries it)")
 local push = lastSent("wallet.changed")
 check(push == nil or push.player ~= joe or push.args.balances.survivor.available == 380, "wallet push (when online) reflects the debit")
 
@@ -15387,9 +15397,6 @@ check(tx and tx.kind == "transfer" and tx.reasonCode == "player_transfer" and tx
     and tx.payload.from == "xf-ann" and tx.payload.to == "xf-cat" and tx.payload.memo == "fare",
     "one tx.committed of kind transfer with payer, payee, burn postings in that order and the memo in the payload")
 local ra, rc = L.receipts("xf-ann"), L.receipts("xf-cat")
-check(ra[#ra].kind == "transfer" and ra[#ra].counterparty == "xf-cat" and ra[#ra].amount == -105 and ra[#ra].reasonText == "fare"
-    and rc[#rc].counterparty == "xf-ann" and rc[#rc].amount == 100 and rc[#rc].reasonText == "fare",
-    "both receipts name the other party and carry the memo")
 local payerLine, payeeLine = nil, nil
 for _, f in pairs(files) do for _, l in ipairs(f.lines) do
     local row = string.find(l, ok1.txId, 1, true) and EC.jsonDecode(l)
@@ -15401,6 +15408,14 @@ local wr = W.state("xf-ann").receipts
 check(ra[#ra].fee == 5 and rc[#rc].fee == nil and payerLine and payerLine.fee == 5 and payeeLine and payeeLine.fee == nil
     and wr[#wr].fee == 5,
     "the fee rides on the sender's receipt (ring, receipt file, wallet.state) and never on the recipient's")
+check(ra[#ra].kind == "transfer" and ra[#ra].counterparty == "xf-cat" and ra[#ra].amount == -105 and ra[#ra].reasonText == nil
+    and rc[#rc].counterparty == "xf-ann" and rc[#rc].amount == 100 and rc[#rc].reasonText == nil and wr[#wr].reasonText == nil
+    and payerLine.reasonText == "fare" and payeeLine.reasonText == "fare",
+    "both receipts name the other party; the memo is in both receipt files (the statement) and not in the ring")
+S.modData().receipts["xf-ann"].items[1].reasonText = "written by an older build"
+L.init()
+check(S.modData().receipts["xf-ann"].items[1].reasonText == nil and #L.receipts("xf-ann") == #ra,
+    "a ring entry an older build wrote with its text loses the text at load and keeps the line")
 local pushed, pushedToPayer = nil, false
 for _, r in ipairs(sentCommands) do
     if r.command == "wallet.transferReceived" then
@@ -15419,6 +15434,20 @@ check(dup.ok and dup.duplicate == true and dup.txId == ok1.txId and dup.fee == 5
 check(refused(send(ann, "xf-cat", 101, 6, { memo = "fare", requestId = "pay-1" }), "request_conflict", s1)
     and refused(send(ann, "xf-cat", 100, 5, { requestId = "pay-1" }), "request_conflict", s1),
     "the same requestId with another amount or without the memo is a conflict, not a second payment")
+do
+    local rec = S.modData().idempotency.map["transfer:xf-ann:pay-1"]
+    local text = false
+    for _, v in pairs(rec.meta) do if v == "fare" then text = true end end
+    check(not text and type(rec.meta.memoHash) == "string" and refused(send(ann, "xf-cat", 100, 5, { memo = "farE", requestId = "pay-1" }), "request_conflict", s1),
+        "the idempotency record keeps a digest of the memo, not its text; another memo under the same id is a conflict")
+    -- a record an older build wrote: the memo text itself, no digest
+    rec.meta.memo, rec.meta.memoHash = "fare", nil
+    Tr.init(S.modData())
+    local resend = send(ann, "xf-cat", 100, 5, { memo = "fare", requestId = "pay-1" })
+    check(rec.meta.memo == nil and type(rec.meta.memoHash) == "string" and resend.duplicate == true and resend.txId == ok1.txId
+        and refused(send(ann, "xf-cat", 100, 5, { memo = "farf", requestId = "pay-1" }), "request_conflict", s1),
+        "an older record's memo becomes a digest at load: its resend is a duplicate, another memo still a conflict")
+end
 
 -- 5. 拒絕全都零變更
 check(refused(send(ann, "xf-ann", 10, 1), "self_transfer", s1), "sending to yourself is refused")
@@ -15611,6 +15640,18 @@ check(again.ok and again.duplicate == true and again.txId == rent.txId and state
         { account = "MOD:XferMod", currency = "survivor", amount = 1 } } }).error == "request_conflict"
     and state() == s8,
     "the top-level E.transfer resends idempotently; the same id for another amount or a post is a conflict")
+do
+    local function holds(t, needle, depth)
+        if type(t) == "string" then return string.find(t, needle, 1, true) ~= nil end
+        if type(t) ~= "table" or depth > 12 then return false end
+        for k, v in pairs(t) do
+            if holds(k, needle, depth + 1) or holds(v, needle, depth + 1) then return true end
+        end
+        return false
+    end
+    check(not holds(S.modData(), "fare", 0) and not holds(S.modData(), "week 1", 0),
+        "no transfer memo and no API reasonText anywhere in the economy's Global ModData")
+end
 check(src.transfer("xf-ann", "xf-iced", "survivor", 10, { requestId = "rent-2", reasonCode = "rent" }).error == "recipient_frozen"
     and src.transfer("xf-ghost", "xf-ann", "survivor", 10, { requestId = "rent-3", reasonCode = "rent" }).error == "account_too_new"
     and src.transfer("xf-ann", "xf-ann", "survivor", 10, { requestId = "rent-4", reasonCode = "rent" }).error == "self_transfer"
@@ -21390,7 +21431,7 @@ do
     else
         run({ check = check, fire = fire, fakePlayer = fakePlayer, lastSent = lastSent,
             now = function() return nowMs end, setNow = function(v) nowMs = v end,
-            clearFiles = function() files = {} end, clearSent = function() sentCommands = {} end,
+            files = function() return files end, clearFiles = function() files = {} end, clearSent = function() sentCommands = {} end,
             sent = function() return sentCommands end, setOnline = function(list) onlinePlayers = list end,
             store = function() return modDataStore end })
     end
