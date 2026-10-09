@@ -724,7 +724,7 @@ function Page:confirmCancel(v)
             local part = X.money(opt.held, opt.currency)
             coins = coins and (coins .. tr("Admin_Set_ListSep") .. part) or part
         elseif opt.kind == "item" and int(opt.held) > 0 then
-            lines[#lines + 1] = tr("Wanted_CancelItems", tostring(int(opt.held)), C.itemLabel(opt.item))
+            lines[#lines + 1] = tr("Wanted_CancelItems", tostring(int(opt.held)), W.titledName(C.itemLabel(opt.item), opt.state))
         end
     end
     if coins then table.insert(lines, 2, tr("Wanted_CancelCoins", coins)) end

@@ -388,7 +388,8 @@ end)()
     package.loaded["MinidoracatEconomy/ECPanelWidgets"] = true
     C.UI = { T = T, amountText = tostring }
     C.PanelWidgets = { currencyLabel = function(id) return "cur:" .. tostring(id) end,
-        marketError = function(args) return "market:" .. tostring(args.error) end }
+        marketError = function(args) return "market:" .. tostring(args.error) end,
+        titledName = function(name, st) return st and st.title and (name .. "|" .. st.title) or name end }
     C.itemLabel = function(t) return "item:" .. tostring(t) end
     dofile(MEDIA .. "/client/MinidoracatEconomy/ECPanelWantedText.lua")
     local X = C.WantedText
@@ -403,8 +404,10 @@ end)()
     check(X.condText(nil) == nil and X.condText({ new = true }) == T .. "Wanted_Cond_New"
         and X.condText({ minPct = 80 }) == T .. "Wanted_Cond_Min|80", "a condition reads as words, none as nothing")
     check(X.optionText({ kind = "coin", unitPrice = 2, currency = "survivor" }) == T .. "Wanted_Each|2 cur:survivor"
-        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Bandage" }) == T .. "Wanted_EachItems|1|item:Base.Bandage",
-        "a payment option names its unit price or its items per unit")
+        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Bandage" }) == T .. "Wanted_EachItems|1|item:Base.Bandage"
+        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Magazine", state = { title = "Fishing Weekly #3" } })
+            == T .. "Wanted_EachItems|1|item:Base.Magazine|Fishing Weekly #3",
+        "a payment option names its unit price or its items per unit, with the title vanilla gave the escrowed copy")
     -- an own order's state pill and what it holds
     check(X.status({ qty = 50, qtyTotal = 50 }) == T .. "Wanted_Status_open"
         and X.status({ qty = 30, qtyTotal = 50 }) == T .. "Wanted_Status_partial"
@@ -487,7 +490,7 @@ end)()
         amountText = tostring, itemTexture = noop }
     C.PanelWidgets = { ITEM_ICON = 32, currencyLabel = function(id) return "cur:" .. tostring(id) end,
         marketError = function(a) return "market:" .. tostring(a.error) end, readError = function(c) return "read:" .. c end,
-        itemBaseName = noop, remainText = tostring, closeCombo = noop }
+        itemBaseName = noop, remainText = tostring, closeCombo = noop, titledName = function(name) return name end }
     C.Keyboard = { invalidate = noop }
     C.DetailWindow = { close = noop, isOpen = function() return false end }
     C.itemLabel = function(t) return "item:" .. tostring(t) end

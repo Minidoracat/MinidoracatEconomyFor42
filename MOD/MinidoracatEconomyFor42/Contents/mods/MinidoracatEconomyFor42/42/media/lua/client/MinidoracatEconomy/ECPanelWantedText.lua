@@ -62,7 +62,7 @@ end
 function X.optionText(opt)
     if type(opt) ~= "table" then return "-" end
     if opt.kind == "coin" then return tr("Wanted_Each", X.money(opt.unitPrice, opt.currency)) end
-    return tr("Wanted_EachItems", tostring(int(opt.perUnit)), C.itemLabel(opt.item))
+    return tr("Wanted_EachItems", tostring(int(opt.perUnit)), W.titledName(C.itemLabel(opt.item), opt.state))
 end
 
 -- Every option of an order on one line, in the order's own option order.
@@ -84,7 +84,7 @@ function X.heldText(order)
             local part = X.money(held, opt.currency)
             coins = coins and (coins .. tr("Admin_Set_ListSep") .. part) or part
         elseif opt.kind == "item" and held > 0 then
-            items = tr("Wanted_HeldItems", tostring(held), C.itemLabel(opt.item))
+            items = tr("Wanted_HeldItems", tostring(held), W.titledName(C.itemLabel(opt.item), opt.state))
         end
     end
     local parts = {}
