@@ -57,7 +57,11 @@ Rp.ITEM_CHARS = 128
 Rp.MARKET_DAYS = { [7] = true, [30] = true }
 
 local DAY_MS = 86400000
-local SCAN_KINDS = { market_buy = true, auction_sale = true, transfer = true }
+-- the trades St.flows counts (one list for the whole server) and transfers: a kind added there is
+-- scanned here without a second whitelist to forget
+local function scanned(kind)
+    return kind == "transfer" or St.TRADE_KINDS[kind] == true
+end
 local OWNER = "SYSTEM:reports"
 local COMMAND = "report.market"
 
@@ -368,7 +372,7 @@ end
 
 -- The tail projector: accumulates and keeps nothing in the job's ring.
 local function project(sc, rec)
-    if rec.type ~= "tx.committed" or not SCAN_KINDS[rec.kind] or rec.rolledBack == true then return nil end
+    if rec.type ~= "tx.committed" or not scanned(rec.kind) or rec.rolledBack == true then return nil end
     local ts = rec.ts
     if not isInt(ts) or ts < sc.from or ts >= sc.to then return nil end
     local d = math.floor((ts - sc.from) / DAY_MS) + 1
@@ -378,7 +382,9 @@ local function project(sc, rec)
     local item = type(payload.item) == "string" and payload.item ~= "" and #payload.item <= Rp.ITEM_CHARS and payload.item or nil
     local qty = (isInt(payload.qty) and payload.qty >= 1) and payload.qty or 1
     for currency, f in pairs(St.flows(rec)) do
-        if EC.CURRENCIES[currency] then
+        -- f.t > 0 only: a buy order's other coin options are released in the same transaction,
+        -- and a release is neither turnover nor a trader on that currency's page
+        if EC.CURRENCIES[currency] and f.t > 0 then
             local a = currencyAcc(sc, currency)
             a.turnover[d] = a.turnover[d] + f.t
             for _, p in ipairs(postings) do
@@ -386,7 +392,7 @@ local function project(sc, rec)
                     a.traders[d][p.account] = true
                 end
             end
-            if trade and item and f.t > 0 then
+            if trade and item then
                 local it = itemAcc(a, item)
                 if it then noteTrade(it, d, f.t, qty, rec.kind == "auction_sale") end
             end

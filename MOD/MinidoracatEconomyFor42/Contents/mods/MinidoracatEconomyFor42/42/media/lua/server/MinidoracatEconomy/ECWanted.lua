@@ -168,13 +168,16 @@ local function optionView(opt, full)
         weight = lot.weight, lotQty = lot.lotQty, state = Codec.preview(lot.snapshot), held = full and lot.qty or nil }
 end
 
+-- An offer belongs to the account that made it: a login name merged into another account since
+-- (ECMerge) is that account's offer - shown to it, deduplicated with it and told through it.
 local function offerView(f)
-    return { from = f.from, option = f.option, unitPrice = f.unitPrice, qty = f.qty, memo = f.memo, at = f.at }
+    return { from = S.accountOf(f.from), option = f.option, unitPrice = f.unitPrice, qty = f.qty, memo = f.memo, at = f.at }
 end
 
 local function offerOf(order, username)
+    local account = S.accountOf(username)
     for i, f in ipairs(order.offers) do
-        if f.from == username then return f, i end
+        if S.accountOf(f.from) == account then return f, i end
     end
     return nil
 end
@@ -453,7 +456,7 @@ function Wd.create(player, args)
                 cur = string.match(key, "^held:(.+)$")
                 if cur then prior.held[cur] = value end
             end
-            prior.item, prior.qty = recorded.item, recorded.qty
+            prior.item, prior.qty, prior.expiresAt = recorded.item, recorded.qty, recorded.expiresAt
         end
         return prior
     end
@@ -513,7 +516,7 @@ function Wd.create(player, args)
         expiresAt = ms + EC.sandbox("MarketListingDays", 7) * 86400000,
     }
     local meta = copy(fp)
-    meta.orderId, meta.lotQty = order.id, lotOpt and #lotOpt.itemIds or nil
+    meta.orderId, meta.lotQty, meta.expiresAt = order.id, lotOpt and #lotOpt.itemIds or nil, order.expiresAt
     for cur, fee in pairs(fees) do meta["fee:" .. cur], meta["held:" .. cur] = fee, held[cur] end
     local rec = nil
     if lotOpt then
@@ -630,15 +633,36 @@ local function closeOrder(order, reason, closeReason)
     return true, refunded, entry
 end
 
+-- args = { orderId, requestId }. The request is idempotent on its own key (a resend answers the
+-- first refund, the same id for another order is request_conflict); the refund itself is keyed by
+-- the order (`wclose:<orderId>`), so nothing here can release twice.
 function Wd.cancel(player, args)
     local username = S.principal(player)
     if not requestIdOf(args) or type(args.orderId) ~= "string" then return { ok = false, error = "invalid_args" } end
+    local requestId = "wcancel:" .. username .. ":" .. args.requestId
+    if not L.validRequestKey(requestId) then return { ok = false, error = "request_too_long" } end
+    local prior, recorded = priorOrder(requestId, { orderId = args.orderId })
+    if prior then
+        if prior.duplicate and recorded then
+            prior.refunded, prior.returnedQty, prior.mailId = {}, recorded.returnedQty, recorded.mailId
+            for key, value in pairs(recorded) do
+                local cur = string.match(key, "^refunded:(.+)$")
+                if cur then prior.refunded[cur] = value end
+            end
+        end
+        return prior
+    end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
     local order = md.wanted.orders[args.orderId]
     if not order then return { ok = false, error = "unknown_order" } end
     if order.owner ~= username then return { ok = false, error = "not_owner" } end
     local ok, refunded, entry = closeOrder(order, "cancelled")
     if not ok then return { ok = false, error = "refund_failed", orderId = order.id } end
+    local meta = { orderId = order.id, returnedQty = entry and entry.qty or nil, mailId = entry and entry.id or nil }
+    for cur, amount in pairs(refunded) do meta["refunded:" .. cur] = amount end
+    if not L.noteOperation(requestId, order.id, meta) then
+        EC.log("wanted cancel " .. order.id .. ": the idempotency record was refused")
+    end
     local out = { ok = true, orderId = order.id, refunded = refunded }
     if not entry then return out end
     out.returnedQty, out.mailId = entry.qty, entry.id
@@ -733,6 +757,8 @@ function Wd.fill(player, args)
         if prior.duplicate and recorded then
             prior.qty, prior.currency, prior.price, prior.tax = recorded.qty, recorded.currency, recorded.paid, recorded.tax
             prior.unitPrice = recorded.currency and args.unitPrice or nil
+            prior.payItem, prior.payQty, prior.mailId = recorded.payItem, recorded.payQty, recorded.mailId
+            prior.remaining, prior.closed = recorded.remaining, recorded.closed
         end
         return prior
     end
@@ -790,8 +816,13 @@ function Wd.fill(player, args)
     -- one tick from here: ledger, order, letters, receipt
     local postings, tax = fillPostings(order, coin and opt or nil, username, n)
     local meta = copy(fp)
+    local payQty = (not coin) and opt.perUnit * n or nil
+    -- the seller's payment letter gets its id now, so the record a resend answers from can name it
+    local payMailId = payQty and S.newId() or nil
     meta.orderId, meta.fillId, meta.qty = order.id, fillId, n
-    if coin then meta.currency, meta.paid, meta.tax = opt.currency, opt.unitPrice * n, tax end
+    meta.remaining, meta.closed = order.qty - n, order.qty - n == 0
+    if coin then meta.currency, meta.paid, meta.tax = opt.currency, opt.unitPrice * n, tax
+    else meta.payItem, meta.payQty, meta.mailId = opt.lot.item, payQty, payMailId end
     local txId = nil
     if #postings > 0 then
         local res = L.post({
@@ -810,14 +841,13 @@ function Wd.fill(player, args)
     for _, o in ipairs(order.options) do
         if o.kind == "coin" then o.held = o.unitPrice * order.qty end
     end
-    local payQty = (not coin) and opt.perUnit * n or nil
     if payQty then opt.lot.qty = opt.lot.qty - payQty end
     local _, own = offerOf(order, username)
     if own then table.remove(order.offers, own) end
     local entry = M.add(order.owner, { kind = "wanted", item = order.item, qty = n, txId = txId, price = price,
         currency = coin and opt.currency or nil, seller = username, snapshot = snapshot })
     local pay = payQty and M.add(username, { kind = "wanted_pay", item = opt.lot.item, qty = payQty, txId = txId,
-        snapshot = opt.lot.snapshot, listingId = opt.lot.id, seller = order.owner }) or nil
+        snapshot = opt.lot.snapshot, listingId = opt.lot.id, seller = order.owner }, payMailId) or nil
     local recorded, recordError = M.finishOut(login, fillId, rec, "fill", txId or fillId)
     if not recorded then error("wanted fill receipt invariant: " .. tostring(recordError)) end
     if #postings == 0 and not L.noteOperation(requestId, fillId, meta) then
@@ -901,9 +931,13 @@ function Wd.raise(player, args)
     local requestId = "wraise:" .. username .. ":" .. args.requestId
     if not L.validRequestKey(requestId) then return { ok = false, error = "request_too_long" } end
     local fp = { orderId = args.orderId, option = args.option, price = args.unitPrice }
-    local prior = priorOrder(requestId, fp)
+    local prior, recorded = priorOrder(requestId, fp)
     if prior then
         prior.option, prior.unitPrice = args.option, args.unitPrice
+        if prior.duplicate and recorded then
+            prior.currency, prior.held, prior.delta = recorded.currency, recorded.held, recorded.delta
+            prior.fee, prior.met = recorded.fee, recorded.met
+        end
         return prior
     end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
@@ -930,7 +964,13 @@ function Wd.raise(player, args)
         { account = username, currency = opt.currency, amount = delta, bucket = "reserved" },
     }
     if fee > 0 then postings[3] = { account = Wd.BURN_ACCOUNT, currency = opt.currency, amount = fee } end
+    -- the offers this price meets, decided before the commit so the record can say how many
+    local kept, met = {}, {}
+    for _, f in ipairs(order.offers) do
+        if f.option == args.option and f.unitPrice <= args.unitPrice then met[#met + 1] = f else kept[#kept + 1] = f end
+    end
     local meta = copy(fp)
+    meta.currency, meta.held, meta.delta, meta.fee, meta.met = opt.currency, opt.held + delta, delta, fee, #met
     local res = L.post({
         kind = "wanted_raise", requestId = requestId, reasonCode = "wanted_raise", actor = username, idemMeta = meta,
         payload = { item = order.item, qty = order.qty, orderId = order.id, option = args.option, currency = opt.currency },
@@ -938,19 +978,16 @@ function Wd.raise(player, args)
     })
     if not res.ok then return { ok = false, error = res.error, currency = opt.currency } end
     opt.unitPrice, opt.held, opt.fee = args.unitPrice, opt.held + delta, (opt.fee or 0) + fee
-    local kept, met = {}, {}
-    for _, f in ipairs(order.offers) do
-        if f.option == args.option and f.unitPrice <= opt.unitPrice then met[#met + 1] = f else kept[#kept + 1] = f end
-    end
     order.offers = kept
     X.emit("wanted.raised", { orderId = order.id, owner = username, option = args.option, currency = opt.currency,
         unitPrice = opt.unitPrice, delta = delta, fee = fee, met = #met, txId = res.txId })
     X.market(username, { kind = "wanted_raised", orderId = order.id, item = order.item, qty = order.qty,
         price = opt.unitPrice, currency = opt.currency, fee = fee, txId = res.txId })
     for _, f in ipairs(met) do
-        X.market(f.from, { kind = "wanted_offer_met", orderId = order.id, item = order.item, qty = order.qty,
+        local seller = S.accountOf(f.from)
+        X.market(seller, { kind = "wanted_offer_met", orderId = order.id, item = order.item, qty = order.qty,
             price = opt.unitPrice, currency = opt.currency, other = username })
-        notify(f.from, { kind = "wanted_raised", orderId = order.id, item = order.item, qty = order.qty,
+        notify(seller, { kind = "wanted_raised", orderId = order.id, item = order.item, qty = order.qty,
             price = opt.unitPrice, currency = opt.currency, from = username })
     end
     return { ok = true, txId = res.txId, orderId = order.id, option = args.option, currency = opt.currency,

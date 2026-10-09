@@ -1850,7 +1850,9 @@ reconcileOuts = function(player, p, scan, username)
                 local record = R.copyReplay(proof)
                 R.markProven(record)
                 if partial then
-                    record.originalKind, record.kind = proof.kind, "return"
+                    -- a return of a return keeps the kind the goods first left as: a buy order's
+                    -- lot or a goods-paid delivery has no price or currency on any later round
+                    record.originalKind, record.kind = proof.kind == "return" and proof.originalKind or proof.kind, "return"
                     record.origins, record.qty, record.lotQty = verdict.validOrigins, verdict.valid, verdict.valid
                 end
                 local ok, info
