@@ -42,6 +42,7 @@ end
 -- what, and the balance chain around it). A field the ring never carried stays nil - an unknown
 -- balance is not 0, and the panel must be able to tell "no reserve movement" from "not recorded"
 -- (the ledger writes reservedAfter only, so reservedBefore is unknown on every current line).
+-- The ring carries no free text (memo, reason): the statement reads that from the receipt files.
 function W.state(username)
     local receipts = L.receipts(username)
     local list = {}
@@ -52,7 +53,7 @@ function W.state(username)
             before = r.before, after = r.after,
             reservedBefore = r.reservedBefore, reservedAfter = r.reservedAfter,
             counterparty = r.counterparty,
-            item = r.item, qty = r.qty, reasonText = r.reasonText, sourceMod = r.sourceMod,
+            item = r.item, qty = r.qty, sourceMod = r.sourceMod,
             reasonCode = r.reasonCode, nameKey = r.nameKey,
             rolledBack = S.isRolledBack(epoch, r.seq),
         }

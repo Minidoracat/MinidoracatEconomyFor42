@@ -158,6 +158,14 @@ local function isAmount(v)
     return type(v) == "number" and v == math.floor(v) and v >= 1 and v <= L.MAX_ABS_AMOUNT
 end
 
+-- The idempotency record lives in Global ModData, which any client can request: it keeps a digest
+-- of the memo, enough to tell a resend from a reused id with another memo, never the text.
+-- ponytail: unsalted 32-bit DJB2 - it can confirm a guessed memo, not reveal one; salt it with a
+-- server-private value if that ever matters.
+local function memoDigest(memo)
+    return EC.hashHex(EC.hashUpdate(EC.hashInit(), memo or ""))
+end
+
 -- req = { from, to, currency, amount, key, reasonCode, reasonText?, actor?, payload?,
 --         fee? (what the player confirmed; nil for the API), memo?, player? (terminal check) }
 -- Check order is design section 3.1. -> { ok, txId, fee, total, sentToday, duplicate? } or
@@ -174,7 +182,7 @@ function Tr.execute(req)
     -- your own names is a self transfer and the money never lands on an alias
     from, to = S.accountOf(from), S.accountOf(to)
     local order = { kind = "transfer", from = from, to = to, currency = currency, amount = amount,
-        quoted = req.fee or -1, memo = req.memo or "" }
+        quoted = req.fee or -1, memoHash = memoDigest(req.memo) }
     local prior = L.priorResult(req.key)
     if prior then
         local meta = prior.meta or {}
@@ -343,6 +351,14 @@ function Tr.init(root)
     md = root
     md.transferDaily = md.transferDaily or {}
     md.transferRecent = md.transferRecent or {}
+    -- Records written before the digest kept the memo itself: convert them once, so a resend of
+    -- such a transfer still compares (L.init has created md.idempotency before this runs).
+    for _, rec in pairs(md.idempotency.map) do
+        local meta = type(rec) == "table" and rec.meta or nil
+        if type(meta) == "table" and meta.kind == "transfer" and type(meta.memo) == "string" then
+            meta.memoHash, meta.memo = memoDigest(meta.memo), nil
+        end
+    end
     if type(md.firstSeen) ~= "table" then
         -- First boot of the build that tracks account age: everyone the economy already knows is
         -- old enough. A world rolled back to a save from before this boot runs this again over

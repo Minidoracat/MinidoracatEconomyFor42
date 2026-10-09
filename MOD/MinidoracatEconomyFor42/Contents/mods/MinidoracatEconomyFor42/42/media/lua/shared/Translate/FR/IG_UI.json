@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "Pas assez de place : ceci ira dans votre boîte aux lettres. Confirmez encore une fois",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "La remise a échoué et tous les objets ont été repris ; la lettre est toujours dans la boîte aux lettres, récupérez-la à nouveau",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "Prêt",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "La note ne peut pas être enregistrée pour le moment : envoie la contre-offre sans note ou réessaie plus tard",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "%1 en attente, %2 en vente, %3 enchères, %4 ordres d'achat",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "Par compte",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "Tout le serveur",

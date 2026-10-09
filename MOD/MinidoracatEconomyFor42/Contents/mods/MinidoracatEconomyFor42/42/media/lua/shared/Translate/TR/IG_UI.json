@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "Yeterli yer yok: bu posta kutunuza gidecek. Bir kez daha onaylayın",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "Teslim başarısız oldu ve tüm eşyalar geri alındı; mektup hâlâ posta kutusunda, yeniden teslim alın",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "Hazır",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "Not şu anda kaydedilemiyor: karşı teklifi notsuz gönderin veya daha sonra tekrar deneyin",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "%1 bekliyor, %2 ilanda, %3 açık artırma, %4 alım talebi",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "Hesap başına",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "Sunucu geneli",

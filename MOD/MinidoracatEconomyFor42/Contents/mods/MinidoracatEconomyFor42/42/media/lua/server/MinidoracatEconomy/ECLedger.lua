@@ -65,6 +65,13 @@ function L.init()
     md = S.modData()
     md.wallets = md.wallets or {}
     md.receipts = md.receipts or {}
+    -- Free text (a transfer memo, an adjust reason, an API reasonText) lives in the receipt and
+    -- events files only; rings written by earlier builds still carry it and lose it here.
+    for _, ring in pairs(md.receipts) do
+        for _, entry in ipairs(type(ring) == "table" and type(ring.items) == "table" and ring.items or {}) do
+            if type(entry) == "table" then entry.reasonText = nil end
+        end
+    end
     md.frozen = md.frozen or {}
     md.idempotency = md.idempotency or { keys = {}, head = 1, count = 0, map = {} }
     md.config = md.config or {}
@@ -441,11 +448,12 @@ function L.post(tx)
         }
         committed[#committed + 1] = entry
         -- the receipt (statement) tells the story of the spendable balance: a reserve shows as the
-        -- available line ("bid held -X"), the mirror line on the reserved bucket is only in the event
+        -- available line ("bid held -X"), the mirror line on the reserved bucket is only in the event.
+        -- No reasonText: the ring is Global ModData, the text stays in the private files.
         if not reserved then pushReceipt(p.account, {
             txId = txId, seq = seq, ts = ts, kind = tx.kind, currency = p.currency, amount = p.amount, fee = p.fee,
             before = availableBefore, after = w.available, reservedAfter = w.reserved, counterparty = L.counterparty(tx.postings, p),
-            sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonText = tx.reasonText, reasonCode = tx.reasonCode,
+            sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonCode = tx.reasonCode,
             nameKey = tx.payload and tx.payload.nameKey or nil,
             item = tx.payload and tx.payload.item or nil, qty = tx.payload and tx.payload.qty or nil,
         }) end

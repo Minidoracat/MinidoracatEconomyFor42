@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "背包空间不足，这笔会先寄到信箱；再按一次确认",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "交付失败，物品已全部收回；信件仍在信箱，请再领一次",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "可领取",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "服务器现在无法保存留言：请不填留言送出还价，或稍后再试",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "未领 %1、刊登 %2、拍卖 %3、求购 %4",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "每人",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "全服",

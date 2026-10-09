@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "Espaço insuficiente: isto vai para a sua caixa de correio. Confirme mais uma vez",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "A entrega falhou e todos os itens foram recolhidos; a carta continua na caixa de correio, então resgate de novo",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "Pronto",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "Não foi possível guardar a nota agora: envie a contraproposta sem nota ou tente mais tarde",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "%1 aguardando, %2 anunciados, %3 leilões, %4 ordens de compra",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "Por conta",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "Todo o servidor",

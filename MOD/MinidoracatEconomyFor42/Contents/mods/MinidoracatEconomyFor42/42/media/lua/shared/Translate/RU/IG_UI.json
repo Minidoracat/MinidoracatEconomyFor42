@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "Не хватает места: это попадёт в почтовый ящик. Подтвердите ещё раз",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "Передача не удалась, и все предметы забраны обратно; письмо всё ещё в почтовом ящике, заберите его снова",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "Готово",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "Сейчас примечание нельзя сохранить: отправьте встречную цену без примечания или попробуйте позже",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "ждут: %1, выставлено: %2, аукционов: %3, заявок: %4",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "На аккаунт",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "На весь сервер",

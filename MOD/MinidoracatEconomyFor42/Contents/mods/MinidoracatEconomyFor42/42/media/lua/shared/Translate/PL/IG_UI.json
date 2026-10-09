@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "Za mało miejsca: to trafi do skrzynki. Potwierdź jeszcze raz",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "Przekazanie nie powiodło się i wszystkie przedmioty zostały cofnięte; list nadal jest w skrzynce, odbierz go ponownie",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "Gotowe",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "Nie można teraz zapisać notatki: wyślij kontrofertę bez notatki lub spróbuj później",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "czeka: %1, wystawione: %2, aukcje: %3, zlecenia kupna: %4",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "Na konto",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "Cały serwer",

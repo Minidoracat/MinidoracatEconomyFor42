@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "背包空間不足，這筆會先寄到信箱；再按一次確認",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "交付失敗，物品已全部收回；信件仍在信箱，請再領一次",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "可領取",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "伺服器現在無法保存留言：請不填留言送出還價，或稍後再試",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "未領 %1、刊登 %2、拍賣 %3、求購 %4",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "每人",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "全服",

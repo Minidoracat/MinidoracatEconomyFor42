@@ -1554,6 +1554,7 @@
   "IGUI_MinidoracatEconomy_Market_Error_mail_confirmation_required": "Nicht genug Platz: Dies geht in dein Postfach. Bestätige noch einmal",
   "IGUI_MinidoracatEconomy_Market_Error_delivery_failed": "Die Übergabe ist fehlgeschlagen und alle Gegenstände wurden zurückgenommen; der Brief ist noch im Postfach, hole ihn erneut ab",
   "IGUI_MinidoracatEconomy_Mail_State_ready": "Bereit",
+  "IGUI_MinidoracatEconomy_Wanted_Error_memo_unavailable": "Die Notiz kann gerade nicht gespeichert werden: sende die Forderung ohne Notiz oder versuche es später erneut",
   "IGUI_MinidoracatEconomy_Mail_CapacityParts": "%1 wartend, %2 eingestellt, %3 Auktionen, %4 Kaufgesuche",
   "IGUI_MinidoracatEconomy_Shop_Scope_player": "Pro Konto",
   "IGUI_MinidoracatEconomy_Shop_Scope_global": "Serverweit",
