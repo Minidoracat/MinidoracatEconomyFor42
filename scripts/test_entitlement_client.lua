@@ -12,7 +12,9 @@ refresh signals, the one shared reading of an order lookup (instant products inc
 ids checked locally and carried on quote / auto-renew, an error code never reaching the screen,
 and the admin integration page: order content / status / auto-renew reason / rental line /
 refund dialog / settings file problem wording, the order list's pages and player filter, and a
-refund sent once with its reason.
+refund sent once with its reason. Also the buy-order page's words and arithmetic
+(ECPanelWantedText): fee and tax rounding, condition / option / held / status wording, and every
+refusal read as a sentence, never as its code.
 ]]
 
 local MEDIA = os.getenv("EC_LUA_ROOT") or "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
@@ -374,6 +376,57 @@ end)()
     check(E.stateText("made_up_state") == "IGUI_MinidoracatEconomy_Common_Unknown"
         and E.autoRenewText("weird") == "IGUI_MinidoracatEconomy_Common_Unknown",
         "an entitlement state or auto-renew value without a translation reads as the unknown word, not its code")
+end)()
+
+-- ---------- buy orders: the words and the arithmetic of the page (ECPanelWantedText) ----------
+;(function()
+    local T = "IGUI_MinidoracatEconomy_"
+    package.loaded["MinidoracatEconomy/ECPanelWidgets"] = true
+    C.UI = { T = T, amountText = tostring }
+    C.PanelWidgets = { currencyLabel = function(id) return "cur:" .. tostring(id) end,
+        marketError = function(args) return "market:" .. tostring(args.error) end }
+    C.itemLabel = function(t) return "item:" .. tostring(t) end
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECPanelWantedText.lua")
+    local X = C.WantedText
+    -- the server's percentage and tax (ECMarket pct; the tax never takes the whole amount)
+    check(X.pct(100, 2) == 2 and X.pct(1, 2) == 1 and X.pct(0, 2) == 0 and X.pct(100, 0) == 0,
+        "a fee is the market's rounded-up percentage, at least 1 while the rate is on")
+    local net, tax = X.net(60, 5)
+    check(net == 57 and tax == 3, "a seller keeps the coins net of the sales tax")
+    net, tax = X.net(1, 50)
+    check(net == 1 and tax == 0, "the tax never takes the last coin")
+    -- conditions and options
+    check(X.condText(nil) == nil and X.condText({ new = true }) == T .. "Wanted_Cond_New"
+        and X.condText({ minPct = 80 }) == T .. "Wanted_Cond_Min|80", "a condition reads as words, none as nothing")
+    check(X.optionText({ kind = "coin", unitPrice = 2, currency = "survivor" }) == T .. "Wanted_Each|2 cur:survivor"
+        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Bandage" }) == T .. "Wanted_EachItems|1|item:Base.Bandage",
+        "a payment option names its unit price or its items per unit")
+    -- an own order's state pill and what it holds
+    check(X.status({ qty = 50, qtyTotal = 50 }) == T .. "Wanted_Status_open"
+        and X.status({ qty = 30, qtyTotal = 50 }) == T .. "Wanted_Status_partial"
+        and X.status({ qty = 30, qtyTotal = 50, blocked = "refund_failed" }) == T .. "Wanted_Status_blocked",
+        "an order is open, partly filled, or held by a failed refund")
+    local held = X.heldText({ options = { { kind = "coin", currency = "survivor", held = 60 },
+        { kind = "item", item = "Base.Bandage", held = 30 } } })
+    check(held == T .. "Card_Join2|" .. T .. "Wanted_HeldCoins|60 cur:survivor|" .. T .. "Wanted_HeldItems|30|item:Base.Bandage",
+        "what an order holds names its coins and its escrowed items")
+    check(X.heldText({ options = {} }) == T .. "Wanted_HeldNone", "an order holding nothing says so")
+    -- refusals: the order's own codes first, then the market's, never the code
+    check(X.errorText({ error = "price_range", min = 1, max = 99 }) == T .. "Wanted_Error_price_range|1|99"
+        and X.errorText({ error = "price_range", max = 99 }) == T .. "Wanted_Error_price_max|99",
+        "a price bound names the bounds the server sent")
+    check(X.errorText({ error = "worn", pct = 62, minPct = 80 }) == T .. "Wanted_Error_worn|62|80",
+        "a worn copy names its durability and the order's floor")
+    check(X.errorText({ error = "mail_confirmation_required", heavy = true }) == T .. "Delivery_ConfirmMailHeavy",
+        "the mailbox question is the market's own sentence")
+    known[T .. "Wanted_Error_own_order"] = "own"
+    check(X.errorText({ error = "own_order" }) == "own", "a buy-order code reads as its own sentence")
+    check(X.errorText({ error = "equipped" }) == "market:equipped", "any other code falls back to the market's wording")
+    check(X.verdictText({ verdict = "worn", pct = 62 }) == T .. "Wanted_Verdict_worn|62"
+        and X.verdictText({ verdict = "equipped" }) == "market:equipped", "a copy the order does not take says why")
+    check(X.charCount("abc") == 3, "a note is counted in characters")
+    C.UI, C.PanelWidgets, C.itemLabel, C.WantedText = nil, nil, nil, nil
+    package.loaded["MinidoracatEconomy/ECPanelWidgets"] = nil
 end)()
 
 -- ---------- the admin integration page, with rendering and engine controls replaced ----------

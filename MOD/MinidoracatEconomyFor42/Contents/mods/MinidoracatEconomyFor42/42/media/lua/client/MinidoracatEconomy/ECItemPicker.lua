@@ -15,10 +15,11 @@
 --       this call starts that load, and refills those two fields in place on the records every
 --       page already holds once it is ready. There is never a second index of the universe.
 --
---   C.ItemPicker.create(owner, policy, onPick, onCancel)
+--   C.ItemPicker.create(owner, policy, onPick, onCancel, noDrag)
 --       the framework's UI.ItemPicker overlay (rev 11), NOT added: the owning page adds it last
 --       (so it paints over its own content), positions it at (0, 0) and resizes it to the whole
---       page. policy is 'shop' (the whole universe) or 'market' (fixed classes skipped).
+--       page (`noDrag`: the host takes no dropped item, so the hint line does not offer it).
+--       policy is 'shop' (the whole universe) or 'market' (fixed classes skipped).
 --       onPick(record) and onCancel() are plain functions, called after the overlay has closed
 --       itself; neither sends a command. Methods: open(), close(), isOpen(), cancel(),
 --       resize(w, h), keyboardTargets(), dispose(). The overlay debounces its own search and
@@ -111,21 +112,23 @@ local function notFixed(rec) return not rec.fixed end
 
 -- What the English half of `search` is worth right now. It goes first on the hint line, because
 -- the hint is fitted to one line: the count may be cut, the reason a name is missing may not.
--- With the index complete, the line says the other way in: drag the item onto the page.
-local function namesNote()
+-- With the index complete, the line says the other way in: drag the item onto the page -- unless
+-- the page takes no drop (`noDrag`), where it says nothing more.
+local function namesNote(noDrag)
     local names = Names.status()
     if names == "loading" or names == "idle" then return tr("Admin_Pick_NamesLoading") end
     if names == "partial" then return tr("Admin_Pick_NamesPartial") end
+    if noDrag then return nil end
     return tr("Admin_Pick_DragHint")
 end
 
-function P.create(owner, policy, onPick, onCancel)
+function P.create(owner, policy, onPick, onCancel, noDrag)
     return U.framework.ItemPicker.new({
         theme = U.theme, placeholder = tr("Admin_Pick_Search"),
         items = function() return P.universe().items end,
         filter = policy == "market" and notFixed or nil,
         revision = function() return Names.revision end,
-        note = namesNote,
+        note = function() return namesNote(noDrag) end,
         onPick = function(_, rec) onPick(rec) end,
         onCancel = function() if onCancel then onCancel() end end,
     })
