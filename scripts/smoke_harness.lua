@@ -1118,6 +1118,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a commit while the serve
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: products frozen while their mod is missing (scripts/test_entitlements.lua scenario 13: the flag and rev 4, nothing runs inside the window, frozen from the start with moved times and one audit line, 30 frozen days without expiry / charge / reminder while an unflagged product runs out, frozen across another start, the thaw moves every lease and refund period once, the schedule resumes, a registration inside the window, a clock set back)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the MiniMap terminals layer (scenario NA-8b: marker API 2 keeps no section and no layer; NA-12: a refused or throwing section leaves the markers untagged; NA-13: settings API 5 + marker API 3 registers the section, tags terminals and ATMs, leaves the target untagged)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the player's "show button" option (scenario DK-5..8: the toolbar entry follows Accept at once, a stored "off" holds from game start, the fallback button never comes back through respawn / game start / resolution, single player still shows none)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: a shop item's name on delivery (scenario SN: read and carried, refusals change nothing, a bad name in the file, written and read back, set and clear, the fresh letter and its named copy, an unnamed row unchanged, a full container stays full, buyback by name, selling back)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19402,11 +19403,14 @@ local snap = Shop.snapshot("sd-zed", nowMs)
 local row = nil
 for _, it in ipairs(snap.items) do if it.id == "w" then row = it end end
 row.id, row.item, row.category = string.rep("i", Shop.ID_MAX), string.rep("t", 128), string.rep("\228\184\173", Shop.CATEGORY_MAX)
+row.name = string.rep("\228\184\173", Shop.NAME_MAX)   -- a send name at its longest, every character 3 bytes
 snap.items = {}
 local per, rest = S.wireBytes(row), S.wireBytes(snap)
+-- the margin is 10% of S.REPLY_MAX_BYTES (itself 10% under the engine's 1,000,000-byte buffer):
+-- a 48-character send name in 3-byte characters takes a full row to about 790 bytes
 check(row.remaining ~= nil and row.buybackRemaining ~= nil and row.prices.cat ~= nil
-    and per * Shop.MAX_SKUS + rest < S.REPLY_MAX_BYTES * 0.8,
-    "SD-12: a catalog at the hard ceiling with every row at its longest fits one reply with room to spare (" .. per .. " bytes a row)")
+    and per * Shop.MAX_SKUS + rest < S.REPLY_MAX_BYTES * 0.9,
+    "SD-12: a catalog at the hard ceiling with every row at its longest, send name included, fits one reply with room to spare (" .. per .. " bytes a row)")
 -- 全部刪光：空目錄，重啟也不會寫回預設商品
 local emptied = cmd(boss, "admin.catalog", { action = "remove", ids = { "w", "v" }, reason = "sd" })
 fire("OnServerStarted")
@@ -21088,6 +21092,148 @@ io.write("scenario RP: money flows, daily breakdown and the admin report\n")
         and startDay.k.checkin.n == 2,
         "RP-26: a commit before the stats module is up raises nothing; the next one takes the day's supply")
     onlinePlayers = {}
+end)()
+
+-- ===== 情境 SN：商店商品的送出名稱 =====
+-- 有名稱的商品：買到的是全新品＋那個名稱（液體容器不被倒空）、同名的全新品能賣回同一個商品；
+-- 沒有名稱的商品行為不變；不合格的名稱一律零變更拒絕。
+io.write("scenario SN: a shop item's name on delivery\n")
+;(function()
+local Shop, M, Codec = S.Shop, S.Mailbox, S.Codec
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, writerDeny = {}, {}, {}
+nowMs = nowMs + 61000
+local function catalog(rows) files[Shop.FILE] = { lines = { EC.jsonEncode({ items = rows }) }, opens = 0 } end
+local function fileText() return table.concat(files[Shop.FILE].lines, "\n") end
+local function fileLine(id)
+    for _, line in ipairs(files[Shop.FILE].lines) do
+        if string.find(line, '"id":"' .. id .. '"', 1, true) then return line end
+    end
+    return nil
+end
+-- an old catalog (no name anywhere) plus one named row written by hand
+catalog({
+    { id = "plain", item = "Base.Hammer", qty = 1, category = "tool", prices = { survivor = { price = 50, bidPrice = 20, buyback = true } } },
+    { id = "kfc", item = "Base.Hammer", name = "KFC box", qty = 1, category = "tool", prices = { survivor = { price = 50, bidPrice = 20, buyback = true } } },
+    { id = "fuel", item = "Base.PetrolCan", name = "Full can", qty = 1, category = "tool", prices = { survivor = { price = 30 } } },
+})
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("sn-admin"); boss.role = "admin"
+local zed = fakePlayer("sn-zed"); zed.x, zed.y = 101, 200; zed.inventory = fakeInventory(80)
+onlinePlayers = { boss, zed }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function held(fullType, name)
+    for _, it in ipairs(zed.inventory.items) do
+        if it.fullType == fullType and (name == nil or it.name == name) then return it end
+    end
+    return nil
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("sn-zed", "survivor", 1000, "SYSTEM_MINT", { requestId = "sn-seed", reasonCode = "t" })
+
+local list = cmd(zed, "shop.list")
+local named, unnamed = nil, nil
+for _, it in ipairs(list.items or {}) do
+    if it.id == "kfc" then named = it elseif it.id == "plain" then unnamed = it end
+end
+check(Shop.sku("kfc").name == "KFC box" and Shop.sku("plain").name == nil and named ~= nil and named.name == "KFC box"
+    and unnamed ~= nil and unnamed.name == nil,
+    "SN-1: a row's name is read from catalog.json and carried by shop.list; an old row has none")
+
+-- refusals: too long, a control character, not text - on add, on set and in the file - change nothing
+local before, rev0 = fileText(), Shop.revision()
+local long = cmd(boss, "admin.catalog", { action = "add", id = "x1", item = "Base.Nails", name = string.rep("x", Shop.NAME_MAX + 1),
+    prices = { survivor = { price = 9 } } })
+local ctl = cmd(boss, "admin.catalog", { action = "add", id = "x2", item = "Base.Nails", name = "a\nb", prices = { survivor = { price = 9 } } })
+local num = cmd(boss, "admin.catalog", { action = "add", id = "x3", item = "Base.Nails", name = 5, prices = { survivor = { price = 9 } } })
+local setLong = cmd(boss, "admin.catalog", { action = "set", id = "kfc", name = string.rep("x", Shop.NAME_MAX + 1) })
+local setCtl = cmd(boss, "admin.catalog", { action = "set", id = "kfc", name = "a\tb" })
+check(long.error == "invalid_args" and ctl.error == "invalid_args" and num.error == "invalid_args"
+    and setLong.error == "invalid_args" and setLong.extra ~= nil and setLong.extra.field == "name"
+    and setCtl.error == "invalid_args" and Shop.sku("x1") == nil and Shop.sku("kfc").name == "KFC box"
+    and fileText() == before and Shop.revision() == rev0,
+    "SN-2: a name over NAME_MAX, with a control character or not text is refused on add and set, and nothing is written")
+catalog({ { id = "bad", item = "Base.Nails", name = "a\1b", prices = { survivor = { price = 9 } } } })
+local reload = cmd(boss, "admin.catalog", { action = "reload" })
+local fs = Shop.fileStatus()
+check(reload.ok == false and fs.errorDetail ~= nil and fs.errorDetail.code == "bad_text" and fs.errorDetail.field == "name"
+    and Shop.sku("kfc") ~= nil and Shop.sku("bad") == nil,
+    "SN-3: a hand-written bad name refuses the reload as bad_text field=name and the previous catalog stays")
+files[Shop.FILE] = { lines = {}, opens = 0 }
+for line in string.gmatch(before .. "\n", "(.-)\n") do files[Shop.FILE].lines[#files[Shop.FILE].lines + 1] = line end
+cmd(boss, "admin.catalog", { action = "reload" })
+
+-- add and set write it back, an empty name clears it, an old row stays without one
+local added = cmd(boss, "admin.catalog", { action = "add", id = "nails", item = "Base.Nails", name = "Lucky nails",
+    prices = { survivor = { price = 9 } } })
+check(added.ok == true and string.find(fileLine("nails") or "", '"name":"Lucky nails"', 1, true) ~= nil
+    and string.find(fileLine("plain") or "", '"name"', 1, true) == nil
+    and cmd(boss, "admin.catalog", { action = "reload" }).ok == true and Shop.sku("nails").name == "Lucky nails",
+    "SN-4: an added name is written into catalog.json and read back; a row without one is written without the field")
+local renamed = cmd(boss, "admin.catalog", { action = "set", id = "nails", name = "Other nails" })
+local afterSet = Shop.sku("nails").name
+local cleared = cmd(boss, "admin.catalog", { action = "set", id = "nails", name = "" })
+local again = cmd(boss, "admin.catalog", { action = "set", id = "nails", name = "" })
+check(renamed.ok == true and afterSet == "Other nails" and cleared.ok == true and Shop.sku("nails").name == nil
+    and string.find(fileLine("nails") or "", '"name"', 1, true) == nil
+    and again.ok == true and again.extra ~= nil and again.extra.changes == 0,
+    "SN-5: set changes the name, an empty one clears it from the row and the file, and clearing it again changes nothing")
+
+-- a named row's letter: a fresh item that carries the name and nothing else
+local rev = Shop.revision()
+local buy = cmd(zed, "shop.buy", { id = "kfc", count = 1, revision = rev })
+local entry = buy.mailId and M.entryOf("sn-zed", buy.mailId) or nil
+local got = held("Base.Hammer", "KFC box")
+check(buy.ok == true and entry ~= nil and type(entry.snapshot) == "table" and entry.snapshot.fresh == true
+    and entry.snapshot.type == "Base.Hammer" and entry.snapshot.name == "KFC box"
+    and got ~= nil and got.customName == true and got.condition == 10,
+    "SN-6: a named row's letter carries a fresh snapshot, and the copy handed over is a new item with that custom name")
+local buyPlain = cmd(zed, "shop.buy", { id = "plain", count = 1, revision = rev })
+local plainEntry = buyPlain.mailId and M.entryOf("sn-zed", buyPlain.mailId) or nil
+check(buyPlain.ok == true and plainEntry ~= nil and plainEntry.snapshot == nil and held("Base.Hammer", "Base.Hammer") ~= nil
+    and held("Base.Hammer", "Base.Hammer").customName == false,
+    "SN-7: a row without a name still sends a plain new item, no snapshot")
+-- a fresh container comes out of the engine full: the fresh rebuild keeps it full, while a
+-- plain snapshot rebuild of the same type empties it (the fake really does Empty)
+local realInstance = instanceItem
+instanceItem = function(t)
+    local it = realInstance(t)
+    if it and it.getFluidContainer then it:getFluidContainer():addFluid(Fluid.Get("Water"), 10) end
+    return it
+end
+local plainRebuild = Codec.rebuild({ type = "Base.PetrolCan", name = "Full can" })
+local fuel = cmd(zed, "shop.buy", { id = "fuel", count = 1, revision = rev })
+instanceItem = realInstance
+local can = held("Base.PetrolCan", "Full can")
+check(plainRebuild ~= nil and plainRebuild.fluidAmount == 0 and fuel.ok == true and can ~= nil
+    and can.fluidAmount == 10 and can.fluidName == "Water" and can.customName == true,
+    "SN-8: a named container is delivered as full as a new one; only a plain snapshot rebuild empties it")
+
+-- buyback: the row's own name or none is new; any other name is renamed
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = 1000
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = 1000
+local other = instanceItem("Base.Hammer"); other:setName("Other"); other:setCustomName(true); zed.inventory:AddItem(other)
+local cand = cmd(zed, "shop.candidates", { id = "kfc" })
+check(cand.ok == true and cand.count == 2 and cand.refused ~= nil and cand.refused.renamed == 1,
+    "SN-9: the named row takes a new copy under its own name and one with no name; another custom name is refused as renamed")
+local toPlain = cmd(zed, "shop.sell", { id = "plain", itemIds = { got.id }, revision = rev })
+local wrong = cmd(zed, "shop.sell", { id = "kfc", itemIds = { other.id }, revision = rev })
+local back = cmd(zed, "shop.sell", { id = "kfc", itemIds = { got.id }, revision = rev })
+check(toPlain.error == "not_canonical" and toPlain.reason == "renamed" and wrong.error == "not_canonical"
+    and wrong.reason == "renamed" and back.ok == true and back.total == 20 and held("Base.Hammer", "KFC box") == nil,
+    "SN-10: the named copy sells back to its own row only; elsewhere, and any other name, is renamed")
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = false
+onlinePlayers = {}
 end)()
 
 io.write("\n")

@@ -506,13 +506,22 @@ function C.demolishTerminal(x, y, z, requestId) send("terminal.demolish", { x = 
 
 -- Shop snapshots carry per-SKU prices[currency], a shared unit quota, and per-currency buyback
 -- budgets. Every transaction names its currency; there is no page-level settlement currency.
+-- A read the server refused (ok = false: reply_too_large) is not an empty shop: the snapshot on
+-- screen stays and C.shopError holds the code until the next good read (listeners get "error").
 C.shop = nil
+C.shopError = nil
 C.shopListeners = {}
 function C.onShop(fn) C.shopListeners[#C.shopListeners + 1] = fn end
 
 
 handlers["shop.list"] = function(args)
     if args.requestId ~= nil and shopSnapshot:accept(args) == "stale" then return end
+    if args.ok == false then
+        C.shopError = tostring(args.error or "unknown")
+        notify(C.shopListeners, "shop", "error", args)
+        return
+    end
+    C.shopError = nil
     C.shop = args
     setUnclaimed(args)
     notify(C.shopListeners, "shop", "list", args)
@@ -825,9 +834,16 @@ handlers["market.browse"] = function(args)
     notify(C.marketListeners, "market", "browse", args)
 end
 
+-- The own listings follow the shop's rule: a refused read keeps C.myListings and sets
+-- C.myListingsError (the page shows it with a retry), the next good read clears it.
 handlers["market.mine"] = function(args)
     if args.requestId ~= nil and listingsSnapshot:accept(args) == "stale" then return end
-    C.myListings = args
+    if args.ok == false then
+        C.myListingsError = tostring(args.error or "unknown")
+    else
+        C.myListingsError = nil
+        C.myListings = args
+    end
     notify(C.marketListeners, "market", "mine", args)
 end
 

@@ -2288,9 +2288,11 @@ end
 -- ----- items dragged in (ECItemDrop) or sent from the item menu (ECItemMenu) -----
 
 -- What adding `item` on page `tab` ("Shop": a new SKU, "Whitelist": a rule) does now:
--- { ok, text, item, record }. `item` is an InventoryItem, or the full type of a world object (a
+-- { ok, text, item, record, name? }. `item` is an InventoryItem, or the full type of a world object (a
 -- standing generator). The record is the universe's own (ECItemPicker), the very one the search
--- would hand over; a type the universe leaves out (hidden, obsolete) has none.
+-- would hand over; a type the universe leaves out (hidden, obsolete) has none. `name` is the
+-- item's own name when it is not its script's (another MOD renamed it): the shop draft's send
+-- name starts from it.
 function Admin:itemVerdict(tab, item)
     local isItem = type(item) ~= "string"
     local function no(text) return { ok = false, item = isItem and item or nil, text = text } end
@@ -2308,7 +2310,15 @@ function Admin:itemVerdict(tab, item)
     elseif record.fixed then
         return no(tr("Drop_Fixed"))
     end
-    return { ok = true, item = isItem and item or nil, record = record, text = getText(T .. key, record.name, fullType) }
+    local name = nil
+    if isItem then
+        local ok, own, script = pcall(function()
+            return item:getDisplayName(), item:getScriptItem():getDisplayName()
+        end)
+        if ok and type(own) == "string" and own ~= "" and own ~= script then name = own end
+    end
+    return { ok = true, item = isItem and item or nil, record = record, name = name,
+        text = getText(T .. key, record.name, fullType) }
 end
 
 -- Add `item` on page `tab`, switching to it first (through the draft guard every page switch
@@ -2320,10 +2330,10 @@ function Admin:addItem(tab, item)
         return
     end
     local page = tab == "Shop" and self.shopPage or self.whitelistPage
-    if self.tab == tab then return page:addRecord(verdict.record) end
+    if self.tab == tab then return page:addRecord(verdict.record, verdict.name) end
     self:requestClose(function()
         self:setTab(tab)
-        page:addRecord(verdict.record)
+        page:addRecord(verdict.record, verdict.name)
     end)
 end
 

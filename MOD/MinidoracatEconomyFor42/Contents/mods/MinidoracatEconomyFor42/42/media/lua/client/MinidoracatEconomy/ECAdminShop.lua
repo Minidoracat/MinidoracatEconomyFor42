@@ -21,11 +21,16 @@
 --
 -- Only columns the admin really moved travel. A per-currency column travels nested, so a write
 -- that raises the survivor price leaves the cat quote exactly as it is:
---   { action="set", id=..., revision=..., qty?, category?, enabled?, dailyCap?, dailyCapScope?,
+--   { action="set", id=..., revision=..., qty?, category?, name?, enabled?, dailyCap?, dailyCapScope?,
 --     buybackCap?, prices = { [currency] = { price?, bidPrice?, enabled?, buyback? } } }
 -- and a batch is the same columns under `fields` with the list of ids. An explicit 0 or "off" is
 -- a value like any other; a column nobody touched is absent from the write, currency sub-tables
 -- included -- and a form that would change nothing sends no command at all.
+--
+-- `name` is the send name (ECShop: the name a bought copy carries; empty = the item's own name,
+-- and an emptied box travels as "" to clear it). It is one SKU's own column: the batch form never
+-- shows or writes it. An item dragged in or sent from the item menu whose own name differs from
+-- its script's (another MOD renamed it) opens its new-SKU draft with that name already typed.
 --
 -- A currency with no quote is NOT a free item and NOT a zero: its price box is empty, its two
 -- direction switches say "not offered" and nothing about it travels. Typing a price is what
@@ -128,6 +133,7 @@ local itemTexture, categoryText = U.itemTexture, U.categoryText
 -- them: the host sets it (ShopMaxItems) and every snapshot carries it (Page:maxItems).
 local PRICE_MAX, CAP_MAX, QTY_MAX = 1000000000, 1000000, 50
 local ID_MAX, CATEGORY_MAX = 32, 32
+local NAME_MAX = 48   -- ECShop.NAME_MAX, in characters
 
 -- The five categories the shop itself pages by. Every other category the dropdown offers is one
 -- the catalog on screen already uses: this page edits a SKU's category, it does not manage a
@@ -369,6 +375,7 @@ local function draftFromSku(sku)
         id = sku.id, item = sku.item,
         qty = tostring(math.floor(tonumber(sku.qty) or 1)),
         category = tostring(sku.category or DEFAULT_CATEGORY),
+        name = type(sku.name) == "string" and sku.name or "",
         enabled = sku.enabled ~= false,
         dailyCap = tostring(math.floor(tonumber(sku.dailyCap) or 0)),
         dailyCapScope = scopeOf(sku.dailyCapScope),
@@ -715,6 +722,10 @@ function Page:buildFields()
     self.fields = fields
     self.fieldByKey = {}
     for _, spec in ipairs(fields) do self.fieldByKey[spec.key] = spec end
+    -- the send name: one SKU's own column, so it is named here but kept out of self.fields -- every
+    -- batch pass walks that list, and a batch never shows or writes a name
+    self.fieldByKey.name = { key = "name", label = "Admin_Shop_Name", kind = "text", entry = true,
+        control = self.nameEntry }
 end
 
 function Page:createChildren()
@@ -779,6 +790,7 @@ function Page:createChildren()
     self.qtyEntry = field({ maxLen = 2 })
     self.capEntry = field({ maxLen = 7 })
     self.bcapEntry = field({ maxLen = 7 })
+    self.nameEntry = field({ maxLen = NAME_MAX })
 
     local function formChip(label, handler)
         local b = Button.create(0, 0, textWidth(label) + 24, chipH(), label, self, handler, "chip")
@@ -828,9 +840,10 @@ function Page:createChildren()
     self.fieldByKey["q:" .. first .. ":price"].tip = tip("Admin_Shop_TipPrice")
     self.fieldByKey["q:" .. first .. ":bidPrice"].tip = tip("Admin_Shop_TipBid")
     self.batchTip = tip("Admin_Shop_TipBatch")
+    self.fieldByKey.name.tip = tip("Admin_Shop_TipName")
 
     -- every box the editor may make editable; the id is a new SKU's alone
-    self.entryFields = { self.qtyEntry, self.capEntry, self.bcapEntry }
+    self.entryFields = { self.qtyEntry, self.capEntry, self.bcapEntry, self.nameEntry }
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
         self.entryFields[#self.entryFields + 1] = self.quotes[cur].priceEntry
         self.entryFields[#self.entryFields + 1] = self.quotes[cur].bidEntry
@@ -838,7 +851,7 @@ function Page:createChildren()
     self.newFields = { self.idEntry }
     -- everything that lives inside the scrolling field area, so placeForm hides what scrolled out
     -- of it in one pass
-    self.formControls = { self.idEntry }
+    self.formControls = { self.idEntry, self.nameEntry }
     for _, spec in ipairs(self.fields) do self.formControls[#self.formControls + 1] = spec.control end
     for _, b in ipairs(self.tips) do self.formControls[#self.formControls + 1] = b end
 
@@ -952,6 +965,7 @@ function Page:isDirty()
             return true
         end
     end
+    if trimText(entryText(self.nameEntry)) ~= (base.name or "") then return true end
     return false
 end
 
@@ -1016,6 +1030,10 @@ function Page:fillEntries(d)
         setEntryText(ctl.bidEntry, q.bidPrice)
     end
     self:fillCategoryCombo(d.category, false)
+    -- the send name: empty means the item's own name, which is what the empty box shows
+    setEntryText(self.nameEntry, d.name or "")
+    local own = d.item ~= nil and itemName(d.item) or ""
+    if self.nameEntry.setPlaceholderText then pcall(self.nameEntry.setPlaceholderText, self.nameEntry, own) end
 end
 
 -- The categories the dropdown offers: the five the shop pages by, then every other category the
@@ -1104,7 +1122,9 @@ function Page:startEdit(id)
     return true
 end
 
-function Page:startNew(record)
+-- `name` (optional): the send name the draft opens with -- the dragged item's own name when
+-- another MOD renamed it (Admin:itemVerdict); the admin may still change or empty it.
+function Page:startNew(record, name)
     local quotes = {}
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
         -- no price is typed yet, so no currency is offered yet: the admin fills in the one (or
@@ -1114,7 +1134,7 @@ function Page:startNew(record)
     local d = {
         isNew = true, id = defaultId(record.fullType, self:takenIds()), item = record.fullType,
         qty = "1", category = DEFAULT_CATEGORY, enabled = true, dailyCapScope = "player",
-        dailyCap = "0", buybackCap = "0", quotes = quotes,
+        dailyCap = "0", buybackCap = "0", quotes = quotes, name = name or "",
     }
     self.batch = nil
     self.batchSent = nil
@@ -1421,8 +1441,9 @@ function Page:onAdd()
 end
 
 -- An item dragged onto the page or sent from the item menu: the same new SKU the picker makes,
--- with the same checks and the same draft guard, without the search.
-function Page:addRecord(record)
+-- with the same checks and the same draft guard, without the search. `name` is the item's own
+-- name when it is not its script's (the draft's send name, prefilled).
+function Page:addRecord(record, name)
     local refusal = self:addRefusal()
     if refusal then
         self.owner.message = { text = refusal, error = true }
@@ -1430,7 +1451,7 @@ function Page:addRecord(record)
     end
     self:requestLeave(function()
         if self.picker:isOpen() then self.picker:close() end
-        self:onPicked(record)
+        self:onPicked(record, name)
     end)
 end
 
@@ -1487,9 +1508,9 @@ function Page:onDelete()
     })
 end
 
-function Page:onPicked(record)
+function Page:onPicked(record, name)
     self.queue = nil
-    self:startNew(record)
+    self:startNew(record, name)
     self:layout()
 end
 
@@ -2005,6 +2026,12 @@ function Page:onApply()
     if offered == 0 then
         return self:reject(tr("Admin_Shop_Price"), tr("Admin_Shop_QuoteNeedAny"))
     end
+    -- the send name, inside the server's own bounds (ECShop.NAME_MAX characters, no control
+    -- character); empty is "the item's own name"
+    local name = trimText(entryText(self.nameEntry))
+    if #name > NAME_MAX or string.find(name, "%c") then
+        return self:reject(tr("Admin_Shop_Name"), getText(T .. "Admin_Shop_NameHint", tostring(NAME_MAX)))
+    end
 
     local args = { action = d.isNew and "add" or "set", id = d.id, revision = self.draftRevision }
     local function quoteLeaves(cur)
@@ -2034,6 +2061,7 @@ function Page:onApply()
             if value["q:" .. cur .. ":price"] ~= nil then prices[cur] = quoteLeaves(cur) end
         end
         args.prices = prices
+        if name ~= "" then args.name = name end
     else
         -- only the leaves that really moved. A currency the admin never touched is absent from
         -- the write, sub-table and all; a quote being created carries all four of its leaves at
@@ -2057,6 +2085,8 @@ function Page:onApply()
             args.buybackCap = value.buybackCap
             moved = moved + 1
         end
+        -- an emptied box travels as "", which clears the row's name
+        if name ~= (base.name or "") then args.name = name; moved = moved + 1 end
         local prices = nil
         for _, cur in ipairs(EC.CURRENCY_ORDER) do
             if value["q:" .. cur .. ":price"] ~= nil then
@@ -2324,8 +2354,10 @@ function Page:rebuildRows()
         local coin = math.max(12, math.min(fontH.small + 2, 20))
         local coinY = 5 + math.floor((fontH.small - coin) / 2)
         for _, sku in ipairs(skus) do
-            local name = itemName(sku.item)
-            local alt = itemOriginal(sku.item)
+            -- a row with a send name is listed by it, the item's own name beside it
+            local sent = type(sku.name) == "string" and sku.name ~= "" and sku.name or nil
+            local name = sent or itemName(sku.item)
+            local alt = sent and itemName(sku.item) or itemOriginal(sku.item)
             local hay = string.lower(name .. " " .. tostring(alt or "") .. " " .. tostring(sku.item)
                 .. " " .. tostring(sku.id) .. " " .. categoryText(sku.category))
             -- both filters, one row test: the category set narrows what the keyword searches
@@ -2422,6 +2454,7 @@ function Page:buildDetailText()
     local lines = {
         tr("Admin_Shop_Id") .. ": " .. tostring(d.id),
         getText(T .. "Admin_Shop_DetailName", itemName(d.item)),
+        getText(T .. "Admin_Shop_DetailSendName", d.name ~= nil and d.name ~= "" and d.name or itemName(d.item)),
         getText(T .. "Admin_Shop_DetailOriginal", itemOriginal(d.item) or itemName(d.item)),
         getText(T .. "Admin_Shop_DetailType", tostring(d.item)),
         getText(T .. "Admin_Shop_DetailQty", tostring(qty)),
@@ -2505,9 +2538,10 @@ function Page:buildDetailText()
     local original = itemOriginal(d.item)
     self.detailCard = {
         source = tr("Admin_Shop_Detail"), sourceIcon = "shop", item = d.item,
-        name = d.item ~= nil and itemName(d.item) or tr("Admin_Shop_NewTitle"),
+        name = (d.name ~= nil and d.name ~= "" and d.name) or (d.item ~= nil and itemName(d.item))
+            or tr("Admin_Shop_NewTitle"),
         sub = d.isNew and (original ~= nil and getText(T .. "Ent_Pair", original, tr("Admin_Shop_NewTitle"))
-            or tr("Admin_Shop_NewTitle")) or original,
+            or tr("Admin_Shop_NewTitle")) or ((d.name ~= nil and d.name ~= "") and itemName(d.item) or original),
         chips = { { value = masterText, token = master == nil and "textFaint" or (master and "text" or "warn"), dot = true } },
         rows = rows, text = table.concat(paras, "\n\n"),
         tech = { { label = tr("Admin_Shop_Id"), value = tostring(d.id) },
@@ -2681,7 +2715,9 @@ local QUOTE_STATES = { "Admin_Shop_QuoteSellOn", "Admin_Shop_QuoteSellOff", "Adm
 -- `quoteLabels` is the stacked fallback's own question: while the currencies are a table their
 -- labels are column titles, and a title must not widen the label column of the plain rows.
 function Page:formMetrics(quoteLabels)
-    local labelW = textWidth(tr("Admin_Shop_Id"))
+    local nameSpec = self.fieldByKey.name
+    local labelW = math.max(textWidth(tr("Admin_Shop_Id")),
+        textWidth(tr(nameSpec.label)) + (nameSpec.tip and self:tipSize() + 4 or 0))
     for _, spec in ipairs(self.fields) do
         if quoteLabels or spec.currency == nil then
             -- a field with a "?" beside its label needs the marker's room in the label column too
@@ -3109,6 +3145,7 @@ function Page:appendRuleText(lines)
     if d.isNew then lines[#lines + 1] = tr("Admin_Shop_IdHint") end
     lines[#lines + 1] = getText(T .. "Admin_Shop_SellHint", tostring(qty))
     lines[#lines + 1] = tr("Admin_Shop_QtyNote")
+    lines[#lines + 1] = tr("Admin_Shop_TipName")
     lines[#lines + 1] = getText(T .. "Admin_Shop_CatNote", itemDisplayCategory(d.item))
     lines[#lines + 1] = getText(T .. "Admin_Shop_CapScopeHint", scopeText(d.dailyCapScope))
     lines[#lines + 1] = tr("Admin_Shop_BcapNote")
@@ -3143,6 +3180,7 @@ function Page:formGroups()
     end
     itemRows[#itemRows + 1] = self:fieldRow("qty")
     itemRows[#itemRows + 1] = self:fieldRow("category")
+    itemRows[#itemRows + 1] = self:fieldRow("name")
     if d.isNew then
         -- the one rule that stays in the form: the id is only editable here, and it is what the
         -- write would be refused for
@@ -3819,6 +3857,12 @@ function Page:keyboardTargets()
             if spec.entry then kind = "entry" elseif spec.combo then kind = "combo" end
             tip(spec.tip)
             field(kind, self:specLabel(spec), spec.control)
+            -- the send name sits right under the category in a single SKU's form only
+            if spec.key == "category" and self.batch == nil then
+                local name = self.fieldByKey.name
+                tip(name.tip)
+                field("entry", tr(name.label), name.control)
+            end
         end
         group(tr("Admin_Shop_Editor"), self.editorButtons)
     end

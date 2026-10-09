@@ -1,7 +1,7 @@
 -- MinidoracatEconomyFor42 - system shop: sell side (spec 12 stage C) and buyback (stage G).
 --
 -- The catalog is a server-owned file, {cachedir}/Lua/MinidoracatEconomy/catalog.json (one JSON
--- document: {"items":[{"id","item","qty","category","enabled","dailyCap","dailyCapScope",
+-- document: {"items":[{"id","item","name"?,"qty","category","enabled","dailyCap","dailyCapScope",
 -- "buybackCap","prices":{"<currency>":{"price","bidPrice","enabled","buyback"}}}]}), read at
 -- start and on admin.catalog{action="reload"}; a broken file keeps the previous catalog and the
 -- error is shown in the panel. A SKU carries one quote per currency it trades in: `price` is
@@ -18,6 +18,9 @@
 -- and are refused when the catalog changed underneath (no silent repricing). A row taken off
 -- the shelf (enabled = false) only stops selling: its buyback quotes stay in force until they
 -- are switched off or the row is removed.
+-- `name` is optional: the name a bought copy carries (a fresh item whose only change is that name,
+-- Codec.rebuild `fresh`), and the one name besides none that buyback still takes as new for this
+-- row (Codec.isCanonical allowName). A row without it sends the item under its own name.
 --
 -- A purchase names its currency, burns it (player -> SYSTEM_BURN), counts against the SKU's
 -- cap: dailyCapScope "player"/"global" use the reward day (ECRewards.dayKey), while
@@ -61,14 +64,17 @@ Shop.BURN_ACCOUNT = "SYSTEM_BURN"
 Shop.MINT_ACCOUNT = "SYSTEM_MINT"
 -- The hard ceiling on the catalog's size, and the top of the ShopMaxItems option (ECCore: one
 -- number). Every reply that carries the catalog (shop.list, admin.catalog) holds every row, and
--- one reply must stay under S.REPLY_MAX_BYTES: a row is at most ~640 bytes on the wire (an id and
--- a category at their maximum, a 128-character item, both quotes, every count; S.wireBytes), so
--- 1000 rows stay near 640 KB. The host's own limit is ShopMaxItems (Shop.maxItems): a catalog
--- change is pushed whole to every online player, so a bigger shop costs that much more on every
--- edit. A file over the hard ceiling is refused at load; the option only ever refuses an add.
+-- one reply must stay under S.REPLY_MAX_BYTES: a row is at most ~790 bytes on the wire (an id, a
+-- category and a send name at their maximum in 3-byte characters, a 128-character item, both
+-- quotes, every count; S.wireBytes, harness SD-12), so 1000 rows stay near 790 KB, under 90% of
+-- the limit. A longer NAME_MAX has to be paid for here first. The host's own limit is
+-- ShopMaxItems (Shop.maxItems): a catalog change is pushed whole to every online player, so a
+-- bigger shop costs that much more on every edit. A file over the hard ceiling is refused at load;
+-- the option only ever refuses an add.
 Shop.MAX_SKUS = EC.OPTION_BY_KEY.ShopMaxItems.max
 Shop.ID_MAX = 32
 Shop.CATEGORY_MAX = 32
+Shop.NAME_MAX = 48            -- characters (Kahlua's #); the wire budget above counts them as 3 bytes
 Shop.QTY_MAX = 50
 Shop.COUNT_MAX = 10
 Shop.ITEMS_PER_BUY_MAX = 100
@@ -78,8 +84,9 @@ Shop.DAILY_KEEP_DAYS = 31
 Shop.FILE_LINES_MAX = 20000
 Shop.BUYBACK_DAY_VERSION = 2
 -- Fields of a SKU an admin patch may change on an existing row. id and item are fixed once the
--- row exists; the per-currency numbers live under `prices` and are patched leaf by leaf.
-Shop.UPDATE_FIELDS = { "qty", "category", "dailyCap", "dailyCapScope", "enabled", "buybackCap" }
+-- row exists; the per-currency numbers live under `prices` and are patched leaf by leaf. An empty
+-- name clears it.
+Shop.UPDATE_FIELDS = { "qty", "category", "name", "dailyCap", "dailyCapScope", "enabled", "buybackCap" }
 Shop.QUOTE_FIELDS = { "price", "bidPrice", "enabled", "buyback" }
 
 -- Written when the file is missing so the host sees the shape. Prices are in the survivor
@@ -234,6 +241,12 @@ local function validateSku(raw, index)
     if type(category) ~= "string" or category == "" or #category > Shop.CATEGORY_MAX or string.find(category, "%c") then
         return fail({ code = "bad_text", field = "category", max = Shop.CATEGORY_MAX })
     end
+    -- the name a bought copy carries: none (or an empty one) sends the item under its own name
+    local name = raw.name
+    if name == "" then name = nil end
+    if name ~= nil and (type(name) ~= "string" or #name > Shop.NAME_MAX or string.find(name, "%c")) then
+        return fail({ code = "bad_text", field = "name", max = Shop.NAME_MAX })
+    end
     if raw.enabled ~= nil and type(raw.enabled) ~= "boolean" then return fail({ code = "not_boolean", field = "enabled" }) end
     local bcap = raw.buybackCap == nil and 0 or raw.buybackCap
     if not isInt(bcap, 0, Shop.CAP_MAX) then return fail({ code = "range", field = "buybackCap", min = 0, max = Shop.CAP_MAX }) end
@@ -263,7 +276,7 @@ local function validateSku(raw, index)
     end
     if quoted == 0 then return fail({ code = "no_price", field = "prices" }) end
     return {
-        id = raw.id, item = raw.item, qty = qty, dailyCap = cap, dailyCapScope = scope,
+        id = raw.id, item = raw.item, name = name, qty = qty, dailyCap = cap, dailyCapScope = scope,
         category = category, enabled = raw.enabled ~= false, buybackCap = bcap, prices = prices,
     }
 end
@@ -411,7 +424,7 @@ local function rowDocument(row)
             enabled = q.enabled ~= false, buyback = q.buyback == true }
     end
     return {
-        id = row.id, item = row.item, qty = row.qty, category = row.category,
+        id = row.id, item = row.item, name = row.name, qty = row.qty, category = row.category,
         enabled = row.enabled ~= false, dailyCap = row.dailyCap,
         dailyCapScope = row.dailyCapScope,
         buybackCap = row.buybackCap or 0, prices = prices,
@@ -498,7 +511,7 @@ function Shop.sku(id)
         prices[currency] = { price = q.price, bidPrice = q.bidPrice, enabled = q.enabled, buyback = q.buyback }
     end
     return {
-        id = base.id, item = base.item, qty = base.qty, category = base.category,
+        id = base.id, item = base.item, name = base.name, qty = base.qty, category = base.category,
         dailyCap = base.dailyCap, dailyCapScope = base.dailyCapScope or "player", enabled = base.enabled,
         weight = base.weight, buybackCap = base.buybackCap, prices = prices,
     }
@@ -836,6 +849,9 @@ local function validField(field, value)
         return type(value) == "string" and value ~= "" and #value <= Shop.CATEGORY_MAX
             and string.find(value, "%c") == nil
     end
+    if field == "name" then
+        return type(value) == "string" and #value <= Shop.NAME_MAX and string.find(value, "%c") == nil
+    end
     return false
 end
 
@@ -986,8 +1002,11 @@ function Shop.updateMany(ids, fields, actor, reason, expectedRevision)
         if not row then return false, "unknown_sku", { id = id } end
         local patched, dirty = copySku(row), false
         for f, v in pairs(patch) do
-            if v ~= row[f] then
-                patched[f] = v
+            -- an empty name is "no name": the row ends up exactly like one that never had one
+            local after = v
+            if f == "name" and v == "" then after = nil end
+            if after ~= row[f] then
+                patched[f] = after
                 changes[#changes + 1] = { id = id, field = f, before = row[f], after = v }
                 dirty = true
             end
@@ -1063,7 +1082,7 @@ local function quotesOf(sku)
     return out
 end
 
--- raw = { id, item, qty?, category?, dailyCap?, dailyCapScope?, enabled?, buybackCap?,
+-- raw = { id, item, name?, qty?, category?, dailyCap?, dailyCapScope?, enabled?, buybackCap?,
 -- prices = { [currency] = { price, bidPrice?, enabled?, buyback? } } }: one new row appended to
 -- the file. The item is whatever the server's own ScriptManager knows (a mod item is as good as
 -- a Base one, the client's list is never trusted); a currency is on offer only if the row quotes
@@ -1092,9 +1111,9 @@ function Shop.add(raw, actor, reason, expectedRevision)
     local ok, err = commitCatalog(items, expectedRevision)
     if not ok then return false, err end
     local quotes = quotesOf(sku)
-    X.emit("admin.catalog", { sku = sku.id, field = "add", item = sku.item, qty = sku.qty, quotes = quotes,
-        actor = actor, reason = reason })
-    X.audit({ action = "catalog", target = sku.id, field = "add", item = sku.item, qty = sku.qty,
+    X.emit("admin.catalog", { sku = sku.id, field = "add", item = sku.item, name = sku.name, qty = sku.qty,
+        quotes = quotes, actor = actor, reason = reason })
+    X.audit({ action = "catalog", target = sku.id, field = "add", item = sku.item, name = sku.name, qty = sku.qty,
         quotes = quotes, admin = actor, reason = reason })
     Shop.pushAll()
     return true
@@ -1226,7 +1245,10 @@ function Shop.buy(player, args)
     if L.getBalance(username, currency).available < total then
         return { ok = false, error = "insufficient_funds", currency = currency, total = total }
     end
-    local prepared, perr = M.prepare(player, { item = sku.item, qty = sku.qty * count })
+    -- a named row's letter is a new item that only carries that name (Codec.rebuild `fresh`);
+    -- a row without one is plain instanceItem, exactly as before
+    local snapshot = sku.name and { type = sku.item, name = sku.name, fresh = true } or nil
+    local prepared, perr = M.prepare(player, { item = sku.item, qty = sku.qty * count, snapshot = snapshot })
     if not prepared then return { ok = false, error = perr or "item_unavailable" } end
     -- a unit heavier than this backpack can hold even empty could only ever wait in a letter
     -- nobody can claim: refused here, before the debit, with the two numbers that say why
@@ -1249,7 +1271,7 @@ function Shop.buy(player, args)
     if not res.ok then return { ok = false, error = res.error, currency = currency } end
     local lifetimeUsed = noteBuy(day, username, sku.id, count)
     local entry = M.add(username, { kind = "shop", item = sku.item, qty = sku.qty * count, txId = res.txId,
-        price = total, currency = currency })
+        price = total, currency = currency, snapshot = snapshot })
     X.emit("shop.purchase", {
         username = username, sku = sku.id, item = sku.item, qty = sku.qty * count, count = count,
         total = total, currency = currency, txId = res.txId, mailId = entry.id,
@@ -1344,7 +1366,7 @@ function Shop.sell(player, args)
         if not item then return { ok = false, error = "item_not_found" } end
         local pass, reason = Codec.stateCheck(item)
         if not pass then return { ok = false, error = reason } end
-        local new, why = Codec.isCanonical(item, sku.item)
+        local new, why = Codec.isCanonical(item, sku.item, sku.name)
         if not new then return { ok = false, error = "not_canonical", reason = why } end
         items[#items + 1] = item
     end
@@ -1511,7 +1533,7 @@ function Shop.candidates(player, args)
             if item == nil then error("container row " .. tostring(i) .. " is not readable") end
             if item:getFullType() == sku.item then
                 local pass, reason = Codec.stateCheck(item)
-                if pass then pass, reason = Codec.isCanonical(item, sku.item) end
+                if pass then pass, reason = Codec.isCanonical(item, sku.item, sku.name) end
                 if not pass then
                     refused[reason] = (refused[reason] or 0) + 1
                 elseif #ids < Shop.ITEMS_PER_BUY_MAX then

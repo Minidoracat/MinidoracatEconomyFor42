@@ -310,6 +310,9 @@ function L.layoutMarket(self, workBottom, chipBand, toolBand, capH, watch)
         search:anchorDrop(mktBottom - (search.entry.y + search.entry.height) - PAD)
     elseif historyMode then
         y = y + noteRowH() + noteLineH()          -- the record's state band: two wrapped lines
+    elseif mineMode and C.myListingsError ~= nil then
+        g.marketMineNoteY = y                     -- a refused read: its note and the retry chip
+        y = y + ROW
     end
     g.marketHeaderY = y
     local mktListY = y + ROW
@@ -860,7 +863,9 @@ function L.layout(self)
     retryB:setVisible(self:historyFault() ~= nil and open and not sheet)
     if retryB:getIsVisible() then
         local ry, rh = g.walletNoteY, walletLineH
-        if self.tab == "Market" then ry, rh = g.marketCardY + CARD_TITLE_H, ROW
+        if self.tab == "Shop" then ry, rh = g.shopNoteY, ROW
+        elseif self.tab == "Market" and self.marketMode == "mine" then ry, rh = g.marketMineNoteY, ROW
+        elseif self.tab == "Market" then ry, rh = g.marketCardY + CARD_TITLE_H, ROW
         elseif self.tab == "Auction" then ry, rh = g.auctionCardY + CARD_TITLE_H, ROW end
         retryB:setX(right - retryB.width)
         retryB:setY(ry + math.floor((rh - retryB.height) / 2))
@@ -1538,6 +1543,21 @@ function L.drawMarket(self)
     L.drawFeePills(self, g.marketPillX, g.marketPillY, info)
     local snap = mine and C.myListings or C.market
     local empty = self.marketEmptyButton
+    -- the own listings' refused read: its band (layoutMarket) says why, beside the retry chip, and
+    -- whatever was read before stays below it marked as the older data -- never an empty list
+    local mineError = mine and C.myListingsError or nil
+    if mineError ~= nil and g.marketMineNoteY ~= nil then
+        local retryB = self.historyRetryButton
+        local noteR = retryB:getIsVisible() and retryB.x - 6 or g.marketCardX + g.marketCardW - PAD
+        local note = W.readError(mineError)
+        if snap then note = note .. "  " .. getText(T .. "History_Stale") end
+        text(self, fitText(note, math.max(0, noteR - g.marketCardX - PAD * 2)), g.marketCardX + PAD,
+            rowTextY(g.marketMineNoteY), "errorText")
+        if not snap or #self.marketList:getItems() == 0 then
+            if empty:getIsVisible() then empty:setVisible(false) end
+            return
+        end
+    end
     if not snap then
         if empty:getIsVisible() then empty:setVisible(false) end
         text(self, getText(T .. "Wallet_Loading"), g.marketCardX + PAD,
