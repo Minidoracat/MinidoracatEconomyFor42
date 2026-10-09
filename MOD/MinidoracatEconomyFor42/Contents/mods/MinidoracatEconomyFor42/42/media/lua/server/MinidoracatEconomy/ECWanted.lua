@@ -231,23 +231,7 @@ local function queryOf(args)
     return q ~= "" and q or nil
 end
 
--- The item types the client resolved the typed text to through its own translated names (the
--- server never sees the player's language). A set of at most Wd.TYPES_MAX strings; anything else
--- in the list is ignored, never an error: the raw query still matches on its own.
-Wd.TYPES_MAX = 200
-local function typesOf(args)
-    if type(args.types) ~= "table" then return nil end
-    local set, n = {}, 0
-    for i = 1, math.min(#args.types, Wd.TYPES_MAX) do
-        local t = args.types[i]
-        if type(t) == "string" and t ~= "" and #t <= 128 then
-            set[t], n = true, n + 1
-        end
-    end
-    return n > 0 and set or nil
-end
-
--- An order matches when its type is one the client resolved the query to, or when the raw query
+-- An order matches when its type is one the client resolved the query to (Mk.typesOf), or when the raw query
 -- is found in its fullType, English name or buyer. Types only widen a query; alone they are ignored.
 local function matches(o, query, types)
     if not query then return true end
@@ -272,7 +256,7 @@ end
 function Wd.browse(username, args)
     args = type(args) == "table" and args or {}
     local query = queryOf(args)
-    local types = query and typesOf(args) or nil
+    local types = query and Mk.typesOf(args.types) or nil
     local category = type(args.category) == "string" and args.category ~= "" and args.category or nil
     local currency = Mk.CURRENCY_ALL
     local base = { page = 1, pages = 1, total = 0, per = Wd.PAGE, rows = {}, currencies = Mk.tradableCurrencies() }
@@ -1135,7 +1119,7 @@ S.handlers["wanted.history"] = function(player, args)
     end)
 end
 
--- admin.wanted {action = "list", query?, owner?, page?, requestId} (read gate) |
+-- admin.wanted {action = "list", query?, types?, owner?, page?, requestId} (read gate) |
 --              {action = "cancel", orderId, reason, requestId} (write gate, audited)
 S.handlers["admin.wanted"] = function(player, args)
     args = type(args) == "table" and args or {}
@@ -1160,8 +1144,9 @@ S.handlers["admin.wanted"] = function(player, args)
     else
         local query = queryOf(args)
         local rows = {}
+        local types = query and Mk.typesOf(args.types) or nil
         for _, o in pairs(md.wanted.orders) do
-            if (args.owner == nil or o.owner == args.owner) and matches(o, query) then rows[#rows + 1] = o end
+            if (args.owner == nil or o.owner == args.owner) and matches(o, query, types) then rows[#rows + 1] = o end
         end
         EC.sortSafe(rows, newestFirst)
         res.rows, res.page, res.pages, res.total = page(rows, args.page, S.principal(player), "admin")

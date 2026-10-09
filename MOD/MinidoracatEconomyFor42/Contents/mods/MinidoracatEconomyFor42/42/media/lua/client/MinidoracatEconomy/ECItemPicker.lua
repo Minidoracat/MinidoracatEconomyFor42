@@ -15,6 +15,10 @@
 --       this call starts that load, and refills those two fields in place on the records every
 --       page already holds once it is ready. There is never a second index of the universe.
 --
+--   C.ItemPicker.queryTypes(query)
+--       the item types a keyword names through that same `search` text: list (sent with every
+--       item keyword search, at most 200) and set (for a page's own filter); nil, {} for none.
+--
 --   C.ItemPicker.create(owner, policy, onPick, onCancel, noDrag)
 --       the framework's UI.ItemPicker overlay (rev 11), NOT added: the owning page adds it last
 --       (so it paints over its own content), positions it at (0, 0) and resizes it to the whole
@@ -104,6 +108,39 @@ function P.universe()
     if #uni.items > 0 then universe = uni end
     applyEnglish(uni)
     return uni
+end
+
+-- The item types a typed keyword names in the player's own language: every record whose
+-- `search` (translated name, English names, fullType) holds it, fixed classes skipped (they are
+-- never listed, auctioned or ordered), at most TYPES_MAX. Every item keyword search sends the
+-- list with its query and the server matches those types before it pages (ECMarket Mk.typesOf),
+-- because it never sees the translated names; the set lets a page filter the snapshot on screen
+-- the same way. Returns nil, {} for no keyword. Cached per keyword until the index changes.
+P.TYPES_MAX = 200
+local NO_TYPES = {}
+local typesCache, typesRev, typesCount = {}, nil, 0
+function P.queryTypes(query)
+    local q = type(query) == "string" and string.lower(string.match(query, "^%s*(.-)%s*$") or "") or ""
+    if q == "" then return nil, NO_TYPES end
+    local uni = P.universe()
+    if typesRev ~= Names.revision or typesCount >= 32 then
+        typesCache, typesRev, typesCount = {}, Names.revision, 0
+    end
+    local hit = typesCache[q]
+    if hit then return hit.list, hit.set end
+    local list, set = {}, {}
+    for _, rec in ipairs(uni.items) do
+        local t = rec.fullType
+        if not rec.fixed and not set[t] and string.find(rec.search, q, 1, true) then
+            list[#list + 1], set[t] = t, true
+            if #list >= P.TYPES_MAX then break end
+        end
+    end
+    -- an empty universe is not cached (P.universe does not cache it either)
+    if #uni.items > 0 then
+        typesCache[q], typesCount = { list = list, set = set }, typesCount + 1
+    end
+    return list, set
 end
 
 -- ---------- the overlay ----------

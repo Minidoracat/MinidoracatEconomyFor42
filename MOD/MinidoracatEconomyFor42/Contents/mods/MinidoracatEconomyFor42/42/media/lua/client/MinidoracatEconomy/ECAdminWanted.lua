@@ -8,8 +8,9 @@
 --       and no timer: the controller calls tick(now) while this tab is on screen.
 --
 -- One command, admin.wanted, two actions, one slot (the controller's):
---   list    { query?, owner?, page? } -> { rows = { adminView }, page, pages, total, stats }
---           read gate. The query is a substring of the item or the owner; owner is an exact
+--   list    { query?, types?, owner?, page? } -> { rows = { adminView }, page, pages, total, stats }
+--           read gate. The query is a substring of the item or the owner, or names the item in
+--           the admin's own language (types, C.ItemPicker.queryTypes); owner is an exact
 --           account. The page is the server's to clamp.
 --   cancel  { orderId, reason } -> { orderId, refunded = { [currency] = amount } }
 --           write gate. The reason dialog says what goes back to the buyer; a refusal is the
@@ -290,7 +291,8 @@ function Page:sendAction(args, req)
 end
 
 function Page:requestList()
-    local args = { action = "list", page = self.page, query = self.query, owner = self.ownerFilter }
+    local args = { action = "list", page = self.page, query = self.query,
+        types = (C.ItemPicker.queryTypes(self.query)), owner = self.ownerFilter }
     local key = self:askKey()
     if self:sendAction(args, { action = "list", key = key }) then
         self.sentKey, self.wantRead = key, false

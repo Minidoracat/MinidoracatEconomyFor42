@@ -2272,6 +2272,7 @@ function Panel:sendBrowse()
     -- nil currency is "every currency": the server answers with `all` and refuses a price sort
     -- there, which is exactly the state the sort box is filtered for
     C.requestMarket({ category = self.marketCat, query = self.marketQuery,
+        types = (C.ItemPicker.queryTypes(self.marketQuery)),
         sort = self.marketSort, page = self.marketPage, seller = self.marketSeller,
         currency = self.marketCur or "all" })
 end
@@ -2428,14 +2429,15 @@ function Panel:rebuildMarketCategories()
     end, self.marketCat or "")
 end
 
--- The server paged and sorted this list already; the only thing it could not match is the
--- translated name (it never sees the player's language), so the search text runs over the page
--- once more here — that is also why an empty result says "no match" and not "empty market".
+-- The server paged and sorted this list already, matching the translated name through the item
+-- types the keyword names (C.ItemPicker.queryTypes); the same test runs over the page once more
+-- here — that is also why an empty result says "no match" and not "empty market".
 function Panel:rebuildMarket()
     local mine = self.marketMode == "mine"
     local snap = mine and C.myListings or C.market
     local src = (snap and snap.items) or {}
     local query = (not mine) and self.marketQuery or nil
+    local _, types = C.ItemPicker.queryTypes(query)
     -- the filter in force, applied to whatever snapshot is on screen: between choosing a
     -- currency and its answer landing, the old page must not keep showing rows of the currency
     -- the player just filtered out
@@ -2447,7 +2449,7 @@ function Panel:rebuildMarket()
         -- what its seller set, and a row that carries none says so instead of borrowing one
         local row = listingRow(it, username, mine)
         if (currency == nil or row.currency == currency)
-            and (query == nil or string.find(string.lower(row.name), query, 1, true)
+            and (query == nil or types[row.item] or string.find(string.lower(row.name), query, 1, true)
             or (row.altName and string.find(string.lower(row.altName), query, 1, true))
             or string.find(string.lower(tostring(row.item)), query, 1, true)
             or string.find(string.lower(row.seller), query, 1, true)) then
@@ -3720,7 +3722,8 @@ end
 function Panel:sendAuctionBrowse()
     self.auctionWanted = nil
     self.auctionSentAt = EC.now()
-    C.requestAuctions({ query = self.auctionQuery, sort = self.auctionSort,
+    C.requestAuctions({ query = self.auctionQuery, types = (C.ItemPicker.queryTypes(self.auctionQuery)),
+        sort = self.auctionSort,
         page = self.auctionPage, seller = self.auctionSeller,
         currency = self.auctionCur or "all" })
 end
@@ -3842,10 +3845,10 @@ function Panel:requestAuctionMode()
     end
 end
 
--- The server matched the untranslated name; the localised one is the client's own job, the
--- way the market page filters its page a second time.
-local function auctionMatch(row, query)
-    if query == nil then return true end
+-- The server matched the untranslated name and the item types the keyword names; the page on
+-- screen is filtered the same way at once, the way the market page filters its page a second time.
+local function auctionMatch(row, query, types)
+    if query == nil or types[row.item] then return true end
     return string.find(string.lower(row.name), query, 1, true) ~= nil
         or (row.altName ~= nil and string.find(string.lower(row.altName), query, 1, true) ~= nil)
         or string.find(string.lower(tostring(row.item)), query, 1, true) ~= nil
@@ -3855,6 +3858,7 @@ end
 function Panel:rebuildAuctions()
     local src = (C.auction and C.auction.items) or {}
     local query = self.auctionQuery
+    local _, types = C.ItemPicker.queryTypes(query)
     -- the filter in force: a browse page never keeps rows of a currency the player filtered
     -- out, not even in the gap before the new answer lands
     local currency = self.auctionCur
@@ -3862,7 +3866,7 @@ function Panel:rebuildAuctions()
     for _, it in ipairs(src) do
         -- each auction quotes the currency its seller fixed on it
         local row = auctionRow(it, "browse")
-        if (currency == nil or row.currency == currency) and auctionMatch(row, query) then
+        if (currency == nil or row.currency == currency) and auctionMatch(row, query, types) then
             rows[#rows + 1] = row
         end
     end
@@ -4535,8 +4539,9 @@ function Panel.create()
     o.auctionGate = ReadGate.create(function(_, requestId)
         -- a pinned auction is an exact lookup: the box only holds its id so the player sees it
         local pinned = o.auctionHistoryId
-        C.requestAuctionHistory({ auctionId = pinned,
-            query = (pinned == nil) and o.auctionHistoryQuery or nil, requestId = requestId })
+        local query = (pinned == nil) and o.auctionHistoryQuery or nil
+        C.requestAuctionHistory({ auctionId = pinned, query = query,
+            types = (C.ItemPicker.queryTypes(query)), requestId = requestId })
     end)
     o.marketMode = "browse"
     o.marketSort = "time"

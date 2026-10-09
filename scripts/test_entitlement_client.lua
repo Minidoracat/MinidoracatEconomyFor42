@@ -448,14 +448,6 @@ end)()
         and X.gateCode("create", { atTerminal = true, known = true, max = 2, count = 2 }) == "too_many_orders"
         and X.gateCode("create", { atTerminal = true, known = true, max = 2, count = 1 }) == nil,
         "creating needs buy orders switched on and a free slot")
-    -- a translated name is resolved to types on this side (bounded, fixed classes skipped)
-    local items = { { fullType = "Base.Bandage", search = "zz-bandage base.bandage" },
-        { fullType = "Base.Bandaid", search = "zz-bandaid base.bandaid" },
-        { fullType = "Base.Fixed", search = "zz-fixed", fixed = true }, { fullType = "Base.Nails", search = "nails" } }
-    local list, set = X.searchTypes(items, "zz-", 200)
-    check(#list == 2 and set["Base.Bandage"] and set["Base.Bandaid"] and not set["Base.Fixed"]
-        and #X.searchTypes(items, "zz-", 1) == 1 and #X.searchTypes(items, nil, 200) == 0,
-        "a keyword names the item types whose translated or English name holds it, at most the bound")
     -- the own-order count from whichever read answered last
     local mine5 = { orders = { 1, 2, 3, 4, 5 }, max = 5 }
     check(X.ownCount({ mineCount = 4, max = 5 }, 200, mine5, 100) == 4
@@ -470,6 +462,36 @@ end)()
     check(f2 == 120 and t2 <= 500, "a form that fits keeps its full height")
     -- keep the words module for the page block below
     C.UI, C.PanelWidgets, C.itemLabel = nil, nil, nil
+end)()
+
+-- ---------- the keyword's item types, shared by every item search (ECItemPicker.queryTypes) ----------
+;(function()
+    for _, m in ipairs({ "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = true end
+    local EC = MinidoracatEconomy
+    local savedFixed, savedCat = EC.isFixedType, EC.itemCategory
+    EC.isFixedType = function(script) return script == "fixed" end
+    EC.itemCategory = function() return "Item" end
+    local srcs = { { fullType = "Base.Bandage", name = "ZZ-Bandage", script = "s" },
+        { fullType = "Base.Bandaid", name = "ZZ-Bandaid", script = "s" },
+        { fullType = "Base.Fixed", name = "ZZ-Fixed", script = "fixed" }, { fullType = "Base.Nails", name = "Nails", script = "s" } }
+    C.UI = { T = "IGUI_MinidoracatEconomy_", init = function()
+        return { ItemPicker = { universe = function() return { items = srcs } end } } end }
+    C.ItemNames = { revision = 0, ensure = function() end, english = function() return nil end, status = function() return "ready" end }
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECItemPicker.lua")
+    local P = C.ItemPicker
+    local list, set = P.queryTypes("  zz-  ")
+    local none, empty = P.queryTypes("")
+    check(#list == 2 and set["Base.Bandage"] and set["Base.Bandaid"] and not set["Base.Fixed"]
+        and none == nil and next(empty) == nil and P.queryTypes(nil) == nil,
+        "a keyword names the item types whose translated or English name holds it, fixed classes skipped; no keyword names none")
+    local savedMax = P.TYPES_MAX
+    P.TYPES_MAX = 1
+    C.ItemNames.revision = 1        -- a new index revision drops the cached answers
+    check(#P.queryTypes("zz-") == 1, "the list is bounded at TYPES_MAX")
+    P.TYPES_MAX = savedMax
+    EC.isFixedType, EC.itemCategory = savedFixed, savedCat
+    C.UI, C.ItemNames, C.ItemPicker = nil, nil, nil
+    for _, m in ipairs({ "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = nil end
 end)()
 
 -- ---------- buy orders: the page's state machine (ECPanelWanted, controls replaced) ----------
@@ -491,8 +513,10 @@ end)()
     C.Keyboard = { invalidate = noop }
     C.DetailWindow = { close = noop, isOpen = function() return false end }
     C.itemLabel = function(t) return "item:" .. tostring(t) end
-    local universe = { items = { { fullType = "Base.Bandage", search = "zz-local base.bandage" } } }
-    C.ItemPicker = { universe = function() return universe end }
+    C.ItemPicker = { queryTypes = function(q)
+        if q == "zz-local" then return { "Base.Bandage" }, { ["Base.Bandage"] = true } end
+        return nil, {}
+    end }
     local atTerminal = true
     C.nearTerminal = function() return atTerminal end
     local wire = {}

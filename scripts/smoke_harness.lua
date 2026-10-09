@@ -1129,6 +1129,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7    -- +7: the wallet's slots tab (
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 74   -- +74: player buy orders (scripts/test_wanted.lua: W-R1..6 the recovery probes for the escrowed lot and a delivery - fill and lot rolled back and mailed home, a double rollback, older saves reclaimed, receipt open while escrowed, ledger-key and live-lot proof with and without a save; W-1..8 create shapes, fees and refusals, fills by coin and by goods, conditions, offers / raise / dismiss, cancel, refused and retried release, expiry, merge blocker, admin list / cancel, reply size at the caps, history)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: buy-order review fixes (scripts/test_wanted.lua: W-R7a/b a lot and a goods-paid fill partly returned twice keep their original kind; W-1b2 / W-3j2 / W-5g2 / W-6a2 resends of create, fill, raise and cancel answer the first result, a cancel id reused for another order is request_conflict; W-9 an offer under a merged login is the account's; W-10 a buy-order fill is in the market report scan)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: localized buy-order search (scripts/test_wanted.lua W-11a..c: the client's resolved item types widen the query, matched before paging, bounded list)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: localized item search on every board (scripts/test_wanted.lua W-12a..f: market.browse, auction.browse, admin.listings, admin.auctions and admin.wanted match the client's item types before paging, Mk.typesOf bounds; scenario 35: auction.history / admin.auctions history match them before the tail limit, bounded)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -4971,6 +4972,24 @@ io.write("scenario 35: buyback state and auction history\n")
     check(invalid and invalid.error == "invalid_args", "oversized history searches fail closed")
     local readonly = history(reader, "admin.auctions", { action = "cancel", auctionId = "auction-1", reason = "no" })
     check(readonly and readonly.error == "forbidden", "adding read-only history does not enable moderator cancellation")
+    -- a localized record search: the item types the client resolved the keyword to are matched
+    -- inside the tail like the raw keyword, before the 200-line ring (220 newer lines follow it)
+    table.insert(files[X.ROOT .. "/events-20260801.json"].lines,
+        event("older-nails", "bid", { item = "Base.Nails", seller = "unrelated-seller", bidder = "history-bidder", amount = 3 }))
+    local typed = { action = "history", query = "zzlocal", types = { "Base.Nails" } }
+    local bare = history(reader, "admin.auctions", { action = "history", query = "zzlocal" })
+    local byType = history(reader, "admin.auctions", typed)
+    local mineType = history(bidder, "auction.history", { query = "zzlocal", types = { "Base.Nails" } })
+    check(bare and bare.total == 0 and byType and #byType.entries == 1 and byType.entries[1].auctionId == "older-nails"
+        and not byType.truncated and mineType and #mineType.entries == 1 and mineType.entries[1].auctionId == "older-nails",
+        "auction record search (player and admin) finds an item through the client's types before the tail limit")
+    local long = {}
+    for i = 1, S.Market.TYPES_MAX do long[i] = "Base.None" .. i end
+    long[#long + 1] = "Base.Nails"
+    local capped = history(reader, "admin.auctions", { action = "history", query = "zzlocal", types = long })
+    local bareTypes = history(bidder, "auction.history", { types = "Base.Nails" })
+    check(capped and capped.total == 0 and bareTypes and not bareTypes.error and #bareTypes.entries == 3,
+        "auction record types are bounded and a non-list is ignored")
 
     local originalReader = getFileReader
     getFileReader = function(path, create)

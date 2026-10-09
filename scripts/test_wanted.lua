@@ -757,8 +757,52 @@ do
     check(p2.total == 2 and p2.pages == 2 and #p2.rows == 1 and p2.rows[1].item ~= "Base.Nails",
         "W-11b: the types are matched before paging: the second page holds the other matching order")
     local long = {}
-    for i = 1, Wd.TYPES_MAX do long[i] = "Base.None" .. i end
+    for i = 1, Mk.TYPES_MAX do long[i] = "Base.None" .. i end
     long[#long + 1] = "Base.Axe"
     check(browse({ query = "zzlocal", types = long }).total == 0 and browse({ query = "zzlocal", types = "Base.Axe" }).total == 0,
         "W-11c: the list is bounded at TYPES_MAX and anything but a list is ignored")
+end
+
+-- ---- W-12: the same localized search on every item board: market, auction, the admin listings,
+-- auctions and buy orders (Mk.typesOf), matched before paging; one row per page proves it ----
+do
+    local admin12, buyer12, seller12 = fresh("w12")
+    local items = { "Base.Axe", "Base.Nails", "Base.Hammer" }
+    for _, item in ipairs(items) do
+        assert(cmd(seller12, "market.list", { itemIds = ids(native(seller12, item)), price = 10 }).ok)
+        assert(cmd(seller12, "auction.create", { itemIds = ids(native(seller12, item)), startPrice = 10, hours = 12 }).ok)
+        assert(coinOrder(buyer12, item, 1, 10).ok)
+    end
+    local two = { "Base.Axe", "Base.Hammer" }
+    local saved = { Mk.PAGE, S.Auction.PAGE, Wd.PAGE }
+    Mk.PAGE, S.Auction.PAGE, Wd.PAGE = 1, 1, 1
+    -- a keyword no English name holds finds nothing alone, and both typed rows with the types:
+    -- the second page holds the other one, so the match ran before the page was cut
+    local function found(p, command, args, key)
+        local bare = cmd(p, command, copy(args))
+        args.types, args.page = two, 2
+        local typed = cmd(p, command, args)
+        local rows = typed[key] or {}
+        return bare.total == 0 and typed.total == 2 and typed.pages == 2 and #rows == 1 and rows[1].item ~= "Base.Nails"
+    end
+    check(found(buyer12, "market.browse", { query = "zzlocal" }, "items"),
+        "W-12a: market.browse matches the client's item types before paging")
+    check(found(buyer12, "auction.browse", { query = "zzlocal" }, "items"),
+        "W-12b: auction.browse matches the client's item types before paging")
+    check(found(admin12, "admin.listings", { action = "list", query = "zzlocal" }, "items"),
+        "W-12c: admin.listings matches the client's item types before paging")
+    check(found(admin12, "admin.auctions", { action = "list", query = "zzlocal" }, "items"),
+        "W-12d: admin.auctions matches the client's item types before paging")
+    check(found(admin12, "admin.wanted", { action = "list", query = "zzlocal" }, "rows"),
+        "W-12e: admin.wanted list matches the client's item types before paging")
+    Mk.PAGE, S.Auction.PAGE, Wd.PAGE = saved[1], saved[2], saved[3]
+    local long = {}
+    for i = 1, Mk.TYPES_MAX do long[i] = "Base.None" .. i end
+    long[#long + 1] = "Base.Axe"
+    local set = Mk.typesOf({ string.rep("x", Mk.TYPE_CHARS + 1), "", 7, "Base.Axe" })
+    check(cmd(buyer12, "market.browse", { query = "zzlocal", types = long }).total == 0
+        and cmd(buyer12, "auction.browse", { query = "zzlocal", types = "Base.Axe" }).total == 0
+        and cmd(admin12, "admin.listings", { action = "list", types = two }).total == 3
+        and set["Base.Axe"] and EC.countKeys(set) == 1 and Mk.typesOf("Base.Axe") == nil,
+        "W-12f: the types are bounded (TYPES_MAX entries, TYPE_CHARS bytes, strings only), a non-list is ignored, and alone they filter nothing")
 end
