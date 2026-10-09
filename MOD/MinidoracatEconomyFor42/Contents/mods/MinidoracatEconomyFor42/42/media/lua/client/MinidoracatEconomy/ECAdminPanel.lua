@@ -2924,7 +2924,7 @@ function Admin:historyCard(row, auction)
         P.cardRow(rows, tr("ACard_Counterparty"), rec.other)
     end
     if type(rec.reason) == "string" and rec.reason ~= "" then
-        P.cardRow(rows, tr("Admin_Audit_Col_Reason"), U.marketReasonText(rec.reason))
+        P.cardRow(rows, tr("Admin_Audit_Col_Reason"), U.marketReasonText(rec.reason, rec.kind))
     end
     if hasItem then P.cardRow(tech, tr("Detail_ItemCode"), rec.item) end
     P.cardRow(tech, tr("Admin_Col_Tx"), rec.txId)
@@ -6800,7 +6800,7 @@ function Admin:auctionHistoryRow(rec, lh, width)
     if type(rec.previous) == "string" and rec.previous ~= "" then
         meta = meta .. " / " .. getText(T .. "Auction_History_Previous", rec.previous)
     end
-    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. U.marketReasonText(rec.reason) end
+    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. U.marketReasonText(rec.reason, rec.kind) end
     local rolled = rec.rolledBack == true
     local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
     -- a line with no price (a flow-back, a cancel, an old event that never carried one) shows no
@@ -6877,7 +6877,7 @@ function Admin:historyRow(rec, lh, width)
     if type(rec.other) == "string" and rec.other ~= "" then
         meta = meta .. " / " .. getText(T .. "Market_History_Other", rec.other)
     end
-    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. U.marketReasonText(rec.reason) end
+    if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. U.marketReasonText(rec.reason, rec.kind) end
     local rolled = rec.rolledBack == true
     local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
     local amountLabel = amountText(rec.price)

@@ -142,10 +142,14 @@ function U.adminErrorText(code)
     return getText(T .. "Admin_Error_unknown")
 end
 
--- A market record's reason: the one the server writes itself (an auction cancelled by downtime)
--- reads as words; anything else is what an admin typed and is shown as written.
+-- A market record's reason: the one the server writes itself (an auction cancelled by downtime, a
+-- closed buy order's code) reads as words; anything else is what an admin typed and is shown as
+-- written. `kind` is the record's kind: only a wanted_closed line carries a code of its own.
 local MARKET_REASON_KEY = { downtime = "Reason_auction_downtime" }
-function U.marketReasonText(reason)
+function U.marketReasonText(reason, kind)
+    if kind == "wanted_closed" then
+        return getTextOrNull(T .. "Wanted_Closed_" .. tostring(reason)) or U.unknownText("wanted close reason", reason)
+    end
     local key = MARKET_REASON_KEY[reason]
     if key then return getText(T .. key) end
     return reason

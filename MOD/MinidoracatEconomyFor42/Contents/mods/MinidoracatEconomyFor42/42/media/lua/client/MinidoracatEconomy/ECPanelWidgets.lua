@@ -1072,15 +1072,11 @@ local function marketKindText(kind)
     return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or U.unknownText("market kind", kind)
 end
 
--- A record's reason as words. A closed buy order names one of its four codes; any other reason is
--- the server's own word (an auction cancelled by downtime) or what an admin typed. nil for none.
+-- A record's reason as words (U.marketReasonText), nil for none.
 function W.historyReason(rec)
     local reason = rec.reason
     if type(reason) ~= "string" or reason == "" then return nil end
-    if rec.kind == "wanted_closed" then
-        return getTextOrNull(T .. "Wanted_Closed_" .. reason) or U.unknownText("wanted close reason", reason)
-    end
-    return U.marketReasonText(reason)
+    return U.marketReasonText(reason, rec.kind)
 end
 
 -- What a buy order paid in items instead of coins ("3 x Bandage"), or nil.
