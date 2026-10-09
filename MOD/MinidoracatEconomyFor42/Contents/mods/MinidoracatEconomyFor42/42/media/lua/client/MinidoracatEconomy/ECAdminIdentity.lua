@@ -475,7 +475,7 @@ local function gap(lines) if #lines > 0 then lines[#lines + 1] = "" end end
 
 -- status.merge.blocked reasons in reading order; a code this list lacks is still listed after them
 local MERGE_BLOCKERS = { "alias_online", "merge_failed", "frozen", "conflict", "reserved", "unknown_currency",
-    "reserved_funds", "live_listing", "auction", "mail_pending", "canonical_moved" }
+    "reserved_funds", "live_listing", "live_order", "auction", "mail_pending", "canonical_moved" }
 
 function Page:stamp(ms)
     return type(ms) == "number" and U.stampText(ms, self.owner.offsetMin) or "-"
