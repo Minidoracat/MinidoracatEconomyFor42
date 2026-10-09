@@ -21,6 +21,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]Two currencies[/b]: Survivor Coin and Cat Coin show available and reserved amounts; the server can rename them and change icons.
 [*] [b]Statement[/b]: one filter row (period, keyword, type, custom dates); click Time or Amount to sort. Fees and sales tax follow the note, and market and auction trades name the item ("Flashlight x1 · seller"). Click any line for its card: item, amount (green in, red out), time and balance after; the transaction ID sits under Technical info.
 [*] [b]Balance details and This month[/b]: Balance details can be read and copied in full, with This month (income and spending by type) below. It counts the statement lines already loaded, on the available balance: a bid hold counts as spending, its refund as income.
+[*] [b]Slots[/b]: the wallet switches between Statement and Slots. Slots lists the slots you bought or rent in other mods: how many you can use, how many are bought and rented, each lease's end and auto-renew, and the last 20 purchases, renewals and refunds; click one for its card. Slot payments on the statement now read "Entitlement purchase/renewal/refund" with the product name.
 [*] [b]Player ID[/b]: your login account (not your character name) sits at the bottom of the navigation rail, red while unverified; click it to copy it for an admin. Merged logins of one Steam account show "main account (login ...)" and share one wallet.
 [/list]
 
@@ -48,6 +49,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] Buy at fixed server prices, with per-player or server-wide daily limits. The title bar shows today's sell-back allowance and limit reset; use each row's own button. The buy window shows the total, your balance after and whether it fits your bag; more under Details and limits.
 [*] When buyback is enabled you can sell items as good as new back to the server; food only needs to be uneaten (cooked, burnt, frozen or stale is fine). The sell window lists the other copies it won't take and why. An entry the admin took off sale but still buys back shows "Buyback only": you can sell it, not buy it.
 [*] Survivor Coin and Cat Coin prices are set per entry; each trade uses the currency you choose, and [b]no quote never means free[/b].
+[*] Some entries have a name set by the server (for example a loot box renamed by another mod): the row shows that name first with the item's own name below, the item you get carries it, and it sells back to the same entry.
 [/list]
 
 [h3]Player market[/h3]
@@ -58,6 +60,7 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] [b]Heavy items[/b] such as generators can be listed, auctioned or sold while held in both hands; a standing generator's right-click menu has the same entries and picks it up with the vanilla action first.
 [*] Rows show the item's key state (condition, blade head, sharpness, ammo, charge, freshness, clothing holes…); click a row for its card, with condition and sharpness as bars and the Buy or Cancel listing button on the card.
 [*] [b]Market price[/b]: when you list or start an auction, the price step shows how many sold in the last 30 days, the median per piece and the lowest to highest price. The server works this out about 3 minutes after it starts and every 6 hours after; until then it reads "Market price data is being prepared" and asks again by itself.
+[*] [b]Names given by other mods[/b] (such as loot box names) stay with the item when listed: the row shows "Custom name: ..." and the buyer gets the same name; the row title is still the item's own name.
 [*] The seller pays the sales tax; listing fees are not refunded; unsold listings return to your mailbox.
 [*] One search box finds items and suggests sellers (a removable "Seller: name" filter). Tax and fee sit beside the title; Rules has the full text.
 [/list]
