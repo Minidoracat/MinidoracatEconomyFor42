@@ -76,6 +76,12 @@ local function button(dlg, title, onClick, style)
     return b
 end
 
+-- ISComboBox paints its option text unfitted, under the arrow: a box of fixed width gets each
+-- label fitted to what it shows (the arrow takes the same 30 px W.comboWidth leaves for it).
+local function fitted(combo, label)
+    return function(k) return fitText(label(k), math.max(20, combo.width - 30)) end
+end
+
 -- A whole positive number typed into a field, or nil.
 local function number(f)
     local raw = string.match(f:getText() or "", "^%s*(%d+)%s*$")
@@ -227,6 +233,7 @@ function Dlg:buildCreate()
         o.tabs.internal = i
         o.cur = self:add(W.newCombo(self, 120, Dlg.onComboEdit))
         W.comboFill(o.cur, ids, W.currencyLabel, ids[math.min(i, #ids)])
+        o.cur:setWidth(W.comboWidth(o.cur, 120, 220))
         o.price = self:add(field(self, 100, 9, true, tr("Wanted_PriceHint", tostring(info.priceMin))))
         o.group = self:add(W.newCombo(self, 220, Dlg.onComboEdit))
         o.per = self:add(field(self, 70, 2, true, tr("Wanted_PerHint")))
@@ -330,7 +337,7 @@ function Dlg:fillGroups()
     for i = 1, OPTIONS_MAX do
         local box = self.opt[i].group
         local was = box:getOptionData(box.selected)
-        W.comboFill(box, keys, function(k) return rows[k].detailText end, was)
+        W.comboFill(box, keys, fitted(box, function(k) return rows[k].detailText end), was)
     end
     self:edited()
 end
@@ -544,12 +551,12 @@ function Dlg:onCandidates(args)
     self.goodRows, self.badRows, self.candError = good, bad, nil
     local keys = {}
     for i = 1, #good do keys[i] = i end
-    W.comboFill(self.groupBox, keys, function(k)
+    W.comboFill(self.groupBox, keys, fitted(self.groupBox, function(k)
         local row = good[k]
         local tokens = W.stateTokens(row.state)
         local name = C.itemLabel(row.item)
         return tr("Wanted_Group", tostring(int(row.count)), tokens[1] and tr("Card_Join2", name, tokens[1]) or name)
-    end, 1)
+    end), 1)
     self:clampQty()
     self:edited()
     self.panel:layoutDialog(self)
