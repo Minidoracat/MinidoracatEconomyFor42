@@ -21,6 +21,7 @@ require "MinidoracatEconomy/ECPlayerPicker"
 require "MinidoracatEconomy/ECLeaderboard"
 require "MinidoracatEconomy/ECItemDrop"
 require "MinidoracatEconomy/ECNavigate"
+require "MinidoracatEconomy/ECPanelWanted"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -121,13 +122,13 @@ end
 -- rest of this file reads. Nothing outside the navigation module may setTitle/setWidth/setHeight
 -- on them again; the identity row's words change through fullTitle + navTitle (Layout.layout).
 local NAV_ENTRIES = {
-    { "Wallet" }, { "Rewards" }, { "Shop" }, { "Market" }, { "Auction" }, { "Mail" },
+    { "Wallet" }, { "Rewards" }, { "Shop" }, { "Market" }, { "Auction" }, { "Wanted" }, { "Mail" },
     { "Leaderboard" },
     { "Identity", true }, { "Admin", true }, { "Settings", true },
 }
 local NAV_ICONS = {
     Wallet = "wallet", Rewards = "gift", Shop = "shop", Market = "market", Auction = "auction",
-    Mail = "mail", Leaderboard = "chart", Identity = "users", Admin = "shieldCheck", Settings = "settings",
+    Wanted = "tag", Mail = "mail", Leaderboard = "chart", Identity = "users", Admin = "shieldCheck", Settings = "settings",
 }
 
 -- The window's open calendar (rev 11: one shared UI.DatePicker; closed by scope, never another window's).
@@ -499,6 +500,9 @@ function Panel:createChildren()
 
     -- the public board: its own controls, its own geometry, its own single read
     self.leaderboard = Leaderboard.create(self)
+    -- the buy orders: a page of its own module too (ECPanelWanted); its dialog, while one is up, is
+    -- self.wantedDialog, which the modal checks below read like the window's own dialogs
+    self.wanted = C.PanelWanted.create(self)
 
     -- the drop target (ECItemDrop): items dragged out of an inventory window land on the page that
     -- takes them - the backpack picker, the market and auction pages, the shop's buyback dialog
@@ -567,7 +571,7 @@ end
 function Panel:updateModalGuard()
     local guard = self.modalGuard
     if guard == nil then return end
-    local top = self.marketDialog or self.buyDialog or self.transferDialog
+    local top = self.marketDialog or self.buyDialog or self.transferDialog or self.wantedDialog
     if top == nil and self.prefsPopover ~= nil and self.prefsPopover:getIsVisible() then
         top = self.prefsPopover
     end
@@ -607,6 +611,7 @@ function Panel:unfocusEntries()
     self.walletBar:blur()
     self.historyBar:blur()
     self.auctionHistoryBar:blur()
+    self.wanted:blur()
 end
 
 -- A page switch, a hide or a collapse takes every open dropdown with it: an ISComboBox popup is
@@ -624,6 +629,7 @@ function Panel:closeCombos()
         end
     end
     self.leaderboard:closeCombos()
+    self.wanted:closeCombos()
     -- the search boxes' seller candidates are a dropdown too, and the box under it must not keep
     -- the keyboard behind a page that is gone (or behind a confirmation this just put up)
     for _, picker in ipairs({ self.marketSearch, self.auctionSearch }) do
@@ -652,6 +658,7 @@ function Panel:keyboardTargets()
     if self.marketDialog then return self.marketDialog:keyboardTargets() end
     if self.buyDialog then return self.buyDialog:keyboardTargets() end
     if self.transferDialog then return self.transferDialog:keyboardTargets() end
+    if self.wantedDialog then return self.wantedDialog:keyboardTargets() end
     if self.prefsPopover and self.prefsPopover:getIsVisible() then
         return self.prefsPopover:keyboardTargets()
     end
@@ -667,6 +674,7 @@ function Panel:keyboardTargets()
     elseif tab == "Auction" then self:auctionTargets(out)
     elseif tab == "Mail" then self:mailTargets(out)
     elseif tab == "Leaderboard" then self.leaderboard:keyboardTargets(out)
+    elseif tab == "Wanted" then self.wanted:keyboardTargets(out)
     end
     out[#out + 1] = { kind = "button", control = self.rulesButton, label = getText(T .. "Trade_Rules") }
     self:detailTargets(out)
@@ -832,12 +840,18 @@ function Panel:onFocusShoulder(delta)
 end
 
 function Panel:isModal()
-    return self.marketDialog ~= nil or self.buyDialog ~= nil or self.transferDialog ~= nil
+    return self.marketDialog ~= nil or self.buyDialog ~= nil or self.transferDialog ~= nil or self.wantedDialog ~= nil
         or (self.prefsPopover and self.prefsPopover:getIsVisible())
 end
 
 function Panel:onEscape()
     if self.marketDialog then self:closeMarketDialog(); return true end
+    -- the buy-order dialog's item picker folds before the dialog under it closes
+    if self.wantedDialog then
+        local picker = self.wantedDialog.picker
+        if picker and picker:isOpen() then picker:cancel() else self.wanted:closeDialog() end
+        return true
+    end
     if self.buyDialog then self:closeBuy(); return true end
     -- the recipient's candidate list folds before the dialog under it closes
     if self.transferDialog then
@@ -889,6 +903,7 @@ function Panel:setTab(tab)
         self:showPrefs(false)
         Detail.close(self)       -- the record belonged to the page that is being left
         self.leaderboard:leave()   -- a queued public read belongs to the page being left
+        self.wanted:leave()        -- so does a buy order's, with its dialog
     end
     self.tab = tab
     for _, b in ipairs(self.tabButtons) do b.active = b.internal == tab end
@@ -908,6 +923,7 @@ function Panel:tabScope()
     if tab == "Mail" then return "mail" end
     if tab == "Market" then return "market" end
     if tab == "Auction" then return "auction" end
+    if tab == "Wanted" then return "wanted" end
     return nil
 end
 
@@ -939,6 +955,8 @@ function Panel:pumpViews()
         C.requestMail()
     elseif scope == "market" then
         self:requestMarketMode()
+    elseif scope == "wanted" then
+        self.wanted:request()
     else
         self:requestAuctionMode()
     end
@@ -982,6 +1000,10 @@ function Panel:refresh()
         if not C.wallet then C.requestWallet() end
     elseif self.tab == "Mail" then
         C.requestMail()
+    elseif self.tab == "Wanted" then
+        -- a buy order is answered by anybody at any time: the page asks again each time it is opened
+        self.wanted:request()
+        if not C.wallet then C.requestWallet() end
     elseif self.tab == "Leaderboard" then
         -- a public board moves whenever anybody trades: the page asks again every time it is
         -- opened, through the transport's own read gate
@@ -1449,13 +1471,16 @@ function Panel:rebuildMail()
         local name = itemName(e.item)
         local seller = type(e.seller) == "string" and e.seller ~= "" and e.seller or nil
         local source = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or U.unknownText("mail kind", e.kind)
-        local from = seller and (source .. " - " .. getText(buyFrom, seller)) or source
+        -- a buy order's payment letter goes to the seller, so the account on it is the buyer
+        local from = seller and (source .. " - " .. getText(e.kind == "wanted_pay" and (T .. "Card_Buyer") or buyFrom,
+            seller)) or source
         rows[#rows + 1] = {
             id = e.id, item = e.item, qty = qty, name = name, altName = itemBaseName(e.item),
             texture = itemTexture(e.item),
             -- a letter that carries money names the currency it was written in; one that
             -- carries none says nothing at all instead of quoting a zero
             price = tonumber(e.price), currency = e.currency, seller = seller,
+            sellerLabel = e.kind == "wanted_pay" and "Wanted_Col_Buyer" or "Market_Col_Seller",
             nameText = name .. " x" .. tostring(qty),
             fromText = from, fromName = source,
             weight = weight,
@@ -3499,6 +3524,9 @@ function Panel:onMarket(kind, args)
     -- the auction pages ride this listener: their kinds carry the "auction." prefix
     local auctionKind = string.match(kind, "^auction%.(.+)$")
     if auctionKind then return self:onAuction(auctionKind, args) end
+    -- the buy-order page rides it too ("wanted.<command>")
+    local wantedKind = string.match(kind, "^wanted%.(.+)$")
+    if wantedKind then return self.wanted:onReply(wantedKind, args) end
     -- the listing dialog's price reference answers itself (ECPanelDialogs): no write reply here
     if kind == "priceRef" then return end
     if kind == "notice" then
@@ -3508,7 +3536,8 @@ function Panel:onMarket(kind, args)
         self:updateMailTab(args.unclaimed)
         if not self.shown or self.isCollapsed then return end
         if self.tab == "Market" then self:requestMarketMode()
-        elseif self.tab == "Auction" then self:requestAuctionMode() end
+        elseif self.tab == "Auction" then self:requestAuctionMode()
+        elseif self.tab == "Wanted" then self.wanted:request() end
         return
     end
     if kind == "whitelist" then
@@ -3566,7 +3595,13 @@ function Panel:onMarket(kind, args)
             self:rebuildMarketCategories()
         end
         self:updateMarketInfo()
-        if kind == "candidates" then self:rebuildCandidates(args) else self:rebuildMarket() end
+        if kind == "candidates" then
+            self:rebuildCandidates(args)
+            -- a buy order's item payment picks from the very same backpack groups
+            self.wanted:onReply("market.candidates", args)
+        else
+            self:rebuildMarket()
+        end
         self:layout()   -- the chip rows (and the mine counter's own width) may have moved
         return
     end
@@ -3652,6 +3687,8 @@ function Panel:onTerminals()
         self:onMarketRefresh()
     elseif self.tab == "Auction" then
         self:onAuctionRefresh()
+    elseif self.tab == "Wanted" then
+        self.wanted:request()
     end
 end
 
@@ -4264,6 +4301,8 @@ function Panel:prerender()
     self.walletGate:pump(self:pageVisible("Wallet"))
     self.marketGate:pump(self:pageVisible("Market", "history"))
     self.auctionGate:pump(self:pageVisible("Auction", "history"))
+    -- the buy-order page keeps its reads and its one write on time wherever the player is
+    self.wanted:sync()
     -- A read that never came back is the page's own timeout note, and the manual retry chip
     -- next to it only appears when the layout is run again: one pass for all three.
     local expired = false
@@ -4364,6 +4403,8 @@ function Panel:prerender()
         self:drawAuction()
     elseif self.tab == "Mail" then
         self:drawMail()
+    elseif self.tab == "Wanted" then
+        self.wanted:draw(self)
     elseif self.tab == "Leaderboard" then
         self.leaderboard:sync()
         self.leaderboard:draw(self)
@@ -4434,6 +4475,7 @@ function Panel:setVisible(visible)
         self.walletGate:clear()
         self.marketGate:clear()
         self.leaderboard:leave()
+        self.wanted:leave()
         Keys.clear(self)              -- no ring waiting behind a closed window
         Keys.releaseJoypad(self)      -- the controller goes back to what it had before
     end

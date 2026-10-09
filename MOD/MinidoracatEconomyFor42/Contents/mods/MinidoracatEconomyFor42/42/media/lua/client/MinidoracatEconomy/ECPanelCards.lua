@@ -100,7 +100,8 @@ end
 local KIND_ICONS = { checkin = "gift", milestone = "gift", transfer = "transactions", shop_buy = "shop",
     shop_sell = "shop", market_buy = "market", market_fee = "market", auction_bid = "auction",
     auction_refund = "auction", auction_sale = "auction", auction_fee = "auction", exchange_deposit = "plug",
-    admin_adjust = "settings", account_merge = "users", mod = "plug" }
+    admin_adjust = "settings", account_merge = "users", mod = "plug", wanted_create = "market",
+    wanted_fill = "market", wanted_raise = "market", wanted_release = "market" }
 
 function K.statement(panel, e, title)
     local cur = e.currency
@@ -317,7 +318,7 @@ function K.mail(panel, e, list, key, title)
     c.chips = chips
     addState(c, e.state, false)
     if e.price ~= nil then addRow(c, tr("Wallet_Col_Amount"), W.moneyText(e.price, e.currency), nil, nil, e.currency) end
-    if e.seller ~= nil then addRow(c, tr("Market_Col_Seller"), e.seller) end
+    if e.seller ~= nil then addRow(c, tr(e.sellerLabel), e.seller) end
     local partial = p.known == true and p.heavy ~= true and fit ~= nil and fit > 0 and fit < qty
     c.actions = { action(panel, "mail", key, "claim", partial and tr("Card_ClaimSome", tostring(fit)) or e.claimLabel,
         "primary", live(list, "actionDisabled", e.claimable == true), nil, list and list.actionHint or nil) }
@@ -327,7 +328,12 @@ end
 
 -- ---------- market and auction records ----------
 -- The kinds whose amount is a wallet movement of the player's own (historyRow signs them).
-local SIGNED = { sold = true, auction_sold = true, bought = true, auction_bid = true, auction_won = true }
+local SIGNED = { sold = true, auction_sold = true, bought = true, auction_bid = true, auction_won = true,
+    wanted_sold = true, wanted_filled = true }
+-- the account on the other side of a record, by kind: who bought, or who sold
+local OTHER_KEY = { sold = "Card_Buyer", auction_sold = "Card_Buyer", wanted_sold = "Card_Buyer",
+    wanted_offer_met = "Card_Buyer", bought = "Market_BuyFrom", auction_won = "Market_BuyFrom",
+    wanted_filled = "Market_BuyFrom" }
 local ACCOUNT_KEYS = { { "Seller", "seller" }, { "Bidder", "bidder" }, { "Buyer", "buyer" }, { "Previous", "previous" } }
 
 function K.history(panel, e, title, auction)
@@ -346,11 +352,10 @@ function K.history(panel, e, title, auction)
             if type(who) == "string" and who ~= "" then parts[#parts + 1] = tr("Auction_History_" .. spec[1], who) end
         end
     elseif type(rec.other) == "string" and rec.other ~= "" then
-        local k = (e.kind == "sold" or e.kind == "auction_sold") and "Card_Buyer"
-            or ((e.kind == "bought" or e.kind == "auction_won") and "Market_BuyFrom" or "Market_History_Other")
-        parts[1] = tr(k, rec.other)
+        parts[1] = tr(OTHER_KEY[e.kind] or "Market_History_Other", rec.other)
     end
-    if type(rec.reason) == "string" and rec.reason ~= "" then parts[#parts + 1] = U.marketReasonText(rec.reason) end
+    local reason = W.historyReason(rec)
+    if reason then parts[#parts + 1] = reason end
     if #parts > 0 then c.sub = join(parts) end
     local price = tonumber(rec.price)
     local signed = not auction and SIGNED[e.kind] == true and price ~= nil
@@ -358,8 +363,15 @@ function K.history(panel, e, title, auction)
         c.hero = { value = U.signedText(e.amount), token = e.amount >= 0 and "positive" or "negative", coin = cur,
             unit = W.currencyLabel(cur), strike = e.rolledBack }
         addRow(c, tr("Card_DealPrice"), U.amountText(price), nil, nil, cur)
+    elseif price ~= nil and (e.kind == "wanted_raised" or e.kind == "wanted_offer_met") then
+        -- a buy order's price per unit: the row's own "each" wording, no wallet movement
+        c.hero = { value = e.amountText, coin = cur, strike = e.rolledBack }
     elseif price ~= nil then
         c.hero = { value = U.amountText(price), coin = cur, unit = W.currencyLabel(cur), strike = e.rolledBack }
+    elseif W.payItemText(rec) then
+        -- paid in items: the items given or received are the amount
+        c.hero = { value = e.amountText, token = e.kind == "wanted_filled" and "negative" or "positive",
+            strike = e.rolledBack }
     end
     if e.rolledBack then c.chips = { { value = tr("Wallet_RolledBack"), token = "negative", dot = true } } end
     local tax, fee = tonumber(rec.tax), tonumber(rec.fee)
@@ -369,6 +381,7 @@ function K.history(panel, e, title, auction)
     addTech(c, "Detail_TxId", rec.txId)
     if auction then addTech(c, "Auction_Col_Id", rec.auctionId or rec.listingId)
     else addTech(c, "Card_ListingId", rec.listingId) end
+    addTech(c, "Wanted_OrderId", rec.orderId)
     addTech(c, "Detail_ItemCode", e.item)
     return c
 end
@@ -535,6 +548,7 @@ function K.mailRules(panel)
         slots[2] = { pill = tostring(tonumber(usage.unclaimed) or 0), text = tr("Card_R_SlotsWaiting") }
         slots[3] = { pill = tostring(tonumber(usage.marketListings) or 0), text = tr("Card_R_SlotsListings") }
         slots[4] = { pill = tostring(tonumber(usage.auctions) or 0), text = tr("Card_R_SlotsAuctions") }
+        slots[5] = { pill = tostring(tonumber(usage.wanted) or 0), text = tr("Card_R_SlotsWanted") }
     end
     slots[#slots + 1] = { text = tr("Card_R_SlotsEach") }
     slots[#slots + 1] = { mark = "no", text = tr("Card_R_MailFull") }

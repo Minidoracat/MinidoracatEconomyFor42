@@ -233,7 +233,7 @@ C.rewardsListeners = {}
 function C.onRewards(fn) C.rewardsListeners[#C.rewardsListeners + 1] = fn end
 C.viewListeners = {}
 function C.onViews(fn) C.viewListeners[#C.viewListeners + 1] = fn end
-local VIEW_SCOPES = { wallet = true, market = true, auction = true, mail = true, shop = true,
+local VIEW_SCOPES = { wallet = true, market = true, auction = true, wanted = true, mail = true, shop = true,
     transactions = true, audit = true, players = true, whitelist = true, leaderboard = true }
 handlers["views.changed"] = function(args)
     for _, scope in ipairs(args.scopes or {}) do
@@ -894,7 +894,11 @@ end
 -- "auction_outbid"|"auction_sold"|"auction_won"|"auction_unsold"|"auction_cancelled"|
 -- "auction_refund", listingId?, auctionId?, item, qty, price, tax?, currency?, buyer?, bidder?,
 -- reason?, mailId?, delivered?, deliveryError?, deliveredQty?, remainingQty?,
--- unclaimed }. The toast has to fire without any page being open, so it lives here.
+-- unclaimed }; and to both sides of a buy order: wanted_filled / wanted_expired / wanted_cancelled
+-- (the buyer), wanted_offer (the buyer: a seller asks for more), wanted_raised (the sellers whose
+-- asking price the buyer just met), with { orderId, item, qty, price?, currency?, payItem?,
+-- payQty?, from?, memo?, remainingQty?, reason? }. The toast has to fire without any page being
+-- open, so it lives here.
 -- %3 of the message: a sale nets the tax off, a cancellation names its reason, every auction
 -- money line is the amount that moved; auction_unsold uses two parameters only.
 -- A won auction is claimed for the winner before this notice is sampled, so the second line
@@ -909,17 +913,34 @@ handlers["market.notice"] = function(args)
     if kind == "sold" or kind == "auction_sold" then
         local price, tax = tonumber(args.price), tonumber(args.tax)
         third = price and tax and (money(price - tax) .. " " .. currency) or "-"
-    elseif kind == "delisted" or kind == "auction_cancelled" then
+    elseif kind == "delisted" or kind == "auction_cancelled" or kind == "wanted_cancelled" then
         third = (type(args.reason) == "string" and args.reason ~= "") and args.reason or "-"
     elseif kind == "auction_bid" or kind == "auction_outbid" or kind == "auction_won"
-        or kind == "auction_refund" then
+        or kind == "auction_refund" or kind == "wanted_offer" or kind == "wanted_raised" then
         local price = tonumber(args.price)
         third = price and (money(price) .. " " .. currency) or "-"
+    elseif kind == "wanted_filled" then
+        -- what the buyer paid for it: coins, or items of the order's item option
+        local price, payQty = tonumber(args.price), tonumber(args.payQty)
+        if price then
+            third = money(price) .. " " .. currency
+        elseif payQty and type(args.payItem) == "string" then
+            third = getText("IGUI_MinidoracatEconomy_Card_ItemQty", C.itemLabel(args.payItem), tostring(payQty))
+        else
+            third = "-"
+        end
     end
+    -- %4 / %5 of a buy-order notice: the other account and the units still wanted
+    local from = type(args.from) == "string" and args.from or "-"
+    local remaining = tostring(math.max(0, math.floor(tonumber(args.remainingQty) or 0)))
     -- the args go in the one lookup: probing the key bare makes the engine warn about %1
     local text = getTextOrNull("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, C.itemLabel(args.item),
-        tostring(math.max(1, math.floor(tonumber(args.qty) or 1))), third)
+        tostring(math.max(1, math.floor(tonumber(args.qty) or 1))), third, from, remaining)
     if text then
+        -- a seller's note to the buyer is shown as written: it is the player's own words
+        if kind == "wanted_offer" and type(args.memo) == "string" and args.memo ~= "" then
+            text = text .. "\n" .. getText("IGUI_MinidoracatEconomy_Wanted_MemoLine", args.memo)
+        end
         C.toast(text)
         local note = C.deliveryText(args)
         if note then C.toast(note) end
@@ -1076,6 +1097,28 @@ function C.requestAuctionHistory(opts)
     return requestId
 end
 
+-- ---------- buy orders (wanted) ----------
+-- The buy-order page (ECPanelWanted) rides the market listener like the auction pages do: every
+-- reply arrives as "wanted.<command>". Transport only -- the page matches each answer against the
+-- requestId it sent (its own read gates and its one write in flight) before any of it becomes a
+-- snapshot, so a refusal or a late answer never replaces what is on screen. A write that moved
+-- money (create / fill / raise / cancel) has the wallet card read again, the way a purchase does.
+local WANTED_MONEY = { create = true, fill = true, raise = true, cancel = true }
+for _, command in ipairs({ "browse", "mine", "candidates", "create", "fill", "cancel", "offer", "raise",
+    "dismiss", "history" }) do
+    local kind = "wanted." .. command
+    handlers[kind] = function(args)
+        setUnclaimed(args)
+        if args.ok and WANTED_MONEY[command] then C.requestWallet() end
+        notify(C.marketListeners, "market", kind, args)
+    end
+end
+
+-- `command` is one of the wanted.* commands above; the caller owns the requestId and the pacing.
+function C.sendWanted(command, args)
+    send("wanted." .. command, args)
+end
+
 -- Picked-up furniture has no item script of its own: it is made from "Moveables.<sprite>" and
 -- then calls itself "<module>.<sprite>" after the shared Base.Moveable script
 -- (InventoryItemFactory.java:87-92, 144-150), so getItemNameFromFullType answers the raw type
@@ -1144,7 +1187,7 @@ end
 -- truncates), held for the player's ToastSeconds option.
 -- While the Economy Center is on screen the stack moves below the window's top band (rev 12
 -- toastAvoid): title bar, the location row with the balances, and the page's first row of actions
--- (market / auction: the tab row and the card title). The whole window cannot be avoided - at its
+-- (market / auction / buy orders: the tab row and the card title). The whole window cannot be avoided - at its
 -- default size nothing fits below or beside it - and a toast over the right end of a table for a
 -- few seconds is better than one over the balances or the claim-all button. Registered once; the
 -- window is only looked up, never created, and nothing is allocated per frame.
@@ -1157,7 +1200,8 @@ local function economyWindowRect()
     if g ~= nil and g.contentY ~= nil then
         band = g.contentY + titleH
         if w.tab == "Market" and g.marketCardY then band = g.marketCardY + titleH
-        elseif w.tab == "Auction" and g.auctionCardY then band = g.auctionCardY + titleH end
+        elseif w.tab == "Auction" and g.auctionCardY then band = g.auctionCardY + titleH
+        elseif w.tab == "Wanted" and w.wanted and w.wanted.g then band = w.wanted.g.cardY + titleH end
     end
     return w:getAbsoluteX(), w:getAbsoluteY(), w.width, math.min(w.height, band)
 end

@@ -121,7 +121,8 @@ function M.mailPillText(self)
         self.mailPillT2 = used >= cap and "negative" or "text"
         self.mailPillW2 = U.pillWidth(self.mailPillL2, self.mailPillV2)
         self.mailPartsText = getText(T .. "Mail_CapacityParts", tostring(tonumber(usage.unclaimed) or 0),
-            tostring(tonumber(usage.marketListings) or 0), tostring(tonumber(usage.auctions) or 0))
+            tostring(tonumber(usage.marketListings) or 0), tostring(tonumber(usage.auctions) or 0),
+            tostring(tonumber(usage.wanted) or 0))
     end
     local batch = self.mailBatch
     if batch ~= nil then
