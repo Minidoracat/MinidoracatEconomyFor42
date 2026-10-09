@@ -1119,6 +1119,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: products frozen while th
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the MiniMap terminals layer (scenario NA-8b: marker API 2 keeps no section and no layer; NA-12: a refused or throwing section leaves the markers untagged; NA-13: settings API 5 + marker API 3 registers the section, tags terminals and ATMs, leaves the target untagged)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the player's "show button" option (scenario DK-5..8: the toolbar entry follows Accept at once, a stored "off" holds from game start, the fallback button never comes back through respawn / game start / resolution, single player still shows none)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: a shop item's name on delivery (scenario SN: read and carried, refusals change nothing, a bad name in the file, written and read back, set and clear, the fresh letter and its named copy, an unnamed row unchanged, a full container stays full, buyback by name, selling back)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: a MOD's setName-only name travels as a label (scenario LB: kept, rebuilt without the custom flag and previewed; none on a fresh copy, custom names unchanged, a long one whole; none for any name vanilla gives by itself; the buyback takes it; different labels never merge; listed, bought and delivered under it)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19961,6 +19962,99 @@ check(Codec.signature(snap) ~= Codec.signature(Codec.snapshot(other)), "DS-4: di
 local new, why = Codec.isCanonical(dish, "Base.CannedCorn")
 check(new == false and why == "prepared_dish" and Codec.signature(Codec.snapshot(instanceItem("Base.CannedCorn"))) ~= Codec.signature(snap),
     "DS-5: the buyback refuses a dish and says why")
+end)()
+
+-- LB: a name another MOD gave with setName alone (Delirium Loot Box's boxes) travels as s.label and
+-- comes back without the custom flag; the names vanilla gives by itself never become a label.
+io.write("scenario LB: a MOD's setName label travels, vanilla's own names do not\n")
+;(function()
+local Codec = S.Codec
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+knownItems["LB.Box"] = { w = 0.5, cat = "Household", main = "Normal" }
+knownItems["LB.Key"] = { w = 0.1, cat = "Household", main = "Item", itemType = "KEY" }
+ItemTag = { KEY_RING = { name = "KeyRing" }, APPLY_OWNER_NAME = { name = "ApplyOwnerName" }, MONOGRAM_OWNER_NAME = { name = "MonogramOwnerName" } }
+local boss = fakePlayer("lb-admin"); boss.role = "admin"
+local seller = fakePlayer("lb-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+local buyer = fakePlayer("lb-buyer"); buyer.x, buyer.y = 101, 200; buyer.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller, buyer }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("lb-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "lb-seed-s", reasonCode = "t" })
+L.credit("lb-buyer", "survivor", 500, "SYSTEM_MINT", { requestId = "lb-seed-b", reasonCode = "t" })
+local function box(label)
+    local it = instanceItem("LB.Box")
+    if label then it:setName(label) end
+    seller.inventory:AddItem(it)
+    return it
+end
+local kfc = box("KFC reward box")
+local snap = Codec.snapshot(kfc)
+local back = Codec.rebuild(snap)
+check(snap.label == "KFC reward box" and snap.name == nil and back.name == "KFC reward box" and back.customName == false
+    and Codec.preview(snap).name == "KFC reward box",
+    "LB-1: a setName-only name is kept as a label, rebuilt without the custom flag, and shown to the buyer")
+local fresh = Codec.snapshot(instanceItem("LB.Box"))
+local custom = instanceItem("LB.Box"); custom:setName("Mine"); custom:setCustomName(true)
+local cs = Codec.snapshot(custom)
+local long = string.rep("x", 200)
+check(fresh.label == nil and Codec.signature(fresh) == Codec.signature(Codec.snapshot(instanceItem("LB.Box")))
+    and cs.name == "Mine" and cs.label == nil and Codec.rebuild(cs).customName == true
+    and Codec.rebuild(Codec.snapshot(box(long))).name == long,
+    "LB-2: a fresh copy has no label, a player's custom name stays a custom name, and a label longer than modData's strings travels whole")
+-- every name vanilla gives by itself, each renamed with setName alone
+local function renamed(fullType, mutate)
+    local it = instanceItem(fullType); it:setName("Vanilla name")
+    if mutate then mutate(it) end
+    return Codec.snapshot(it).label
+end
+local auto = {
+    food = renamed("Base.CannedCorn"), literature = renamed("Base.Notebook"), key = renamed("LB.Key"),
+    furniture = renamed("Base.Mov_Chair"), radio = renamed("Base.RadioRed"),
+    onCreate = renamed("LB.Box", function(it) it.getLuaCreate = function() return "ItemCodeOnCreate.onCreatePhoto" end end),
+    media = renamed("LB.Box", function(it) it.getRecordedMediaIndex = function() return 3 end end),
+    keyRing = renamed("LB.Box", function(it) it.hasTag = function(_, t) return t == ItemTag.KEY_RING end end),
+    owner = renamed("LB.Box", function(it) it.hasTag = function(_, t) return t == ItemTag.APPLY_OWNER_NAME end end),
+    monogram = renamed("LB.Box", function(it) it.hasTag = function(_, t) return t == ItemTag.MONOGRAM_OWNER_NAME end end),
+}
+local leaked = {}
+for k, v in pairs(auto) do if v ~= nil then leaked[#leaked + 1] = k end end
+check(#leaked == 0 and renamed("LB.Box", function(it) it.getRecordedMediaIndex = function() return -1 end end) == "Vanilla name",
+    "LB-3: food, literature, keys, furniture, radios, script OnCreate, recorded media, key rings and owner names keep no label (leaked: " .. table.concat(leaked, ",") .. ")")
+local new, why = Codec.isCanonical(kfc, "LB.Box")
+check(new == true and why == nil, "LB-4: the buyback still takes a labelled copy that is otherwise new")
+local kfc2, other = box("KFC reward box"), box("Other box")
+local rows = {}
+for _, r in ipairs(cmd(seller, "market.candidates").items) do
+    if r.item == "LB.Box" and r.state and r.state.name == "KFC reward box" then rows[#rows + 1] = r.count end
+end
+local mixed = cmd(seller, "market.list", { itemIds = { kfc.id, other.id }, price = 30 })
+check(Codec.signature(snap) ~= Codec.signature(Codec.snapshot(other)) and Codec.signature(snap) ~= Codec.signature(fresh)
+    and #rows == 1 and rows[1] == 2 and mixed.error == "mixed_items",
+    "LB-5: copies with different labels never merge: one picker row per label, and a mixed lot is refused")
+local listed = cmd(seller, "market.list", { itemIds = { kfc.id, kfc2.id }, price = 30 })
+local row = nil
+for _, r in ipairs(cmd(buyer, "market.browse", { sort = "time" }).items or {}) do if r.id == listed.listingId then row = r end end
+local bought = cmd(buyer, "market.buy", { listingId = listed.listingId, price = 30 })
+local got = {}
+for _, it in ipairs(buyer.inventory.items) do if it.fullType == "LB.Box" then got[#got + 1] = it end end
+check(listed.ok == true and row and row.state.name == "KFC reward box" and row.name ~= "KFC reward box" and bought.ok == true
+    and #got == 2 and got[1].name == "KFC reward box" and got[2].name == "KFC reward box"
+    and got[1].customName == false and got[2].customName == false,
+    "LB-6: the buyer sees the label on a listing filed under the item's own name and receives both boxes under it, not marked as renamed")
+ItemTag = nil
+onlinePlayers = {}
 end)()
 
 -- ===== 情境 TX：玩家端與共用文字函式不把代碼放上畫面 =====

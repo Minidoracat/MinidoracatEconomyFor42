@@ -65,6 +65,9 @@ Codec.FILE = X.ROOT .. "/whitelist.json"
 Codec.MODDATA_MAX_LEAVES = 32      -- scalar values a snapshot's modData may carry
 Codec.MODDATA_MAX_DEPTH = 3        -- nesting: modData -> table -> table
 Codec.MODDATA_STRING_MAX = 128
+-- InventoryItem.setName keeps at most 256 characters (InventoryItem.java:2484-2490): a label of
+-- that length is still one a MOD could give, so it travels whole instead of being dropped
+Codec.LABEL_MAX = 256
 -- spices, and ingredients added to a dish, a food may carry each (the journal packs a whole
 -- snapshot in 128 values; vanilla recipes take at most 6 ingredients, MaxItems in evolvedrecipes.txt)
 Codec.SPICES_MAX = 16
@@ -602,7 +605,7 @@ local canonical = {}
 local FOOD_PORTION = { "hunger", "calories", "proteins", "lipids", "carbs" }
 local function canonicalCopy(s)
     local copy = {}
-    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" then copy[k] = v end end
+    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" and k ~= "label" then copy[k] = v end end
     if type(s.food) == "table" then
         local portion = {}
         for _, key in ipairs(FOOD_PORTION) do portion[key] = s.food[key] end
@@ -647,6 +650,47 @@ function Codec.isCanonical(item, fullType, allowName)
     return false, "other"
 end
 
+-- A name another MOD gave with setName alone (no setCustomName; Delirium Loot Box's boxes,
+-- DLB_Server.lua:342-349) is kept apart from a player's custom name: s.label, rebuilt with
+-- setName only. Vanilla names some items by itself the same way, from their state or the world,
+-- and none of those is a label (42.21 engine and vanilla Lua searched 2026-10-09):
+--   a script OnCreate (Item.java:1915-1918 -> InventoryItem.initialiseItem :4264-4271): book and
+--     magazine titles, newspapers, fliers, photos, ID cards, lockets, fish, chum, fishing rods
+--     (ItemCodeOnCreate.java, fishing_properties.lua); a fresh copy already rolls its own
+--   recorded media: setRecordedMediaIndex names a disc or tape after its content (:4178-4191)
+--   food: dishes and evolved recipes (EvolvedRecipe.java:489, ISAddItemInRecipe.lua:75-215),
+--     bowls, muffins, coffee (RecipeCodeOnCreate.java:71, 185-197, 349), foraged wild food
+--     (forageSystem.lua:2270), the herbalist's berries (ISInventoryPane.lua:2101-2118)
+--   literature: newspapers and scratch tickets (RecipeCodeHelper.java:52, 241,
+--     RecipeCodeOnCreate.java:887), a story's document (RBTwiggy.java:44)
+--   keys and key rings: the building, the car, the owner (ItemPickerJava.java:2366-2367,
+--     BaseVehicle.java:10751, IsoGameCharacter.java:11489)
+--   furniture and radios: the name comes from the sprite (Moveable.java:111-174) and
+--     getDisplayName adds the switched-on prefix (:61-79)
+--   an owner's name on an ID, a dog tag or a monogram (InventoryItem.java:4976-4990, from
+--     IsoZombie, IsoDeadBody, ItemPickerJava and the randomized buildings)
+-- Animals and maps are never listed (EC.LISTING_FIXED_TYPES).
+local AUTO_NAMED_TYPES = { "FOOD", "LITERATURE", "KEY", "KEY_RING", "MOVEABLE", "RADIO" }
+local AUTO_NAMED_TAGS = { "KEY_RING", "APPLY_OWNER_NAME", "MONOGRAM_OWNER_NAME" }
+local function labelOf(item)
+    local script = call(item, "getScriptItem")
+    if script == nil or call(item, "getLuaCreate") ~= nil then return nil end
+    local media = call(item, "getRecordedMediaIndex")
+    if type(media) == "number" and media >= 0 then return nil end
+    for _, n in ipairs(AUTO_NAMED_TYPES) do
+        local t = ItemType and ItemType[n]
+        if t ~= nil and call(script, "isItemType", t) == true then return nil end
+    end
+    for _, n in ipairs(AUTO_NAMED_TAGS) do
+        local t = ItemTag and ItemTag[n]
+        if t ~= nil and call(item, "hasTag", t) == true then return nil end
+    end
+    local name = call(item, "getDisplayName")
+    if type(name) ~= "string" or name == "" or #name > Codec.LABEL_MAX then return nil end
+    if name == call(script, "getDisplayName") then return nil end
+    return name
+end
+
 -- Bounded snapshot; call after Codec.check passed. Food keeps its edible state and the world
 -- hour it was listed at: escrow is not a freezer, so the rebuild ages it by the hours it spent
 -- there (Codec.rebuild). Our own claim stamp is dropped on purpose.
@@ -664,6 +708,8 @@ function Codec.snapshot(item)
         -- then prefix a second time (InventoryItem.java:2428-2479, 3204-3206)
         local name = call(item, "getDisplayName")
         if type(name) == "string" and name ~= "" and #name <= Codec.MODDATA_STRING_MAX then s.name = name end
+    else
+        s.label = labelOf(item)
     end
     if call(item, "getCategory") == "Food" then
         -- raw values: the plain getters add the burnt / stale / cooked modifiers, and writing those
@@ -999,6 +1045,8 @@ function Codec.rebuild(s)
         call(item, "setName", s.name)
         call(item, "setCustomName", true)
     end
+    -- another MOD's name, not the player's: no custom flag (Codec.snapshot, labelOf)
+    if type(s.label) == "string" then call(item, "setName", s.label) end
     if type(s.device) == "table" then
         local dev = call(item, "getDeviceData")
         local d = s.device
@@ -1116,7 +1164,7 @@ function Codec.preview(s)
     if s.infected then p.infected = true end
     if s.keyId ~= nil then p.keyed = true end
     if s.remote ~= nil then p.paired = true end
-    if type(s.name) == "string" then p.name = s.name end
+    if type(s.name) == "string" then p.name = s.name elseif type(s.label) == "string" then p.name = s.label end
     if type(s.dish) == "table" and type(s.dish.items) == "table" and #s.dish.items > 0 then p.ingredients = s.dish.items end
     local food = s.food
     if type(food) == "table" then
