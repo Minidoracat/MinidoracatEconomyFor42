@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "一覧に戻る",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "買取を停止",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "分類",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "液体を入れる容器はインベントリで液体の名前しか表示されず、独自の名前は見えないため、この種類にはお届け名を設定できません。",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "フィールド %1：液体を入れる容器は独自の名前が表示されないため、お届け名を設定できません。",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "お届け名",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "購入したアイテムはこの名前になり、それ以外は新品と同じです。この名前の新品はこの商品に買い取ってもらえます。空欄ならアイテム本来の名前です。インベントリからドラッグしたり右クリックの「ショップに追加」を使うと、そのアイテムの名前が入ります。",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "最大 %1 文字、制御文字は使えません",

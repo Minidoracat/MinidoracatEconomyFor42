@@ -20,7 +20,9 @@
 -- are switched off or the row is removed.
 -- `name` is optional: the name a bought copy carries (a fresh item whose only change is that name,
 -- Codec.rebuild `fresh`), and the one name besides none that buyback still takes as new for this
--- row (Codec.isCanonical allowName). A row without it sends the item under its own name.
+-- row (Codec.isCanonical allowName). A row without it sends the item under its own name. An item
+-- with a fluid container cannot show a name (EC.hidesItemName), so a name on one is refused
+-- (name_not_shown) - at load like any other bad row, and on every panel write.
 --
 -- A purchase names its currency, burns it (player -> SYSTEM_BURN), counts against the SKU's
 -- cap: dailyCapScope "player"/"global" use the reward day (ECRewards.dayKey), while
@@ -246,6 +248,11 @@ local function validateSku(raw, index)
     if name == "" then name = nil end
     if name ~= nil and (type(name) ~= "string" or #name > Shop.NAME_MAX or string.find(name, "%c")) then
         return fail({ code = "bad_text", field = "name", max = Shop.NAME_MAX })
+    end
+    -- an item with a fluid container never shows a name of its own (EC.hidesItemName): a name
+    -- nobody would see is refused, not stored
+    if name ~= nil and EC.hidesItemName(raw.item) then
+        return fail({ code = "name_not_shown", field = "name" })
     end
     if raw.enabled ~= nil and type(raw.enabled) ~= "boolean" then return fail({ code = "not_boolean", field = "enabled" }) end
     local bcap = raw.buybackCap == nil and 0 or raw.buybackCap
@@ -1039,8 +1046,12 @@ function Shop.updateMany(ids, fields, actor, reason, expectedRevision)
         if dirty then
             -- the whole row must still parse: the file is re-read after the write and a row that
             -- fails there would take the entire catalog down
-            local candidate = validateSku(patched, id)
-            if not candidate then return false, "invalid_args", { id = id } end
+            local candidate, failure = validateSku(patched, id)
+            if not candidate then
+                -- a name this item cannot show says so (the code and its facts, worded by the panel)
+                if failure and failure.code == "name_not_shown" then return false, "invalid_args", failure end
+                return false, "invalid_args", { id = id }
+            end
             rows[id] = candidate
             touched = touched + 1
         end
@@ -1098,9 +1109,10 @@ function Shop.add(raw, actor, reason, expectedRevision)
     if #file.items >= Shop.maxItems() then return false, "catalog_full" end
     local badField, badExtra = unknownAddField(raw)
     if badField then return false, badField, badExtra end
-    local sku = validateSku(raw, raw.id)
+    local sku, failure = validateSku(raw, raw.id)
     if not sku then
         if not itemExists(raw.item) then return false, "unknown_item" end
+        if failure and failure.code == "name_not_shown" then return false, "invalid_args", failure end
         return false, "invalid_args"
     end
     local items = {}

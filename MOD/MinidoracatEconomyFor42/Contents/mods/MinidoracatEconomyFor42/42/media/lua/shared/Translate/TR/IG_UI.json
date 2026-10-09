@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "Listeye dön",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "Geri alımı kapat",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "Kategori",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "Sıvı taşıyan bir kap envanterde yalnızca sıvının adını gösterir, özel bir ad göstermez; bu yüzden bu eşyaya teslim adı verilemez.",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "Alan %1: sıvı taşıyan bir kap hiçbir zaman özel ad göstermez, bu yüzden teslim adı verilemez.",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "Teslim adı",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "Satın alınan kopyalar bu adı taşır, geri kalanı yepyenidir; bu adı taşıyan yeni bir kopya bu ürüne geri satılabilir. Eşyanın kendi adını kullanmak için boş bırakın. Envanterden sürüklenen ya da \"Mağazaya ekle\" ile gönderilen eşyanın adı otomatik doldurulur.",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "En fazla %1 karakter, kontrol karakteri olmadan",

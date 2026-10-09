@@ -169,7 +169,7 @@ local FILE_ERR_ARGS = {
     not_boolean = { "field" }, mixed_prices = { "field" }, buyback_needs_bid = { "field" },
     no_items = { "field" }, too_many = { "field", "max" }, bad_entry = { "field", "entry", "max" },
     bad_id = { "field", "max" }, bad_text = { "field", "max" }, unknown_item = { "field", "item" },
-    range = { "field", "min", "max" }, unknown_currency = { "currency" },
+    range = { "field", "min", "max" }, unknown_currency = { "currency" }, name_not_shown = { "field" },
     arbitrage = { "id", "currency", "otherId", "otherCurrency" },
 }
 

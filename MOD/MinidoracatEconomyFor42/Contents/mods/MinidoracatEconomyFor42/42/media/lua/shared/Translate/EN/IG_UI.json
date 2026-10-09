@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "Back to list",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "Turn buyback off",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "Category",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "A container that holds liquid only shows the liquid's name in the inventory, never a custom name, so this item cannot have a name on delivery.",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "Field %1: a container that holds liquid never shows a custom name, so it cannot have a name on delivery.",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "Name on delivery",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "Bought copies carry this name and are otherwise brand new; a new copy with this name can be sold back to this item. Leave it empty to use the item's own name. Dragging an item in from the inventory, or using \"Add to shop\" on it, fills in that item's name.",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "At most %1 characters, with no control characters",

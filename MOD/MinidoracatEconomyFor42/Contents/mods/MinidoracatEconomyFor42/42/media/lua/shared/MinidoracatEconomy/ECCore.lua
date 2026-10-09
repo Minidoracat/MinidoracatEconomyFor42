@@ -188,6 +188,23 @@ function EC.itemCategory(obj)
     return callText(obj, "getDisplayCategory") or callText(obj, "getCategory") or EC.classCategory(obj)
 end
 
+-- Does an item of this type show a name of its own? One with a fluid container never does:
+-- InventoryItem.getName(player) answers getFluidContainer():getUiName() for it (42.21.0
+-- InventoryItem.java:2435-2439), so a custom name never reaches the inventory or the tooltip (a
+-- vanilla rename of a bottle does not either). Asked of the script - GameEntityScript
+-- .containsComponent (GameEntityScript.java:95) with ComponentType (LuaManager.java:1884, 2277),
+-- the way vanilla asks an item (ISInventoryPaneContextMenu.lua:3101) - so nothing is created.
+-- Shared: the server refuses a shop send name on such a type (ECShop validateSku), the admin
+-- page disables the field. Answers true for "hides it", false otherwise (unknown type included).
+function EC.hidesItemName(fullType)
+    if type(fullType) ~= "string" or ComponentType == nil or ScriptManager == nil then return false end
+    local ok, hit = pcall(function()
+        local script = ScriptManager.instance:FindItem(fullType)
+        return script ~= nil and script:containsComponent(ComponentType.FluidContainer) == true
+    end)
+    return ok and hit == true
+end
+
 -- The local player's role name, exactly as the engine spells it, or "" when there is none. Read
 -- from the player object, never from the connection: the deprecated global getAccessLevel()
 -- dereferences GameClient.connection (LuaManager.java:4435-4436), which is null once the client

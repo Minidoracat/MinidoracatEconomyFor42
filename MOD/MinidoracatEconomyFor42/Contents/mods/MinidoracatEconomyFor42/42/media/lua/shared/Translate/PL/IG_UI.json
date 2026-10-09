@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "Wróć do listy",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "Wyłącz skup",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "Kategoria",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "Pojemnik na płyn pokazuje w ekwipunku tylko nazwę płynu, nigdy własną nazwę, więc ten przedmiot nie może mieć nazwy przy dostawie.",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "Pole %1: pojemnik na płyn nigdy nie pokazuje własnej nazwy, więc nie może mieć nazwy przy dostawie.",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "Nazwa przy dostawie",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "Kupione egzemplarze mają tę nazwę, a poza tym są nowe; nowy egzemplarz o tej nazwie można odsprzedać do tej pozycji. Zostaw puste, aby użyć własnej nazwy przedmiotu. Przeciągnięcie przedmiotu z ekwipunku lub opcja „Dodaj do sklepu” wpisuje nazwę tego przedmiotu.",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "Najwyżej %1 znaków, bez znaków sterujących",

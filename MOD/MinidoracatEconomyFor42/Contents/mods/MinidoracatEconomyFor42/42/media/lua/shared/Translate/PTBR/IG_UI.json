@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "Voltar à lista",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "Desativar recompra",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "Categoria",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "Um recipiente de líquido só mostra o nome do líquido no inventário, nunca um nome próprio, então este item não pode ter nome na entrega.",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "Campo %1: um recipiente de líquido nunca mostra um nome próprio, então não pode ter nome na entrega.",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "Nome na entrega",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "As cópias compradas levam este nome e, fora isso, são novas; uma cópia nova com este nome pode ser revendida a este item. Deixe vazio para usar o nome do próprio item. Arrastar um item do inventário, ou usar \"Adicionar à loja\", preenche o nome desse item.",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "No máximo %1 caracteres, sem caracteres de controle",
