@@ -297,6 +297,49 @@ end)()
         "a consent timeout keeps its rental id")
 end)()
 
+-- ---------- the wallet's list: one read, every envelope cached, refusals keep the old list ----------
+;(function()
+    tick(10001)
+    tick(700)
+    local got, late, pushes = {}, {}, 0
+    E.onPush(function() pushes = pushes + 1 end)
+    check(E.getList() == nil, "no list before the first read")
+    local id = E.requestList(function(r) got[#got + 1] = r end)
+    local first = sent[#sent]
+    local id2 = E.requestList(function(r) late[#late + 1] = r end)
+    local id3 = E.requestList(function(r) late[#late + 1] = r end)
+    check(first.command == "entitlement.list" and first.args.requestId == id and first.args.sourceMod == nil
+        and id2 ~= id and id3 == id2 and sent[#sent] == first,
+        "a list read names nobody's product; a second waits for the lane and a third shares it")
+    reply("entitlement.list", { ok = true, requestId = id, more = true, entries = {
+        envelope(20, 3), envelope(3, 1, { productId = "other_slot" }), { ok = false, error = "unknown_source" } } })
+    local list, err = E.getList()
+    check(#got == 1 and err == nil and list ~= nil and #list.entries == 2 and list.more == true
+        and list.entries[1].entitlement.revision == 20 and list.entries[2].productId == "other_slot"
+        and E.getState(SRC, "other_slot").entitlement.revision == 3,
+        "every envelope of a list is cached and the list keeps the server's order")
+    reply("entitlement.changed", envelope(21, 3))
+    check(pushes == 1 and E.getList().entries[1].entitlement.revision == 21,
+        "a push is announced and the list shows the newest copy of that product")
+    tick(700)
+    check(sent[#sent].command == "entitlement.list" and sent[#sent].args.requestId == id2, "the queued read leaves next")
+    reply("entitlement.list", { ok = false, error = "not_ready", requestId = id2 })
+    list, err = E.getList()
+    check(#late == 2 and late[1].error == "not_ready" and err == "not_ready" and list ~= nil and #list.entries == 2,
+        "a refused read answers both callers and keeps the last list beside the error")
+    tick(700)
+    local timedOut = {}
+    local id4 = E.requestList(function(r) timedOut[#timedOut + 1] = r end)
+    tick(10001)
+    check(#timedOut == 1 and timedOut[1].unknown == true and select(2, E.getList()) == "timeout",
+        "an unanswered read is a timeout")
+    reply("entitlement.list", { ok = true, requestId = id4, entries = { envelope(19, 3) } })
+    list, err = E.getList()
+    check(#timedOut == 1 and err == nil and #list.entries == 1 and list.more == false
+        and list.entries[1].entitlement.revision == 21,
+        "a late list still lands without a second callback, and an older envelope never replaces a newer one")
+end)()
+
 -- ---------- an error code never reaches the screen ----------
 ;(function()
     known["IGUI_MinidoracatEconomy_Ent_Error_limit_reached"] = "LIMIT"
@@ -356,26 +399,26 @@ end)()
     known[T .. "Ent_OrderStatus_paid"], known[T .. "Ent_OrderStatus_refunded"] = "paid", "refunded"
 
     -- what an order bought, and its status
-    check(A.contentText({ kind = "permanent", quantity = 2 }) == T .. "Ent_Content_Permanent|2",
+    check(E.contentText({ kind = "permanent", quantity = 2 }) == T .. "Ent_Content_Permanent|2",
         "a bought-outright order names its slots")
-    check(A.contentText({ kind = "rental", quantity = 1, rentalNo = 2 }) == T .. "Ent_Content_New|2|1",
+    check(E.contentText({ kind = "rental", quantity = 1, rentalNo = 2 }) == T .. "Ent_Content_New|2|1",
         "a new rental names its place and slots")
-    check(A.contentText({ kind = "rental", quantity = 2, rentalNo = 1, renewal = true }) == T .. "Ent_Content_Renewal|1|2",
+    check(E.contentText({ kind = "rental", quantity = 2, rentalNo = 1, renewal = true }) == T .. "Ent_Content_Renewal|1|2",
         "a renewal is a renewal")
-    check(A.contentText({ kind = "rental", quantity = 2, rentalNo = 1, renewal = true, auto = true })
+    check(E.contentText({ kind = "rental", quantity = 2, rentalNo = 1, renewal = true, auto = true })
         == T .. "Ent_Content_Auto|1|2", "a scheduler renewal is an auto-renewal, not a plain renewal")
-    check(A.contentText({ kind = "rental", quantity = 1 }) == T .. "Ent_Content_NewGone|1",
+    check(E.contentText({ kind = "rental", quantity = 1 }) == T .. "Ent_Content_NewGone|1",
         "a rental the account no longer holds is named as removed")
     local pending = { status = "paid", durable = { status = "pending" } }
-    check(A.statusText(pending, true) == "paid", "an instant product never shows a save state")
-    check(A.statusText(pending, false) == T .. "Ent_StatusUnsaved|paid", "a product that waits for the save says so")
-    check(A.statusText({ status = "paid", durable = { status = "confirmed" } }, false) == "paid",
+    check(E.statusText(pending, true) == "paid", "an instant product never shows a save state")
+    check(E.statusText(pending, false) == T .. "Ent_StatusUnsaved|paid", "a product that waits for the save says so")
+    check(E.statusText({ status = "paid", durable = { status = "confirmed" } }, false) == "paid",
         "a saved order shows only its status")
-    check(A.statusText({ status = "refunded", durable = { status = "confirmed" }, refund = { durable = { status = "pending" } } }, false)
+    check(E.statusText({ status = "refunded", durable = { status = "confirmed" }, refund = { durable = { status = "pending" } } }, false)
         == T .. "Ent_StatusUnsaved|refunded"
-        and A.statusText({ status = "refunded", durable = { status = "pending" }, refund = { durable = { status = "confirmed" } } }, false)
+        and E.statusText({ status = "refunded", durable = { status = "pending" }, refund = { durable = { status = "confirmed" } } }, false)
         == "refunded"
-        and A.statusText({ status = "refunded", durable = { status = "confirmed" }, refund = { durable = { status = "pending" } } }, true)
+        and E.statusText({ status = "refunded", durable = { status = "confirmed" }, refund = { durable = { status = "pending" } } }, true)
         == "refunded",
         "a refund shows its own save state, not the payment's; an instant product shows none")
 
@@ -384,7 +427,7 @@ end)()
         rentalDays = 7, rentalLimit = 5 }
     local agreed = { price = 250, currency = "survivor", days = 7 }
     local function tag(state, p, ent, terms)
-        local s, token = A.autoTag({ autoRenewState = state, autoTerms = terms or agreed }, p, ent or { rentalCommitted = 2 })
+        local s, token = E.autoTag({ autoRenewState = state, autoTerms = terms or agreed }, p, ent or { rentalCommitted = 2 })
         return s, token
     end
     check(tag("on", plan) == T .. "Ent_AutoTag_on" and select(2, tag("on", plan)) == "textMuted", "auto-renew on")
@@ -404,15 +447,15 @@ end)()
 
     -- rental lines: what is left in days, or hours below a day
     local now = 1000000000
-    local line = A.rentalLine(1, { quantity = 2, state = "active", paidUntil = now + 7 * 86400000 + 3 * 3600000 }, now, 0)
+    local line = E.rentalLine(1, { quantity = 2, state = "active", paidUntil = now + 7 * 86400000 + 3 * 3600000 }, now, 0)
     check(line == T .. "Ent_RentalLine_active|1|2|t" .. tostring(now + 7 * 86400000 + 3 * 3600000) .. "|" .. T .. "Ent_Days|7",
         "an active rental shows its end and whole days left")
-    check(has(A.rentalLine(1, { quantity = 2, state = "paused_terms", paidUntil = now + 5 * 3600000 }, now, 0),
+    check(has(E.rentalLine(1, { quantity = 2, state = "paused_terms", paidUntil = now + 5 * 3600000 }, now, 0),
         T .. "Ent_Hours|5"), "under a day left is shown in hours")
-    check(A.rentalLine(2, { quantity = 1, state = "grace", paidUntil = now - 10, graceUntil = now + 900 }, now, 0)
+    check(E.rentalLine(2, { quantity = 1, state = "grace", paidUntil = now - 10, graceUntil = now + 900 }, now, 0)
         == T .. "Ent_RentalLine_grace|2|1|t" .. tostring(now + 900), "a rental in grace shows the grace end")
-    check(A.rentalLine(3, { quantity = 1, state = "expired" }, now, 0) == T .. "Ent_RentalLine_expired|3|1", "expired")
-    check(A.rentalLine(4, { quantity = 1, state = "pending" }, now, 0) == T .. "Ent_RentalLine_pending|4|1",
+    check(E.rentalLine(3, { quantity = 1, state = "expired" }, now, 0) == T .. "Ent_RentalLine_expired|3|1", "expired")
+    check(E.rentalLine(4, { quantity = 1, state = "pending" }, now, 0) == T .. "Ent_RentalLine_pending|4|1",
         "a new rental waiting for the save")
 
     -- the settings file problem a source reports, in its own words or Economy's
@@ -450,10 +493,10 @@ end)()
 
     -- source names: the registered key, else the display name, else the mod id
     known["IGUI_MVM_SourceName"] = "Vehicle Manager"
-    check(A.sourceName({ sourceNameKey = "IGUI_MVM_SourceName", sourceMod = SRC }) == "Vehicle Manager", "the source's own key")
-    check(A.sourceName({ sourceNameKey = "IGUI_Not_Here", sourceName = { EN = "VM", CH = "VMCH" }, sourceMod = SRC }) == "VM",
+    check(E.sourceName({ sourceNameKey = "IGUI_MVM_SourceName", sourceMod = SRC }) == "Vehicle Manager", "the source's own key")
+    check(E.sourceName({ sourceNameKey = "IGUI_Not_Here", sourceName = { EN = "VM", CH = "VMCH" }, sourceMod = SRC }) == "VM",
         "a key this client lacks falls back to the display name")
-    check(A.sourceName({ modId = "SomeMod" }) == "SomeMod", "nothing else: the mod id")
+    check(E.sourceName({ modId = "SomeMod" }) == "SomeMod", "nothing else: the mod id")
 
     local function control()
         return { setEnabled = function(self, on) self.enabled = on end, setText = function(self, v) self.value = v end,

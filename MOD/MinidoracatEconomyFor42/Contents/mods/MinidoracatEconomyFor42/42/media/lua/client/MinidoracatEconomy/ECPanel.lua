@@ -94,6 +94,7 @@ Panel.drawMarket = Layout.drawMarket
 Panel.drawAuctionHistory = Layout.drawAuctionHistory
 Panel.drawAuction = Layout.drawAuction
 Panel.drawFooter = Layout.drawFooter
+Panel.requestEntitlements = C.PanelEntitlements.request
 
 -- Taller than vanilla (max(16, small font + 1)) so the Medium title fits; the vanilla
 -- close/pin/collapse buttons and the drag region size themselves from this value.
@@ -260,6 +261,14 @@ function Panel:createChildren()
         local d = self.walletHeader:focusDescriptor()
         self.walletHeaderFocus = { kind = d.kind, control = d.control, label = d.label, captionSide = "none" }
     end
+    -- the card's two modes: the statement, and every entitlement slot this login holds (a read of
+    -- its own, ECPanelEntitlements); a picked row opens its record like every other table
+    self.walletTabs = W.modeTabs(self, { { id = "statement", label = getText(T .. "Wallet_Statement") },
+        { id = "ent", label = getText(T .. "Ent_WalletTab") } }, self.walletMode,
+        function(panel, id) panel:onWalletMode(id) end)
+    self.entList = U.newTable(C.PanelEntitlements.EntCell, C.PanelEntitlements.rowHeight())
+    self.entList.onSelect = function(_, item) self:onDetailRow("ent", item) end
+    self:addChild(self.entList)
 
     -- ----- the balance reader -----
     -- The wallet's balance view *is* a reading surface with no table of its own (every currency
@@ -693,6 +702,7 @@ function Panel:detailTargets(out)
 end
 
 function Panel:walletTargets(out)
+    out[#out + 1] = { kind = "button", control = self.walletTabs, label = getText(T .. "Ent_Kb_WalletModes") }
     out[#out + 1] = { kind = "button", control = self.transferButton, label = self.transferButton.fullTitle }
     out[#out + 1] = { kind = "button", control = self.walletDetailsButton,
         label = getText(T .. "Wallet_Details") }
@@ -702,6 +712,7 @@ function Panel:walletTargets(out)
     -- the sortable header (rev 12): Left/Right pick a column, Enter / A sorts by it
     if self.walletHeader then out[#out + 1] = self.walletHeaderFocus end
     out[#out + 1] = { kind = "list", control = self.list, label = getText(T .. "Wallet_Statement") }
+    out[#out + 1] = { kind = "list", control = self.entList, label = getText(T .. "Ent_Kb_Orders") }
     out[#out + 1] = { kind = "button", control = self.walletEmptyButton, label = getText(T .. "Market_ClearFilters") }
     self:pagerTargets(out, self.walletBar)
 end
@@ -937,7 +948,11 @@ end
 function Panel:refresh()
     if self.tab == "Wallet" then
         C.requestWallet()
-        if not self.history then self:loadHistory() end
+        if self.walletMode == "ent" then
+            self:requestEntitlements()
+        elseif not self.history then
+            self:loadHistory()
+        end
     elseif self.tab == "Rewards" then
         self.rewardsPolledMs = EC.now()
         C.requestRewards()
@@ -992,6 +1007,27 @@ function Panel:pageVisible(tab, mode)
     if tab == "Market" then return self.marketMode == mode end
     if tab == "Auction" then return self.auctionMode == mode end
     return true
+end
+
+-- The wallet card's mode (tab id "statement" / "ent"); the tab row follows it silently. The slots
+-- mode reads every product again each time it is opened: it is one short read.
+function Panel:onWalletMode(mode)
+    self.walletTabs:setSelected(mode, true)
+    if self.walletMode == mode then return end
+    self.walletMode = mode
+    self.walletDetails, self.walletFiltersOpen = false, false
+    closeCalendar(self)
+    self:unfocusEntries()
+    Detail.close(self)          -- the record belongs to the mode that is being left
+    self:layout()
+    Keys.invalidate(self)
+    if mode == "ent" then self:requestEntitlements() end
+end
+
+-- entitlement.changed (the owner's own envelope or a plan's public signal): the slots mode on
+-- screen reads its list again; a hidden one reads when it is opened.
+function Panel:onEntitlementPush()
+    if self.walletMode == "ent" and self:pageVisible("Wallet") then self:requestEntitlements() end
 end
 
 -- Switch readers without changing statement filters, selection or list scroll.
@@ -1066,6 +1102,9 @@ local function normalize(e, offsetMin)
     local desc = "-"
     local kind = e.kind or e.type
     local qty = math.floor(tonumber(e.qty) or 1)
+    -- an entitlement payment / renewal / refund says which one (Reason_entitlement_*) instead of
+    -- the generic "mod" kind; the kind filter still groups it under "mod"
+    local entitlement = type(e.reasonCode) == "string" and string.sub(e.reasonCode, 1, 12) == "entitlement_"
     if cpClass == "player" then
         -- a transfer names the other player and, when there is one, the memo both sides wrote;
         -- a market or auction deal names what changed hands and with whom
@@ -1078,8 +1117,11 @@ local function normalize(e, offsetMin)
     elseif cpClass == "discord" then
         desc = accountName(cp)
     elseif e.sourceMod then
-        -- integration postings (spec 21.3): the mod's own account plus its own wording when it gave one
-        desc = accountName("MOD:" .. tostring(e.sourceMod))
+        -- integration postings (spec 21.3): the mod's own account plus its own wording when it gave
+        -- one; an entitlement payment or refund names the product instead, when this client has
+        -- the source's translation of it
+        local product = entitlement and type(e.nameKey) == "string" and getTextOrNull(e.nameKey) or nil
+        desc = product or accountName("MOD:" .. tostring(e.sourceMod))
         if type(e.reasonText) == "string" and e.reasonText ~= "" then desc = desc .. " - " .. e.reasonText end
     elseif type(e.item) == "string" then
         -- shop purchases carry the item and count (ring and receipt files alike)
@@ -1091,7 +1133,7 @@ local function normalize(e, offsetMin)
     local valueText = signedText(amount)
     -- a transfer reads as sent or received by its sign; the filter chip still groups both
     local label = kind == "transfer" and getText(T .. (amount < 0 and "Kind_transfer_out" or "Kind_transfer_in"))
-        or kindText(kind)
+        or (entitlement and U.reasonText(e.reasonCode)) or kindText(kind)
     local item = type(e.item) == "string" and e.item or nil
     -- the part of the amount that was a fee or a tax; lines written before receipts carried it
     -- say nothing rather than claim there was none. It rides on the note as a muted
@@ -2559,6 +2601,7 @@ function Panel:detailText(kind, e)
         end
         return out
     end
+    if kind == "ent" then return C.PanelEntitlements.detailText(e, detailLine, self.offsetMin) end
     if kind == "balance" then
         out[1] = e.name
         out[2] = detailLine("Wallet_Available", e.availableText)
@@ -2661,6 +2704,7 @@ end
 -- without needing a caption of its own.
 function Panel:detailTitle(kind)
     if kind == "statement" then return getText(T .. "Wallet_Statement") end
+    if kind == "ent" then return getText(T .. "Ent_WalletTab") end
     if kind == "history" then
         return getText(T .. (self.tab == "Auction" and "Auction_History_Title" or "Market_History_Title"))
     end
@@ -3036,7 +3080,10 @@ end
 -- The history read of the page on screen that failed, as the server's own code, or nil. One
 -- answer for the three reads: the retry chip and the note line both read it.
 function Panel:historyFault()
-    if self.tab == "Wallet" then return self.historyError end
+    if self.tab == "Wallet" then
+        if self.walletMode == "ent" then return self.entError end
+        return self.historyError
+    end
     if self.tab == "Market" and self.marketMode == "history" then return self.marketHistoryError end
     if self.tab == "Auction" and self.auctionMode == "history" then return self.auctionHistoryError end
     return nil
@@ -3048,7 +3095,7 @@ end
 function Panel:onHistoryRetry()
     if self:historyFault() == nil then return end
     if self.tab == "Wallet" then
-        self:loadHistory()
+        if self.walletMode == "ent" then self:requestEntitlements() else self:loadHistory() end
     elseif self.tab == "Market" then
         self.marketHistoryError = nil
         self:requestMarketHistory()
@@ -4417,6 +4464,7 @@ function Panel.create()
     o.offsetMin = localOffsetMinutes()
     o.monthTotals = nil
     o.walletDetails = false
+    o.walletMode = "statement"
     o.walletFiltersOpen = false
     o.detailWatch = {}
     o.viewDirty = {}
@@ -4477,6 +4525,9 @@ function P.instance()
         -- reads again; every other page records it and asks when it is looked at.
         C.onViews(function(scope) if P.window then P.window:onViewChanged(scope) end end)
         C.onIdentity(function() if P.window then P.window:onIdentityChanged() end end)
+        if C.Entitlements then
+            C.Entitlements.onPush(function() if P.window then P.window:onEntitlementPush() end end)
+        end
     end
     return P.window
 end

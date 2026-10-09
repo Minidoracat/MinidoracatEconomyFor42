@@ -23,6 +23,7 @@ if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEco
 end
 require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECPanelShopMail"
+require "MinidoracatEconomy/ECPanelEntitlements"
 require "MinidoracatEconomy/ECPanelCards"
 
 local EC = MinidoracatEconomy
@@ -524,6 +525,9 @@ function L.layout(self)
     local x, y
     local isWallet = self.tab == "Wallet"
     local isRewards = self.tab == "Rewards"
+    -- the wallet's slots mode (ECPanelEntitlements) replaces the statement; the balance view is
+    -- the statement's own and is left when the mode switches (Panel:onWalletMode)
+    local entMode = isWallet and self.walletMode == "ent"
     local balances = isWallet and self.walletDetails
     local walletLineH = self.list.rowHeight
     g.walletHeaderH = math.max(CARD_TITLE_H, fontH.medium + 8)
@@ -557,9 +561,9 @@ function L.layout(self)
     g.detailY = g.contentY + g.contentH - g.detailH
     local resultsBottom = g.detailY - 6
     self.walletCompact = resultsBottom - filtersBottom - walletLineH * 3 - 2 < walletLineH * 3
-    local sheet = isWallet and not balances and self.walletCompact and self.walletFiltersOpen
-    local showFilters = isWallet and not balances and (not self.walletCompact or sheet)
-    local showList = isWallet and not balances and not sheet
+    local sheet = isWallet and not balances and not entMode and self.walletCompact and self.walletFiltersOpen
+    local showFilters = isWallet and not balances and not entMode and (not self.walletCompact or sheet)
+    local showList = isWallet and not balances and not entMode and not sheet
     if sheet then g.detailH, g.detailY = 0, g.contentY + g.contentH end
     local hasTable = not isRewards and not balances and not sheet
     g.workH = hasTable and math.max(ROW * 3, g.contentH - g.detailH - 6) or g.contentH
@@ -582,12 +586,12 @@ function L.layout(self)
     -- Full filters, a compact filter sheet, or the full balance reader; never stacked into zero room.
     local fold, filt = self.walletDetailsButton, self.walletFilterButton
     fold.active = balances
-    fold:setVisible(isWallet)
+    fold:setVisible(isWallet and not entMode)
     self.walletEmptyButton:setVisible(false)      -- the paint shows it over an empty statement
     fold:setX(right - fold.width)
     fold:setY(g.contentY + math.floor((g.walletHeaderH - fold.height) / 2))
     filt.active = sheet
-    filt:setVisible(isWallet and not balances and self.walletCompact)
+    filt:setVisible(isWallet and not balances and not entMode and self.walletCompact)
     filt:setX(fold.x - 6 - filt.width); filt:setY(fold.y)
     -- the gold transfer button sits left of the header chips; its visibility is the server's
     -- (per frame, Panel:syncTransfer), so the title keeps only the room left of it
@@ -638,7 +642,8 @@ function L.layout(self)
     g.listBottom = listY + listH
     self.walletBar:layoutPager(listX + PAD, g.listBottom + 2, listX + listW - PAD, showList, walletLineH)
     g.walletNoteY = g.listBottom + 2 + walletLineH
-    if isWallet and not balances and not sheet then watch[#watch + 1] = { kind = "statement", list = self.list } end
+    if showList then watch[#watch + 1] = { kind = "statement", list = self.list } end
+    C.PanelEntitlements.layout(self, isWallet, entMode, balances, listX, listW, chromeTop + 4, workBottom, open, watch)
 
     -- ----- rewards: the daily card and the milestone card (L.layoutRewards) -----
     L.layoutRewards(self, isRewards and open)
@@ -1203,10 +1208,11 @@ end
 function L.drawWallet(self)
     local g = self.g
     local bx, bw = g.bodyX, g.bodyW
-    local title = fitText(getText(T .. (g.walletBalances and "Wallet_Balances" or "Wallet_Statement")),
-        math.max(0, g.walletTitleW), UIFont.Medium)
+    -- the mode tabs name the card (statement | slots); the balance view keeps its own title
+    local title = g.walletBalances and fitText(getText(T .. "Wallet_Balances"), math.max(0, g.walletTitleW), UIFont.Medium) or ""
     card(self, bx, g.contentY, bw, g.workH, title, g.walletHeaderH)
     if g.walletBalances then return L.drawBalances(self) end
+    if g.walletEnt then return C.PanelEntitlements.draw(self) end
     if g.walletFilters then self.walletBar:draw(self) end
     if not g.walletList then return end
     local cols = self.list.cols

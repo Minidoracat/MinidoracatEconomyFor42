@@ -445,7 +445,8 @@ function L.post(tx)
         if not reserved then pushReceipt(p.account, {
             txId = txId, seq = seq, ts = ts, kind = tx.kind, currency = p.currency, amount = p.amount, fee = p.fee,
             before = availableBefore, after = w.available, reservedAfter = w.reserved, counterparty = L.counterparty(tx.postings, p),
-            sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonText = tx.reasonText,
+            sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonText = tx.reasonText, reasonCode = tx.reasonCode,
+            nameKey = tx.payload and tx.payload.nameKey or nil,
             item = tx.payload and tx.payload.item or nil, qty = tx.payload and tx.payload.qty or nil,
         }) end
     end

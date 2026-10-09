@@ -270,7 +270,7 @@ end
 -- Accounts are player usernames or the source's own MOD:<modId>; per-currency sums must be 0.
 --
 -- `internal` is ECEntitlements' own argument and never reaches the facade (G.post passes nil):
---   { commit = <L.post commit descriptor>, reversal = <amount>? }
+--   { commit = <L.post commit descriptor>, reversal = <amount>?, nameKey = <product name key>? }
 -- It keys idempotency under "ent:" instead of "mod:", hands the copy-on-write commit to L.post,
 -- and for a reversal of one paid order (at most that order's amount, once - ECEntitlements owns
 -- that bound) counts the mint as `refund` instead of weighing it against dailyMintCap. Budget,
@@ -336,10 +336,17 @@ local function post(req, internal)
         return reject(modId, "cap_exceeded", req)
     end
 
+    -- an entitlement payment or refund names its product's translation key on the receipt, so the
+    -- statement can say what was bought; only ECEntitlements passes one, and only a plain key
+    local nameKey = internal and internal.nameKey
+    if type(nameKey) ~= "string" or #nameKey > G.NAME_KEY_MAX or not string.match(nameKey, "^[%w_]+$") then
+        nameKey = nil
+    end
     local res = L.post({
         kind = "mod", requestId = key, reasonCode = req.reasonCode, reasonText = extras.reasonText,
         actor = modId, idemMeta = { fp = fp },
-        payload = { sourceMod = modId, reasonCode = req.reasonCode, reasonText = extras.reasonText, ref = extras.ref, meta = extras.meta },
+        payload = { sourceMod = modId, reasonCode = req.reasonCode, reasonText = extras.reasonText, ref = extras.ref,
+            meta = extras.meta, nameKey = nameKey },
         postings = postings, commit = internal and internal.commit or nil,
     })
     if not res.ok then return reject(modId, res.error, req) end
@@ -353,7 +360,7 @@ function G.post(req)
     return post(req, nil)
 end
 
--- ECEntitlements only (never on the facade or a handle). internal = { commit, reversal? }.
+-- ECEntitlements only (never on the facade or a handle). internal = { commit, reversal?, nameKey? }.
 function G.entitlementPost(req, internal)
     if type(internal) ~= "table" then return { ok = false, error = "invalid_args" } end
     return post(req, internal)

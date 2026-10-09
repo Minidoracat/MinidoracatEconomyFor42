@@ -507,6 +507,100 @@ local afterRefund = rent1(E.peek("TestVM", "ann", "vehicle_slot"))
 check(latest.ok and afterRefund.auto.on == false and afterRefund.lease.last ~= lastOrder,
     "refunding the latest period restores the previous lease and switches auto-renew off in the same commit")
 
+-- ---------- the player's own list (the wallet's slots tab) and what a player's snapshot omits ----------
+do
+    local function owned(name)                 -- "<source>/<product>" of every row this login holds
+        local set = {}
+        for m, byUser in pairs(S.modData().entitlements.rows) do
+            for p in pairs(byUser[name] or {}) do set[m .. "/" .. p] = true end
+        end
+        return set
+    end
+    local function listed(res)
+        local set, n = {}, 0
+        for _, env in ipairs(res.entries or {}) do set[env.sourceMod .. "/" .. env.productId], n = env, n + 1 end
+        return set, n
+    end
+    local function sameKeys(a, b)
+        for k in pairs(a) do if not b[k] then return false end end
+        for k in pairs(b) do if not a[k] then return false end end
+        return true
+    end
+    local function orderIn(env, id)
+        for _, o in ipairs(env and env.orders or {}) do if o.orderId == id then return o end end
+        return nil
+    end
+    local mine = cmd(ann, "entitlement.list", { requestId = "list-ann" })
+    local theirs = cmd(bob, "entitlement.list", {})
+    local annSet = listed(mine)
+    local bobSet = listed(theirs)
+    local annSlot, bobSlot = annSet["TestVM/vehicle_slot"] or {}, bobSet["TestVM/vehicle_slot"] or {}
+    check(mine.ok and mine.requestId == "list-ann" and mine.more == nil and sameKeys(annSet, owned("ann"))
+        and sameKeys(bobSet, owned("bob")) and annSlot.sourceNameKey == "IGUI_Test_Source"
+        and (annSlot.sourceName or {}).EN == "Test VM" and annSlot.nameKey == "IGUI_Test_Slot"
+        and (annSlot.entitlement or {}).revision == E.peek("TestVM", "ann", "vehicle_slot").rev
+        and (bobSlot.entitlement or {}).revision == E.peek("TestVM", "bob", "vehicle_slot").rev
+        and orderIn(annSlot, p1.orderId) ~= nil and orderIn(bobSlot, p1.orderId) == nil,
+        "entitlement.list answers every product of the caller's own login, with the source's name, and nobody else's")
+    local st = cmd(ann, "entitlement.state", with({}))
+    local stored = nil
+    for _, o in ipairs(E.peek("TestVM", "ann", "vehicle_slot").orders) do if o.id == p1.orderId then stored = o end end
+    local listedRefund = (orderIn(annSlot, p1.orderId) or {}).refund or {}
+    local stateRefund = (orderIn(st, p1.orderId) or {}).refund or {}
+    local desk = cmd(boss, "admin.entitlements", { action = "orders", username = "ann" })
+    local deskRefund = nil
+    for _, o in ipairs(desk.orders or {}) do if o.orderId == p1.orderId then deskRefund = o.refund end end
+    check(stored ~= nil and stored.rf.by == "boss" and listedRefund.amount == 1000 and listedRefund.txId ~= nil
+        and listedRefund.by == nil and stateRefund.amount == 1000 and stateRefund.by == nil
+        and deskRefund ~= nil and deskRefund.amount == 1000 and deskRefund.txId == listedRefund.txId,
+        "a player's snapshot carries the refund's amount, time and transaction but never the admin who made it; the desk's rows are unchanged")
+    local keep = E.LIST_MAX
+    E.LIST_MAX = 0
+    local cut = cmd(ann, "entitlement.list", {})
+    E.LIST_MAX = keep
+    check(cut.ok and #cut.entries == 0 and cut.more == true, "a list past E.LIST_MAX is cut and says so")
+    -- a second copy of the module before its ModData is ready: the command answers not_ready
+    local fakeS = setmetatable({ handlers = {}, onInit = function() end }, { __index = S })
+    local env = setmetatable({ Events = { OnTickEvenPaused = { Add = function() end } },
+        MinidoracatEconomy = setmetatable({ Server = fakeS, Entitlements = false, v1 = false,
+            Integration = setmetatable({}, { __index = G }), EntitlementPlans = setmetatable({}, { __index = P }) },
+            { __index = EC }) }, { __index = _G })
+    local chunk = loadfile(ctx.media .. "/server/MinidoracatEconomy/ECEntitlements.lua", "t", env)
+    chunk()
+    fakeS.handlers["entitlement.list"](ann, { requestId = "list-early" })
+    local early = (lastSent("entitlement.list") or {}).args or {}
+    check(early.ok == false and early.error == "not_ready" and early.entries == nil and early.requestId == "list-early",
+        "before ModData is ready the list answers not_ready and carries nothing")
+end
+
+-- ---------- receipts name the entitlement reason and the product ----------
+do
+    local ring = cmd(ann, "wallet.state", {}).receipts or {}
+    local refundLine = ring[#ring] or {}
+    local purchase = nil
+    advance(1000)
+    fire("OnTickEvenPaused")                   -- the export queue writes the receipt files
+    for _, f in pairs(ctx.files()) do
+        for _, line in ipairs(f.lines or {}) do
+            if string.find(line, '"entitlement_purchase"', 1, true) then
+                local rec = EC.jsonDecode(line)
+                if type(rec) == "table" and rec.delta ~= nil and rec.type == "mod" then purchase = purchase or rec end
+            end
+        end
+    end
+    check(refundLine.reasonCode == "entitlement_refund" and refundLine.nameKey == "IGUI_Test_Slot"
+        and refundLine.sourceMod == "TestVM" and purchase ~= nil and purchase.nameKey == "IGUI_Test_Slot"
+        and purchase.sourceMod == "TestVM",
+        "the receipt ring and the receipt file carry the entitlement reason code and the product's name key")
+    local spoof = vm.post({ requestId = "ent-spoof-1", reasonCode = "entitlement_purchase", nameKey = "IGUI_Spoof",
+        postings = { { account = "ann", currency = "survivor", amount = -1 },
+            { account = G.account("TestVM"), currency = "survivor", amount = 1 } } })
+    local last = L.receipts("ann")
+    last = last[#last] or {}
+    check(spoof.ok and last.reasonCode == "entitlement_purchase" and last.nameKey == nil,
+        "a source posting through the facade cannot put a product name on the receipt")
+end
+
 -- ---------- long life, privacy, admin view, budget, LRU ----------
 for _ = 1, 21 do
     advance(1000)

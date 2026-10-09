@@ -3734,7 +3734,7 @@ function Admin:refreshSourceReader(selected)
     if not selected then
         addReaderLine(rows, waiting and tr("Admin_Loading") or tr("Admin_Src_Empty"), nil, "textFaint")
     else
-        addReaderLine(rows, tr("Admin_Src_Name"), C.AdminEntitlements.sourceName(selected))
+        addReaderLine(rows, tr("Admin_Src_Name"), C.Entitlements.sourceName(selected))
         addReaderLine(rows, tr("Admin_Src_RegisteredAt"), selected.registeredAt and stampText(tonumber(selected.registeredAt) or 0, self.offsetMin) or "-")
         local today = selected.today or {}
         addReaderLine(rows, tr("Admin_Src_Col_Mint"), amountText(today.mint or 0) .. " / " .. amountText(selected.dailyMintCap or 0))
