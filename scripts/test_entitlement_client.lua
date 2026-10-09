@@ -338,6 +338,25 @@ end)()
     check(#timedOut == 1 and err == nil and #list.entries == 1 and list.more == false
         and list.entries[1].entitlement.revision == 21,
         "a late list still lands without a second callback, and an older envelope never replaces a newer one")
+    -- two older reads time out, a newer one lands; the older ones answering late (a success with
+    -- fewer products, a refusal) change neither the members, `more` nor the error
+    tick(700)
+    local a1 = E.requestList()
+    tick(10001)
+    local a2 = E.requestList()
+    tick(10001)
+    local b = E.requestList()
+    reply("entitlement.list", { ok = true, requestId = b, more = true, entries = {
+        envelope(21, 3), envelope(4, 1, { productId = "other_slot" }), envelope(1, 1, { productId = "third_slot" }) } })
+    reply("entitlement.list", { ok = true, requestId = a1, entries = { envelope(19, 3) } })
+    reply("entitlement.list", { ok = false, error = "not_ready", requestId = a2 })
+    list, err = E.getList()
+    check(a1 ~= nil and a2 ~= nil and b ~= nil and err == nil and list ~= nil and #list.entries == 3
+        and list.more == true and list.entries[3].productId == "third_slot",
+        "an older read answering late, as a list or a refusal, never replaces the newer list or adds an error")
+    for _, fn in ipairs(gameStart) do fn() end
+    list, err = E.getList()
+    check(list == nil and err == nil, "a new world forgets the list and its error")
 end)()
 
 -- ---------- an error code never reaches the screen ----------

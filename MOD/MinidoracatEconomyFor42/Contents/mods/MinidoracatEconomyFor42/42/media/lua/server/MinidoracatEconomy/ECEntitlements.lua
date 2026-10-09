@@ -101,8 +101,8 @@ E.ORDERS_KEEP = 20
 -- index orders by time if a server grows to many thousands of paying accounts.
 E.ORDERS_PAGE = 50
 -- ponytail: entitlement.list answers at most this many products in one reply (an envelope with a
--- full order ring and RENTALS_MAX rentals is about 20 KB on the wire, so 30 stay well under
--- S.REPLY_MAX_BYTES); page the list if one login ever holds more products.
+-- full order ring, RENTALS_MAX rentals and every key at its longest is about 14 KB by S.wireBytes,
+-- so 30 stay under half of S.REPLY_MAX_BYTES); page the list if one login ever holds more products.
 E.LIST_MAX = 30
 -- ponytail: a fixed cap on rentals per account keeps the row and the player's list small; raise it
 -- (and page the list) if hosts want many small rentals.
@@ -1697,6 +1697,9 @@ end
 -- Every product of the caller's own login name (rows are per login, never merged across the
 -- account's other characters) as its envelope plus the source's name, for the wallet's entitlement
 -- tab. Read only; nobody else's row can be named. `more`: the list was cut at E.LIST_MAX.
+-- The source's display name goes out as the two languages the client reads (C.Entitlements
+-- .sourceName): registerSource bounds each name, not how many languages a source sends, so the
+-- whole table would leave the reply unbounded by LIST_MAX.
 S.handlers["entitlement.list"] = function(player, args)
     local res
     if not ent then
@@ -1707,7 +1710,9 @@ S.handlers["entitlement.list"] = function(player, args)
         for i = 1, math.min(#all, E.LIST_MAX) do
             local env = all[i]
             local src = G.source(env.sourceMod)
-            env.sourceNameKey, env.sourceName = src and src.nameKey or nil, src and src.displayName or nil
+            local names = src and src.displayName or {}
+            env.sourceNameKey = src and src.nameKey or nil
+            env.sourceName = (names.CH ~= nil or names.EN ~= nil) and { CH = names.CH, EN = names.EN } or nil
             entries[i] = env
         end
         res = { ok = true, entries = entries, more = #all > E.LIST_MAX or nil }

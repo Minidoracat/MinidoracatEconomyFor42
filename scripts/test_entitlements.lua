@@ -601,6 +601,59 @@ do
         "a source posting through the facade cannot put a product name on the receipt")
 end
 
+-- ---------- the list stays inside one reply at its cap, whatever a source names itself ----------
+-- Like SD-12: one real envelope grown to the longest it can be (E.ORDERS_KEEP orders and
+-- E.RENTALS_MAX rentals, the biggest of each this world holds, keys at their maximum) times
+-- E.LIST_MAX, from a source whose display name lists hundreds of languages.
+do
+    local names = { CH = string.rep("c", G.NAME_MAX), EN = string.rep("e", G.NAME_MAX) }
+    for i = 1, 600 do names[string.format("L%07d", i)] = string.rep("x", G.NAME_MAX) end
+    local wide = V.registerSource({ modId = "TestWide", currencies = { "survivor" }, reasonCodes = REASONS,
+        nameKey = string.rep("S", G.NAME_KEY_MAX), displayName = names })
+    local reg = wide.registerProduct({ id = "wide_slot", nameKey = string.rep("N", P.NAME_KEY_MAX),
+        defaults = defaults(), instant = true })
+    local wd = fakePlayer("wd1")
+    ctx.setOnline({ ann, bob, boss, wd })
+    L.credit("wd1", "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-wide-wd1", reasonCode = "t" })
+    local paid = wide.purchase("wd1", wide.quote("wd1", "wide_slot", "permanent", 1).quote.id)
+    local res = cmd(wd, "entitlement.list", {})
+    local annList = cmd(ann, "entitlement.list", {})
+    ctx.setOnline({ ann, bob, boss })
+    local env = (res.entries or {})[1] or {}
+    local function biggest(list)
+        local best, size = nil, -1
+        for _, v in ipairs(list or {}) do
+            local n = S.wireBytes(v)
+            if n > size then best, size = v, n end
+        end
+        return best
+    end
+    local allOrders, allRentals = {}, {}
+    for _, e in ipairs({ env, (annList.entries or {})[1] or {} }) do
+        for _, o in ipairs(e.orders or {}) do allOrders[#allOrders + 1] = o end
+        for _, r in ipairs((e.entitlement or {}).rentals or {}) do allRentals[#allRentals + 1] = r end
+    end
+    local order, rental = biggest(allOrders), biggest(allRentals)
+    local filled = order ~= nil and rental ~= nil and order.refund ~= nil and rental.terms ~= nil
+    if filled then
+        rental.autoTerms = rental.autoTerms or { price = rental.terms.price, currency = rental.terms.currency,
+            days = rental.terms.days }
+        env.orders, env.entitlement.rentals = {}, {}
+        for i = 1, E.ORDERS_KEEP do env.orders[i] = order end
+        for i = 1, E.RENTALS_MAX do env.entitlement.rentals[i] = rental end
+    end
+    local per = S.wireBytes(env)
+    local rest = S.wireBytes({ ok = true, entries = {}, more = true, requestId = string.rep("r", G.REQUEST_ID_MAX) })
+    local kept = 0
+    for _ in pairs(G.source("TestWide").displayName) do kept = kept + 1 end
+    local sent = 0
+    for _ in pairs(env.sourceName or {}) do sent = sent + 1 end
+    check(reg.ok and paid.ok and filled and sent == 2 and env.sourceName.CH == names.CH and env.sourceName.EN == names.EN
+        and kept == 602 and per * E.LIST_MAX + rest < S.REPLY_MAX_BYTES * 0.8,
+        "a list at E.LIST_MAX with every product at its longest fits one reply with room to spare, and a source's"
+            .. " display name goes out as the two languages the client reads (" .. per .. " bytes a product)")
+end
+
 -- ---------- long life, privacy, admin view, budget, LRU ----------
 for _ = 1, 21 do
     advance(1000)
