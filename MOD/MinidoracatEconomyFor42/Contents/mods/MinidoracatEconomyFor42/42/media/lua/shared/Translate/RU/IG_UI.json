@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "Этот предмет нельзя продавать на рынке, поэтому заявку на него создать нельзя",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "У вас уже максимум заявок (%1)",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "На сервере нет места для новых заявок; попробуйте позже",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Недостаточно средств: не хватает %1",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Недостаточно средств: всего нужно %1",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "Этой заявки больше нет: обновите список",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "Нельзя сдавать товар или запрашивать больше по своей заявке",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "Заявка приостановлена, пока повторяется возврат",

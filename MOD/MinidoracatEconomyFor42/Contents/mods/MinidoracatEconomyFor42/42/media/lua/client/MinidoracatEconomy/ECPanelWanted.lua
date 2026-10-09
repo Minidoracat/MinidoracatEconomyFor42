@@ -175,13 +175,14 @@ function Cell:render()
     local x = cols.actionR
     local acts = e.actions
     if acts then
-        local off = self.list.actionDisabled == true
+        -- each action has its own gate (Page:sync): a frozen account may still cancel and ignore
+        local open = self.list.actionOpen
         for i = #acts, 1, -1 do
             local id = acts[i]
             local w = cols.actW[id]
             x = x - w
             R.put(self, id, cols.actLabel[id], x, chipY, w, CHIP_H,
-                not off and not (id == "raise" and e.raiseOff), id == "cancel" and "danger" or nil)
+                open ~= nil and open[id] == true and not (id == "raise" and e.raiseOff), id == "cancel" and "danger" or nil)
             x = x - 6
         end
     elseif e.pill then
@@ -244,11 +245,22 @@ function M.create(panel)
     p.retryButton = chip(panel, p, "History_Retry", Page.onRetry)
     p.emptyButton = chip(panel, p, "Market_ClearFilters", Page.onEmpty)
     p.combos = { p.catCombo }
-    p.browseGate = C.ReadGate.create(function(_, requestId)
-        C.sendWanted("browse", { page = p.pageNo, query = p.query, category = p.category, requestId = requestId })
-    end)
+    -- a browse with a keyword also carries the item types the keyword names in the player's own
+    -- language (Page:queryTypes): the server matches them before it pages, so a translated name
+    -- finds orders on every page, not only on the one already on screen
+    p.browseGate = C.ReadGate.create(function(_, requestId) C.sendWanted("browse", p:browseArgs(requestId)) end)
     p.mineGate = C.ReadGate.create(function(_, requestId) C.sendWanted("mine", { requestId = requestId }) end)
     p.histGate = C.ReadGate.create(function(_, requestId) C.sendWanted("history", { requestId = requestId }) end)
+    -- the seller's copies for one order: the question is the order id, so an answer about another
+    -- order (a dialog closed and another opened) is never applied, and one read paces them all
+    p.candGate = C.ReadGate.create(function(orderId, requestId)
+        p.candSentFor = orderId
+        C.sendWanted("candidates", { orderId = orderId, requestId = requestId })
+    end)
+    -- which row action is open right now, by action (Page:sync); both tables read the same one
+    p.actionOpen = {}
+    p.list.actionOpen, p.mineList.actionOpen = p.actionOpen, p.actionOpen
+    p.gateState = {}
     p.controls = { p.tabs, p.refreshButton, p.createButton, p.search, p.catCombo, p.list, p.mineList, p.histList,
         p.prevButton, p.nextButton, p.retryButton, p.emptyButton }
     p:setVisible(false)
@@ -305,6 +317,7 @@ function Page:leave()
     self.browseGate:clear()
     self.mineGate:clear()
     self.histGate:clear()
+    self.candGate:clear()
     self.queryAt = nil
 end
 
@@ -316,6 +329,27 @@ local function norm(s) return (s == nil or s == "") and "" or tostring(s) end
 -- from the answer (the server clamps it), so it is no part of the match.
 function Page:browseKey()
     return norm(self.query) .. "\1" .. norm(self.category)
+end
+
+-- What a browse read asks: the page, the category, the keyword and (with a keyword) the item types
+-- it names in the player's own language (Page:queryTypes).
+function Page:browseArgs(requestId)
+    return { page = self.pageNo, query = self.query, types = self.query and (self:queryTypes()) or nil,
+        category = self.category, requestId = requestId }
+end
+
+-- The item types the keyword names, through the session's item index (the translated name, the
+-- English name and the fullType each item is searched by in every picker): a list for the server
+-- (at most TYPES_MAX) and a set for this side's own filter. Kept per keyword and index revision.
+local TYPES_MAX = 200
+function Page:queryTypes()
+    local q = self.query
+    local rev = C.ItemNames and C.ItemNames.revision or 0
+    if self.typesQuery ~= q or self.typesRev ~= rev then
+        self.typesQuery, self.typesRev = q, rev
+        self.typesList, self.typesSet = X.searchTypes(q and C.ItemPicker.universe().items or {}, q, TYPES_MAX)
+    end
+    return self.typesList, self.typesSet
 end
 
 function Page:visible(mode)
@@ -339,10 +373,12 @@ function Page:onRefresh()
     self:request()
 end
 
+-- The retry chip: the refused read of the mode on screen, and the policy read (rates, bounds,
+-- the order limit) when that one is what failed.
 function Page:onRetry()
-    if self.mode == "browse" then self.browseError = nil
-    elseif self.mode == "mine" then self.mineError = nil
-    else self.histError = nil end
+    if self.mode == "browse" or self.browseSnap == nil then self.browseError = nil end
+    if self.mode == "mine" then self.mineError = nil
+    elseif self.mode == "history" then self.histError = nil end
     self:request()
     self.panel:layout()
 end
@@ -384,9 +420,11 @@ function Page:onPage(button)
     self:request()
 end
 
--- The one button over an empty table: clear the filters, or start a buy order.
+-- The one button over an empty table: clear the filters, start a buy order, or (an empty record)
+-- go and look at the orders there are.
 function Page:onEmpty()
     if self.emptyAction == "create" then return self:onCreate() end
+    if self.emptyAction == "browse" then return self:onMode("browse") end
     if self.emptyAction == "history" then
         self.histBar:reset()
         return
@@ -403,10 +441,12 @@ end
 function Page:rebuild()
     local rows = {}
     local q = self.query
+    local _, types = self:queryTypes()
     for _, v in ipairs(self.browseSnap and self.browseSnap.rows or {}) do
         local row = browseRow(v)
-        -- the server matched the English name; the player's own language is matched here
-        if q == nil or string.find(row.search, q, 1, true) then rows[#rows + 1] = row end
+        -- the snapshot on screen is filtered at once while the next read is on its way: by the
+        -- player's own words, or by a type those words name (the server's own match, Page:queryTypes)
+        if q == nil or string.find(row.search, q, 1, true) or types[v.item] then rows[#rows + 1] = row end
     end
     self.rows = rows
     self.list:setItems(rows)
@@ -418,6 +458,8 @@ function Page:rebuild()
     self.infoT = nil
     local info = self:info()
     self.tabs:setItemLabel("mine", tr("Wanted_MineCount", tostring(info.count or 0), tostring(info.max or 0)))
+    -- an open dialog quotes these numbers too: it is measured again with them
+    if self.dialog then self.dialog.dirtySummary = true end
     self:syncDetail()
 end
 
@@ -434,13 +476,14 @@ function Page:rebuildHistory()
     self.histList:setItems(self.histRows)
 end
 
--- The numbers the page and its dialogs quote, from whichever read carried them last. Built when a
--- snapshot lands (Page:rebuild), read every frame.
+-- The numbers the page and its dialogs quote. The rates and bounds come from the browse read only
+-- (`known` says whether it has answered: an unknown fee is not a zero fee); the own-order count
+-- and limit from whichever of browse and mine answered last. Built when a snapshot lands
+-- (Page:rebuild), read every frame.
 function Page:info()
     if self.infoT then return self.infoT end
-    local b, m = self.browseSnap or {}, self.mineSnap or {}
-    local maxOrders = tonumber(m.max) or tonumber(b.max)
-    local count = m.orders and #m.orders or tonumber(b.mineCount)
+    local b = self.browseSnap or {}
+    local count, maxOrders = X.ownCount(self.browseSnap, self.browseAt, self.mineSnap, self.mineAt)
     self.infoT = {
         feePercent = int(b.feePercent), taxPercent = int(b.taxPercent),
         priceMin = math.max(1, int(b.priceMin)), priceMax = int(b.priceMax), days = int(b.days),
@@ -449,53 +492,93 @@ function Page:info()
     return self.infoT
 end
 
--- Why a write is shut right now (frozen, away from a terminal), or nil. `create` adds the order
--- limit: switched off by the host, or every slot in use.
-function Page:gateReason(create)
-    if C.wallet and C.wallet.frozen then return tr("Shop_Error_account_frozen") end
-    if not C.nearTerminal() then
+-- The gate of one write (create | fill | offer | raise | cancel | dismiss) as a code (X.gateCode)
+-- or nil. Read every frame by Page:sync: one state table, refilled.
+function Page:gateCode(action)
+    local s, info = self.gateState, self:info()
+    s.frozen = C.wallet ~= nil and C.wallet.frozen == true
+    s.atTerminal = C.nearTerminal()
+    s.known, s.max, s.count = info.known, info.max, info.count
+    return X.gateCode(action, s)
+end
+
+-- The same gate in words, or nil when the write may go out. A policy that is not read yet says
+-- so (or why its read failed); it is never quoted as zero.
+function Page:gateReason(action)
+    local code = self:gateCode(action)
+    if code == nil then return nil end
+    if code == "account_frozen" then return tr("Shop_Error_account_frozen") end
+    if code == "not_at_terminal" then
         local s = tr("Wanted_AtTerminal")
         return C.Navigate and C.Navigate.withHint(s) or s
     end
-    if not create then return nil end
-    local info = self:info()
-    if info.max == nil then return tr("Wallet_Loading") end
-    if info.max <= 0 then return X.errorText({ error = "wanted_disabled" }) end
-    if info.count and info.count >= info.max then return X.errorText({ error = "too_many_orders", max = info.max }) end
-    return nil
+    if code == "policy_unknown" then
+        return self.browseError and W.readError(self.browseError) or tr("Wallet_Loading")
+    end
+    return X.errorText({ error = code, max = self:info().max })
 end
 
 -- ---------- replies ----------
 
 local READS = { browse = true, mine = true, history = true }
 
+-- Whether a reply is the answer this gate is waiting for. A good answer names its question (`key`)
+-- and is matched on it (ECReadGate: an older read of the same question may still be shown). A
+-- refusal often carries nothing but its code and the requestId (reply_too_large, ECServer), so it
+-- is taken only as the answer to the very read this gate sent -- never dropped as "another
+-- question" for lacking the echo, and never borrowed from an older read.
+local function accepted(gate, args, key)
+    if args.ok == false or args.error ~= nil then
+        if args.requestId == nil or args.requestId ~= gate.sentId then return false end
+        return gate:accept(args, nil) ~= "stale"
+    end
+    return gate:accept(args, key) ~= "stale"
+end
+M.accepted = accepted
+
 function Page:onReply(kind, args)
     if READS[kind] then return self:onRead(kind, args) end
-    if kind == "candidates" or kind == "market.candidates" then
+    if kind == "candidates" then return self:onCandidates(args) end
+    if kind == "market.candidates" then
         if self.dialog then self.dialog:onRead(kind, args) end
         return
     end
     self:onWrite(kind, args)
 end
 
+-- wanted.candidates: only the answer about the order the open fill dialog is for. A refusal that
+-- names no order is about the one this gate last asked for.
+function Page:onCandidates(args)
+    if not accepted(self.candGate, args, args.orderId) then return end
+    local about = args.orderId or self.candSentFor
+    local dlg = self.dialog
+    if dlg and dlg.kind == "fill" and about == dlg.ctx.view.id then dlg:onCandidates(args) end
+end
+
+-- Asked by the fill dialog: the seller's copies of the type, judged against this order.
+function Page:wantCandidates(orderId)
+    self.candGate:want(orderId, true)
+end
+
 function Page:onRead(kind, args)
+    local now = EC.now()
     if kind == "browse" then
-        if self.browseGate:accept(args, norm(args.query) .. "\1" .. norm(args.category)) == "stale" then return end
-        if args.ok == false then
+        if not accepted(self.browseGate, args, norm(args.query) .. "\1" .. norm(args.category)) then return end
+        if args.ok == false or args.error ~= nil then
             self.browseError = tostring(args.error or "unknown")
         else
-            self.browseError, self.browseSnap = nil, args
+            self.browseError, self.browseSnap, self.browseAt = nil, args, now
             self.pageNo = math.max(1, int(args.page))
         end
     elseif kind == "mine" then
-        if self.mineGate:accept(args) == "stale" then return end
-        if args.ok == false then
+        if not accepted(self.mineGate, args) then return end
+        if args.ok == false or args.error ~= nil then
             self.mineError = tostring(args.error or "unknown")
         else
-            self.mineError, self.mineSnap = nil, args
+            self.mineError, self.mineSnap, self.mineAt = nil, args, now
         end
     else
-        if self.histGate:accept(args) == "stale" then return end
+        if not accepted(self.histGate, args) then return end
         if args.ok == false or args.error ~= nil then
             self.histError = tostring(args.error or "unknown")
         else
@@ -513,13 +596,16 @@ function Page:onWrite(kind, args)
     if pending == nil or args.requestId == nil or args.requestId ~= pending.requestId then return end
     self.pending = nil
     if type(args.mine) == "table" then
+        -- a write answers with the own orders as they are now: the freshest count there is
         self.mineSnap = self.mineSnap or {}
-        self.mineSnap.orders = args.mine
+        self.mineSnap.orders, self.mineAt = args.mine, EC.now()
     end
     self.panel:updateMailTab(args.unclaimed)
     self:rebuild()
     local dlg = self.dialog
     if args.ok ~= true then
+        -- a refusal may leave out what the request itself named (a raise's currency)
+        if args.currency == nil then args.currency = pending.currency end
         if dlg and dlg.kind == pending.dialog then
             dlg:onRefused(args)
         else
@@ -571,19 +657,21 @@ end
 
 -- Every write goes out here: one in flight, matched on its requestId, given up on after the
 -- timeout (never resent on its own). `dialog` names the dialog that waits for the answer.
-function Page:send(command, args, item, dialog)
+function Page:send(command, args, item, dialog, currency)
     if self.pending then return false end
     args.requestId = args.requestId or C.newRequestId()
-    self.pending = { requestId = args.requestId, at = EC.now(), item = item, dialog = dialog }
+    self.pending = { requestId = args.requestId, at = EC.now(), item = item, dialog = dialog, currency = currency }
     C.sendWanted(command, args)
     return true
 end
 
 function Page:busy() return self.pending ~= nil end
 
+-- A dialog opens only on a known policy (Page:gateReason "create"): the dialog then reads the
+-- page's numbers live (Page:info), so a policy that changes while it is open is quoted at once.
 function Page:onCreate()
-    if self:busy() or self.panel:isModal() or self:gateReason(true) then return end
-    self:openDialog("create", { info = self:info() })
+    if self:busy() or self.panel:isModal() or self:gateReason("create") then return end
+    self:openDialog("create", {})
 end
 
 -- Find the row a card (or a stale button) names again in what is on screen now.
@@ -597,12 +685,12 @@ function Page:findRow(key)
 end
 
 function Page:onRowAction(row, id)
-    if row == nil or self:busy() or self.panel:isModal() or self:gateReason(false) then return end
+    if row == nil or self:busy() or self.panel:isModal() or self:gateReason(id) then return end
     local v = row.view
     if id == "fill" then
-        self:openDialog("fill", { view = v, info = self:info() })
+        self:openDialog("fill", { view = v })
     elseif id == "offer" then
-        self:openDialog("offer", { view = v, info = self:info() })
+        self:openDialog("offer", { view = v })
     elseif id == "cancel" then
         self:confirmCancel(v)
     elseif id == "raise" and not row.raiseOff then
@@ -645,7 +733,8 @@ function Page:confirmCancel(v)
     Dialog.show({ title = tr("Wanted_CancelTitle"), text = table.concat(lines, "\n"), theme = U.theme,
         confirmText = tr("Wanted_Cancel"), cancelText = tr("Wanted_Keep"), danger = true,
         onResult = function(ok)
-            if ok and not page:gateReason(false) then page:send("cancel", { orderId = v.id }, v.item) end
+            -- a frozen account may still take its order down (the server refunds with allowFrozen)
+            if ok and not page:gateReason("cancel") then page:send("cancel", { orderId = v.id }, v.item) end
         end })
 end
 
@@ -668,8 +757,9 @@ function Page:confirmRaise(row)
     Dialog.show({ title = tr("Wanted_RaiseTitle"), text = text, theme = U.theme,
         confirmText = tr("Wanted_RaiseConfirm", X.money(delta + fee, opt.currency)), cancelText = tr("Admin_Cancel"),
         onResult = function(ok)
-            if ok and not page:gateReason(false) then
-                page:send("raise", { orderId = v.id, option = row.option, unitPrice = row.unitPrice }, v.item)
+            if ok and not page:gateReason("raise") then
+                page:send("raise", { orderId = v.id, option = row.option, unitPrice = row.unitPrice }, v.item, nil,
+                    opt.currency)
             end
         end })
 end
@@ -737,7 +827,7 @@ function Page:cardOf(row)
     for _, id in ipairs(row.actions or {}) do
         acts[#acts + 1] = { id = id, label = tr(ACTION_KEYS[id]),
             style = id == "cancel" and "danger" or ((id == "fill" or id == "raise") and "primary" or "chip"),
-            enabled = function() return not page.list.actionDisabled and not (id == "raise" and row.raiseOff) end,
+            enabled = function() return page.actionOpen[id] == true and not (id == "raise" and row.raiseOff) end,
             run = function() page:onDetailAction(row.key, id) end }
     end
     c.actions = acts
@@ -786,6 +876,8 @@ end
 
 -- ---------- per frame ----------
 
+local ROW_ACTIONS = { "fill", "offer", "raise", "cancel", "dismiss" }
+
 function Page:sync()
     local now = EC.now()
     self.browseGate:pump(self:visible() and (self.mode == "browse" or self.browseSnap == nil))
@@ -796,6 +888,11 @@ function Page:sync()
     if self.mineGate:expired() then self.mineError, expired = "timeout", true end
     if self.histGate:expired() then self.histError, expired = "timeout", true end
     if expired then self.panel:layout() end
+    -- the fill dialog's candidate read: paced with every other one, asked again if it never came back
+    local dlg = self.dialog
+    local filling = dlg ~= nil and dlg.kind == "fill"
+    self.candGate:pump(filling)
+    if self.candGate:expired() and filling then self.candGate:want(dlg.ctx.view.id, true) end
     if self.queryAt and now >= self.queryAt then
         self.queryAt = nil
         self.pageNo = 1
@@ -812,10 +909,11 @@ function Page:sync()
         end
         self:request()
     end
-    local shut = self:gateReason(false) ~= nil or pending ~= nil
-    self.list.actionDisabled = shut
-    self.mineList.actionDisabled = shut
-    local reason = self:gateReason(true)
+    -- every row action has its own gate: a frozen account may still cancel and ignore an asking
+    -- price, and nothing that quotes the rates opens before they are read
+    local open = self.actionOpen
+    for _, id in ipairs(ROW_ACTIONS) do open[id] = pending == nil and self:gateCode(id) == nil end
+    local reason = self:gateReason("create")
     self.createButton:setEnable(reason == nil and pending == nil and not self.panel:isModal())
     self.createButton.tooltip = reason
     local busy = self.browseGate:busy()
@@ -887,8 +985,11 @@ function Page:layout(x, y, w, h)
     elseif snap == nil then
         g.note, g.noteToken = tr("Wallet_Loading"), "textMuted"
     elseif self.mode ~= "history" then
-        g.note = self:gateReason(self.mode == "mine")
-        g.noteToken = "warn"
+        -- why this mode's own writes are shut; a policy read that failed is an error with its retry
+        g.note = self:gateReason(self.mode == "mine" and "create" or "fill")
+        local policyFailed = self.browseSnap == nil and self.browseError ~= nil
+        g.noteToken = policyFailed and "errorText" or "warn"
+        err = err or (policyFailed and self.browseError) or nil
     end
     local retry = self.retryButton
     retry:setVisible(open and err ~= nil)

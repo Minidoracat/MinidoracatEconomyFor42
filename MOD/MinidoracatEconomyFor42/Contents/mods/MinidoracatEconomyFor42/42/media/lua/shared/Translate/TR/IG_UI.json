@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "Bu eşya pazarda ticareti yapılamadığı için talep edilemez",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "İzin verilen en fazla alım talebine zaten sahipsiniz (%1)",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "Sunucuda yeni alım talebine yer yok; daha sonra tekrar deneyin",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Yeterli bakiye yok: %1 eksik",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Yetersiz bakiye: toplam %1 gerekiyor",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "Bu alım talebi artık yok: listeyi yenileyin",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "Kendi alım talebinize teslim edemez veya karşı teklif veremezsiniz",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "İadesi yeniden denenirken bu alım talebi beklemede",

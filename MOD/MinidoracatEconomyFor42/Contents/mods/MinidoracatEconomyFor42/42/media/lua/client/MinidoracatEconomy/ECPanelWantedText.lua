@@ -123,6 +123,7 @@ function X.errorText(args)
     end
     if code == "too_many_orders" then return tr("Wanted_Error_too_many_orders", tostring(int(args.max))) end
     if code == "insufficient_funds" and tonumber(args.needed) then
+        -- the server's `needed` is what the write costs in all, not what is missing
         return tr("Wanted_Error_insufficient_funds", X.money(args.needed, args.currency))
     end
     if code == "qty_exceeded" then return tr("Wanted_Error_qty_exceeded", tostring(int(args.qty))) end
@@ -136,6 +137,73 @@ function X.errorText(args)
         return tr(args.heavy and "Delivery_ConfirmMailHeavy" or "Delivery_ConfirmMail")
     end
     return getTextOrNull(T .. "Wanted_Error_" .. code) or W.marketError(args)
+end
+
+-- ---------- the page's decisions (pure: the offline test drives them) ----------
+
+-- The writes a frozen account may still make: taking its own order down (the coins come back with
+-- allowFrozen) and dropping an asking price. Every other write would move money or goods.
+local FROZEN_OK = { cancel = true, dismiss = true }
+-- The writes whose words quote the server's rates and bounds (the browse read carries them):
+-- never offered from a policy that has not been read -- an unknown fee is not a zero fee.
+local NEEDS_POLICY = { create = true, fill = true, offer = true, raise = true }
+
+-- Why `action` (create | fill | offer | raise | cancel | dismiss) cannot go out now, as a code, or
+-- nil. s = { frozen, atTerminal, known (the policy was read), max, count }.
+function X.gateCode(action, s)
+    if s.frozen and not FROZEN_OK[action] then return "account_frozen" end
+    if not s.atTerminal then return "not_at_terminal" end
+    if NEEDS_POLICY[action] and not s.known then return "policy_unknown" end
+    if action == "create" then
+        if (tonumber(s.max) or 0) <= 0 then return "wanted_disabled" end
+        if s.count and s.count >= s.max then return "too_many_orders" end
+    end
+    return nil
+end
+
+-- The item types whose search text (the translated name, the English name, the fullType) holds
+-- `query`, at most `max`, fixed classes skipped (they are never ordered): what the server matches
+-- an order against besides the raw text, which it cannot read in the player's language. Returns
+-- the list sent and the same types as a set.
+function X.searchTypes(items, query, max)
+    local list, set = {}, {}
+    if query == nil or query == "" then return list, set end
+    for _, rec in ipairs(items) do
+        local t = rec.fullType
+        if not rec.fixed and type(t) == "string" and not set[t] and type(rec.search) == "string"
+            and string.find(rec.search, query, 1, true) then
+            list[#list + 1], set[t] = t, true
+            if #list >= max then break end
+        end
+    end
+    return list, set
+end
+
+-- The own-order count and limit, from whichever read answered last: the browse page (mineCount,
+-- max) or the own list (its length, max). A missing read gives way to the other one.
+function X.ownCount(browse, browseAt, mine, mineAt)
+    local useMine = type(mine) == "table" and type(mine.orders) == "table"
+        and (browse == nil or (mineAt or 0) >= (browseAt or 0))
+    if useMine then
+        return #mine.orders, tonumber(mine.max) or tonumber(browse and browse.max)
+    end
+    if browse then return tonumber(browse.mineCount), tonumber(browse.max) or tonumber(mine and mine.max) end
+    return nil, mine and tonumber(mine.max) or nil
+end
+
+-- How a dialog of at most `maxH` splits its height between the form and the reader: `top` is the
+-- title band, `errH` the refusal lines, `bottom` the gaps and the button row. The reader keeps two
+-- lines (or what it needs, if less) and the form scrolls (canScroll) instead of pushing the buttons
+-- out of the window; the form never drops under one row. Returns formH, readerH, total height.
+function X.dialogBands(maxH, top, formNeed, errH, readerNeed, bottom, line, canScroll)
+    local room = maxH - top - errH - bottom
+    local readerMin = math.min(readerNeed, line * 2 + 12)
+    local formH = formNeed
+    if canScroll and formNeed + readerMin > room then
+        formH = math.max(math.min(formNeed, line + 16), room - readerMin)
+    end
+    local readerH = math.max(line + 12, math.min(readerNeed, room - formH))
+    return formH, readerH, top + formH + errH + readerH + bottom
 end
 
 return X

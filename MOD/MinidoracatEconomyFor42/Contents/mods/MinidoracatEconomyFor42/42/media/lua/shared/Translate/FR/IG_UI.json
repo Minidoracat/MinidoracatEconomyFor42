@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "Cet objet ne peut pas être échangé sur le marché, il ne peut donc pas faire l'objet d'un ordre d'achat",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "Vous avez déjà le nombre maximal d'ordres d'achat (%1)",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "Le serveur n'a plus de place pour de nouveaux ordres d'achat ; réessayez plus tard",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Fonds insuffisants : il manque %1",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Fonds insuffisants : il faut %1 au total",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "Cet ordre d'achat n'existe plus : actualisez la liste",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "Vous ne pouvez ni livrer ni faire de contre-offre sur votre propre ordre d'achat",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "Cet ordre d'achat est suspendu pendant que son remboursement est retenté",

@@ -1086,6 +1086,16 @@ function W.payItemText(rec)
     return getText(T .. "Card_ItemQty", itemName(rec.payItem), tostring(math.floor(n)))
 end
 
+-- A market record's own amount, unsigned, as the admin desk lists it: the gross price, a buy
+-- order's per-unit price (a raise, an asking price it met) spelled "each", or the items a buy
+-- order was paid in. nil for a record that carries none of them -- never a made-up zero.
+function W.recordAmountText(rec)
+    local price = tonumber(rec.price)
+    if price == nil then return W.payItemText(rec) end
+    if EACH_KINDS[tostring(rec.kind)] then return getText(T .. "Wanted_Each", amountText(price)) end
+    return amountText(price)
+end
+
 -- One history line. The amount is what the record moved for this player: a sale nets the tax
 -- off, money leaving the account (a purchase, a bid the auction now holds, the price the
 -- winner paid) is negative, and everything else is the price as it stood. It is always named

@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "这种物品不能在市场交易，不能求购",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "你的求购单已达上限（%1 张）",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "服务器的求购单已满，请稍后再试",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "余额不足：还差 %1",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "余额不足：这笔共需要 %1",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "这张求购单已不存在：请刷新",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "不能交货或还价给自己的求购单",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "这张求购单暂停中（退款处理中）",
