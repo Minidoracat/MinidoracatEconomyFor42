@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "마켓에서 거래할 수 없는 아이템이라 주문할 수 없습니다",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "구매 주문 한도(%1건)에 도달했습니다",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "서버에 구매 주문을 더 받을 공간이 없습니다. 나중에 다시 시도하세요",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "잔액이 부족합니다: %1 모자람",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "잔액이 부족합니다: 총 %1이(가) 필요합니다",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "해당 구매 주문이 사라졌습니다. 목록을 새로고침하세요",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "자신의 구매 주문에는 납품하거나 역제안할 수 없습니다",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "환불을 재시도하는 동안 이 구매 주문은 보류됩니다",

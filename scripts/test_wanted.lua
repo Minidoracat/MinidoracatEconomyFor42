@@ -741,3 +741,24 @@ do
         and twine.units == 1 and m.traders.daily[#m.traders.daily] == 2,
         "W-10: a 10-coin buy-order fill is turnover, a priced item and two traders in the market report")
 end
+
+-- ---- W-11: a localized search: the client's resolved item types widen the query before paging ----
+do
+    local _, buyer11 = fresh("w11")
+    for _, item in ipairs({ "Base.Axe", "Base.Nails", "Base.Twine" }) do assert(coinOrder(buyer11, item, 1, 10).ok) end
+    local function browse(args) return cmd(buyer11, "wanted.browse", args) end
+    check(browse({ query = "zzlocal" }).total == 0 and browse({ query = "zzlocal", types = { "Base.Axe" } }).total == 1
+        and browse({ types = { "Base.Axe" } }).total == 3 and browse({ query = "nails", types = { "Base.Axe" } }).total == 2,
+        "W-11a: a translated name the server cannot read finds its orders through the client's types; types only widen a query")
+    local savedPage = Wd.PAGE
+    Wd.PAGE = 1
+    local p2 = browse({ query = "zzlocal", types = { "Base.Axe", "Base.Twine" }, page = 2 })
+    Wd.PAGE = savedPage
+    check(p2.total == 2 and p2.pages == 2 and #p2.rows == 1 and p2.rows[1].item ~= "Base.Nails",
+        "W-11b: the types are matched before paging: the second page holds the other matching order")
+    local long = {}
+    for i = 1, Wd.TYPES_MAX do long[i] = "Base.None" .. i end
+    long[#long + 1] = "Base.Axe"
+    check(browse({ query = "zzlocal", types = long }).total == 0 and browse({ query = "zzlocal", types = "Base.Axe" }).total == 0,
+        "W-11c: the list is bounded at TYPES_MAX and anything but a list is ignored")
+end

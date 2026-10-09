@@ -231,8 +231,27 @@ local function queryOf(args)
     return q ~= "" and q or nil
 end
 
-local function matches(o, query)
+-- The item types the client resolved the typed text to through its own translated names (the
+-- server never sees the player's language). A set of at most Wd.TYPES_MAX strings; anything else
+-- in the list is ignored, never an error: the raw query still matches on its own.
+Wd.TYPES_MAX = 200
+local function typesOf(args)
+    if type(args.types) ~= "table" then return nil end
+    local set, n = {}, 0
+    for i = 1, math.min(#args.types, Wd.TYPES_MAX) do
+        local t = args.types[i]
+        if type(t) == "string" and t ~= "" and #t <= 128 then
+            set[t], n = true, n + 1
+        end
+    end
+    return n > 0 and set or nil
+end
+
+-- An order matches when its type is one the client resolved the query to, or when the raw query
+-- is found in its fullType, English name or buyer. Types only widen a query; alone they are ignored.
+local function matches(o, query, types)
     if not query then return true end
+    if types and types[o.item] then return true end
     local hay = string.lower(tostring(o.item) .. " " .. tostring(o.name or "") .. " " .. tostring(o.owner))
     return string.find(hay, query, 1, true) ~= nil
 end
@@ -247,11 +266,13 @@ local function page(rows, requested, viewer, mode)
     return out, p, pages, total
 end
 
--- args = { page?, query?, category?, currency? = "all" }. Newest first; the query matches the
--- fullType, the English name and the buyer (the client filters again by translated name).
+-- args = { page?, query?, types?, category?, currency? = "all" }. Newest first; the query matches
+-- the fullType, the English name and the buyer, or one of the `types` the client resolved it to
+-- from translated names -- before paging, so a localized search finds every page's orders.
 function Wd.browse(username, args)
     args = type(args) == "table" and args or {}
     local query = queryOf(args)
+    local types = query and typesOf(args) or nil
     local category = type(args.category) == "string" and args.category ~= "" and args.category or nil
     local currency = Mk.CURRENCY_ALL
     local base = { page = 1, pages = 1, total = 0, per = Wd.PAGE, rows = {}, currencies = Mk.tradableCurrencies() }
@@ -264,7 +285,7 @@ function Wd.browse(username, args)
     end
     local rows = {}
     for _, o in pairs(md.wanted.orders) do
-        local take = matches(o, query) and (category == nil or o.category == category)
+        local take = matches(o, query, types) and (category == nil or o.category == category)
         if take and currency ~= Mk.CURRENCY_ALL then
             take = false
             for _, opt in ipairs(o.options) do

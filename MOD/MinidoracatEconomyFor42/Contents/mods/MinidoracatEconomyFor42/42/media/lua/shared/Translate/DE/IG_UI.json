@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "Dieser Gegenstand kann nicht auf dem Markt gehandelt und daher nicht gesucht werden",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "Du hast bereits die maximale Anzahl an Kaufgesuchen (%1)",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "Der Server hat keinen Platz für weitere Kaufgesuche; versuche es später erneut",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Nicht genug Guthaben: es fehlen %1",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Nicht genug Guthaben: insgesamt werden %1 benötigt",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "Dieses Kaufgesuch gibt es nicht mehr: Aktualisiere die Liste",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "Du kannst nicht an dein eigenes Kaufgesuch liefern oder dafür mehr verlangen",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "Dieses Kaufgesuch ist pausiert, während die Erstattung erneut versucht wird",

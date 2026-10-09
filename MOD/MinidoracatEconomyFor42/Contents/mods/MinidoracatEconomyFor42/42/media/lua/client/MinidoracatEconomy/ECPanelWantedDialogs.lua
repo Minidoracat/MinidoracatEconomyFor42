@@ -5,10 +5,13 @@
 --                                   out by Panel:layoutDialog like every other modal of it
 --
 -- One class, three forms. Each form is a list of labelled rows (the label left, its controls
--- right, wrapped inside the dialog at any font), a one-line refusal under them, a scrolling reader
--- with the numbers the press will move, and the two buttons. A refusal that belongs to a field
--- marks that field (TextField:setInvalid where the framework has it, rev 16) and says why on the
--- message line; the next edit of the field drops it. The write itself goes out through the page
+-- right, wrapped inside the dialog at any font) in a form that scrolls (UI.ScrollPanel) when the
+-- window is too short, the refusal under it (two lines; a longer one is also whole at the top of
+-- the reader), a scrolling reader with the numbers the press will move, and the two buttons --
+-- the whole dialog stays inside the window's band. The rates and bounds it quotes are the page's,
+-- read live (Dlg:policy). A refusal that belongs to a field marks that field
+-- (TextField:setInvalid where the framework has it, rev 16) and says why on the message line; the
+-- next edit of the field drops it. The write itself goes out through the page
 -- (Page:send: one in flight, its requestId), which hands the answer back here (onRefused /
 -- onTimeout). A press after a timeout carries the same requestId, so the server answers a
 -- repeat with what it already did instead of doing it twice; anything changed is a new request.
@@ -86,17 +89,63 @@ function D.new(kind, panel, page, ctx)
     setmetatable(dlg, Dlg)
     dlg.background = false
     dlg.kind, dlg.panel, dlg.page, dlg.ctx = kind, panel, page, ctx
-    dlg.info = ctx.info
-    dlg.all, dlg.priceNow = {}, {}
+    dlg.all, dlg.priceNow, dlg.labels = {}, {}, {}
     dlg:initialise()
     panel:addChild(dlg)     -- instantiate -> createChildren
     dlg:open()
     return dlg
 end
 
+-- The rates, bounds and limits the dialog quotes: the page's, read live (Page:info), so a policy
+-- that arrives or changes while the dialog is open is what the next frame shows. The dialog only
+-- opens once the policy was read (Page:gateReason), and its confirm is shut again if it is not.
+function Dlg:policy() return self.page:info() end
+
+-- The form scrolls inside the band the window gives the dialog (UI.ScrollPanel, rev 16), so the
+-- reader and the two buttons stay on screen at any font and with every payment option open. An
+-- older framework gets a plain panel: the form then takes the height it needs.
+local function newForm()
+    local ui = U.framework
+    if ui ~= nil and ui.ScrollPanel == nil then pcall(require, "MinidoracatUI/Widgets/ScrollPanel") end
+    if ui ~= nil and (ui.API_REVISION or 0) >= 16 and ui.CAPABILITIES and ui.CAPABILITIES.scrollPanel == true
+        and ui.ScrollPanel ~= nil then
+        return ui.ScrollPanel.new({ theme = U.theme }), true
+    end
+    local p = ISPanel:new(0, 0, 100, 100)
+    p.background = false
+    p:initialise()
+    return p, false
+end
+
+-- A row's label, a child of the form so it scrolls (and is clipped) with the row it names.
+local Label = ISPanel:derive("MinidoracatEconomyWantedLabel")
+function Label:prerender() end
+function Label:render()
+    if self.fit ~= "" then text(self, self.fit, 0, math.floor((self.height - fontH.small) / 2), "textMuted") end
+end
+function Label:onMouseDown() return false end
+function Label:onMouseUp() return false end
+function Label:onMouseWheel() return false end
+
+function Dlg:label(i)
+    local l = self.labels[i]
+    if l == nil then
+        l = ISPanel:new(0, 0, 10, 10)
+        setmetatable(l, Label)
+        l.background, l.fit = false, ""
+        l:initialise()
+        self.form:addChild(l)
+        self.labels[i] = l
+    end
+    return l
+end
+
 -- Every control a form builds goes in self.all, so the layout can hide what the form does not
--- place this time (a coin option has no group box, a removed option nothing at all).
+-- place this time (a coin option has no group box, a removed option nothing at all). It lives in
+-- the form (the helpers built it on the dialog, which stays its callback target).
 function Dlg:add(control)
+    if control.parent == self then self:removeChild(control) end
+    self.form:addChild(control)
     self.all[#self.all + 1] = control
     return control
 end
@@ -110,6 +159,8 @@ function Dlg:createChildren()
     self.cancelButton = U.Button.create(0, 0, textWidth(cancel) + 30, bh, cancel, self, Dlg.onCancel, "chip")
     self:addChild(self.cancelButton)
     self.summaryBox = U.newReader(self, 240, fontH.small * 2 + 12)
+    self.form, self.canScroll = newForm()
+    self:addChild(self.form)
     self.combos = {}
     if self.kind == "create" then
         self:buildCreate()
@@ -160,7 +211,7 @@ end
 -- ---------- create ----------
 
 function Dlg:buildCreate()
-    local info = self.info
+    local info = self:policy()
     self.itemButton = self:add(button(self, tr("Wanted_PickItem"), Dlg.onPickItem))
     self.qtyField = self:add(field(self, 80, 2, true, "1-" .. QTY_MAX))
     self.condTabs = self:add(W.modeTabs(self, { { id = "any", label = tr("Wanted_Cond_Any") },
@@ -296,12 +347,13 @@ end
 function Dlg:createLines()
     local out = {}
     local qty = number(self.qtyField) or 0
+    local info = self:policy()
     for i = 1, self.optCount do
         local o = self.opt[i]
         if o.kind == "coin" then
             local cur = o.cur:getOptionData(o.cur.selected)
             local held = (number(o.price) or 0) * qty
-            local fee = X.pct(held, self.info.feePercent)
+            local fee = X.pct(held, info.feePercent)
             local bal = cur and C.wallet and C.wallet.balances and C.wallet.balances[cur]
             out[#out + 1] = tr("Wanted_SumCoin", tostring(i), X.money(held, cur), X.money(fee, cur),
                 X.money(held + fee, cur), X.money(bal and bal.available or 0, cur))
@@ -312,7 +364,7 @@ function Dlg:createLines()
         end
     end
     out[#out + 1] = ""
-    if self.info.days > 0 then out[#out + 1] = tr("Wanted_SumDays", tostring(self.info.days)) end
+    if info.days > 0 then out[#out + 1] = tr("Wanted_SumDays", tostring(info.days)) end
     out[#out + 1] = tr("Wanted_SumSlot")
     out[#out + 1] = tr("Wanted_CancelNoRefund")
     return out
@@ -327,7 +379,7 @@ function Dlg:checkCreate()
     if cond and cond.new == nil and (cond.minPct == nil or cond.minPct > 100 or self.hasCondition == false) then
         return tr("Wanted_Err_Pct"), self.pctField
     end
-    local info, seen = self.info, {}
+    local info, seen = self:policy(), {}
     for i = 1, self.optCount do
         local o = self.opt[i]
         if o.kind == "coin" then
@@ -341,7 +393,8 @@ function Dlg:checkCreate()
             local need = price * qty + X.pct(price * qty, info.feePercent)
             local bal = C.wallet and C.wallet.balances and C.wallet.balances[cur]
             if bal and need > int(bal.available) then
-                return X.errorText({ error = "insufficient_funds", needed = need - int(bal.available), currency = cur }), o.price
+                -- the same words as the server's refusal: what this option takes in all
+                return X.errorText({ error = "insufficient_funds", needed = need, currency = cur }), o.price
             end
         else
             local g = self.groups and self.groups[o.group:getOptionData(o.group.selected)]
@@ -411,20 +464,19 @@ function Dlg:buildFill()
     local step = math.max(CHIP_H, fontH.small + 8)
     self.minus = self:add(U.Button.create(0, 0, step + 6, step, "-", self, Dlg.onStep, "chip"))
     self.minus.internal = -1
-    self:addChild(self.minus)
     self.qtyField = self:add(field(self, 70, 2, true, nil))
     self.plus = self:add(U.Button.create(0, 0, step + 6, step, "+", self, Dlg.onStep, "chip"))
     self.plus.internal = 1
-    self:addChild(self.plus)
     self.first = self.optButtons[1]
-    -- the seller's own copies of the type, judged against the order (one read, paced)
-    self.candGate = C.ReadGate.create(function(_, requestId)
-        C.sendWanted("candidates", { orderId = v.id, requestId = requestId })
-    end)
-    self.candGate:want("c", true)
+    -- the seller's own copies of the type, judged against the order: the page's read, keyed on
+    -- this order (an answer about another order is never shown here)
+    self.page:wantCandidates(v.id)
 end
 
+-- The option a delivery is paid in. Shut while a delivery is on its way: the answer (a moved
+-- price) belongs to the option that was sent.
 function Dlg:onOptionPick(b)
+    if self.page:busy() then return end
     self.choice = b.internal
     self.acceptMail = nil
     self:edited()
@@ -465,21 +517,22 @@ end
 function Dlg:optionLabel(i, n)
     local opt = self.ctx.view.options[i]
     if opt.kind == "coin" then
-        local net, tax = X.net(self:unitPrice(i) * n, self.info.taxPercent)
+        local net, tax = X.net(self:unitPrice(i) * n, self:policy().taxPercent)
         return tr("Wanted_FillCoin", X.optionText({ kind = "coin", unitPrice = self:unitPrice(i), currency = opt.currency }),
             X.money(net, opt.currency), X.money(tax, opt.currency))
     end
     return tr("Wanted_FillItem", X.optionText(opt), tostring(int(opt.perUnit) * n), C.itemLabel(opt.item))
 end
 
--- wanted.candidates: the groups the order takes fill the box, the others are counted and named.
-function Dlg:onRead(kind, args)
-    if kind == "market.candidates" then
-        if self.kind == "create" then self:fillGroups() end
-        return
-    end
-    if self.kind ~= "fill" or self.candGate:accept(args) == "stale" then return end
-    if args.ok == false then
+-- market.candidates (the create form's item option): the backpack groups were rebuilt.
+function Dlg:onRead(kind)
+    if kind == "market.candidates" and self.kind == "create" then self:fillGroups() end
+end
+
+-- wanted.candidates for this order (the page matched it): the groups the order takes fill the
+-- box, the others are counted and named.
+function Dlg:onCandidates(args)
+    if args.ok == false or args.error ~= nil then
         self.candError = args.error
         self:setError(X.errorText(args), nil)
         return
@@ -582,8 +635,9 @@ function Dlg:checkOffer()
     if price == nil or price <= int(opt.unitPrice) then
         return X.errorText({ error = "offer_not_higher", unitPrice = opt.unitPrice }), self.priceField
     end
-    if self.info.priceMax > 0 and price > self.info.priceMax then
-        return X.errorText({ error = "price_range", max = self.info.priceMax }), self.priceField
+    local priceMax = self:policy().priceMax
+    if priceMax > 0 and price > priceMax then
+        return X.errorText({ error = "price_range", max = priceMax }), self.priceField
     end
     local n = number(self.qtyField)
     if n == nil or n > int(v.qty) then return X.errorText({ error = "qty_exceeded", qty = v.qty }), self.qtyField end
@@ -624,7 +678,7 @@ end
 
 function Dlg:onConfirm()
     if self.page:busy() then return end
-    local gate = self.page:gateReason(self.kind == "create")
+    local gate = self.page:gateReason(self.kind)
     if gate then return self:setError(gate, nil) end
     local msg, control = self[CHECKS[self.kind]](self)
     if msg then return self:setError(msg, control) end
@@ -632,6 +686,8 @@ function Dlg:onConfirm()
     local key = keyOf(args)
     if not (self.sent and self.sent.key == key) then self.sent = { key = key, requestId = C.newRequestId() } end
     args.requestId = self.sent.requestId
+    -- the answer is about the option that goes out now (a moved price is that option's)
+    self.sentChoice = args.option
     self:setError(nil)
     local item = self.kind == "create" and args.item or self.ctx.view.item
     self.page:send(self.kind, args, item, self.kind)
@@ -647,8 +703,10 @@ function Dlg:onRefused(args)
     self.sent = nil
     local code = tostring(args.error or "")
     if code == "mail_confirmation_required" then self.acceptMail = true end
-    if code == "price_changed" and tonumber(args.unitPrice) then self.priceNow[self.choice] = int(args.unitPrice) end
-    if self.kind == "fill" and REREAD[code] then self.candGate:want("c", true) end
+    if code == "price_changed" and tonumber(args.unitPrice) and self.sentChoice then
+        self.priceNow[self.sentChoice] = int(args.unitPrice)
+    end
+    if self.kind == "fill" and REREAD[code] then self.page:wantCandidates(self.ctx.view.id) end
     if code == "item_not_found" and self.kind == "create" then self.panel:askCandidates(C.newRequestId()) end
     self.dirtySummary = true
     local name = FIELD_OF[code]
@@ -662,13 +720,13 @@ end
 
 -- ---------- geometry ----------
 
--- One labelled row after another: the label left (fitted when painted), the controls right of it,
--- wrapped onto a further line when the dialog is too narrow; `stack` puts one control per line.
+-- One labelled row after another, in the form's own coordinates: the label left (a child of the
+-- form, so it scrolls with its row), the controls right of it, wrapped onto a further line when
+-- the form is too narrow; `stack` puts one control per line. Returns the height the rows take.
 function Dlg:placeRows(rows, y)
-    self.labels = {}
     self.targets = {}
-    local right = self.width - PAD
-    for _, row in ipairs(rows) do
+    local right = self.formRight
+    for i, row in ipairs(rows) do
         local x, lineY, lineH = self.fieldX, y, 0
         for _, c in ipairs(row.items) do
             if x > self.fieldX and (row.stack or x + c.width > right) then
@@ -687,9 +745,13 @@ function Dlg:placeRows(rows, y)
             end
             self.targets[#self.targets + 1] = d
         end
-        self.labels[#self.labels + 1] = { text = row.label, y = y, h = math.max(lineH, CHIP_H) }
+        local l = self:label(i)
+        l:setX(0); l:setY(y); l:setWidth(self.labelW); l:setHeight(math.max(lineH, CHIP_H))
+        l.fit = fitText(row.label, self.labelW)
+        l:setVisible(true)
         y = lineY + lineH + 8
     end
+    for i = #rows + 1, #self.labels do self.labels[i]:setVisible(false) end
     return y
 end
 
@@ -713,6 +775,9 @@ function Dlg:lines()
     return self:offerLines()
 end
 
+-- The dialog inside the band the window gives it (Panel:layoutDialog): the title, the form, the
+-- refusal, the reader and the two buttons. X.dialogBands keeps the whole of it within `maxH`: the
+-- form scrolls rather than push the buttons off the window, and the reader keeps two lines.
 function Dlg:layoutInside(maxW, maxH)
     local w = math.max(420, math.min(maxW, 680))
     if self.picker and self.picker:isOpen() then
@@ -724,18 +789,26 @@ function Dlg:layoutInside(maxW, maxH)
     end
     self:setWidth(w)
     for _, c in ipairs(self.all) do c:setVisible(false) end
-    local labelW = math.floor(w * 0.28)
-    self.fieldX = PAD + labelW + PAD
-    self.fieldW = w - self.fieldX - PAD
-    self.labelW = labelW
-    local y = PAD
-    self.titleY = y
-    y = y + fontH.medium + PAD
+    local form = self.form
+    form:setX(PAD)
+    form:setWidth(w - PAD * 2)
+    local cw = self.canScroll and form:contentWidth() or (w - PAD * 2)
+    self.labelW = math.floor(cw * 0.28)
+    self.fieldX = self.labelW + PAD
+    self.fieldW = cw - self.fieldX
+    self.formRight = cw
+    self.titleY = PAD
+    local top = PAD + fontH.medium + PAD
+    if self.kind == "create" then
+        -- the price hint quotes the minimum the server last named
+        local hint = tr("Wanted_PriceHint", tostring(self:policy().priceMin))
+        for i = 1, OPTIONS_MAX do self.opt[i].price.placeholder = hint end
+    end
     local rows = {}
     if self.kind == "create" then self:createRows(rows)
     elseif self.kind == "fill" then self:fillRows(rows)
     else self:offerRows(rows) end
-    y = self:placeRows(rows, y)
+    local formNeed = self:placeRows(rows, 0)
     -- what this layout hid gives up the keyboard and its popup (a hidden box keeps both otherwise)
     for _, c in ipairs(self.all) do
         if not c:getIsVisible() then
@@ -743,21 +816,33 @@ function Dlg:layoutInside(maxW, maxH)
             if c.expanded then W.closeCombo(c) end
         end
     end
-    self.errY, self.errLines = nil, nil
-    if self.err then
-        self.errY = y
-        self.errLines = U.wrapText(self.err.text, w - PAD * 2, 3)
-        y = y + #self.errLines * (fontH.small + 2) + 6
-    end
+    -- the refusal: two lines under the form; a longer one (a recovery refusal names its reason,
+    -- the copy, the operation and what to do next) is also whole at the top of the reader
     local lines = self:lines()
+    self.errLines = nil
+    local errH = 0
+    if self.err then
+        self.errLines = U.wrapText(self.err.text, w - PAD * 2, 2)
+        errH = #self.errLines * (fontH.small + 2) + 6
+        if #U.wrapText(self.err.text, w - PAD * 2, math.huge) > 2 then
+            table.insert(lines, 1, "")
+            table.insert(lines, 1, self.err.text)
+        end
+    end
     local buttonH = self.cancelButton.height
-    local room = maxH - y - PAD - buttonH - PAD
+    local readerW = w - PAD * 2
+    local formH, readerH = X.dialogBands(maxH, top, formNeed, errH, W.readerHeight(lines, readerW),
+        PAD + buttonH + PAD, fontH.small, self.canScroll)
+    form:setY(top)
+    form:setHeight(math.max(1, formH))
+    local y = top + formH
+    self.errY = self.errLines and y or nil
+    y = y + errH
     local box = self.summaryBox
-    box:setX(PAD); box:setY(y); box:setWidth(w - PAD * 2)
-    box:setHeight(math.max(fontH.small + 12, math.min(W.readerHeight(lines, w - PAD * 2), room)))
+    box:setX(PAD); box:setY(y); box:setWidth(readerW); box:setHeight(readerH)
     W.setSummary(self, lines)
     self.dirtySummary = false
-    y = y + box.height + PAD
+    y = y + readerH + PAD
     local label = self:confirmLabel()
     local cb = self.confirmButton
     cb:setWidth(math.max(120, math.min(w - PAD * 3 - self.cancelButton.width, textWidth(label, UIFont.Medium) + 40)))
@@ -786,27 +871,22 @@ function Dlg:prerender()
     local w, h = self.width, self.height
     fill(self, 0, 0, w, h, "surface")
     border(self, 0, 0, w, h, "accent")
-    if self.candGate then
-        self.candGate:pump(true)
-        -- a candidate read is safe to repeat: one that never came back is simply asked again
-        if self.candGate:expired() then self.candGate:want("c", true) end
-    end
     if self.picker and self.picker:isOpen() then return end
     if self.dirtySummary then self.panel:layoutDialog(self) end
     text(self, fitText(self:title(), w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
-    for _, l in ipairs(self.labels or {}) do
-        if l.text ~= "" then
-            text(self, fitText(l.text, self.labelW), PAD, l.y + math.floor((l.h - fontH.small) / 2), "textMuted")
-        end
-    end
     if self.errY then
         for i, line in ipairs(self.errLines) do
             text(self, line, PAD, self.errY + (i - 1) * (fontH.small + 2), "errorText")
         end
     end
     local busy = self.page:busy()
-    self.confirmButton:setEnable(not busy and self.page:gateReason(self.kind == "create") == nil)
-    self.confirmButton.tooltip = self.page:gateReason(self.kind == "create")
+    local gate = self.page:gateReason(self.kind)
+    self.confirmButton:setEnable(not busy and gate == nil)
+    self.confirmButton.tooltip = gate
+    -- what the write in flight was sent with stays as it was until it is answered
+    if self.optButtons then
+        for _, b in ipairs(self.optButtons) do b:setEnable(not busy) end
+    end
 end
 
 function Dlg:render() end

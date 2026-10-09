@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "This item cannot be traded on the market, so it cannot be ordered",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "You already have the most buy orders allowed (%1)",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "The server has no room for more buy orders; try again later",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Not enough funds: %1 short",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Not enough funds: this needs %1 in total",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "That buy order no longer exists: refresh the list",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "You cannot deliver or ask on your own buy order",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "This buy order is on hold while its refund is retried",

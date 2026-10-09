@@ -2928,12 +2928,16 @@ function Admin:historyCard(row, auction)
     end
     if hasItem then P.cardRow(tech, tr("Detail_ItemCode"), rec.item) end
     P.cardRow(tech, tr("Admin_Col_Tx"), rec.txId)
-    local price = tonumber(rec.price)
+    P.cardRow(tech, tr("Wanted_OrderId"), rec.orderId)
+    -- the record's own amount: a gross price, a buy order's price per unit, or the items it was
+    -- paid in (W.recordAmountText); the coin only goes with coins
+    local amount = C.PanelWidgets.recordAmountText(rec)
+    local coin = tonumber(rec.price) ~= nil and rec.currency or nil
     return {
         source = tr(auction and "Auction_History_Title" or "Admin_Lst_History"),
         sourceIcon = auction and "auction" or "tag", item = hasItem and rec.item or nil,
         iconKey = auction and "auction" or "tag", name = name, sub = marketKindLabel(rec.kind),
-        hero = price and P.cardHero(amountText(price), rec.currency, nil, row.rolled) or nil,
+        hero = amount and P.cardHero(amount, coin, nil, row.rolled) or nil,
         chips = row.rolled and { P.rolledChip() } or nil, rows = rows, tech = tech,
     }
 end
@@ -6880,7 +6884,7 @@ function Admin:historyRow(rec, lh, width)
     if type(rec.reason) == "string" and rec.reason ~= "" then meta = meta .. " / " .. U.marketReasonText(rec.reason, rec.kind) end
     local rolled = rec.rolledBack == true
     local rolledLabel = rolled and tr("Wallet_RolledBack") or nil
-    local amountLabel = amountText(rec.price)
+    local amountLabel = C.PanelWidgets.recordAmountText(rec) or "-"
     local right = math.max(60, width - PAD)
     local headW = math.max(0, right - textWidth(amountLabel) - PAD * 2)
     local metaW = rolled and math.max(0, headW - textWidth(rolledLabel) - PAD) or headW

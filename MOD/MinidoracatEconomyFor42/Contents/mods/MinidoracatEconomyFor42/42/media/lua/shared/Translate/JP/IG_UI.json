@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "このアイテムはマーケットで取引できないため、買い注文を出せません",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "買い注文が上限（%1 件）に達しています",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "サーバーの買い注文が満杯です。しばらくしてから再試行してください",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "残高が足りません：あと %1 必要です",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "残高不足：合計 %1 が必要です",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "この買い注文はもう存在しません。一覧を更新してください",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "自分の買い注文には納品も価格交渉もできません",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "返金を再試行中のため、この買い注文は一時停止しています",

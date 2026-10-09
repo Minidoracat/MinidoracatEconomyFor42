@@ -924,7 +924,7 @@
   "IGUI_MinidoracatEconomy_Wanted_Error_not_whitelisted": "Este objeto no se puede comerciar en el mercado, así que no se puede pedir",
   "IGUI_MinidoracatEconomy_Wanted_Error_too_many_orders": "Ya tienes el máximo de órdenes de compra permitido (%1)",
   "IGUI_MinidoracatEconomy_Wanted_Error_wanted_full": "El servidor no admite más órdenes de compra; inténtalo más tarde",
-  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Fondos insuficientes: faltan %1",
+  "IGUI_MinidoracatEconomy_Wanted_Error_insufficient_funds": "Fondos insuficientes: se necesitan %1 en total",
   "IGUI_MinidoracatEconomy_Wanted_Error_unknown_order": "Esa orden de compra ya no existe: actualiza la lista",
   "IGUI_MinidoracatEconomy_Wanted_Error_own_order": "No puedes entregar ni hacer contraofertas en tu propia orden de compra",
   "IGUI_MinidoracatEconomy_Wanted_Error_order_held": "Esta orden de compra está en pausa mientras se reintenta su reembolso",
