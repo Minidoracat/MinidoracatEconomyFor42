@@ -112,7 +112,7 @@ local function tr(key) return getText(T .. key) end
 local function lineH() return fontH.small + 6 end
 local function entryH() return math.max(26, fontH.small + 12) end
 local function listRowH() return lineH() * 2 + 12 end
-local function chipH() return math.max(20, fontH.small + 6) end
+local function chipH() return math.max(24, fontH.small + 6) end
 
 local function txGroupText(group)
     return getTextOrNull(T .. "Admin_Tx_Group_" .. tostring(group)) or U.unknownText("tx group", group)
@@ -325,8 +325,8 @@ local Page = ISPanel:derive("MinidoracatEconomyAdminTxPage")
 function Page:createChildren()
     self.txEntry = newEntry(240, entryH(), { maxLen = TX_QUERY_CHARS, clear = true,
         placeholder = tr("Admin_Tx_Search") })
-    self.txEntry.target = self
-    self.txEntry.onTextChangeFunction = Page.onTxSearch
+    self.txEntry._entry.target = self
+    self.txEntry._entry.onTextChangeFunction = Page.onTxSearch
     self:addChild(self.txEntry)
     -- the keyword's own mode: one field's whole value, or any field containing the text
     self.txModeButtons = {}
@@ -1319,7 +1319,8 @@ function Page:keyboardTargets()
         out[#out + 1] = { kind = "scroll", label = tr("Admin_Tx_Filters"), control = self,
             focusable = false }
     end
-    add("entry", tr("Admin_Tx_SearchLabel"), self.txEntry)
+    out[#out + 1] = { kind = "entry", label = tr("Admin_Tx_SearchLabel"), control = self.txEntry._entry,
+        frame = self.txEntry }
     -- the shared row: the source (dropdown or chips), the days (chip or boxes with their calendar
     -- buttons), the sort and the page chips (UI.FilterBar); the compact card's own page chips
     f:appendTargets(out)

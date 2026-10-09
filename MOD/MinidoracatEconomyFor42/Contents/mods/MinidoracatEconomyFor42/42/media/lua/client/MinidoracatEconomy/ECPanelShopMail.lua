@@ -185,6 +185,7 @@ function M.layoutShop(self, workBottom, toolBand, capH, watch)
     g.shopPillRows = M.placeShopPills(self)
     g.shopHeadH = headHeight(g.shopPillRows)
     self.shopEntry:setVisible(isShop)
+    self.shopEmptyButton:setVisible(false)        -- the paint shows it over a filtered-out table
     self.shopEntry:setWidth(math.max(140, math.min(300, math.floor(bw * 0.28))))
     self.shopCatCombo:setVisible(isShop)
     self.shopCatCombo:setWidth(comboWidth(self.shopCatCombo, 120, math.floor(bw * 0.3)))
@@ -340,10 +341,16 @@ function M.drawShop(self)
     textRight(self, getText(T .. "Shop_Col_Remaining"), hx + cols.remainR, hty, "textMuted")
     if #list:getItems() == 0 and C.shopError == nil then
         if self.shopQuery or self.shopCat then
-            text(self, getText(T .. "Shop_NoMatch"), hx + PAD, list.y + math.floor((ROW - fontH.small) / 2), "textMuted")
+            -- the filters emptied it: say what was searched and offer the way back
+            local query = string.match(U.entryText(self.shopEntry), "^%s*(.-)%s*$")
+            C.PanelLayout.drawEmpty(self, self.shopEmptyButton, "shopMatch", list, query ~= ""
+                and getText(T .. "Shop_NoMatchQuery", query) or getText(T .. "Shop_NoMatch"),
+                nil, getText(T .. "Market_ClearFilters"), true)
         else
             U.drawEmptyState(self, "shop")
         end
+    elseif self.shopEmptyButton:getIsVisible() then
+        self.shopEmptyButton:setVisible(false)
     end
 end
 

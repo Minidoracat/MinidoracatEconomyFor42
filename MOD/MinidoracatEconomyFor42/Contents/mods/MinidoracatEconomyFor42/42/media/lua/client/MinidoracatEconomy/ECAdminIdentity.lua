@@ -157,9 +157,9 @@ function Page:createChildren()
 
     self.searchEntry = U.newEntry(240, entryH(), { maxLen = QUERY_MAX, clear = true,
         placeholder = tr("Admin_Id_Search") })
-    self.searchEntry.target = self
-    self.searchEntry.onTextChangeFunction = Page.onSearchTyped
-    self.searchEntry.onCommandEntered = function() self:applyQuery() end
+    self.searchEntry._entry.target = self
+    self.searchEntry._entry.onTextChangeFunction = Page.onSearchTyped
+    self.searchEntry._entry.onCommandEntered = function() self:applyQuery() end
     self:addChild(self.searchEntry)
     self.filterButtons = {}
     for _, id in ipairs(FILTERS) do
@@ -1172,7 +1172,8 @@ function Page:keyboardTargets()
         out[#out + 1] = { kind = "scroll", label = caption, control = self.reader, focusable = false }
         return out
     end
-    out[#out + 1] = { kind = "entry", label = tr("Admin_Id_Search"), control = self.searchEntry }
+    out[#out + 1] = { kind = "entry", label = tr("Admin_Id_Search"), control = self.searchEntry._entry,
+        frame = self.searchEntry }
     out[#out + 1] = { kind = "group", label = tr("Admin_Id_FilterLabel"), controls = self.filterButtons }
     out[#out + 1] = { kind = "group", label = tr("Filter_PageNav"), controls = { self.prevButton, self.nextButton } }
     -- the caption carries the slice in full: a keyboard user never sees the fitted line

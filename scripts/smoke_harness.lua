@@ -20914,7 +20914,7 @@ check(F and F.docked == true and #regs == 1 and buttons == 0 and layouts == 0 an
 local C = EC.Client
 local idle = spec and spec.getBadge() == 0 and spec.getStatus() == nil
 C.unclaimed = 3.6
-check(idle and spec.getBadge() == 3 and spec.getStatus() == "3 item(s) waiting in your mailbox",
+check(idle and spec.getBadge() == 3 and spec.getStatus() == "Mailbox: 3 waiting",
     "DK-2: the badge counts the mail waiting and the status says so; nothing pending shows neither")
 local closed = spec and spec.isActive() == false
 C.Panel.window = { visible = true, getIsVisible = function(self) return self.visible end }
