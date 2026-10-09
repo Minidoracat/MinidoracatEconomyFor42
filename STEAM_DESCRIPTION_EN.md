@@ -25,7 +25,7 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 [list]
 [*] [b]Two-currency wallet[/b]: Survivor Coin and Cat Coin, with a searchable, filterable statement
 [*] [b]System shop[/b]: fixed-price purchases, and sell items back to the server when buyback is on
-[*] [b]Player market and auctions[/b]: sell items from your bag at a fixed price or by auction, at any terminal
+[*] [b]Player market, auctions and buy orders[/b]: list at a fixed price, auction, or post what you want to buy, at any terminal
 [*] [b]Player transfers[/b]: send currency straight to another player when the server allows it
 [*] [b]Guide to the nearest terminal[/b]: direction and distance, a golden arrow that stops on arrival; with MiniMap, terminals and ATMs show on the maps
 [*] [b]Mailbox[/b]: purchases, wins and returns arrive here and survive your character's death

@@ -72,12 +72,22 @@ Server installation, permissions and external tools: [url=https://steamcommunity
 [*] Click an auction for its card: whether you lead, time left, the next minimum bid and what you hold, with the Bid (or Raise) and History buttons on the card.
 [/list]
 
+[h3]Buy orders[/h3]
+[list]
+[*] [b]Create[/b]: at a terminal open Buy orders, then Create buy order. Pick the item and quantity (up to 50). Condition can be Any condition, New only, or Durability at least a percentage; for tools with a head, such as axes, the lower of the body and the head counts. Then add up to three payment options: a price each in a currency, or one kind of item from your bag at so many per unit.
+[*] [b]Held at creation[/b]: payment coins are held at once and payment items are taken from your main inventory. Each coin option pays the market listing fee once; item options are free. An open buy order takes one mailbox slot; how long it runs and how many you may have open depend on the server.
+[*] [b]Delivering[/b]: a seller opens an order on the Browse tab at a terminal, picks one payment option and delivers, in parts if they like. Coins pay the market sales tax; items do not. Delivered goods are mailed to the buyer, even if the buyer is offline or their mailbox is full.
+[*] [b]Asks and raises[/b]: if the price is too low, a seller can press Ask more on a coin option with a price each, a quantity and a note (up to 64 characters); it costs nothing and holds no items. The buyer is told and can Raise to this or Ignore. A raise only goes up, applies to every seller, tops up the held money, and the extra amount pays the listing fee rate. At most 10 asks per order, one per seller.
+[*] [b]Closing[/b]: an order ends when it is filled, cancelled or expired. Unused held money goes back to your wallet, payment items are mailed back, and the listing fee is not refunded. Cancelling asks you to confirm (Keep order / Cancel order). You cannot deliver or ask on your own order.
+[*] [b]Records[/b]: the History tab, Market - History, the wallet statement (created, deal, raised, hold released) and the mailbox all show them.
+[/list]
+
 [h3]Mailbox[/h3]
 [list]
 [*] Purchases, wins, cancellations and returns arrive here; claim one by one or with "Claim all". The title bar shows Waiting and Slots.
 [*] If your bag cannot take a whole letter, the pieces that fit are handed over and the rest waits; the message says how much room you need.
 [*] Heavy items skip the bag: one per claim, straight into both hands. If your hands already hold a heavy item, the letter waits until you put it down.
-[*] Unclaimed items survive your character's death. Unclaimed mail plus your listings and auctions count towards the mailbox limit.
+[*] Unclaimed items survive your character's death. Unclaimed mail plus your listings, auctions and open buy orders count towards the mailbox limit.
 [/list]
 
 [h3]Rewards, seasons and leaderboards[/h3]

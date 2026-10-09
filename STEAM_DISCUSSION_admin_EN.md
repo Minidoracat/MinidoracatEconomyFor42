@@ -31,6 +31,9 @@ Needs attention lists only what has a problem (assets to reconcile, identity con
 [h2]⚙️ Server settings[/h2]
 [list]
 [*] All options are changed live under Economy Administration - Settings, and audited.
+[*] [b]Buy orders (players post what they want to buy)[/b]: Settings has "Max buy orders per player" (0-50, default 5, 0 = players cannot post). Duration, listing fee, sales tax and the price limits reuse the market options. The server holds at most 500 buy orders at once; when full, players are told there is no room. Each open buy order takes one mailbox slot of its owner.
+[*] [b]Admin "Buy orders" tab[/b] (Market and shop): search by item or buyer and see each order's payment options and held amounts. Force cancel needs a reason and leaves an audit entry; held money and items go back as usual and the buyer is notified. An order whose refund failed stops taking deliveries, the server retries every minute, and Needs attention on the Overview reminds you.
+[*] [b]Merging[/b]: a login with an open buy order cannot merge; cancel it or wait until it closes.
 [*] catalog.json (shop) and whitelist.json (Listing whitelist) are in the server data folder; panel edits are written back. Press Reload after hand edits.
 [*] [b]Shop entries[/b] can be deleted one at a time or several at once, with a required reason; sent mail and transaction records are kept, and re-adding the same ID continues its purchase counts. Delisting only stops sales: also turn off buyback, or delete the entry, to retire it. The entry cap is under Settings - System shop (default 200, up to 1000).
 [*] Drag an item from your bag onto the admin Shop page to create an entry, or onto the Listing whitelist page to pick it for a rule; the item right-click "Economy" menu has "Add as a shop item" and "Add a whitelist rule" too.
@@ -98,6 +101,7 @@ The interface and order flow exist, but it is [b]not subscribe-and-go[/b]: you n
 [*] With incomplete source or save evidence the system keeps a pending entry rather than reissuing or deleting. Admin - Reconciliation lists them server-wide; resolve one by one or in batches (Ctrl/Shift), each with a reason. Read-only roles can only view.
 [*] [b]Crash duplicates[/b]: an older player save can bring back items already listed, auctioned or sold. Once the trade is in a world save, the copy is taken back at the holder's login (notice and SYSTEM Audit line); worn, hotbar and non-empty bag items stay pending.
 [*] [b]Restore[/b]: select that Audit line, press Restore and give a reason to mail a rebuilt copy to the holder, once per reclaim (latest 200 kept). The original still exists, so [b]restore only real mistakes[/b].
+[*] [b]Crashes and buy orders[/b]: buy orders are not rebuilt from player saves; items held in an order or in transit are mailed back to their owners, and money follows the world save. For held buy-order records, Reconciliation can only discard, not restore (same as system buyback); anything the system can prove is mailed back by itself.
 [*] Never clear pending entries by hand; check companion and world saves.
 [/list]
 
