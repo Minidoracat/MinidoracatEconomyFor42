@@ -143,6 +143,8 @@ end
 
 -- The note under the list, most urgent first: a failed read (over older rows: marked as older),
 -- the first read on its way, nothing held at all (the empty state over the list), a cut list.
+-- A failed read is worded as a read (W.readError, the shop's snapshot wording), never with the
+-- facade's payment wording: a timeout here is "no answer, try again", not "result unknown".
 function M.draw(self)
     local g = self.g
     local list = self.entList
@@ -150,7 +152,7 @@ function M.draw(self)
     local noteW = math.max(0, (retryB:getIsVisible() and retryB.x - 6 or list.x + list.width) - list.x - PAD)
     local note, token = nil, "textMuted"
     if self.entError then
-        note, token = Ent().errorText(self.entError), "errorText"
+        note, token = C.PanelWidgets.readError(self.entError), "errorText"
         if self.entLoaded then note = note .. "  " .. tr("History_Stale") end
     elseif not self.entLoaded then
         note = tr("Wallet_Loading")
