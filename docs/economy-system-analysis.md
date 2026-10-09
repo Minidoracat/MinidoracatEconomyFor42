@@ -1311,7 +1311,7 @@ local res = E.debit("playerA", "survivor", 120, {
 | `wanted.browse` / `wanted.mine` / `wanted.candidates` / `wanted.history` | 公開讀取 | 瀏覽（每頁 20）、自己的單（含還價）、賣方背包裡可交的同款、`wanted_` 開頭的市場紀錄 |
 | `wanted.create` | 終端、冪等 `wcreate:<user>:<rid>` | 建單並託管 |
 | `wanted.fill` | 終端、冪等 `wfill:<user>:<rid>` | 賣方選一個選項交貨 |
-| `wanted.cancel` | 終端、限本人（凍結也可） | 退保留款、寄回剩下的物品 |
+| `wanted.cancel` | 終端、限本人（凍結也可）、冪等 `wcancel:<user>:<rid>` | 退保留款（退款本身以 `wclose:<orderId>` 去重）、寄回剩下的物品 |
 | `wanted.offer` / `wanted.raise` / `wanted.dismiss` | 終端 | 賣方對貨幣選項還價（不動錢物）／買方加價（冪等 `wraise:<user>:<rid>`）／買方忽略還價 |
 | `admin.wanted` | list 讀取、cancel 寫入（`A.reasonError`、稽核） | 全服列表與強制取消 |
 
@@ -1323,6 +1323,8 @@ local res = E.debit("playerA", "survivor", 120, {
 | `wanted_fill` | 選中的貨幣：買方 reserved −u×n、賣方 ＋(u×n−成交稅)、`SYSTEM_BURN` ＋稅；其他貨幣選項各釋放 u'×n 回買方 available；全無分錄時記冪等紀錄 |
 | `wanted_raise` | 買方 available −(差額＋差額的刊登費)、reserved ＋差額 |
 | `wanted_release` | 結單（交齊、取消、到期、管理員）時把剩下的保留款全部釋放，`allowFrozen` |
+
+重送一律回第一次的結果（建單的期限、費用與保留款，交貨的付款物品、付款信、剩餘件數，加價的差額、費用與被滿足的還價數，取消的退款與退回信），都存在冪等紀錄的扁平欄位裡，不從目前的單子重算。
 
 不變式：每個貨幣選項 `held == 單價 × 剩餘件數`；物品選項 `lot.qty ≥ perUnit × 剩餘件數`；每種貨幣「所有開放中的單的 held＋拍賣最高出價＝全部錢包 reserved」。釋放被帳本拒絕時單子原樣保留、標 `blocked="refund_failed"`，每分鐘重試；交貨與還價都被拒（`order_held`）。
 

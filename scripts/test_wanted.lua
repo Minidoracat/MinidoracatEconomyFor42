@@ -296,6 +296,54 @@ do
         "W-R6b: once saved, the live lot alone proves the escrow and its pending clears")
 end
 
+-- ---- W-R7: partial -> rollback -> partial for goods that never had a price (a lot, a goods-paid fill) ----
+-- The first rollback finds one original back in the player save and mails the other two home as a
+-- `return` whose originalKind is the goods' own kind; that return is lost by a second rollback while
+-- the save now also holds a second original, so the last unit is a second partial of a return.
+local function partialTwice(tag, giver, items, saved, id)
+    local user = giver:getUsername()
+    restart(saved)
+    ctx.setOnline({ giver })
+    giver.inventory:AddItem(items[1])
+    M.reconcile(giver)
+    proofPump(user)
+    local _, first = letters(user, "return", items[1]:getFullType())
+    assert(proofSettle() == 0)
+    restart(saved)
+    ctx.setOnline({ giver })
+    giver.inventory:AddItem(items[2])
+    M.reconcile(giver)
+    proofPump(user)
+    local _, second = letters(user, "return", items[1]:getFullType())
+    return first, second, reason(user, id)
+end
+do
+    local _, buyer = fresh("wr7a")
+    local planks = native(buyer, "Base.Plank", 3)
+    local saved = copy(S.modData())
+    local created = cmd(buyer, "wanted.create", { item = "Base.Nails", qty = 3,
+        options = { { kind = "item", itemIds = ids(planks), perUnit = 1 } } })
+    local lotId = order(created.orderId).options[1].lot.id
+    assert(proofSettle() == 0)
+    local first, second, held = partialTwice("wr7a", buyer, planks, saved, lotId)
+    check(first == 2 and second == 1 and held == nil and buyer.inventory.count("Base.Plank") == 2,
+        "W-R7a: a buy order's lot partly returned twice: the second partial of the price-less return still mails the last unit (" .. tostring(held) .. ")")
+end
+do
+    local _, buyer, seller = fresh("wr7b")
+    local planks = native(buyer, "Base.Plank", 3)
+    local created = cmd(buyer, "wanted.create", { item = "Base.Nails", qty = 3,
+        options = { { kind = "item", itemIds = ids(planks), perUnit = 1 } } })
+    local saved = copy(S.modData())
+    local nails = native(seller, "Base.Nails", 3)
+    assert(cmd(seller, "wanted.fill", { orderId = created.orderId, option = 1, itemIds = ids(nails) }).ok)
+    local fillId = pendOf(seller, "fill")
+    assert(fillId and proofSettle() == 0)
+    local first, second, held = partialTwice("wr7b", seller, nails, saved, fillId)
+    check(first == 2 and second == 1 and held == nil and seller.inventory.count("Base.Nails") == 2,
+        "W-R7b: a goods-paid fill partly returned twice: the second partial still mails the last unit (" .. tostring(held) .. ")")
+end
+
 io.write("scenario W: player buy orders\n")
 
 local admin, buyer, seller = fresh("w")
@@ -325,6 +373,9 @@ local resend = cmd(buyer, "wanted.create", { requestId = "want-" .. (serial), it
 check(resend.duplicate == true and resend.orderId == mixed.orderId and S.modData().wanted.count == 1
     and bal(bu).available == 5000 - 110,
     "W-1b: a resent create answers the first order and charges nothing")
+check(resend.expiresAt == mixed.expiresAt and resend.item == "Base.Nails" and resend.qty == 10 and resend.lotQty == 10
+    and resend.fees.survivor == 10 and resend.held.cat == 30,
+    "W-1b2: the resent create answers with the first one's expiry, fees and reservations")
 local conflict = cmd(buyer, "wanted.create", { requestId = "want-" .. (serial - 1), item = "Base.Nails", qty = 9, options = {
     { kind = "coin", currency = "survivor", unitPrice = 10 } } })
 check(conflict.error == "request_conflict" and S.modData().wanted.count == 1,
@@ -460,6 +511,11 @@ check(byGoods.ok and byGoods.payQty == 2 and byGoods.delivered == true and selle
     and payLetter ~= nil and payLetter.listingId == mo.options[3].lot.id and payLetter.kind == "wanted_pay"
     and mo.options[3].lot.qty == 8 and mo.qty == 4 and heldMatches(mo) and reservedInvariant(),
     "W-3j: a fill paid in goods hands the seller perUnit x n out of the lot (letter listingId = lot id) and releases both coin options")
+local byGoodsAgain = cmd(seller, "wanted.fill", { requestId = "want-" .. serial, orderId = mixed.orderId, option = 3, itemIds = ids(nails, 5, 6) })
+check(byGoodsAgain.duplicate == true and byGoodsAgain.payItem == "Base.Plank" and byGoodsAgain.payQty == 2
+    and byGoodsAgain.remaining == 4 and byGoodsAgain.closed == false and byGoodsAgain.mailId == byGoods.mailId
+    and byGoodsAgain.qty == 2 and mo.options[3].lot.qty == 8,
+    "W-3j2: a resent goods-paid fill answers with the first one's payment, letter, remaining units and closed flag")
 local sCat = bal(su, "cat").available
 local done = cmd(seller, "wanted.fill", { orderId = mixed.orderId, option = 2, itemIds = ids(nails, 7, 10), unitPrice = 3 })
 local _, lotBack = letters(bu, "return", "Base.Plank")
@@ -528,6 +584,10 @@ check(cmd(buyer, "wanted.raise", { requestId = raiseRid, orderId = o2.orderId, o
     and cmd(seller, "wanted.raise", { orderId = o2.orderId, option = 1, unitPrice = 14 }).error == "not_owner"
     and bal(bu).available == avail - 11,
     "W-5g: a resent raise is a duplicate, a changed one a conflict; never lower; only the buyer raises")
+local raisedAgain = cmd(buyer, "wanted.raise", { requestId = raiseRid, orderId = o2.orderId, option = 1, unitPrice = 12 })
+check(raisedAgain.duplicate == true and raisedAgain.currency == "survivor" and raisedAgain.held == 60 and raisedAgain.delta == 10
+    and raisedAgain.fee == 1 and raisedAgain.met == 1 and raisedAgain.unitPrice == 12,
+    "W-5g2: a resent raise answers with the first one's currency, reservation, difference, fee and offers met")
 local poorRaise = cmd(buyer, "wanted.raise", { orderId = o2.orderId, option = 1, unitPrice = 1000 })
 check(poorRaise.error == "insufficient_funds" and poorRaise.needed == (1000 - 12) * 5 + 494 and bal(bu).available == avail - 11,
     "W-5h: a raise the buyer cannot pay moves nothing")
@@ -546,6 +606,13 @@ local cancelled = cmd(buyer, "wanted.cancel", { orderId = o2.orderId })
 check(cancelled.ok and cancelled.refunded.survivor == 48 and bal(bu).reserved == resBefore - 48
     and bal(bu).available == availBefore + 48 and order(o2.orderId) == nil and reservedInvariant(),
     "W-6a: cancel releases the reservation (the fee stays paid)")
+local cancelRid = "want-" .. serial
+local cancelAgain = cmd(buyer, "wanted.cancel", { requestId = cancelRid, orderId = o2.orderId })
+local cancelOther = cmd(buyer, "wanted.cancel", { requestId = cancelRid, orderId = coinOnly.orderId })
+check(cancelAgain.duplicate == true and cancelAgain.ok and cancelAgain.orderId == o2.orderId
+    and cancelAgain.refunded.survivor == 48 and cancelOther.error == "request_conflict" and order(coinOnly.orderId) ~= nil
+    and bal(bu).available == availBefore + 48,
+    "W-6a2: a resent cancel answers the first refund; the same id for another order is request_conflict and cancels nothing")
 local o3planks = native(buyer, "Base.Plank", 2)
 local o3 = cmd(buyer, "wanted.create", { item = "Base.Nails", qty = 2, options = {
     { kind = "coin", currency = "cat", unitPrice = 5 }, { kind = "item", itemIds = ids(o3planks), perUnit = 1 } } })
@@ -633,3 +700,44 @@ check(histReply.requestId == "w-hist" and onlyWanted and created >= 6,
     "W-8b: wanted.history answers the buyer's wanted_ lines and nothing else of the market file")
 SV.WantedMaxPerPlayer, SV.MailboxPerAccount, SV.MarketListingFeePercent, SV.MarketSalesTaxPercent = nil, nil, nil, nil
 ctx.setOnline({})
+
+-- ---- W-9: an offer made under a login name that was merged into another account ----
+do
+    local _, buyerM, aliasP = fresh("wm")
+    local alias = aliasP:getUsername()
+    local canon = fakePlayer("wm-canon")
+    local o = coinOrder(buyerM, "Base.Nails", 5, 10)
+    assert(cmd(aliasP, "wanted.offer", { orderId = o.orderId, option = 1, unitPrice = 12, qty = 2 }).ok)
+    local id = S.modData().identity or {}
+    S.modData().identity = id
+    id.merged = id.merged or {}
+    id.merged[alias] = { into = canon:getUsername() }
+    ctx.setOnline({ buyerM, canon })
+    cmd(canon, "wanted.mine", {})
+    local row = nil
+    for _, r in ipairs(cmd(canon, "wanted.browse", {}).rows) do if r.id == o.orderId then row = r end end
+    local second = cmd(canon, "wanted.offer", { orderId = o.orderId, option = 1, unitPrice = 13, qty = 1 })
+    local raised = cmd(buyerM, "wanted.raise", { orderId = o.orderId, option = 1, unitPrice = 12 })
+    check(row and row.myOffer and row.myOffer.unitPrice == 12 and second.error == "offer_exists"
+        and raised.met == 1 and #notices(canon, "wanted_raised") == 1 and #order(o.orderId).offers == 0,
+        "W-9: an offer left under a merged login is the account's own: shown to it, counted once, its seller told on the account")
+end
+
+-- ---- W-10: a buy-order sale is in the market report's scan, not only in the daily rollup ----
+do
+    local admin10, buyer10, seller10 = fresh("wrp")
+    local o = coinOrder(buyer10, "Base.Twine", 1, 10)
+    assert(cmd(seller10, "wanted.fill", { orderId = o.orderId, option = 1, itemIds = ids(native(seller10, "Base.Twine", 1)), unitPrice = 10 }).ok)
+    assert(proofSettle() == 0)
+    cmd(admin10, "admin.report", { action = "market", days = 7, currency = "survivor", refresh = true })
+    for _ = 1, 300 do
+        if EC.Reports.status().state ~= "running" then break end
+        fire("OnTickEvenPaused")
+    end
+    local m = cmd(admin10, "admin.report", { action = "market", days = 7, currency = "survivor" })
+    local twine = nil
+    for _, it in ipairs(m.items or {}) do if it.item == "Base.Twine" then twine = it end end
+    check(m.state == "ready" and m.turnover.daily[#m.turnover.daily] == 10 and twine ~= nil and twine.amount == 10
+        and twine.units == 1 and m.traders.daily[#m.traders.daily] == 2,
+        "W-10: a 10-coin buy-order fill is turnover, a priced item and two traders in the market report")
+end
