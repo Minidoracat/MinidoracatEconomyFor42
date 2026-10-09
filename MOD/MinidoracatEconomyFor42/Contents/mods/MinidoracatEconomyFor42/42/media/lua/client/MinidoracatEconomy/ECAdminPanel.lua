@@ -56,6 +56,7 @@ require "MinidoracatEconomy/ECAdminRecovery"
 require "MinidoracatEconomy/ECAdminSeasons"
 require "MinidoracatEconomy/ECAdminAccounts"
 require "MinidoracatEconomy/ECAdminEntitlements"
+require "MinidoracatEconomy/ECAdminWanted"
 require "MinidoracatEconomy/ECAdminIdentity"
 require "MinidoracatEconomy/ECRowActions"
 require "MinidoracatEconomy/ECPlayerPicker"
@@ -101,7 +102,7 @@ end
 -- schema: rotating a season and deciding how long the next one runs are the same rare,
 -- deliberate act, and both of them take the native role capability rather than the write role.
 -- The keyboard walks the rows in this order, which is the order they are painted in.
-local TABS = { "Dashboard", "Recovery", "Player", "Identity", "Shop", "Whitelist", "Listings", "Auctions", "Transactions", "Reports", "Audit", "Currencies", "Sources", "IntegrationPlans", "Settings", "Seasons", "System" }
+local TABS = { "Dashboard", "Recovery", "Player", "Identity", "Shop", "Whitelist", "Listings", "Auctions", "Wanted", "Transactions", "Reports", "Audit", "Currencies", "Sources", "IntegrationPlans", "Settings", "Seasons", "System" }
 -- tab -> the group it opens (Admin_Group_<id>); a field rather than another main-chunk local
 P.TAB_GROUPS = { Dashboard = "Overview", Player = "Players", Shop = "Market", Transactions = "Money",
     Currencies = "Integration", Settings = "Server" }
@@ -111,14 +112,14 @@ P.TAB_GROUPS = { Dashboard = "Overview", Player = "Players", Shop = "Market", Tr
 P.TAB_ICONS = {
     Player = "users", Recovery = "layers", Dashboard = "gauge", Currencies = "coins", Sources = "plug",
     IntegrationPlans = "sliders",
-    Shop = "shop", Whitelist = "shieldCheck", Identity = "lock", Listings = "tag", Auctions = "auction",
+    Shop = "shop", Whitelist = "shieldCheck", Identity = "lock", Listings = "tag", Auctions = "auction", Wanted = "market",
     Transactions = "transactions", Reports = "chart", Audit = "clipboardCheck", System = "server",
     Settings = "settings", Seasons = "reload",
 }
 -- the overview's "needs attention" rows: every kind rebuildAttention knows, one per currency for
 -- the conservation check, fits under this bound
 P.ATTENTION_MAX = 16
-local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim", "admin.identity", "admin.report" }
+local COMMANDS = { "admin.lookup", "admin.adjust", "admin.freeze", "admin.config", "admin.audit", "admin.auditFile", "admin.auditDetail", "admin.system", "admin.icons", "admin.sources", "admin.players", "admin.accounts", "admin.receipts", "admin.option", "admin.catalog", "admin.currency", "admin.listings", "admin.auctions", "admin.wanted", "admin.whitelist", "admin.marketHistory", "admin.transactions", "admin.transaction", "admin.recovery", "admin.seasons", "admin.entitlements", "admin.reclaim", "admin.identity", "admin.report" }
 local PATH_KEYS = { "root", "events", "receipts", "audit", "heartbeat", "icons" }
 local EXCHANGE_FIELDS = { "pointsPerCoin", "perOrderMin", "perOrderMax", "perAccountDaily", "serverDaily" }
 
@@ -2270,6 +2271,11 @@ function Admin:createChildren()
     self.entitlementsPage = C.AdminEntitlements.create(self, send, isPending, newRequestId)
     self:addChild(self.entitlementsPage)
 
+    -- The buy order desk (ECAdminWanted): every open order and the forced cancel. It sends
+    -- admin.wanted through this controller's slot and owns everything else.
+    self.wantedPage = C.AdminWanted.create(self, send, isPending, newRequestId)
+    self:addChild(self.wantedPage)
+
     -- The identity desk (ECAdminIdentity): SteamID bindings, the whitelist import and the
     -- confirmation of conflicts. It sends admin.identity through this controller's slot and
     -- nothing else; the confirmation is this controller's dialog (mode "identity").
@@ -2647,6 +2653,10 @@ function Admin:rebuildAttention()
         local auctions = type(sys.auctions) == "table" and sys.auctions or EMPTY_ROW
         if (tonumber(auctions.held) or 0) > 0 then
             add("warn", getText(T .. "Admin_Ov_HeldAuctions", numText(auctions.held)), tr("Admin_Ov_HeldDetail"), "Auctions")
+        end
+        local wanted = type(sys.wanted) == "table" and sys.wanted or EMPTY_ROW
+        if (tonumber(wanted.held) or 0) > 0 then
+            add("warn", getText(T .. "Admin_Ov_WantedHeld", numText(wanted.held)), tr("Admin_Ov_WantedHeldDetail"), "Wanted")
         end
     end
     local supply = type(self.supply) == "table" and self.supply or EMPTY_ROW
@@ -4972,6 +4982,7 @@ function Admin:isModal()
         or (self.tab == "Transactions" and self.txPage:isModal())
         or (self.tab == "Reports" and self.reportsPage:isModal())
         or (self.tab == "IntegrationPlans" and self.entitlementsPage:isModal())
+        or (self.tab == "Wanted" and self.wantedPage:isModal())
 end
 
 -- Escape, offered by the root that actually holds the keyboard (ECAdminWindow:onEscape). There
@@ -5008,6 +5019,7 @@ function Admin:onEscape()
     if self.tab == "Transactions" then return self.txPage:onEscape() end
     if self.tab == "Reports" then return self.reportsPage:onEscape() end
     if self.tab == "IntegrationPlans" then return self.entitlementsPage:onEscape() end
+    if self.tab == "Wanted" then return self.wantedPage:onEscape() end
     return false
 end
 
@@ -5042,6 +5054,7 @@ function Admin:keyboardTargets()
     if self.tab == "Seasons" then return self.seasonsPage:keyboardTargets() end
     if self.tab == "Identity" then return self.identityPage:keyboardTargets() end
     if self.tab == "IntegrationPlans" then return self.entitlementsPage:keyboardTargets() end
+    if self.tab == "Wanted" then return self.wantedPage:keyboardTargets() end
     local out = {}
     if self.tab == "Player" then
         -- the mode switch comes first in both modes, so the way back out of the list (and into
@@ -5538,6 +5551,7 @@ function Admin:matchesReply(kind, args)
     end
     if kind == "report" then return self.reportsPage:matchesReply(kind, args) end
     if kind == "entitlements" then return self.entitlementsPage:matchesReply(args) end
+    if kind == "wanted" then return self.wantedPage:matchesReply(args) end
     if kind == "identity" then return self.identityPage:matchesReply(args) end
     if kind == "auditDetail" then
         return self.auditDetailRequestId == nil or args.requestId == nil
@@ -5629,7 +5643,7 @@ end
 -- notice is never treated as the fresh snapshot.
 local SCOPE_TAB = { wallet = "Player", market = "Listings", auction = "Auctions",
     audit = "Audit", players = "Player", whitelist = "Whitelist", shop = "Shop",
-    transactions = "Transactions" }
+    transactions = "Transactions", wanted = "Wanted" }
 
 function Admin:onViewChanged(scope)
     if scope == "transactions" then self.txPage:onViewChanged(scope) end
@@ -6085,6 +6099,8 @@ function Admin:onReply(kind, args)
     elseif kind == "entitlements" then
         -- the slot is freed (matchesReply already matched the page's own open request)
         self.entitlementsPage:onReply(args)
+    elseif kind == "wanted" then
+        self.wantedPage:onReply(args)
     elseif kind == "identity" then
         self.identityPage:onReply(args)
         -- the identity page's status carries the same counts as the overview's (Id.attention)
@@ -6187,6 +6203,7 @@ function Admin:onTimeout(command)
     if command == "admin.catalog" or command == "admin.option" then self.shopPage:onTimeout(command) end
     if command == "admin.whitelist" then self.whitelistPage:onTimeout(command) end
     if command == "admin.entitlements" then self.entitlementsPage:onTimeout() end
+    if command == "admin.wanted" then self.wantedPage:onTimeout() end
     if command == "admin.identity" then
         self.identityPage:onTimeout()
         if self.dialog ~= nil and self.dialog.mode == "identity" then
@@ -7133,6 +7150,7 @@ function Admin:updateEnabled()
     self.txPage:updateEnabled()
     self.reportsPage:updateEnabled()
     self.entitlementsPage:updateEnabled()
+    self.wantedPage:updateEnabled()
 
     self.whitelistPage:updateEnabled()
 
@@ -7760,6 +7778,10 @@ function Admin:layout()
     self.entitlementsPage:setY(g.bodyY)
     self.entitlementsPage:setVisible(read and self.tab == "IntegrationPlans" and self:getIsVisible())
     self.entitlementsPage:resize(w, g.bodyH)
+    self.wantedPage:setX(0)
+    self.wantedPage:setY(g.bodyY)
+    self.wantedPage:setVisible(read and self.tab == "Wanted" and self:getIsVisible())
+    self.wantedPage:resize(w, g.bodyH)
 
     -- settings page: search row on top, the group nav down the left, the option list plus the
     -- "reset this group" button on the right. The reset row is reserved whether the button is
@@ -9018,6 +9040,7 @@ function Admin:clearData()
     self.shopPage:clear()
     self.whitelistPage:clear()
     self.entitlementsPage:clear()
+    self.wantedPage:clear()
 end
 
 function Admin:prerender()
@@ -9085,6 +9108,11 @@ function Admin:prerender()
     if entitlement and entitlement.args.action == "refund" and not self:writeAllowed() then
         deferred["admin.entitlements"], pendingAt["admin.entitlements"] = nil, nil
         self.entitlementsPage:onCancelled(entitlement.args.requestId)
+    end
+    local forced = deferred["admin.wanted"]
+    if forced and forced.args.action == "cancel" and not self:writeAllowed() then
+        deferred["admin.wanted"], pendingAt["admin.wanted"] = nil, nil
+        self.wantedPage:onCancelled(forced.args.requestId)
     end
     flushDeferred(now)
 
@@ -9155,6 +9183,7 @@ function Admin:prerender()
     -- the season desk: the read it was owed while the shared slot was busy goes out from here
     if self.tab == "Seasons" and self.hadRead then self.seasonsPage:tick(now) end
     if self.tab == "IntegrationPlans" and self.hadRead then self.entitlementsPage:tick(now) end
+    if self.tab == "Wanted" and self.hadRead then self.wantedPage:tick(now) end
     if self.tab == "Identity" and self.hadRead then self.identityPage:tick(now) end
 
     -- the account typed in history mode: one command per pause, never one per keystroke
@@ -9216,6 +9245,7 @@ function Admin:prerender()
     -- untouched -- the window chrome around this child still honours it.
     if self.tab == "Transactions" or self.tab == "Reports" or self.tab == "Shop" or self.tab == "Whitelist"
         or self.tab == "Recovery" or self.tab == "Seasons" or self.tab == "IntegrationPlans" or self.tab == "Identity"
+        or self.tab == "Wanted"
         or (self.tab == "Player" and self.playerMode == "list") then
         fillSolid(self, 0, 0, self.width, self.height, "surface")
     end
@@ -9240,6 +9270,7 @@ function Admin:prerender()
         or (self.tab == "Recovery" and self.recoveryPage.updatedAt)
         or (self.tab == "Seasons" and self.seasonsPage.updatedAt)
         or (self.tab == "IntegrationPlans" and self.entitlementsPage.updatedAt)
+        or (self.tab == "Wanted" and self.wantedPage.updatedAt)
         or (self.tab == "Identity" and self.identityPage.updatedAt) or nil
     if stampAt then
         local fresh = getText(T .. "Admin_Updated", stampText(stampAt, self.offsetMin))
@@ -9384,6 +9415,8 @@ function Admin:refresh()
         self.seasonsPage:refresh()
     elseif self.tab == "IntegrationPlans" then
         self.entitlementsPage:refresh()
+    elseif self.tab == "Wanted" then
+        self.wantedPage:refresh()
     elseif self.tab == "Identity" then
         self.identityPage:refresh()
     end
@@ -9424,6 +9457,7 @@ function Admin:setVisible(visible)
     self.recoveryPage:setVisible(visible and self.tab == "Recovery" and self:readAllowed())
     self.seasonsPage:setVisible(visible and self.tab == "Seasons" and self:readAllowed())
     self.entitlementsPage:setVisible(visible and self.tab == "IntegrationPlans" and self:readAllowed())
+    self.wantedPage:setVisible(visible and self.tab == "Wanted" and self:readAllowed())
     self.identityPage:setVisible(visible and self.tab == "Identity" and self:readAllowed())
     -- the account list keeps everything it read: a window that was merely hidden must come back
     -- to the same slice, and the permission collapse is what drops it
@@ -9439,6 +9473,7 @@ function Admin:dispose()
     self.pendingRecovery = nil
     self.seasonsPage:dispose()
     self.entitlementsPage:dispose()
+    self.wantedPage:dispose()
     self.identityPage:dispose()
     self.pendingSeason, self.seasonUnknown = nil, nil
     self.shopPage:dispose()

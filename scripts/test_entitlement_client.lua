@@ -782,5 +782,76 @@ end)()
     check(#opened == 4 and p.queue == nil and p.draft.id == "battery", "opening a saved row ends the list")
 end)()
 
+-- ---------- the admin buy order page (ECAdminWanted) ----------
+;(function()
+    local classes = {}
+    ISPanel = { derive = function(_, name)
+        local class = {}
+        class.__index = class
+        classes[name] = class
+        return class
+    end }
+    for _, m in ipairs({ "ISUI/ISPanel", "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECDetailWindow" }) do
+        package.loaded[m] = true
+    end
+    local T = "IGUI_MinidoracatEconomy_"
+    local function noop() end
+    C.UI = { PAD = 8, T = T, CARD_TITLE_H = 28, fontH = { small = 16, medium = 20 }, text = noop,
+        textWidth = function(s) return #tostring(s) end, fitText = function(s) return s end,
+        amountText = tostring, currencyName = C.currencyName, itemName = function(t) return "name:" .. t end,
+        unknownText = function() return T .. "Common_Unknown" end,
+        adminErrorText = function(code) return "ERR:" .. tostring(code) end, setEntryEditable = noop }
+    MinidoracatEconomy.CURRENCY_ORDER = { "survivor", "cat" }
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminWanted.lua")
+    local W, Page = C.AdminWanted, classes.MinidoracatEconomyAdminWantedPage
+
+    local now = 1000
+    check(W.statusOf({ blocked = "refund_failed", closing = "cancelled", qty = 1, qtyTotal = 2, expiresAt = 0 }, now) == "refund_failed"
+        and select(2, W.statusOf({ blocked = "refund_failed" }, now)) == "errorText", "a failed refund outranks every other state")
+    check(W.statusOf({ closing = "expired", qty = 2, qtyTotal = 2, expiresAt = 5000 }, now) == "closing"
+        and W.statusOf({ qty = 2, qtyTotal = 2, expiresAt = 500 }, now) == "expired"
+        and W.statusOf({ qty = 1, qtyTotal = 2, expiresAt = 5000 }, now) == "partial"
+        and W.statusOf({ qty = 2, qtyTotal = 2, expiresAt = 5000 }, now) == "open", "closing, expired, partial, open")
+    check(W.statusText({ blocked = "mystery" }, now) == T .. "Common_Unknown", "an unknown block is the unknown word, never the code")
+    check(W.condText(nil) == T .. "Admin_Wd_Cond_any" and W.condText({ new = true }) == T .. "Admin_Wd_Cond_new"
+        and W.condText({ minPct = 80 }) == T .. "Admin_Wd_Cond_pct|80", "the condition: any, new only, a durability floor")
+
+    local view = { id = "w1", owner = "bob", item = "Base.Nails", qty = 30, qtyTotal = 50, options = {
+        { kind = "coin", currency = "survivor", unitPrice = 20, held = 600, fee = 10 },
+        { kind = "coin", currency = "cat", unitPrice = 1, held = 0 },
+        { kind = "item", perUnit = 1, item = "Base.Bandage", held = 30 } } }
+    local lines = W.cancelLines(view)
+    check(#lines == 4 and lines[1] == T .. "Admin_Wd_CancelHead|name:Base.Nails|30|50"
+        and lines[2] == T .. "Admin_Wd_CancelRefund|600 cur:survivor"
+        and lines[3] == T .. "Admin_Wd_CancelReturn|30|name:Base.Bandage" and lines[4] == T .. "Admin_Wd_CancelWarn",
+        "the cancel dialog lists the held money and the escrowed items going back; an empty option is not listed")
+    check(W.refundText({ cat = 30, survivor = 600 }) == "600 cur:survivor" .. T .. "Admin_Set_ListSep" .. "30 cur:cat"
+        and W.refundText({}) == nil and W.refundText(nil) == nil, "the refund names every currency in registry order")
+
+    -- a refused cancel shows the error and nothing else; a list answer to an old question is dropped
+    local owner = { readAllowed = function() return true end, writeAllowed = function() return false end }
+    local p = setmetatable({ owner = owner, rows = { view }, page = 1, isPending = function() return false end,
+        layout = noop, invalidateKeyboard = noop }, Page)
+    p.sent = { action = "cancel", requestId = "c1", ownerName = "bob" }
+    p:onReply({ ok = false, error = "refund_failed", requestId = "c1", rows = {} })
+    check(owner.message.text == "ERR:refund_failed" and owner.message.error == true and p.rows[1] == view,
+        "a refused cancel says why and keeps the list on screen")
+    p.query = "nails"
+    p.sent = { action = "list", key = "old", requestId = "l1" }
+    p:onReply({ ok = true, requestId = "l1", rows = {}, page = 1, pages = 1, total = 0 })
+    check(p.rows[1] == view, "an answer to a search the admin moved off is not shown")
+    p:onReply({ ok = true, requestId = "l1", rows = {} })
+    check(p.rows[1] == view, "an answered request is not answered twice")
+
+    -- the read-only role sees the cancel button disabled; the write role may press it
+    p.searchEntry, p.ownerEntry, p.list = {}, {}, {}
+    p.prevButton, p.nextButton = { setEnable = noop }, { setEnable = noop }
+    p:updateEnabled()
+    check(p.list.optionsDisabled == true, "read-only: force cancel disabled")
+    owner.writeAllowed = function() return true end
+    p:updateEnabled()
+    check(p.list.optionsDisabled == false, "write role: force cancel enabled")
+end)()
+
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end
