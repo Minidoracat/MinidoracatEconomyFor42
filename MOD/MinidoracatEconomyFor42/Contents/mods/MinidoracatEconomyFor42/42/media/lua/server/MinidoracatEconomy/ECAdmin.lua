@@ -821,6 +821,8 @@ function A.system(write, manage)
         mailboxUnclaimed = md.mailbox and md.mailbox.unclaimed or 0,
         market = Mk.stats(),
         auctions = S.Auction and S.Auction.stats() or nil,
+        -- open buy orders, and how many are held on a refund the ledger refused (ECWanted)
+        wanted = S.Wanted and S.Wanted.stats() or nil,
         whitelist = Codec.status(),
         -- rollback ledgers this start could not read in full: letters minted up to one are not
         -- claimable and transfers up to one are held until it leaves the recent-starts history

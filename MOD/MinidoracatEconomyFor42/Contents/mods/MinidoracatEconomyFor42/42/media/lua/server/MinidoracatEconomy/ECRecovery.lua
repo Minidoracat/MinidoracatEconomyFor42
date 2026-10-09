@@ -1826,6 +1826,18 @@ function R.worldOperation(id)
         EC.log("recovery world lookup failed for " .. id .. ": auction")
         return nil, "world_unverified"
     end
+    if type(info) == "table" then return info end
+    -- a buy order's escrowed lot is the third live holder (ECWanted, kind "wanted")
+    local Wd = S.Wanted
+    if Wd == nil or type(Wd.operationInfo) ~= "function" then
+        EC.log("recovery world lookup unavailable for " .. id .. ": wanted")
+        return nil, "world_unverified"
+    end
+    ok, info = pcall(Wd.operationInfo, id)
+    if not ok then
+        EC.log("recovery world lookup failed for " .. id .. ": wanted")
+        return nil, "world_unverified"
+    end
     return info
 end
 
@@ -1914,6 +1926,15 @@ function R.sourceAlive(ref)
     else
         local ok, alive = pcall(Au.hasAuction, ref)
         if not ok then unknown = unknown or "auction_lookup_failed"
+        elseif alive == true then return true end
+    end
+    -- a buy order's escrowed lot: its receipt must stay open for as long as the lot is held
+    local Wd = S.Wanted
+    if Wd == nil or type(Wd.lotExists) ~= "function" then
+        unknown = unknown or "wanted_module_missing"
+    else
+        local ok, alive = pcall(Wd.lotExists, ref)
+        if not ok then unknown = unknown or "wanted_lookup_failed"
         elseif alive == true then return true end
     end
     local receipt = R.receipt(ref)
@@ -2312,6 +2333,11 @@ end
 
 -- ---------- pending adjudication (login, rule three rows 4-6) ----------
 
+-- Kinds with no standing world record: a buyback (destroyed for a mint) and a buy-order delivery
+-- (the goods went to the buyer's mailbox). Mk.hasListing judges them by their commit's ledger key,
+-- so "no live operation under this id" is the expected answer for them, not an unverified one.
+local WORLDLESS_KINDS = { buyback = true, fill = true }
+
 -- Pure: it reads the world, the player save and one inventory snapshot and says what should
 -- happen. ECMailbox applies it. Actions:
 --   "removeOriginal" - the world committed the transfer and the older player save still carries
@@ -2465,7 +2491,7 @@ local function judgeRecord(username, id, pend, scan, opts)
             -- existed still cannot make another account's live listing into this account's
             -- business, and a row of theirs must not be described as this player's old copy
             local live, worldError = R.worldOperation(id)
-            if worldError or (live == nil and pend.kind ~= "buyback") then
+            if worldError or (live == nil and not WORLDLESS_KINDS[pend.kind]) then
                 out.action, out.reason = "hold", "world_unverified"
                 return out
             end
@@ -2502,12 +2528,12 @@ local function judgeRecord(username, id, pend, scan, opts)
         -- instead of being acted on with the player's own description of it; a refusal drops
         -- the rows matched from the claim, so it never hands a caller objects to remove.
         local live, worldError = R.worldOperation(id)
-        if worldError or (live == nil and pend.kind ~= "buyback") then
+        if worldError or (live == nil and not WORLDLESS_KINDS[pend.kind]) then
             out.action, out.reason = "hold", "world_unverified"
             return out
         end
         if live == nil then
-            -- Both live stores answered absent; hasListing proved this buyback's mint exists.
+            -- Every live store answered absent; hasListing proved this operation's commit exists.
             if #out.present > 0 then out.action, out.clear = "removeOriginal", pendVerdict == "survived"
             elseif pendVerdict == "survived" then out.action = "clear" end
             return out
