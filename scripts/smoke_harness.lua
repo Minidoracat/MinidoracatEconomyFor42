@@ -225,12 +225,16 @@ for _, n in ipairs({ "NORMAL", "FOOD", "WEAPON", "LITERATURE", "DRAINABLE", "CON
     ItemType[n] = { name = n }
 end
 local MAIN_TO_TYPE = { Normal = "NORMAL", Food = "FOOD", Weapon = "WEAPON", Literature = "LITERATURE", Drainable = "DRAINABLE", Container = "CONTAINER", Item = "NORMAL" }
+-- ComponentType（LuaManager.java:2277）：哨兵表；腳本的 containsComponent（GameEntityScript.java:95）
+-- 只回答液體容器（knownItems 的 fluid）
+ComponentType = { FluidContainer = { name = "FluidContainer" } }
 ScriptManager = { instance = { FindItem = function(_, name)
     local k = knownItems[name]
     if not k then return nil end
     local itemType = ItemType[k.itemType or MAIN_TO_TYPE[k.main] or "NORMAL"]
     return { name = name, getDisplayName = function() return name end, getDisplayCategory = function() return k.cat end,
-        getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end }
+        getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end,
+        containsComponent = function(_, c) return c == ComponentType.FluidContainer and k.fluid == true end }
 end } }
 Fluid = { Get = function(name) return { name = name } end }
 -- BloodBodyPartType（BloodBodyPartType.java:10-47，MAX 之前 18 個部位）、ImmutableColor／Color 建構子
@@ -1118,7 +1122,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a commit while the serve
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: products frozen while their mod is missing (scripts/test_entitlements.lua scenario 13: the flag and rev 4, nothing runs inside the window, frozen from the start with moved times and one audit line, 30 frozen days without expiry / charge / reminder while an unflagged product runs out, frozen across another start, the thaw moves every lease and refund period once, the schedule resumes, a registration inside the window, a clock set back)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the MiniMap terminals layer (scenario NA-8b: marker API 2 keeps no section and no layer; NA-12: a refused or throwing section leaves the markers untagged; NA-13: settings API 5 + marker API 3 registers the section, tags terminals and ATMs, leaves the target untagged)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the player's "show button" option (scenario DK-5..8: the toolbar entry follows Accept at once, a stored "off" holds from game start, the fallback button never comes back through respawn / game start / resolution, single player still shows none)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: a shop item's name on delivery (scenario SN: read and carried, refusals change nothing, a bad name in the file, written and read back, set and clear, the fresh letter and its named copy, an unnamed row unchanged, a full container stays full, buyback by name, selling back)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: a shop item's name on delivery (scenario SN: read and carried, refusals change nothing, a bad name in the file, written and read back, set and clear, the fresh letter and its named copy, an unnamed row unchanged, a fresh container stays full, buyback by name, selling back, a name on a fluid container refused on every write and at load)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -21115,7 +21119,7 @@ end
 catalog({
     { id = "plain", item = "Base.Hammer", qty = 1, category = "tool", prices = { survivor = { price = 50, bidPrice = 20, buyback = true } } },
     { id = "kfc", item = "Base.Hammer", name = "KFC box", qty = 1, category = "tool", prices = { survivor = { price = 50, bidPrice = 20, buyback = true } } },
-    { id = "fuel", item = "Base.PetrolCan", name = "Full can", qty = 1, category = "tool", prices = { survivor = { price = 30 } } },
+    { id = "fuel", item = "Base.PetrolCan", qty = 1, category = "tool", prices = { survivor = { price = 30 } } },
 })
 fire("OnServerStarted")
 worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
@@ -21202,21 +21206,45 @@ local plainEntry = buyPlain.mailId and M.entryOf("sn-zed", buyPlain.mailId) or n
 check(buyPlain.ok == true and plainEntry ~= nil and plainEntry.snapshot == nil and held("Base.Hammer", "Base.Hammer") ~= nil
     and held("Base.Hammer", "Base.Hammer").customName == false,
     "SN-7: a row without a name still sends a plain new item, no snapshot")
--- a fresh container comes out of the engine full: the fresh rebuild keeps it full, while a
--- plain snapshot rebuild of the same type empties it (the fake really does Empty)
+-- a fresh container comes out of the engine full: a fresh rebuild keeps it full, while a plain
+-- snapshot rebuild of the same type empties it (the fake really does Empty)
 local realInstance = instanceItem
 instanceItem = function(t)
     local it = realInstance(t)
     if it and it.getFluidContainer then it:getFluidContainer():addFluid(Fluid.Get("Water"), 10) end
     return it
 end
-local plainRebuild = Codec.rebuild({ type = "Base.PetrolCan", name = "Full can" })
-local fuel = cmd(zed, "shop.buy", { id = "fuel", count = 1, revision = rev })
+local plainRebuild = Codec.rebuild({ type = "Base.PetrolCan" })
+local freshRebuild = Codec.rebuild({ type = "Base.PetrolCan", name = "Full can", fresh = true })
 instanceItem = realInstance
-local can = held("Base.PetrolCan", "Full can")
-check(plainRebuild ~= nil and plainRebuild.fluidAmount == 0 and fuel.ok == true and can ~= nil
-    and can.fluidAmount == 10 and can.fluidName == "Water" and can.customName == true,
-    "SN-8: a named container is delivered as full as a new one; only a plain snapshot rebuild empties it")
+check(plainRebuild ~= nil and plainRebuild.fluidAmount == 0 and freshRebuild ~= nil
+    and freshRebuild.fluidAmount == 10 and freshRebuild.fluidName == "Water",
+    "SN-8: a fresh rebuild leaves a new container as full as the engine made it; only a plain snapshot rebuild empties it")
+-- an item with a fluid container never shows a name of its own (InventoryItem.getName answers the
+-- container's UI name): a name on one is refused everywhere, and nothing changes
+local beforeFluid, revFluid = fileText(), Shop.revision()
+local addFluid = cmd(boss, "admin.catalog", { action = "add", id = "can2", item = "Base.PetrolCan", name = "Full can",
+    prices = { survivor = { price = 30 } } })
+local setFluid = cmd(boss, "admin.catalog", { action = "set", id = "fuel", name = "Full can" })
+local batchFluid = cmd(boss, "admin.catalog", { action = "batch", ids = { "fuel" }, fields = { name = "Full can" } })
+check(addFluid.error == "invalid_args" and addFluid.extra ~= nil and addFluid.extra.code == "name_not_shown"
+    and setFluid.error == "invalid_args" and setFluid.extra ~= nil and setFluid.extra.code == "name_not_shown"
+    and setFluid.extra.field == "name" and batchFluid.extra ~= nil and batchFluid.extra.code == "name_not_shown"
+    and Shop.sku("can2") == nil and Shop.sku("fuel").name == nil and fileText() == beforeFluid and Shop.revision() == revFluid
+    and cmd(boss, "admin.catalog", { action = "set", id = "fuel", name = "" }).ok == true,
+    "SN-11: a name on a fluid container is refused as name_not_shown on add, set and batch, nothing is written; no name is fine")
+local fluidRows = EC.jsonDecode(beforeFluid).items
+for _, r in ipairs(fluidRows) do if r.id == "fuel" then r.name = "Full can" end end
+catalog(fluidRows)
+local fluidReload = cmd(boss, "admin.catalog", { action = "reload" })
+local fluidStatus = Shop.fileStatus()
+check(fluidReload.ok == false and fluidStatus.errorDetail ~= nil and fluidStatus.errorDetail.code == "name_not_shown"
+    and fluidStatus.errorDetail.id == "fuel" and Shop.sku("fuel") ~= nil and Shop.sku("fuel").name == nil
+    and Shop.revision() == revFluid,
+    "SN-12: a hand-written name on a fluid container refuses the reload like any bad row, and the previous catalog stays")
+files[Shop.FILE] = { lines = {}, opens = 0 }
+for line in string.gmatch(beforeFluid .. "\n", "(.-)\n") do files[Shop.FILE].lines[#files[Shop.FILE].lines + 1] = line end
+cmd(boss, "admin.catalog", { action = "reload" })
 
 -- buyback: the row's own name or none is new; any other name is renamed
 SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true

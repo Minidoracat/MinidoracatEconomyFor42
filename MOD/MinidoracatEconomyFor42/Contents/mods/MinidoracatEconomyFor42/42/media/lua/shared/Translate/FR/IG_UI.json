@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "Retour à la liste",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "Désactiver le rachat",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "Catégorie",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "Un récipient à liquide n'affiche que le nom du liquide dans l'inventaire, jamais un nom personnalisé : cet objet ne peut donc pas avoir de nom à la livraison.",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "Champ %1 : un récipient à liquide n'affiche jamais de nom personnalisé et ne peut donc pas avoir de nom à la livraison.",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "Nom à la livraison",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "Les exemplaires achetés portent ce nom et sont neufs pour le reste ; un exemplaire neuf portant ce nom peut être revendu à cet article. Laissez vide pour garder le nom de l'objet. Glisser un objet depuis l'inventaire, ou utiliser « Ajouter à la boutique », remplit le nom de cet objet.",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "%1 caractères au maximum, sans caractère de contrôle",

@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "回到清单",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "关闭收购",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "分类",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "装液体的容器在背包里只会显示液体名称，看不到自订名称，所以这类物品不能设置送出名称。",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "字段 %1：装液体的容器看不到自订名称，不能设置送出名称。",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "送出名称",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "玩家买到的物品会带这个名称，其他状态和全新品一样；同名的全新品也能卖回这个商品。留空就用物品原名。从背包拖进来或右键「加入商店」时，会自动带入那件物品的名称。",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "最多 %1 个字符，不能有控制字符",

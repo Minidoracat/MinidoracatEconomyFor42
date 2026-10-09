@@ -1225,6 +1225,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_Back": "목록으로 돌아가기",
   "IGUI_MinidoracatEconomy_Admin_Shop_BuybackOff": "매입 끄기",
   "IGUI_MinidoracatEconomy_Admin_Shop_Category": "분류",
+  "IGUI_MinidoracatEconomy_Admin_Shop_NameHidden": "액체를 담는 용기는 인벤토리에서 액체 이름만 보이고 사용자 이름은 보이지 않으므로, 이 아이템에는 전달 이름을 설정할 수 없습니다.",
+  "IGUI_MinidoracatEconomy_Admin_FileErr_name_not_shown": "%1 필드: 액체를 담는 용기는 사용자 이름이 보이지 않으므로 전달 이름을 설정할 수 없습니다.",
   "IGUI_MinidoracatEconomy_Admin_Shop_Name": "전달 이름",
   "IGUI_MinidoracatEconomy_Admin_Shop_TipName": "구매한 아이템은 이 이름을 달고 나머지는 새 아이템과 같습니다. 이 이름의 새 아이템은 이 상품으로 되팔 수 있습니다. 비워 두면 아이템 원래 이름을 씁니다. 인벤토리에서 끌어오거나 우클릭 \"상점에 추가\"를 쓰면 그 아이템의 이름이 채워집니다.",
   "IGUI_MinidoracatEconomy_Admin_Shop_NameHint": "최대 %1자, 제어 문자 없이",

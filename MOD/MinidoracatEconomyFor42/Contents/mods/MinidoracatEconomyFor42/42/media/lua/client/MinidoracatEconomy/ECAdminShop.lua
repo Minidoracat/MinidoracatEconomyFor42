@@ -30,7 +30,9 @@
 -- `name` is the send name (ECShop: the name a bought copy carries; empty = the item's own name,
 -- and an emptied box travels as "" to clear it). It is one SKU's own column: the batch form never
 -- shows or writes it. An item dragged in or sent from the item menu whose own name differs from
--- its script's (another MOD renamed it) opens its new-SKU draft with that name already typed.
+-- its script's (another MOD renamed it) opens its new-SKU draft with that name already typed. An
+-- item with a fluid container cannot show a name at all (EC.hidesItemName): its box is shut, the
+-- form says why, nothing is prefilled and nothing travels.
 --
 -- A currency with no quote is NOT a free item and NOT a zero: its price box is empty, its two
 -- direction switches say "not offered" and nothing about it travels. Typing a price is what
@@ -965,8 +967,29 @@ function Page:isDirty()
             return true
         end
     end
-    if trimText(entryText(self.nameEntry)) ~= (base.name or "") then return true end
+    if self:sendName() ~= (base.name or "") then return true end
     return false
+end
+
+-- Whether the open draft's item can show a name at all (EC.hidesItemName: one with a fluid
+-- container never does, and the server refuses a name on it). Asked once per type.
+local hiddenNames = {}
+function Page:nameHidden()
+    local item = self.draft ~= nil and self.draft.item or nil
+    if type(item) ~= "string" then return false end
+    local hidden = hiddenNames[item]
+    if hidden == nil then
+        hidden = EC.hidesItemName(item)
+        hiddenNames[item] = hidden
+    end
+    return hidden
+end
+
+-- The send name the box holds right now, trimmed; "" is the item's own name, and so is anything
+-- left in the box of an item that cannot show one.
+function Page:sendName()
+    if self:nameHidden() then return "" end
+    return trimText(entryText(self.nameEntry))
 end
 
 -- The value one column holds on screen right now. A number is whatever its box holds (a string,
@@ -2028,7 +2051,7 @@ function Page:onApply()
     end
     -- the send name, inside the server's own bounds (ECShop.NAME_MAX characters, no control
     -- character); empty is "the item's own name"
-    local name = trimText(entryText(self.nameEntry))
+    local name = self:sendName()
     if #name > NAME_MAX or string.find(name, "%c") then
         return self:reject(tr("Admin_Shop_Name"), getText(T .. "Admin_Shop_NameHint", tostring(NAME_MAX)))
     end
@@ -2451,10 +2474,13 @@ function Page:buildDetailText()
     local master = self:masterState()
     local masterText = getText(T .. "Admin_Shop_Master", master == nil and tr("Admin_Loading")
         or tr(master and "Admin_Shop_StateOn" or "Admin_Shop_StateOff"))
+    -- the send name as the box holds it right now (like the count and the cap above): empty is the
+    -- item's own name
+    local sendName = self:sendName()
     local lines = {
         tr("Admin_Shop_Id") .. ": " .. tostring(d.id),
         getText(T .. "Admin_Shop_DetailName", itemName(d.item)),
-        getText(T .. "Admin_Shop_DetailSendName", d.name ~= nil and d.name ~= "" and d.name or itemName(d.item)),
+        getText(T .. "Admin_Shop_DetailSendName", sendName ~= "" and sendName or itemName(d.item)),
         getText(T .. "Admin_Shop_DetailOriginal", itemOriginal(d.item) or itemName(d.item)),
         getText(T .. "Admin_Shop_DetailType", tostring(d.item)),
         getText(T .. "Admin_Shop_DetailQty", tostring(qty)),
@@ -2538,10 +2564,10 @@ function Page:buildDetailText()
     local original = itemOriginal(d.item)
     self.detailCard = {
         source = tr("Admin_Shop_Detail"), sourceIcon = "shop", item = d.item,
-        name = (d.name ~= nil and d.name ~= "" and d.name) or (d.item ~= nil and itemName(d.item))
+        name = (sendName ~= "" and sendName) or (d.item ~= nil and itemName(d.item))
             or tr("Admin_Shop_NewTitle"),
         sub = d.isNew and (original ~= nil and getText(T .. "Ent_Pair", original, tr("Admin_Shop_NewTitle"))
-            or tr("Admin_Shop_NewTitle")) or ((d.name ~= nil and d.name ~= "") and itemName(d.item) or original),
+            or tr("Admin_Shop_NewTitle")) or (sendName ~= "" and itemName(d.item) or original),
         chips = { { value = masterText, token = master == nil and "textFaint" or (master and "text" or "warn"), dot = true } },
         rows = rows, text = table.concat(paras, "\n\n"),
         tech = { { label = tr("Admin_Shop_Id"), value = tostring(d.id) },
@@ -2668,6 +2694,8 @@ function Page:updateEnabled()
     local target = self.draft ~= nil or self.batch ~= nil
     local edit = write and not modal and target and not saving
     for _, e in ipairs(self.entryFields) do setEntryEditable(e, edit) end
+    -- an item with a fluid container never shows a name (EC.hidesItemName): its box stays shut
+    setEntryEditable(self.nameEntry, edit and self.batch == nil and not self:nameHidden())
     -- the id is the one column only a new SKU may set; the unit count and the category are not
     local new = self.draft ~= nil and self.draft.isNew == true
     for _, e in ipairs(self.newFields) do setEntryEditable(e, edit and new) end
@@ -3181,6 +3209,9 @@ function Page:formGroups()
     itemRows[#itemRows + 1] = self:fieldRow("qty")
     itemRows[#itemRows + 1] = self:fieldRow("category")
     itemRows[#itemRows + 1] = self:fieldRow("name")
+    if self:nameHidden() then
+        itemRows[#itemRows + 1] = { note = tr("Admin_Shop_NameHidden"), token = "textFaint" }
+    end
     if d.isNew then
         -- the one rule that stays in the form: the id is only editable here, and it is what the
         -- write would be refused for

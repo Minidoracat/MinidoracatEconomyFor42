@@ -2291,8 +2291,8 @@ end
 -- { ok, text, item, record, name? }. `item` is an InventoryItem, or the full type of a world object (a
 -- standing generator). The record is the universe's own (ECItemPicker), the very one the search
 -- would hand over; a type the universe leaves out (hidden, obsolete) has none. `name` is the
--- item's own name when it is not its script's (another MOD renamed it): the shop draft's send
--- name starts from it.
+-- item's own name when it is not its script's (another MOD renamed it) and the type can show a
+-- name at all (EC.hidesItemName): the shop draft's send name starts from it.
 function Admin:itemVerdict(tab, item)
     local isItem = type(item) ~= "string"
     local function no(text) return { ok = false, item = isItem and item or nil, text = text } end
@@ -2311,7 +2311,7 @@ function Admin:itemVerdict(tab, item)
         return no(tr("Drop_Fixed"))
     end
     local name = nil
-    if isItem then
+    if isItem and not EC.hidesItemName(fullType) then
         local ok, own, script = pcall(function()
             return item:getDisplayName(), item:getScriptItem():getDisplayName()
         end)
