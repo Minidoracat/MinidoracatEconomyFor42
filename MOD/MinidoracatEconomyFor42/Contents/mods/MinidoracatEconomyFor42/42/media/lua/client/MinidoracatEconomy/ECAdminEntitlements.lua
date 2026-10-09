@@ -6,9 +6,8 @@
 --       transport functions are the controller's own and are always called as self.send(...),
 --       self.isPending(...), self.newRequestId() -- never with ":". The page owns no Events hook
 --       and no timer: the controller calls tick(now) while this tab is on screen.
---   C.AdminEntitlements.sourceName(src)
---       a source's display name: its registered translation key, else its { CH, EN } display
---       name, else its mod id. The sources page uses the same one.
+--   The page's words for orders, rentals and source names are C.Entitlements' (sourceName,
+--   contentText, statusText, autoTag, rentalLine): the player's wallet lists them too.
 --
 -- One command, admin.entitlements, four actions, one slot (the controller's): at most one of
 -- them is open at a time and a reply is matched against exactly that request.
@@ -59,7 +58,6 @@ local amountText, card = U.amountText, U.card
 local COMMAND = "admin.entitlements"
 local REASON_MAX = 1000
 local ACCOUNT_MAX = 64
-local DAY_MS, HOUR_MS = 86400000, 3600000
 local CARD_MIN_W = 240
 local DIALOG_W = 480
 
@@ -118,110 +116,6 @@ local function orderIdOf(o)
     return id ~= nil and tostring(id) or nil
 end
 
--- The language option cannot change without a restart, so it is read once; getOptionLanguageName
--- is absent on old builds.
-local langCode = nil
-local function gameLanguage()
-    if langCode then return langCode end
-    langCode = "EN"
-    if type(getCore) == "function" then
-        local ok, name = pcall(function() return getCore():getOptionLanguageName() end)
-        if ok and type(name) == "string" and name ~= "" then langCode = name end
-    end
-    return langCode
-end
-
-function P.sourceName(src)
-    if type(src) ~= "table" then return "-" end
-    local key = src.sourceNameKey
-    local named = type(key) == "string" and key ~= "" and getTextOrNull(key) or nil
-    if named ~= nil then return named end
-    local names = src.sourceName or src.displayName
-    if type(names) == "table" then
-        local lang = gameLanguage()
-        local pick = (lang == "CH" or lang == "CN") and names.CH or names.EN
-        if type(pick) ~= "string" or pick == "" then pick = names.EN or names.CH end
-        if type(pick) == "string" and pick ~= "" then return pick end
-    end
-    return tostring(src.modId or src.sourceMod or "-")
-end
-
--- What an order bought: "buy outright", a new rental, a renewal or a scheduler renewal, and how
--- many slots. A rental the account no longer holds is named as removed.
-function P.contentText(o)
-    local q = num(o.quantity)
-    if o.kind == "permanent" then return getText(T .. "Ent_Content_Permanent", q) end
-    local which = (o.auto == true and "Auto") or ((o.renewal == true or o.kind == "renewal") and "Renewal") or "New"
-    local n = tonumber(o.rentalNo)
-    if n == nil then return getText(T .. "Ent_Content_" .. which .. "Gone", q) end
-    return getText(T .. "Ent_Content_" .. which, tostring(n), q)
-end
-
--- Paid / refunded; a product that waits for the world save says so while it waits -- for a refund
--- that is the refund's own save, not the payment's. An instant product takes effect in the paying
--- commit and never shows a save state.
-function P.statusText(o, instant)
-    local s = Ent().orderStatusText(o.status)
-    if instant ~= true then
-        local d = o.durable
-        if o.status == "refunded" then d = type(o.refund) == "table" and o.refund.durable or nil end
-        local saved = type(d) == "table" and d.status or nil
-        if saved ~= nil and saved ~= "confirmed" then s = getText(T .. "Ent_StatusUnsaved", s) end
-    end
-    return s
-end
-
--- One label for a rental's auto-renew, naming the one reason it is paused: the agreed terms no
--- longer match the plan's rent / currency / period, the account rents more than the limit, the
--- plan stopped renting, the plan does not allow auto-renew, or the server holds it.
-function P.autoTag(r, plan, ent)
-    local state = r.autoRenewState or (r.autoRenew == true and "on" or "off")
-    if state == "on" or state == "pending_on" then return tr("Ent_AutoTag_on"), "textMuted" end
-    if state == "off" or state == "pending_off" then return tr("Ent_AutoTag_off"), "textMuted" end
-    if state == "paused_system" then return tr("Ent_AutoTag_system"), "warn" end
-    local reason = "paused"
-    if type(plan) == "table" then
-        local a = r.autoTerms
-        if type(a) == "table" and (tonumber(a.price) ~= tonumber(plan.rentalPrice)
-            or a.currency ~= plan.rentalCurrency or tonumber(a.days) ~= tonumber(plan.rentalDays)) then
-            reason = "terms"
-        elseif type(ent) == "table" and (tonumber(ent.rentalCommitted) or 0) > (tonumber(plan.rentalLimit) or 0) then
-            reason = "limit"
-        elseif plan.rentalEnabled ~= true then
-            reason = "stopped"
-        elseif plan.autoRenewAllowed ~= true then
-            reason = "disallowed"
-        end
-    end
-    return tr("Ent_AutoTag_" .. reason), "warn"
-end
-
--- Whole days while a day or more is left, hours below that.
-function P.remainingText(ms)
-    ms = math.max(0, tonumber(ms) or 0)
-    if ms >= DAY_MS then return getText(T .. "Ent_Days", tostring(math.floor(ms / DAY_MS))) end
-    return getText(T .. "Ent_Hours", tostring(math.max(1, math.ceil(ms / HOUR_MS))))
-end
-
--- "#n, k slots, <state>": active with its end and what is left, in grace with the grace end,
--- expired, frozen (its product's mod is missing: what was left when it froze), or (a product that
--- waits for the save) a new rental not confirmed yet.
-function P.rentalLine(i, r, now, offsetMin)
-    local n, q = tostring(i), num(r.quantity)
-    local state, paid = r.state, tonumber(r.paidUntil)
-    if state == "grace" then
-        return getText(T .. "Ent_RentalLine_grace", n, q, U.stampText(tonumber(r.graceUntil), offsetMin))
-    end
-    if state == "expired" then return getText(T .. "Ent_RentalLine_expired", n, q) end
-    if state == "pending" or paid == nil then return getText(T .. "Ent_RentalLine_pending", n, q) end
-    if state == "frozen" then
-        -- the server shows a frozen rental's times as if it came back now: what is left stays put
-        if paid > now then return getText(T .. "Ent_RentalLine_frozen", n, q, P.remainingText(paid - now)) end
-        return getText(T .. "Ent_RentalLine_frozenGrace", n, q, P.remainingText((tonumber(r.graceUntil) or now) - now))
-    end
-    return getText(T .. "Ent_RentalLine_active", n, q, U.stampText(paid, offsetMin), P.remainingText(paid - now))
-end
-
 -- Every rental of one account entry, one full line each with its auto-renew label: what the
 -- shared detail window shows when the page has no room for all of them.
 function P.rentalsText(entry, now, offsetMin)
@@ -229,7 +123,7 @@ function P.rentalsText(entry, now, offsetMin)
     local lines = {}
     for i, r in ipairs(type(ent.rentals) == "table" and ent.rentals or {}) do
         if type(r) == "table" then
-            lines[#lines + 1] = getText(T .. "Ent_Pair", P.rentalLine(i, r, now, offsetMin), (P.autoTag(r, entry.plan, ent)))
+            lines[#lines + 1] = getText(T .. "Ent_Pair", Ent().rentalLine(i, r, now, offsetMin), (Ent().autoTag(r, entry.plan, ent)))
         end
     end
     return table.concat(lines, "\n")
@@ -242,7 +136,7 @@ function P.rentalsCard(entry, username, now, offsetMin)
     local lines = {}
     for i, r in ipairs(type(ent.rentals) == "table" and ent.rentals or {}) do
         if type(r) == "table" then
-            lines[#lines + 1] = { text = P.rentalLine(i, r, now, offsetMin), note = (P.autoTag(r, entry.plan, ent)) }
+            lines[#lines + 1] = { text = Ent().rentalLine(i, r, now, offsetMin), note = (Ent().autoTag(r, entry.plan, ent)) }
         end
     end
     return {
@@ -897,7 +791,7 @@ function Page:rebuildPlanRows()
         local key = keyOf(e.sourceMod, e.productId)
         local problem = type(e.source) == "table" and type(e.source.problem) == "table"
         items[i] = { sourceMod = e.sourceMod, productId = e.productId, line1 = Ent().productName(e),
-            line2 = getText(T .. "Ent_PlanRowLine", P.sourceName(e), boolText(e.plan.permanentEnabled == true),
+            line2 = getText(T .. "Ent_PlanRowLine", Ent().sourceName(e), boolText(e.plan.permanentEnabled == true),
                 boolText(e.plan.rentalEnabled == true)),
             token2 = (e.loaded == false or problem or e.plan.provisional == true) and "warn" or nil }
         if key == self.selKey then sel = i end
@@ -957,9 +851,9 @@ function Page:rebuildOrderRows()
     local wTime = math.max(textWidth(U.STAMP_SAMPLE), textWidth(tr("Ent_Col_Time")))
     for i, s in ipairs(source) do
         local o = s.order
-        local content = P.contentText(o)
+        local content = Ent().contentText(o)
         if multi then content = pair(Ent().productName(s.product), content) end
-        local status = P.statusText(o, s.instant)
+        local status = Ent().statusText(o, s.instant)
         local cells = { self:stamp(tonumber(o.at)) }
         wTime = math.max(wTime, textWidth(cells[1]))
         if withPlayer then cells[#cells + 1] = s.username end
@@ -1347,10 +1241,10 @@ function Page:layoutAccounts(g, w, h)
             for i = 1, shown do
                 local r = rentals[i]
                 if type(r) == "table" then
-                    local tag, tagToken = P.autoTag(r, entry.plan, ent)
+                    local tag, tagToken = Ent().autoTag(r, entry.plan, ent)
                     local tagFit = fitText(tag, math.floor(w * 0.45))
                     local tagW = textWidth(tagFit)
-                    opText(g.head, fitText(P.rentalLine(i, r, now, self.owner.offsetMin), w - tagW - PAD * 2), PAD, y, "text")
+                    opText(g.head, fitText(Ent().rentalLine(i, r, now, self.owner.offsetMin), w - tagW - PAD * 2), PAD, y, "text")
                     g.head[#g.head + 1] = { kind = "textRight", s = tagFit, x = w - PAD, y = y, token = tagToken }
                     y = y + lh
                 end

@@ -100,6 +100,10 @@ E.ORDERS_KEEP = 20
 -- ponytail: the admin order list sorts every row's ring on each page (rows x ORDERS_KEEP orders);
 -- index orders by time if a server grows to many thousands of paying accounts.
 E.ORDERS_PAGE = 50
+-- ponytail: entitlement.list answers at most this many products in one reply (an envelope with a
+-- full order ring and RENTALS_MAX rentals is about 20 KB on the wire, so 30 stay well under
+-- S.REPLY_MAX_BYTES); page the list if one login ever holds more products.
+E.LIST_MAX = 30
 -- ponytail: a fixed cap on rentals per account keeps the row and the player's list small; raise it
 -- (and page the list) if hosts want many small rentals.
 E.RENTALS_MAX = 10
@@ -614,8 +618,9 @@ local function orderView(o, w, ds, row)
         auto = o.auto, activatedAt = o.activatedAt, txId = o.tx,
         durable = { status = verdict(o, w), source = ds.source, seq = ds.seq } }
     v.refundable, v.refundEffect, v.previousUntil, v.rentalNo = refundFacts(row, o)
+    -- the admin who refunded is the audit's, never the player's (rf.by stays in ModData)
     if o.rf then
-        v.refund = { amount = o.rf.amt, at = o.rf.ts, txId = o.rf.tx, by = o.rf.by, durable = { status = verdict(o.rf, w) } }
+        v.refund = { amount = o.rf.amt, at = o.rf.ts, txId = o.rf.tx, durable = { status = verdict(o.rf, w) } }
     end
     return v
 end
@@ -933,7 +938,7 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
             { account = username, currency = terms.cur, amount = -terms.amt },
             { account = G.account(modId), currency = terms.cur, amount = terms.amt },
         },
-    }, { commit = { into = bySource, key = username, value = user, stamps = stamps } })
+    }, { commit = { into = bySource, key = username, value = user, stamps = stamps }, nameKey = planRow.nameKey })
     if not res.ok then return fail(res.error) end
     if res.duplicate then
         -- that key already paid and published; answer from the ring, never publish again
@@ -1266,7 +1271,8 @@ function E.refund(modId, username, productId, orderId, opts)
             { account = G.account(modId), currency = o.cur, amount = -amount },
             { account = username, currency = o.cur, amount = amount },
         },
-    }, { commit = { into = bySource, key = username, value = user, stamps = stamps }, reversal = o.amt })
+    }, { commit = { into = bySource, key = username, value = user, stamps = stamps }, reversal = o.amt,
+        nameKey = (P.row(modId, productId) or {}).nameKey })
     if not res.ok then return withSnapshot(fail(res.error), modId, username, productId) end
     if res.duplicate then
         local found = findOrder(modId, username, orderId)
@@ -1630,6 +1636,24 @@ function E.journalStatus()
     return { state = journal.state, lines = journal.lines, needSeq = journal.needSeq }
 end
 
+-- Every product this user has a row for (optionally one source / product), as envelopes.
+local function accountEntries(username, modId, productId)
+    local entries = {}
+    for m, byUser in pairs(ent.rows) do
+        if modId == nil or m == modId then
+            for p in pairs(byUser[username] or {}) do
+                if productId == nil or p == productId then entries[#entries + 1] = snapshot(m, username, p) end
+            end
+        end
+    end
+    if modId and productId and #entries == 0 then entries[1] = snapshot(modId, username, productId) end
+    EC.sortSafe(entries, function(a, b)
+        if a.sourceMod ~= b.sourceMod then return a.sourceMod < b.sourceMod end
+        return a.productId < b.productId
+    end)
+    return entries
+end
+
 -- ---------- player commands (module MinidoracatEconomy; every reply echoes requestId) ----------
 
 local function requestIdOf(args)
@@ -1670,25 +1694,28 @@ S.handlers["entitlement.order"] = function(player, args)
         E.getOrder(args.sourceMod, S.login(player), args.productId, args.orderId))
 end
 
--- ---------- admin.entitlements ----------
-
--- Every product this user has a row for (optionally one source / product), as envelopes.
-local function accountEntries(username, modId, productId)
-    local entries = {}
-    for m, byUser in pairs(ent.rows) do
-        if modId == nil or m == modId then
-            for p in pairs(byUser[username] or {}) do
-                if productId == nil or p == productId then entries[#entries + 1] = snapshot(m, username, p) end
-            end
+-- Every product of the caller's own login name (rows are per login, never merged across the
+-- account's other characters) as its envelope plus the source's name, for the wallet's entitlement
+-- tab. Read only; nobody else's row can be named. `more`: the list was cut at E.LIST_MAX.
+S.handlers["entitlement.list"] = function(player, args)
+    local res
+    if not ent then
+        res = fail("not_ready")
+    else
+        local all = accountEntries(S.login(player))
+        local entries = {}
+        for i = 1, math.min(#all, E.LIST_MAX) do
+            local env = all[i]
+            local src = G.source(env.sourceMod)
+            env.sourceNameKey, env.sourceName = src and src.nameKey or nil, src and src.displayName or nil
+            entries[i] = env
         end
+        res = { ok = true, entries = entries, more = #all > E.LIST_MAX or nil }
     end
-    if modId and productId and #entries == 0 then entries[1] = snapshot(modId, username, productId) end
-    EC.sortSafe(entries, function(a, b)
-        if a.sourceMod ~= b.sourceMod then return a.sourceMod < b.sourceMod end
-        return a.productId < b.productId
-    end)
-    return entries
+    answer(player, "entitlement.list", args, res)
 end
+
+-- ---------- admin.entitlements ----------
 
 local function adminAccount(args)
     if not validUser(args.username) then return fail("invalid_args") end

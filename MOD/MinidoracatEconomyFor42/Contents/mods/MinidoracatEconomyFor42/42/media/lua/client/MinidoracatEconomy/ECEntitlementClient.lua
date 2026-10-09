@@ -12,6 +12,14 @@
 --   setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental) -> requestId | nil, why
 --   getOrder(sourceMod, productId, orderId, cb)                      -> requestId | nil, why
 --   onChanged(fn)                                                    fn(envelope)
+--   requestList(cb?)                                                 -> requestId | nil, why
+--   getList()                                                        -> { entries, more } | nil, error?
+--   onPush(fn)                                                       fn(args) on every entitlement.changed
+--
+-- requestList reads every product of this login at once (entitlement.list, Economy's own wallet
+-- tab): each envelope is adopted into the same cache as a state reply, and getList answers the
+-- products of the last good read in the server's order (each as the cache's newest copy) with the
+-- error of the last read (nil after a good one). onPush tells a page that lists them to read again.
 --
 -- `rental` is a rental id from entitlement.rentals[i].id (CAPABILITIES.rentals): a rental quote
 -- without it opens a new rental, with it renews that one; auto-renew is always per rental.
@@ -46,13 +54,16 @@ local TIMEOUT_MS = 10000
 local QUEUE_MAX = 32          -- per command: a runaway caller is refused instead of flooding the server
 local LATE_MAX = 32           -- timed-out requests whose late answer may still carry a snapshot
 
-local STATE, QUOTE, PURCHASE, AUTORENEW, ORDER =
-    "entitlement.state", "entitlement.quote", "entitlement.purchase", "entitlement.autoRenew", "entitlement.order"
-local COMMANDS = { STATE, QUOTE, PURCHASE, AUTORENEW, ORDER }
+local STATE, QUOTE, PURCHASE, AUTORENEW, ORDER, LIST =
+    "entitlement.state", "entitlement.quote", "entitlement.purchase", "entitlement.autoRenew", "entitlement.order",
+    "entitlement.list"
+local COMMANDS = { STATE, QUOTE, PURCHASE, AUTORENEW, ORDER, LIST }
 
 local cache = {}        -- key -> envelope
 local appliedSeq = {}   -- key -> sequence of the newest request / push that wrote the cache
 local listeners = {}
+local pushListeners = {}
+local listKeys, listMore, listErr = nil, false, nil   -- the last list read: cache keys in server order
 local lanes = {}        -- command -> { queue = { req, ... }, inflight = req | nil, sentAt = ms | nil }
 local late = {}         -- requestId -> req
 local lateOrder = {}
@@ -136,6 +147,23 @@ local function adopt(env, reqSeq)
     return true
 end
 
+-- A list reply: every envelope goes into the cache like a state reply; the list keeps only the
+-- keys, so a later push for one product shows through getList. A refusal keeps the old list.
+local function adoptList(args, reqSeq)
+    if args.ok ~= true or type(args.entries) ~= "table" then
+        listErr = tostring(args.error or "unknown")
+        return
+    end
+    local keys = {}
+    for _, env in ipairs(args.entries) do
+        if envelopeOf(env) ~= nil then
+            adopt(env, reqSeq)
+            keys[#keys + 1] = keyOf(env.sourceMod, env.productId)
+        end
+    end
+    listKeys, listMore, listErr = keys, args.more == true, nil
+end
+
 -- ---------- lanes ----------
 
 local function finish(req, result)
@@ -176,6 +204,7 @@ pump = function()
         if req ~= nil and now - req.sentAt > TIMEOUT_MS then
             lane.inflight = nil
             rememberLate(req)
+            if command == LIST then listErr = "timeout" end
             finish(req, timeoutResult(req))
         end
         if lane.inflight == nil and #lane.queue > 0 and player ~= nil
@@ -243,6 +272,7 @@ local function onReply(command, args)
         if command == QUOTE then rememberQuote(req, args) end
         local env = envelopeOf(args)
         if env ~= nil then adopt(env, req.seq) end
+        if command == LIST then adoptList(args, req.seq) end
         finish(req, args)
         if #lane.queue > 0 then
             ensurePump()
@@ -254,6 +284,7 @@ local function onReply(command, args)
         late[id] = nil
         local env = envelopeOf(args)
         if env ~= nil then adopt(env, lost.seq) end
+        if command == LIST then adoptList(args, lost.seq) end
     end
 end
 
@@ -269,15 +300,19 @@ C.handlers["entitlement.changed"] = function(args)
     if env ~= nil then
         seq = seq + 1
         adopt(env, seq)
-        return
-    end
-    -- A public signal names nobody's entitlement: the products this client already holds read
-    -- themselves again, and onChanged fires when those answers land.
-    for _, old in pairs(cache) do
-        if (args.sourceMod == nil or args.sourceMod == old.sourceMod)
-            and (args.productId == nil or args.productId == old.productId) then
-            E.requestState(old.sourceMod, old.productId)
+    else
+        -- A public signal names nobody's entitlement: the products this client already holds read
+        -- themselves again, and onChanged fires when those answers land.
+        for _, old in pairs(cache) do
+            if (args.sourceMod == nil or args.sourceMod == old.sourceMod)
+                and (args.productId == nil or args.productId == old.productId) then
+                E.requestState(old.sourceMod, old.productId)
+            end
         end
+    end
+    for _, fn in ipairs(pushListeners) do
+        local ok, err = pcall(fn, args)
+        if not ok then EC.log("entitlement push listener failed: " .. tostring(err)) end
     end
 end
 
@@ -343,6 +378,27 @@ end
 
 function E.onChanged(fn)
     if type(fn) == "function" then listeners[#listeners + 1] = fn end
+end
+
+function E.requestList(cb)
+    -- a list read that has not left yet answers every caller that asks for one
+    local queued = lanes[LIST].queue[1]
+    if queued ~= nil then
+        if type(cb) == "function" then queued.cbs[#queued.cbs + 1] = cb end
+        return queued.requestId
+    end
+    return enqueue(LIST, {}, cb, {})
+end
+
+function E.getList()
+    if listKeys == nil then return nil, listErr end
+    local entries = {}
+    for i, key in ipairs(listKeys) do entries[i] = cache[key] end
+    return { entries = entries, more = listMore }, listErr
+end
+
+function E.onPush(fn)
+    if type(fn) == "function" then pushListeners[#pushListeners + 1] = fn end
 end
 
 -- ---------- wording (every text a consumer shows comes from the four translation files) ----------
@@ -426,6 +482,123 @@ function E.currencyName(id)
     return C.currencyName(id)
 end
 
+-- ---------- the wording Economy's own pages share (admin plan page, the wallet's list) ----------
+-- Pure functions of a snapshot; ECWidgets (C.UI) is read when they are called, not at load.
+
+local DAY_MS, HOUR_MS = 86400000, 3600000
+
+local function num(v)
+    local n = tonumber(v)
+    return n ~= nil and tostring(n) or "-"
+end
+
+-- The language option cannot change without a restart, so it is read once; getOptionLanguageName
+-- is absent on old builds.
+local langCode = nil
+local function gameLanguage()
+    if langCode then return langCode end
+    langCode = "EN"
+    if type(getCore) == "function" then
+        local ok, name = pcall(function() return getCore():getOptionLanguageName() end)
+        if ok and type(name) == "string" and name ~= "" then langCode = name end
+    end
+    return langCode
+end
+
+-- A source's display name: its registered translation key, else its { CH, EN } display name,
+-- else its mod id.
+function E.sourceName(src)
+    if type(src) ~= "table" then return "-" end
+    local key = src.sourceNameKey
+    local named = type(key) == "string" and key ~= "" and getTextOrNull(key) or nil
+    if named ~= nil then return named end
+    local names = src.sourceName or src.displayName
+    if type(names) == "table" then
+        local lang = gameLanguage()
+        local pick = (lang == "CH" or lang == "CN") and names.CH or names.EN
+        if type(pick) ~= "string" or pick == "" then pick = names.EN or names.CH end
+        if type(pick) == "string" and pick ~= "" then return pick end
+    end
+    return tostring(src.modId or src.sourceMod or "-")
+end
+
+-- What an order bought: "buy outright", a new rental, a renewal or a scheduler renewal, and how
+-- many slots. A rental the account no longer holds is named as removed.
+function E.contentText(o)
+    local q = num(o.quantity)
+    if o.kind == "permanent" then return getText(T .. "Ent_Content_Permanent", q) end
+    local which = (o.auto == true and "Auto") or ((o.renewal == true or o.kind == "renewal") and "Renewal") or "New"
+    local n = tonumber(o.rentalNo)
+    if n == nil then return getText(T .. "Ent_Content_" .. which .. "Gone", q) end
+    return getText(T .. "Ent_Content_" .. which, tostring(n), q)
+end
+
+-- Paid / refunded; a product that waits for the world save says so while it waits -- for a refund
+-- that is the refund's own save, not the payment's. An instant product takes effect in the paying
+-- commit and never shows a save state.
+function E.statusText(o, instant)
+    local s = E.orderStatusText(o.status)
+    if instant ~= true then
+        local d = o.durable
+        if o.status == "refunded" then d = type(o.refund) == "table" and o.refund.durable or nil end
+        local saved = type(d) == "table" and d.status or nil
+        if saved ~= nil and saved ~= "confirmed" then s = getText(T .. "Ent_StatusUnsaved", s) end
+    end
+    return s
+end
+
+-- One label for a rental's auto-renew, naming the one reason it is paused: the agreed terms no
+-- longer match the plan's rent / currency / period, the account rents more than the limit, the
+-- plan stopped renting, the plan does not allow auto-renew, or the server holds it.
+function E.autoTag(r, plan, ent)
+    local state = r.autoRenewState or (r.autoRenew == true and "on" or "off")
+    if state == "on" or state == "pending_on" then return getText(T .. "Ent_AutoTag_on"), "textMuted" end
+    if state == "off" or state == "pending_off" then return getText(T .. "Ent_AutoTag_off"), "textMuted" end
+    if state == "paused_system" then return getText(T .. "Ent_AutoTag_system"), "warn" end
+    local reason = "paused"
+    if type(plan) == "table" then
+        local a = r.autoTerms
+        if type(a) == "table" and (tonumber(a.price) ~= tonumber(plan.rentalPrice)
+            or a.currency ~= plan.rentalCurrency or tonumber(a.days) ~= tonumber(plan.rentalDays)) then
+            reason = "terms"
+        elseif type(ent) == "table" and (tonumber(ent.rentalCommitted) or 0) > (tonumber(plan.rentalLimit) or 0) then
+            reason = "limit"
+        elseif plan.rentalEnabled ~= true then
+            reason = "stopped"
+        elseif plan.autoRenewAllowed ~= true then
+            reason = "disallowed"
+        end
+    end
+    return getText(T .. "Ent_AutoTag_" .. reason), "warn"
+end
+
+-- Whole days while a day or more is left, hours below that.
+function E.remainingText(ms)
+    ms = math.max(0, tonumber(ms) or 0)
+    if ms >= DAY_MS then return getText(T .. "Ent_Days", tostring(math.floor(ms / DAY_MS))) end
+    return getText(T .. "Ent_Hours", tostring(math.max(1, math.ceil(ms / HOUR_MS))))
+end
+
+-- "#n, k slots, <state>": active with its end and what is left, in grace with the grace end,
+-- expired, frozen (its product's mod is missing: what was left when it froze), or (a product that
+-- waits for the save) a new rental not confirmed yet.
+function E.rentalLine(i, r, now, offsetMin)
+    local stampText = C.UI.stampText
+    local n, q = tostring(i), num(r.quantity)
+    local state, paid = r.state, tonumber(r.paidUntil)
+    if state == "grace" then
+        return getText(T .. "Ent_RentalLine_grace", n, q, stampText(tonumber(r.graceUntil), offsetMin))
+    end
+    if state == "expired" then return getText(T .. "Ent_RentalLine_expired", n, q) end
+    if state == "pending" or paid == nil then return getText(T .. "Ent_RentalLine_pending", n, q) end
+    if state == "frozen" then
+        -- the server shows a frozen rental's times as if it came back now: what is left stays put
+        if paid > now then return getText(T .. "Ent_RentalLine_frozen", n, q, E.remainingText(paid - now)) end
+        return getText(T .. "Ent_RentalLine_frozenGrace", n, q, E.remainingText((tonumber(r.graceUntil) or now) - now))
+    end
+    return getText(T .. "Ent_RentalLine_active", n, q, stampText(paid, offsetMin), E.remainingText(paid - now))
+end
+
 -- ---------- session ----------
 
 -- A new world: nothing learned from the previous server survives, and nothing it owed is waited
@@ -433,6 +606,7 @@ end
 Events.OnGameStart.Add(function()
     cache, appliedSeq, late, lateOrder = {}, {}, {}, {}
     quotes, quoteOrder = {}, {}
+    listKeys, listMore, listErr = nil, false, nil
     resetLanes()
     if pumping then
         pumping = false

@@ -50,7 +50,7 @@ local result = source.registerProduct({
 
 `registerSource` 的 `nameKey` 選填，是來源名稱的翻譯鍵（`^[%w_]+$`、1–96 位元組，不合格回 `nil, "invalid_args"`）；管理台顯示來源名稱時先找這個翻譯，找不到才用 `displayName`，再沒有就用 modId。`G.sources()`（管理台來源頁）與 `plans` 列都帶 `sourceNameKey`。
 
-交易紀錄的原因：`entitlement_purchase`／`entitlement_renewal`／`entitlement_refund` 由 Economy 翻譯；來源自訂的其他 `reasonCodes` Economy 沒有譯文，管理台顯示成「其他模組的原因：<代碼>」（`Reason_custom`），代碼本身照原樣。
+交易紀錄的原因：`entitlement_purchase`／`entitlement_renewal`／`entitlement_refund` 由 Economy 翻譯；來源自訂的其他 `reasonCodes` Economy 沒有譯文，管理台顯示成「其他模組的原因：<代碼>」（`Reason_custom`），代碼本身照原樣。名額付款與退款的收據（錢包收據環與收據檔）另帶 `reasonCode` 與商品的 `nameKey`，玩家對帳單的種類欄寫「權益購買／權益續租／權益退款」、說明欄寫商品名（客戶端沒有該翻譯時退回模組帳戶名稱）；來源自己透過 `post`／`debit` 記的帳不帶 `nameKey`。
 
 註冊帶 `sandbox` 欄位回 `{ ok = false, error = "invalid_args", field = "sandbox" }`：沙盒同步已移除，Economy 不讀寫任何沙盒選項。`instant` 不是 boolean 時回 `field = "instant"`；`freezeWhenAbsent` 不是 boolean 時回 `field = "freezeWhenAbsent"`（舊 Economy 不認得這個欄位、不會報錯，所以先看能力旗標）。
 
@@ -92,7 +92,9 @@ local result = source.registerProduct({
 - `entitlement.rentals`：依建立順序的租約清單，每張 `{ id, quantity, state, paidUntil?, graceUntil?, terms?, autoRenew, autoRenewState, autoTerms?, termsRevision?, pendingOrderId?, autoPending? }`。`id` 是建立它的訂單 id；`state` 為 `pending/active/grace/expired/paused_terms/paused_system/frozen`（條款改變、租用合計超過 `rentalLimit` 或租用停售時為 `paused_terms`；`frozen` 只出現在 `freezeWhenAbsent` 商品缺席時，見「缺席時凍結」）；`autoRenewState` 為 `off/pending_on/on/pending_off/paused_terms/paused_system`，其中 `paused_terms` 表示目前方案的租金、幣別或每期天數和同意時記下的不同（或租用合計超過上限），要玩家重新同意；`autoPending=true` 表示這張的待確認付款是自動續租發起的。即時生效商品的租約不會是 `pending`，同意直接是 `on`。
 - `rentals[i].terms = { price, amount, currency, days, graceHours }`：這張租約正在跑（或已付款待生效）的那一期的條款，`price` 是每個名額的租金、`amount` 是該期總額。`rentals[i].autoTerms = { price, currency, days }`：自動續租開啟時，玩家同意的條款。
 - `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`（`notice.rental` 指出是哪張租約）。
-- `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id），排程自動續租的訂單帶 `auto=true`，已生效的訂單帶 `activatedAt`。每筆另帶付款交易 `txId` 與退款判斷（見「管理台」）：`refundable`、`refundEffect?`、`previousUntil?`、`rentalNo?`。
+- `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id），排程自動續租的訂單帶 `auto=true`，已生效的訂單帶 `activatedAt`。每筆另帶付款交易 `txId` 與退款判斷（見「管理台」）：`refundable`、`refundEffect?`、`previousUntil?`、`rentalNo?`；已退款的訂單帶 `refund = { amount, at, txId, durable = { status } }`（不帶執行退款的管理員，那只在稽核紀錄）。
+
+Economy 玩家錢包的「名額」分頁會列出名額紀錄：客戶端送 `entitlement.list`（無參數），伺服器回呼叫者登入名下每個商品的 snapshot（上面的格式，另帶來源的 `sourceNameKey?`、`sourceName?`），最多 30 項（`E.LIST_MAX`，超過時 `more = true`）；ModData 未就緒回 `not_ready`。名額照登入名記，同一帳號的其他角色不合併。
 
 舊的頂層 `paidUntil/graceUntil/autoRenew/autoRenewState/termsRevision` 已刪除，改讀各租約的同名欄位。
 
@@ -282,6 +284,7 @@ Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action 
 - `quote(sourceMod, productId, kind, quantity, cb, rental?)`：`rental` 省略為買斷或新租約，給租約 id 為續租該張；只有 `kind == "rental"` 能帶 `rental`。
 - `setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental)`：`rental` 必填；同一產品一次只送一筆同意或取消，前一筆未回時回 `nil, "pending"`。
 - 租約 id 與其他 id 同規則（1–96 字元字串、不含控制字元），不合格時本機回 `nil, "invalid_args"`。
+- `requestList(cb?)`／`getList()`／`onPush(fn)`：Economy 錢包「名額」分頁用。`requestList` 讀回自己全部商品（同一條排隊／合併／逾時規則），每個 snapshot 也寫進 `getState` 的快取；`getList()` 回 `{ entries, more }`（上一次成功讀到的商品，各取快取中最新的一份）與上一次讀取的錯誤；`onPush` 在每個 `entitlement.changed` 之後呼叫。
 
 `Client.openAdminPlans(sourceMod?, productId?)` 開啟管理台的唯讀方案總覽並選到該產品；讀取權限仍由伺服器重新驗證。
 

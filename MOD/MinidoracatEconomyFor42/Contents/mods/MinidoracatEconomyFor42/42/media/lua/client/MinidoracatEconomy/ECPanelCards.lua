@@ -373,6 +373,48 @@ function K.history(panel, e, title, auction)
     return c
 end
 
+-- ---------- the wallet's slots (ECPanelEntitlements rows) ----------
+-- A product (its name, row or rental lines): the source, the three counts as pills and one line
+-- per rental with its auto-renew label. An order: what it bought and what was paid, its status,
+-- and when a refund came back how much and when; ids only in the technical info.
+function K.entitlement(panel, e, title)
+    local E, env = C.Entitlements, e.env
+    local c = { source = title, sourceIcon = "wallet", iconKey = "sliders", name = E.productName(env),
+        sub = E.sourceName(env), rows = {}, tech = {} }
+    local o = e.order
+    if o == nil then
+        local ent = type(env.entitlement) == "table" and env.entitlement or {}
+        c.chips = { { label = tr("Ent_PillUsable"), value = tostring(tonumber(ent.usable) or 0) },
+            { label = tr("Ent_Kind_permanent"), value = tostring(tonumber(ent.permanent) or 0) },
+            { label = tr("Ent_Kind_rental"), value = tostring(tonumber(ent.rental) or 0) } }
+        local lines, now = {}, EC.now()
+        for i, r in ipairs(type(ent.rentals) == "table" and ent.rentals or {}) do
+            if type(r) == "table" then
+                lines[#lines + 1] = { text = E.rentalLine(i, r, now, panel.offsetMin), note = (E.autoTag(r, env.plan, ent)) }
+            end
+        end
+        if #lines > 0 then c.sections = { { title = tr("Ent_RentalsHead"), lines = lines } } end
+    else
+        local cur = o.currency
+        c.sub = join({ c.sub, e.content })
+        c.hero = { value = e.amount, token = e.refunded and "textMuted" or "negative", coin = cur,
+            unit = W.currencyLabel(cur), strike = e.refunded }
+        c.chips = { { value = e.status, token = e.refunded and "warn" or nil, dot = true } }
+        addRow(c, tr("Ent_Col_Time"), e.time)
+        local rf = type(o.refund) == "table" and o.refund or nil
+        if rf then
+            addRow(c, tr("Ent_RefundTitle"), U.amountText(tonumber(rf.amount) or 0),
+                U.stampText(tonumber(rf.at), panel.offsetMin), "positive", cur)
+        end
+        addTech(c, "Ent_OrderId", o.orderId)
+        addTech(c, "Detail_TxId", o.txId)
+        addTech(c, "Ent_RefundTxId", rf and rf.txId)
+    end
+    addTech(c, "ACard_SourceMod", env.sourceMod)
+    addTech(c, "PCard_Ent_ProductId", env.productId)
+    return c
+end
+
 -- The card of one row of `kind`, opened (or refreshed) from `panel.detailList`.
 function K.build(panel, kind, e, key, title)
     local list = panel.detailList
@@ -382,6 +424,7 @@ function K.build(panel, kind, e, key, title)
     if kind == "market" then return K.market(panel, e, list, key, title) end
     if kind == "auction" then return K.auction(panel, e, list, key, title) end
     if kind == "mail" then return K.mail(panel, e, list, key, title) end
+    if kind == "ent" then return K.entitlement(panel, e, title) end
     return nil
 end
 
