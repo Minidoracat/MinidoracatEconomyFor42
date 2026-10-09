@@ -821,6 +821,8 @@ function A.system(write, manage)
         mailboxUnclaimed = md.mailbox and md.mailbox.unclaimed or 0,
         market = Mk.stats(),
         auctions = S.Auction and S.Auction.stats() or nil,
+        -- open buy orders, and how many are held on a refund the ledger refused (ECWanted)
+        wanted = S.Wanted and S.Wanted.stats() or nil,
         whitelist = Codec.status(),
         -- rollback ledgers this start could not read in full: letters minted up to one are not
         -- claimable and transfers up to one are held until it leaves the recent-starts history
@@ -2104,7 +2106,10 @@ local function restorePending(username, target, opId, pend, proof, content, succ
     pend.returnMailId = entry.id
     Rcv.transmit(target)
     local record = Rcv.copyReplay(evidence)
-    record.originalKind, record.kind, record.returnMailId = evidence.kind or pend.kind, "return", entry.id
+    -- a return of a return keeps the kind the goods first left as (a buy order's lot or a
+    -- goods-paid delivery has no price or currency, and the next partial return relies on that)
+    local firstKind = evidence.kind == "return" and evidence.originalKind or evidence.kind or pend.kind
+    record.originalKind, record.kind, record.returnMailId = firstKind, "return", entry.id
     record.origins, record.qty, record.lotQty = origins, qty, qty
     record.protocol = Rcv.PROTOCOL
     record.epoch, record.seq = md.meta.epoch, S.nextSeq()

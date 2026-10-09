@@ -142,10 +142,14 @@ function U.adminErrorText(code)
     return getText(T .. "Admin_Error_unknown")
 end
 
--- A market record's reason: the one the server writes itself (an auction cancelled by downtime)
--- reads as words; anything else is what an admin typed and is shown as written.
+-- A market record's reason: the one the server writes itself (an auction cancelled by downtime, a
+-- closed buy order's code) reads as words; anything else is what an admin typed and is shown as
+-- written. `kind` is the record's kind: only a wanted_closed line carries a code of its own.
 local MARKET_REASON_KEY = { downtime = "Reason_auction_downtime" }
-function U.marketReasonText(reason)
+function U.marketReasonText(reason, kind)
+    if kind == "wanted_closed" then
+        return getTextOrNull(T .. "Wanted_Closed_" .. tostring(reason)) or U.unknownText("wanted close reason", reason)
+    end
     local key = MARKET_REASON_KEY[reason]
     if key then return getText(T .. key) end
     return reason
@@ -721,8 +725,10 @@ function U.reasonText(code, written)
 end
 
 -- The kinds whose SYSTEM_BURN posting is a charge on one party, and the word for it: a transfer's
--- sender pays a fee, a sale's seller a tax. Labels the statement's fee line and the admin record.
-U.FEE_KEY = { transfer = "Wallet_Col_Fee", market_buy = "Wallet_Tax", auction_sale = "Wallet_Tax" }
+-- sender pays a fee, a sale's seller a tax, a buy order's owner the listing fee on what it holds.
+-- Labels the statement's fee line and the admin record.
+U.FEE_KEY = { transfer = "Wallet_Col_Fee", market_buy = "Wallet_Tax", auction_sale = "Wallet_Tax",
+    wanted_create = "Market_Fee", wanted_raise = "Market_Fee", wanted_fill = "Wallet_Tax" }
 
 color, fill, border, text, textWidth, fitText, textRight, textCentre, strike, drawCoin, clockText, dateText, stampText, durationText, amountText, signedText, hasBit, kindText, pad2 = U.color, U.fill, U.border, U.text, U.textWidth, U.fitText, U.textRight, U.textCentre, U.strike, U.drawCoin, U.clockText, U.dateText, U.stampText, U.durationText, U.amountText, U.signedText, U.hasBit, U.kindText, U.pad2
 

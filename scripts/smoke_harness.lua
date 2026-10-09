@@ -1063,6 +1063,7 @@ require("MinidoracatEconomy/ECTransfer")
 require("MinidoracatEconomy/ECIdentity")
 require("MinidoracatEconomy/ECMerge")
 require("MinidoracatEconomy/ECReports")
+require("MinidoracatEconomy/ECWanted")
 local EC = MinidoracatEconomy
 local S = EC.Server
 local L = EC.Ledger
@@ -1125,6 +1126,9 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: the player's "show butto
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: a shop item's name on delivery (scenario SN: read and carried, refusals change nothing, a bad name in the file, written and read back, set and clear, the fresh letter and its named copy, an unnamed row unchanged, a fresh container stays full, buyback by name, selling back, a name on a fluid container refused on every write and at load)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: a MOD's setName-only name travels as a label (scenario LB: kept, rebuilt without the custom flag and previewed; none on a fresh copy, custom names unchanged, a long one whole; none for any name vanilla gives by itself; the buyback takes it; different labels never merge; listed, bought and delivered under it)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7    -- +7: the wallet's slots tab (scripts/test_entitlements.lua): entitlement.list answers only the caller's own login with the source's name, a player's snapshot never names the refunding admin while the desk's rows stay, the list cap, not_ready before ModData, receipts carry the entitlement reason code and product name key, the facade cannot put a name key on a receipt, a list at its cap with the longest products and a many-language source name fits one reply
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 74   -- +74: player buy orders (scripts/test_wanted.lua: W-R1..6 the recovery probes for the escrowed lot and a delivery - fill and lot rolled back and mailed home, a double rollback, older saves reclaimed, receipt open while escrowed, ledger-key and live-lot proof with and without a save; W-1..8 create shapes, fees and refusals, fills by coin and by goods, conditions, offers / raise / dismiss, cancel, refused and retried release, expiry, merge blocker, admin list / cancel, reply size at the caps, history)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: buy-order review fixes (scripts/test_wanted.lua: W-R7a/b a lot and a goods-paid fill partly returned twice keep their original kind; W-1b2 / W-3j2 / W-5g2 / W-6a2 resends of create, fill, raise and cancel answer the first result, a cancel id reused for another order is request_conflict; W-9 an offer under a merged login is the account's; W-10 a buy-order fill is in the market report scan)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: localized buy-order search (scripts/test_wanted.lua W-11a..c: the client's resolved item types widen the query, matched before paging, bounded list)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -21358,6 +21362,20 @@ check(toPlain.error == "not_canonical" and toPlain.reason == "renamed" and wrong
 SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = false
 onlinePlayers = {}
 end)()
+
+-- ===== 求購單 v2（情境在 scripts/test_wanted.lua；共用本檔的假全域與 check）=====
+do
+    local run = loadfile("scripts/test_wanted.lua")
+    if run == nil then
+        check(false, "scripts/test_wanted.lua loads")
+    else
+        run({ check = check, fire = fire, fakePlayer = fakePlayer, lastSent = lastSent,
+            now = function() return nowMs end, setNow = function(v) nowMs = v end,
+            clearFiles = function() files = {} end, clearSent = function() sentCommands = {} end,
+            sent = function() return sentCommands end, setOnline = function(list) onlinePlayers = list end,
+            store = function() return modDataStore end })
+    end
+end
 
 io.write("\n")
 if assertions ~= EXPECTED_ASSERTIONS then

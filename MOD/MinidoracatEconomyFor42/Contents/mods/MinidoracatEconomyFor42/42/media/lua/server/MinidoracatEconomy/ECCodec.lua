@@ -590,6 +590,39 @@ function Codec.check(item)
     return Codec.stateCheck(item)
 end
 
+-- The whitelist verdict for an item type with no object in hand (a buy order names the item it
+-- wants before anybody owns one): the same three rules as Codec.check, read off the script, so
+-- nothing is instanced. A type the server has no script for is unknown_item - a picked-up piece
+-- of furniture (`Base.<sprite>`, no script of its own) is refused here for that reason.
+-- Returns true, or false, the reason and (not_whitelisted) the rule.
+function Codec.typeAllowed(fullType)
+    if type(fullType) ~= "string" or fullType == "" or #fullType > 128 then return false, "unknown_item" end
+    local ok, script = pcall(function() return ScriptManager.instance:FindItem(fullType) end)
+    if not ok or script == nil then return false, "unknown_item" end
+    if wl.excludeTypes[fullType] then return false, "not_whitelisted", "excluded" end
+    if EC.isFixedType(script) then return false, "not_whitelisted", "fixed" end
+    if not wl.types[fullType] and not wl.categories[EC.itemCategory(script)] then return false, "not_whitelisted", "category" end
+    return true
+end
+
+-- Durability in whole percent, rounded down: the lowest of the body (getCondition /
+-- getConditionMax, InventoryItem.java:2772, 2505) and, on an item with a head, the head
+-- (getHeadCondition / getHeadConditionMax, :4792-4808) - an axe whose head reaches zero breaks
+-- whatever the handle says (:4810-4824). A part whose maximum is not positive is skipped; an item
+-- with no readable part is whole (100). Sharpness, uses and charge are not durability.
+-- `pct >= minPct` is the same test as `current * 100 >= minPct * max` for every part.
+function Codec.durabilityPct(item)
+    local pct = 100
+    local function part(cur, max)
+        if type(cur) == "number" and type(max) == "number" and max > 0 then
+            pct = math.min(pct, math.floor(math.max(0, cur) * 100 / max))
+        end
+    end
+    part(call(item, "getCondition"), call(item, "getConditionMax"))
+    if call(item, "hasHeadCondition") == true then part(call(item, "getHeadCondition"), call(item, "getHeadConditionMax")) end
+    return pct
+end
+
 -- The system buys only what it could have handed out itself: the item must look like a freshly
 -- created one of that type in everything the shop pays for (condition, uses, repairs, read
 -- pages, how much of a food is left, fluid, no custom name, clothing wear). Age, modData, a

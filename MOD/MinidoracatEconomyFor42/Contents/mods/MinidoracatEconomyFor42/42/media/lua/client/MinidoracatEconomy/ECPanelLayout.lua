@@ -838,6 +838,11 @@ function L.layout(self)
     local isBoard = self.tab == "Leaderboard"
     board:setVisible(isBoard and open)
     board:layout(bx, g.contentY, bw, g.contentH)
+    -- the buy orders, the same way (ECPanelWanted)
+    local wanted = self.wanted
+    local isWanted = self.tab == "Wanted"
+    wanted:setVisible(isWanted and open)
+    wanted:layout(bx, g.contentY, bw, g.contentH)
 
     -- The page on screen names its rules (body and title); an open rules window follows them.
     -- Hidden unless the page on screen shows it again in its own branch below.
@@ -852,6 +857,7 @@ function L.layout(self)
     rules:setVisible(rules:getIsVisible() and open)
     rules:setEnable(not self:isModal())
     if self.tab == "Market" or self.tab == "Auction" then L.tradeRules(self, open) end
+    if isWanted then wanted:placeRules(rules, open) end
     if self.tab == "Shop" or self.tab == "Mail" then
         -- right end of the title row (left of the mailbox's gold claim-all), placed by the page
         rules:setVisible(open)
@@ -895,6 +901,7 @@ function L.layout(self)
     self:layoutMarketDialog()
     self:layoutBuy()
     self:layoutDialog(self.transferDialog)
+    self:layoutDialog(self.wantedDialog)
     self.layoutW, self.layoutH = w, h
     self.layoutCollapsed = self.isCollapsed
     self.layoutBand = band

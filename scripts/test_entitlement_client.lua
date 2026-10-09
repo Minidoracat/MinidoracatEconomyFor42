@@ -12,7 +12,13 @@ refresh signals, the one shared reading of an order lookup (instant products inc
 ids checked locally and carried on quote / auto-renew, an error code never reaching the screen,
 and the admin integration page: order content / status / auto-renew reason / rental line /
 refund dialog / settings file problem wording, the order list's pages and player filter, and a
-refund sent once with its reason.
+refund sent once with its reason. Also the buy-order page's words and arithmetic
+(ECPanelWantedText): fee and tax rounding, condition / option / held / status wording, and every
+refusal read as a sentence, never as its code; the per-write gates (a frozen account may still
+cancel), the unknown policy, the localized search types, the own-order count and the dialog
+height bound; and the page's state machine (ECPanelWanted with its controls replaced): no create
+before the policy is read, a frozen cancel, a bare refusal of the read in flight, the types sent
+with a keyword, another order's candidates dropped, and the empty record's button.
 ]]
 
 local MEDIA = os.getenv("EC_LUA_ROOT") or "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
@@ -374,6 +380,233 @@ end)()
     check(E.stateText("made_up_state") == "IGUI_MinidoracatEconomy_Common_Unknown"
         and E.autoRenewText("weird") == "IGUI_MinidoracatEconomy_Common_Unknown",
         "an entitlement state or auto-renew value without a translation reads as the unknown word, not its code")
+end)()
+
+-- ---------- buy orders: the words and the arithmetic of the page (ECPanelWantedText) ----------
+;(function()
+    local T = "IGUI_MinidoracatEconomy_"
+    package.loaded["MinidoracatEconomy/ECPanelWidgets"] = true
+    C.UI = { T = T, amountText = tostring }
+    C.PanelWidgets = { currencyLabel = function(id) return "cur:" .. tostring(id) end,
+        marketError = function(args) return "market:" .. tostring(args.error) end }
+    C.itemLabel = function(t) return "item:" .. tostring(t) end
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECPanelWantedText.lua")
+    local X = C.WantedText
+    -- the server's percentage and tax (ECMarket pct; the tax never takes the whole amount)
+    check(X.pct(100, 2) == 2 and X.pct(1, 2) == 1 and X.pct(0, 2) == 0 and X.pct(100, 0) == 0,
+        "a fee is the market's rounded-up percentage, at least 1 while the rate is on")
+    local net, tax = X.net(60, 5)
+    check(net == 57 and tax == 3, "a seller keeps the coins net of the sales tax")
+    net, tax = X.net(1, 50)
+    check(net == 1 and tax == 0, "the tax never takes the last coin")
+    -- conditions and options
+    check(X.condText(nil) == nil and X.condText({ new = true }) == T .. "Wanted_Cond_New"
+        and X.condText({ minPct = 80 }) == T .. "Wanted_Cond_Min|80", "a condition reads as words, none as nothing")
+    check(X.optionText({ kind = "coin", unitPrice = 2, currency = "survivor" }) == T .. "Wanted_Each|2 cur:survivor"
+        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Bandage" }) == T .. "Wanted_EachItems|1|item:Base.Bandage",
+        "a payment option names its unit price or its items per unit")
+    -- an own order's state pill and what it holds
+    check(X.status({ qty = 50, qtyTotal = 50 }) == T .. "Wanted_Status_open"
+        and X.status({ qty = 30, qtyTotal = 50 }) == T .. "Wanted_Status_partial"
+        and X.status({ qty = 30, qtyTotal = 50, blocked = "refund_failed" }) == T .. "Wanted_Status_blocked",
+        "an order is open, partly filled, or held by a failed refund")
+    local held = X.heldText({ options = { { kind = "coin", currency = "survivor", held = 60 },
+        { kind = "item", item = "Base.Bandage", held = 30 } } })
+    check(held == T .. "Card_Join2|" .. T .. "Wanted_HeldCoins|60 cur:survivor|" .. T .. "Wanted_HeldItems|30|item:Base.Bandage",
+        "what an order holds names its coins and its escrowed items")
+    check(X.heldText({ options = {} }) == T .. "Wanted_HeldNone", "an order holding nothing says so")
+    -- refusals: the order's own codes first, then the market's, never the code
+    check(X.errorText({ error = "price_range", min = 1, max = 99 }) == T .. "Wanted_Error_price_range|1|99"
+        and X.errorText({ error = "price_range", max = 99 }) == T .. "Wanted_Error_price_max|99",
+        "a price bound names the bounds the server sent")
+    check(X.errorText({ error = "worn", pct = 62, minPct = 80 }) == T .. "Wanted_Error_worn|62|80",
+        "a worn copy names its durability and the order's floor")
+    check(X.errorText({ error = "mail_confirmation_required", heavy = true }) == T .. "Delivery_ConfirmMailHeavy",
+        "the mailbox question is the market's own sentence")
+    known[T .. "Wanted_Error_own_order"] = "own"
+    check(X.errorText({ error = "own_order" }) == "own", "a buy-order code reads as its own sentence")
+    check(X.errorText({ error = "equipped" }) == "market:equipped", "any other code falls back to the market's wording")
+    check(X.verdictText({ verdict = "worn", pct = 62 }) == T .. "Wanted_Verdict_worn|62"
+        and X.verdictText({ verdict = "equipped" }) == "market:equipped", "a copy the order does not take says why")
+    check(X.charCount("abc") == 3, "a note is counted in characters")
+    check(X.errorText({ error = "insufficient_funds", needed = 102, currency = "survivor" })
+        == T .. "Wanted_Error_insufficient_funds|102 cur:survivor",
+        "insufficient funds quotes the server's needed amount, which is the total the write costs")
+    -- the gate of each write: a frozen account may still take its order down and ignore an ask
+    local base = { frozen = true, atTerminal = true, known = true, max = 5, count = 1 }
+    check(X.gateCode("cancel", base) == nil and X.gateCode("dismiss", base) == nil
+        and X.gateCode("fill", base) == "account_frozen" and X.gateCode("create", base) == "account_frozen"
+        and X.gateCode("raise", base) == "account_frozen" and X.gateCode("offer", base) == "account_frozen",
+        "frozen: cancel and dismiss stay open, every write that moves money or goods is shut")
+    check(X.gateCode("cancel", { atTerminal = false }) == "not_at_terminal",
+        "every write, cancel included, is made at a terminal")
+    local unknown = { atTerminal = true, known = false, max = 5, count = 0 }
+    check(X.gateCode("create", unknown) == "policy_unknown" and X.gateCode("raise", unknown) == "policy_unknown"
+        and X.gateCode("fill", unknown) == "policy_unknown" and X.gateCode("cancel", unknown) == nil,
+        "nothing that quotes the rates opens before the policy was read; an unknown fee is not zero")
+    check(X.gateCode("create", { atTerminal = true, known = true, max = 0 }) == "wanted_disabled"
+        and X.gateCode("create", { atTerminal = true, known = true, max = 2, count = 2 }) == "too_many_orders"
+        and X.gateCode("create", { atTerminal = true, known = true, max = 2, count = 1 }) == nil,
+        "creating needs buy orders switched on and a free slot")
+    -- a translated name is resolved to types on this side (bounded, fixed classes skipped)
+    local items = { { fullType = "Base.Bandage", search = "zz-bandage base.bandage" },
+        { fullType = "Base.Bandaid", search = "zz-bandaid base.bandaid" },
+        { fullType = "Base.Fixed", search = "zz-fixed", fixed = true }, { fullType = "Base.Nails", search = "nails" } }
+    local list, set = X.searchTypes(items, "zz-", 200)
+    check(#list == 2 and set["Base.Bandage"] and set["Base.Bandaid"] and not set["Base.Fixed"]
+        and #X.searchTypes(items, "zz-", 1) == 1 and #X.searchTypes(items, nil, 200) == 0,
+        "a keyword names the item types whose translated or English name holds it, at most the bound")
+    -- the own-order count from whichever read answered last
+    local mine5 = { orders = { 1, 2, 3, 4, 5 }, max = 5 }
+    check(X.ownCount({ mineCount = 4, max = 5 }, 200, mine5, 100) == 4
+        and X.ownCount({ mineCount = 4, max = 5 }, 100, mine5, 200) == 5
+        and X.ownCount(nil, nil, mine5, 100) == 5 and X.ownCount({ mineCount = 3, max = 5 }, 1, nil, nil) == 3,
+        "the own-order count is the newer read's, never a stale list preferred for good")
+    -- the dialog never outgrows its band: 1000x560 at the largest font, three payment options
+    local formH, readerH, total = X.dialogBands(500, 69, 690, 2 * 47 + 6, 400, 12 + 55 + 12, 45, true)
+    check(total <= 500 and formH < 690 and readerH >= 45 + 12,
+        "a form taller than the band scrolls: the reader and the buttons stay inside the window")
+    local f2, _, t2 = X.dialogBands(500, 69, 120, 0, 60, 79, 16, true)
+    check(f2 == 120 and t2 <= 500, "a form that fits keeps its full height")
+    -- keep the words module for the page block below
+    C.UI, C.PanelWidgets, C.itemLabel = nil, nil, nil
+end)()
+
+-- ---------- buy orders: the page's state machine (ECPanelWanted, controls replaced) ----------
+;(function()
+    local T = "IGUI_MinidoracatEconomy_"
+    local function noop() end
+    local savedGate, savedPanel = C.ReadGate, ISPanel
+    for _, m in ipairs({ "ISUI/ISPanel", "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECPanelWidgets",
+        "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECReadGate", "MinidoracatEconomy/ECDetailWindow",
+        "MinidoracatEconomy/ECPanelCards", "MinidoracatEconomy/ECItemPicker", "MinidoracatEconomy/ECPanelWantedText",
+        "MinidoracatEconomy/ECPanelWantedDialogs" }) do package.loaded[m] = true end
+    ISPanel = { derive = function() local c = {}; c.__index = c; return c end }
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECReadGate.lua")
+    C.UI = { T = T, PAD = 8, ROW = 28, CHIP_H = 26, CARD_TITLE_H = 36, fontH = { small = 16, medium = 20 },
+        amountText = tostring, itemTexture = noop }
+    C.PanelWidgets = { ITEM_ICON = 32, currencyLabel = function(id) return "cur:" .. tostring(id) end,
+        marketError = function(a) return "market:" .. tostring(a.error) end, readError = function(c) return "read:" .. c end,
+        itemBaseName = noop, remainText = tostring, closeCombo = noop }
+    C.Keyboard = { invalidate = noop }
+    C.DetailWindow = { close = noop, isOpen = function() return false end }
+    C.itemLabel = function(t) return "item:" .. tostring(t) end
+    local universe = { items = { { fullType = "Base.Bandage", search = "zz-local base.bandage" } } }
+    C.ItemPicker = { universe = function() return universe end }
+    local atTerminal = true
+    C.nearTerminal = function() return atTerminal end
+    local wire = {}
+    C.sendWanted = function(command, args) wire[#wire + 1] = { command = command, args = args } end
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECPanelWanted.lua")
+    local M = C.PanelWanted
+    local panel = { pageVisible = function() return true end, layout = noop, updateMailTab = noop,
+        isModal = function() return false end }
+    local p = setmetatable({ panel = panel, mode = "mine", pageNo = 1, rows = {}, mineRows = {}, histRows = {},
+        histAll = {}, actionOpen = {}, gateState = {}, combos = {}, tabs = { setItemLabel = noop, setSelected = noop },
+        list = { setItems = noop }, mineList = { setItems = noop }, search = { isFocused = function() return false end },
+        histBar = { blur = noop } }, M.Page)
+    p.browseGate = C.ReadGate.create(function(_, rid) C.sendWanted("browse", p:browseArgs(rid)) end)
+    p.mineGate = C.ReadGate.create(function(_, rid) C.sendWanted("mine", { requestId = rid }) end)
+    p.histGate = C.ReadGate.create(function(_, rid) C.sendWanted("history", { requestId = rid }) end)
+    p.candGate = C.ReadGate.create(function(orderId, rid)
+        p.candSentFor = orderId
+        C.sendWanted("candidates", { orderId = orderId, requestId = rid })
+    end)
+    local function last(command)
+        for i = #wire, 1, -1 do if wire[i].command == command then return wire[i].args end end
+    end
+    local opened, cancelled = nil, nil
+    p.openDialog = function(_, kind) opened = kind end
+    p.confirmCancel = function() cancelled = true end
+    -- the own list answers first: the rates are not known, nothing quotes them
+    p:request()
+    p:onReply("mine", { ok = true, requestId = last("mine").requestId, orders = { { id = "o1", item = "Base.Nails",
+        qty = 5, qtyTotal = 5, options = {} } }, max = 5 })
+    p.infoT = nil
+    p:onCreate()
+    check(opened == nil and p:gateReason("create") == T .. "Wallet_Loading" and p:info().known == false,
+        "page: the own list alone opens no create dialog; the unknown policy reads as loading, not a zero fee")
+    nowMs = nowMs + 700
+    p.browseGate:pump(true)
+    p:onReply("browse", { ok = true, requestId = last("browse").requestId, rows = {}, page = 1, pages = 1,
+        feePercent = 2, taxPercent = 5, priceMin = 1, priceMax = 100, max = 5, mineCount = 4 })
+    p:onCreate()
+    check(opened == "create" and p:info().feePercent == 2 and p:info().count == 4,
+        "page: once the policy is read the dialog opens, and the newer browse count wins over the older list")
+    -- frozen at a terminal: the order can still be cancelled, nothing else
+    C.wallet = { frozen = true }
+    p.infoT = nil
+    p:onRowAction({ view = { id = "o1", item = "Base.Nails" } }, "cancel")
+    opened = nil
+    p:onRowAction({ view = { id = "o1", item = "Base.Nails", options = {} } }, "fill")
+    check(cancelled == true and opened == nil, "page: a frozen account reaches the cancel confirmation, never a delivery")
+    C.wallet = nil
+    -- a refusal that carries only its code and the requestId is shown, the snapshot kept
+    p.mode, p.query = "browse", "nails"
+    nowMs = nowMs + 700
+    p:request()
+    local rid = last("browse").requestId
+    p:onReply("browse", { ok = false, error = "reply_too_large", requestId = "someone-else" })
+    local ignored = p.browseError == nil
+    p:onReply("browse", { ok = false, error = "reply_too_large", requestId = rid })
+    check(ignored and p.browseError == "reply_too_large" and p.browseSnap ~= nil,
+        "page: a bare refusal of the read in flight is shown (an older one is not) and the snapshot stays")
+    -- a translated keyword goes out with the item types it names
+    p.query = "zz-local"
+    nowMs = nowMs + 700
+    p:request()
+    local types = last("browse").types
+    check(type(types) == "table" and types[1] == "Base.Bandage" and last("browse").query == "zz-local",
+        "page: a translated keyword is sent with the item types it names, for the server to match before paging")
+    -- the candidates of another order are never shown in this fill dialog
+    local got = nil
+    p.dialog = { kind = "fill", ctx = { view = { id = "B" } }, onCandidates = function(_, a) got = a end }
+    nowMs = nowMs + 700
+    p:wantCandidates("A")
+    local ridA = last("candidates").requestId
+    p:wantCandidates("B")
+    p:onReply("candidates", { ok = true, orderId = "A", requestId = ridA, rows = {} })
+    local droppedA = got == nil
+    nowMs = nowMs + 700
+    p.candGate:pump(true)
+    p:onReply("candidates", { ok = true, orderId = "B", requestId = last("candidates").requestId, rows = {} })
+    check(droppedA and got ~= nil and got.orderId == "B", "page: a late candidate answer for order A never fills order B's dialog")
+    p.dialog = nil
+    -- an empty record's button goes to the orders there are
+    p.mode, p.emptyAction = "history", "browse"
+    p:onEmpty()
+    check(p.mode == "browse", "page: the empty record's button switches to browsing")
+    C.ReadGate, ISPanel = savedGate, savedPanel
+    C.UI, C.PanelWidgets, C.itemLabel, C.WantedText, C.PanelWanted = nil, nil, nil, nil, nil
+    C.Keyboard, C.DetailWindow, C.ItemPicker, C.nearTerminal, C.sendWanted = nil, nil, nil, nil, nil
+    for _, m in ipairs({ "ISUI/ISPanel", "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECDetailWindow" }) do
+        package.loaded[m] = nil
+    end
+    package.loaded["MinidoracatEconomy/ECPanelWidgets"] = nil
+end)()
+
+-- ---------- a market record's own amount, as the admin desk lists it (ECPanelWidgets) ----------
+;(function()
+    local T = "IGUI_MinidoracatEconomy_"
+    local savedPanel = ISPanel
+    ISPanel = { derive = function() local c = {}; c.__index = c; return c end }
+    for _, m in ipairs({ "ISUI/ISPanel", "ISUI/ISComboBox", "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECKeyboard",
+        "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = true end
+    C.UI = setmetatable({ T = T, fontH = {}, amountText = tostring }, { __index = function() return function() end end })
+    C.itemLabel = function(t) return "item:" .. tostring(t) end
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECPanelWidgets.lua")
+    local W = C.PanelWidgets
+    check(W.recordAmountText({ kind = "wanted_sold", payItem = "Base.Bandage", payQty = 3 }) == T .. "Card_ItemQty|item:Base.Bandage|3"
+        and W.recordAmountText({ kind = "wanted_filled", payItem = "Base.Bandage", payQty = 2 }) == T .. "Card_ItemQty|item:Base.Bandage|2",
+        "admin record: a buy order paid in items lists the items and their count, never a zero")
+    check(W.recordAmountText({ kind = "wanted_raised", price = 12 }) == T .. "Wanted_Each|12"
+        and W.recordAmountText({ kind = "wanted_offer_met", price = 15 }) == T .. "Wanted_Each|15",
+        "admin record: a raise and an asking price met are prices per unit and say so")
+    check(W.recordAmountText({ kind = "sold", price = 40 }) == "40" and W.recordAmountText({ kind = "expired" }) == nil,
+        "admin record: every other record keeps its gross price; a record with none has no amount")
+    ISPanel, C.UI, C.itemLabel, C.PanelWidgets = savedPanel, nil, nil, nil
+    for _, m in ipairs({ "ISUI/ISPanel", "ISUI/ISComboBox", "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECKeyboard",
+        "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = nil end
 end)()
 
 -- ---------- the admin integration page, with rendering and engine controls replaced ----------
@@ -780,6 +1013,77 @@ end)()
     p.saveRequestId = "s2"
     p:onReply("catalog", { ok = true, requestId = "s2", id = "battery", revision = "r3", items = catalog.items }, { action = "set" })
     check(#opened == 4 and p.queue == nil and p.draft.id == "battery", "opening a saved row ends the list")
+end)()
+
+-- ---------- the admin buy order page (ECAdminWanted) ----------
+;(function()
+    local classes = {}
+    ISPanel = { derive = function(_, name)
+        local class = {}
+        class.__index = class
+        classes[name] = class
+        return class
+    end }
+    for _, m in ipairs({ "ISUI/ISPanel", "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECDetailWindow" }) do
+        package.loaded[m] = true
+    end
+    local T = "IGUI_MinidoracatEconomy_"
+    local function noop() end
+    C.UI = { PAD = 8, T = T, CARD_TITLE_H = 28, fontH = { small = 16, medium = 20 }, text = noop,
+        textWidth = function(s) return #tostring(s) end, fitText = function(s) return s end,
+        amountText = tostring, currencyName = C.currencyName, itemName = function(t) return "name:" .. t end,
+        unknownText = function() return T .. "Common_Unknown" end,
+        adminErrorText = function(code) return "ERR:" .. tostring(code) end, setEntryEditable = noop }
+    MinidoracatEconomy.CURRENCY_ORDER = { "survivor", "cat" }
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminWanted.lua")
+    local W, Page = C.AdminWanted, classes.MinidoracatEconomyAdminWantedPage
+
+    local now = 1000
+    check(W.statusOf({ blocked = "refund_failed", closing = "cancelled", qty = 1, qtyTotal = 2, expiresAt = 0 }, now) == "refund_failed"
+        and select(2, W.statusOf({ blocked = "refund_failed" }, now)) == "errorText", "a failed refund outranks every other state")
+    check(W.statusOf({ closing = "expired", qty = 2, qtyTotal = 2, expiresAt = 5000 }, now) == "closing"
+        and W.statusOf({ qty = 2, qtyTotal = 2, expiresAt = 500 }, now) == "expired"
+        and W.statusOf({ qty = 1, qtyTotal = 2, expiresAt = 5000 }, now) == "partial"
+        and W.statusOf({ qty = 2, qtyTotal = 2, expiresAt = 5000 }, now) == "open", "closing, expired, partial, open")
+    check(W.statusText({ blocked = "mystery" }, now) == T .. "Common_Unknown", "an unknown block is the unknown word, never the code")
+    check(W.condText(nil) == T .. "Admin_Wd_Cond_any" and W.condText({ new = true }) == T .. "Admin_Wd_Cond_new"
+        and W.condText({ minPct = 80 }) == T .. "Admin_Wd_Cond_pct|80", "the condition: any, new only, a durability floor")
+
+    local view = { id = "w1", owner = "bob", item = "Base.Nails", qty = 30, qtyTotal = 50, options = {
+        { kind = "coin", currency = "survivor", unitPrice = 20, held = 600, fee = 10 },
+        { kind = "coin", currency = "cat", unitPrice = 1, held = 0 },
+        { kind = "item", perUnit = 1, item = "Base.Bandage", held = 30 } } }
+    local lines = W.cancelLines(view)
+    check(#lines == 4 and lines[1] == T .. "Admin_Wd_CancelHead|name:Base.Nails|30|50"
+        and lines[2] == T .. "Admin_Wd_CancelRefund|600 cur:survivor"
+        and lines[3] == T .. "Admin_Wd_CancelReturn|30|name:Base.Bandage" and lines[4] == T .. "Admin_Wd_CancelWarn",
+        "the cancel dialog lists the held money and the escrowed items going back; an empty option is not listed")
+    check(W.refundText({ cat = 30, survivor = 600 }) == "600 cur:survivor" .. T .. "Admin_Set_ListSep" .. "30 cur:cat"
+        and W.refundText({}) == nil and W.refundText(nil) == nil, "the refund names every currency in registry order")
+
+    -- a refused cancel shows the error and nothing else; a list answer to an old question is dropped
+    local owner = { readAllowed = function() return true end, writeAllowed = function() return false end }
+    local p = setmetatable({ owner = owner, rows = { view }, page = 1, isPending = function() return false end,
+        layout = noop, invalidateKeyboard = noop }, Page)
+    p.sent = { action = "cancel", requestId = "c1", ownerName = "bob" }
+    p:onReply({ ok = false, error = "refund_failed", requestId = "c1", rows = {} })
+    check(owner.message.text == "ERR:refund_failed" and owner.message.error == true and p.rows[1] == view,
+        "a refused cancel says why and keeps the list on screen")
+    p.query = "nails"
+    p.sent = { action = "list", key = "old", requestId = "l1" }
+    p:onReply({ ok = true, requestId = "l1", rows = {}, page = 1, pages = 1, total = 0 })
+    check(p.rows[1] == view, "an answer to a search the admin moved off is not shown")
+    p:onReply({ ok = true, requestId = "l1", rows = {} })
+    check(p.rows[1] == view, "an answered request is not answered twice")
+
+    -- the read-only role sees the cancel button disabled; the write role may press it
+    p.searchEntry, p.ownerEntry, p.list = {}, {}, {}
+    p.prevButton, p.nextButton = { setEnable = noop }, { setEnable = noop }
+    p:updateEnabled()
+    check(p.list.optionsDisabled == true, "read-only: force cancel disabled")
+    owner.writeAllowed = function() return true end
+    p:updateEnabled()
+    check(p.list.optionsDisabled == false, "write role: force cancel enabled")
 end)()
 
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))

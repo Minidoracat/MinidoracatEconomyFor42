@@ -1299,3 +1299,38 @@ local res = E.debit("playerA", "survivor", 120, {
 | 同一 `requestId` 重送 | 回第一次的結果（`duplicate=true`），不重複扣款 |
 | 經濟 MOD 未載入或 API 版本不合 | consumer 走 fail-soft；本 MOD 無事可做 |
 | 對凍結帳號 `credit` | `account_frozen`；管理員解凍後 consumer 重送同 `requestId` 成功 |
+
+## 22. 求購單（2026-10-10，`server/ECWanted.lua`）
+
+買方開單收購一種物品（1～50 件，可限「只收全新」或「最低耐久 N%」），最多三個付款選項：每種貨幣最多一個貨幣選項、最多一個物品選項（一種物品、每件給 `perUnit` 個）。上限 `WantedMaxPerPlayer`（0＝不開放）、全服 `Wd.MAX_ORDERS`＝500，每張開放中的單佔買方一格信箱。
+
+### 22.1 指令
+
+| 指令 | 閘門 | 作用 |
+|---|---|---|
+| `wanted.browse` / `wanted.mine` / `wanted.candidates` / `wanted.history` | 公開讀取 | 瀏覽（每頁 20）、自己的單（含還價）、賣方背包裡可交的同款、`wanted_` 開頭的市場紀錄 |
+| `wanted.create` | 終端、冪等 `wcreate:<user>:<rid>` | 建單並託管 |
+| `wanted.fill` | 終端、冪等 `wfill:<user>:<rid>` | 賣方選一個選項交貨 |
+| `wanted.cancel` | 終端、限本人（凍結也可）、冪等 `wcancel:<user>:<rid>` | 退保留款（退款本身以 `wclose:<orderId>` 去重）、寄回剩下的物品 |
+| `wanted.offer` / `wanted.raise` / `wanted.dismiss` | 終端 | 賣方對貨幣選項還價（不動錢物）／買方加價（冪等 `wraise:<user>:<rid>`）／買方忽略還價 |
+| `admin.wanted` | list 讀取、cancel 寫入（`A.reasonError`、稽核） | 全服列表與強制取消 |
+
+### 22.2 金流
+
+| kind | 分錄 |
+|---|---|
+| `wanted_create` | 每個貨幣選項：買方 available −(單價×件數＋刊登費)、reserved ＋單價×件數、`SYSTEM_BURN` ＋刊登費；沒有貨幣選項時只記冪等紀錄（`L.noteOperation`） |
+| `wanted_fill` | 選中的貨幣：買方 reserved −u×n、賣方 ＋(u×n−成交稅)、`SYSTEM_BURN` ＋稅；其他貨幣選項各釋放 u'×n 回買方 available；全無分錄時記冪等紀錄 |
+| `wanted_raise` | 買方 available −(差額＋差額的刊登費)、reserved ＋差額 |
+| `wanted_release` | 結單（交齊、取消、到期、管理員）時把剩下的保留款全部釋放，`allowFrozen` |
+
+重送一律回第一次的結果（建單的期限、費用與保留款，交貨的付款物品、付款信、剩餘件數，加價的差額、費用與被滿足的還價數，取消的退款與退回信），都存在冪等紀錄的扁平欄位裡，不從目前的單子重算。
+
+不變式：每個貨幣選項 `held == 單價 × 剩餘件數`；物品選項 `lot.qty ≥ perUnit × 剩餘件數`；每種貨幣「所有開放中的單的 held＋拍賣最高出價＝全部錢包 reserved」。釋放被帳本拒絕時單子原樣保留、標 `blocked="refund_failed"`，每分鐘重試；交貨與還價都被拒（`order_held`）。
+
+### 22.3 崩潰語意
+
+- **單子永遠不從玩家存檔重建**，錢都在世界存檔、跟著世界回滾。
+- 從玩家存檔交出去的物品走既有的 list-out：買方押的物品是 `wanted` 轉出（op id＝lot id＝收據 ref＝付款信與退回信的 listingId），賣方交的貨是 `fill` 轉出（帶帳本鍵 `txRequestId`）。世界回滾而玩家存檔較新時，這兩種一律以退回信寄回本人（`Wd.restoreFromPending`）；世界較新時舊存檔裡的副本由既有的舊副本收回處理。
+- 恢復核心認得託管中的 lot：`Mk.hasListing`、`R.worldOperation`（`Wd.operationInfo` 回原始 `lotQty`）、`R.sourceAlive`（託管期間收據不關閉）都問 `Wd.lotExists`；`fill` 沒有常駐的世界紀錄，跟收購一樣以帳本冪等鍵判定。兩種的退回信沒有價格與幣別，`ECMailbox` 的部分退回／第二次回滾不要求幣別。
+- 結單在同一個 tick 內釋放、寄回、移除單子；V1／V2 回滾後單子回到開放狀態，下一次掃描或操作再結一次。

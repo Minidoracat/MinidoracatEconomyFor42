@@ -147,7 +147,8 @@ end
 
 -- The flow chart's stacks: which band a kind's inflow / outflow feeds (1..4, 4 = everything else).
 local UP_BAND = { checkin = 1, milestone = 2, shop_sell = 3 }
-local DOWN_BAND = { shop_buy = 1, market_fee = 2, auction_fee = 2, market_buy = 3, auction_sale = 3 }
+local DOWN_BAND = { shop_buy = 1, market_fee = 2, auction_fee = 2, wanted_create = 2, wanted_raise = 2,
+    market_buy = 3, auction_sale = 3, wanted_fill = 3 }
 
 -- The chart palette, in either shape C.Charts hands it ({r,g,b} fields or [1..3]).
 local function rgbOf(c)

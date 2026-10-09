@@ -206,26 +206,28 @@ function M.mergeAccount(alias, into)
     return moved
 end
 
--- Slots per account (sandbox MailboxPerAccount). A slot is taken by an unclaimed mailbox entry
--- or by an active market listing (the listing turns into a mailbox entry when it comes back,
--- so a return never needs a free slot and the count never overshoots).
+-- Slots per account (sandbox MailboxPerAccount). A slot is taken by an unclaimed mailbox entry,
+-- an active market listing, an active auction or an open buy order (each turns into at most one
+-- mailbox entry when it comes back, so a return never needs a free slot and the count never
+-- overshoots).
 function M.capacity()
     return EC.sandbox("MailboxPerAccount", 50)
 end
 
--- Held slots that are not mailbox entries: active market listings and active auctions. They are
--- counted apart (a screenshot of 1 waiting + 3 listings + 2 auctions is 6 of 50 held, not 6
--- letters), so the client can name the three kinds instead of one "listings" lump.
+-- Held slots that are not mailbox entries: active market listings, active auctions and open buy
+-- orders. They are counted apart (a screenshot of 1 waiting + 3 listings + 2 auctions is 6 of 50
+-- held, not 6 letters), so the client can name each kind instead of one "listings" lump.
 local function escrowCounts(username)
-    local Mk, Au = S.Market, S.Auction
+    local Mk, Au, Wd = S.Market, S.Auction, S.Wanted
     local listings = (Mk and Mk.ownerCount) and Mk.ownerCount(username) or 0
     local auctions = (Au and Au.ownerCount) and Au.ownerCount(username) or 0
-    return listings, auctions
+    local wanted = (Wd and Wd.ownerCount) and Wd.ownerCount(username) or 0
+    return listings, auctions, wanted
 end
 
 function M.used(username)
-    local listings, auctions = escrowCounts(username)
-    return M.unclaimed(username) + listings + auctions
+    local listings, auctions, wanted = escrowCounts(username)
+    return M.unclaimed(username) + listings + auctions + wanted
 end
 
 function M.hasFreeSlot(username)
@@ -234,10 +236,10 @@ end
 
 -- What the client shows next to the mailbox count.
 function M.usage(username)
-    local listings, auctions = escrowCounts(username)
+    local listings, auctions, wanted = escrowCounts(username)
     local unclaimed = M.unclaimed(username)
-    return { unclaimed = unclaimed, marketListings = listings, auctions = auctions,
-        used = unclaimed + listings + auctions, capacity = M.capacity() }
+    return { unclaimed = unclaimed, marketListings = listings, auctions = auctions, wanted = wanted,
+        used = unclaimed + listings + auctions + wanted, capacity = M.capacity() }
 end
 
 -- fields = { kind, item, qty, txId, price?, snapshot?, listingId?, parentMailId?, units?, seller? }. A
@@ -1848,7 +1850,9 @@ reconcileOuts = function(player, p, scan, username)
                 local record = R.copyReplay(proof)
                 R.markProven(record)
                 if partial then
-                    record.originalKind, record.kind = proof.kind, "return"
+                    -- a return of a return keeps the kind the goods first left as: a buy order's
+                    -- lot or a goods-paid delivery has no price or currency on any later round
+                    record.originalKind, record.kind = proof.kind == "return" and proof.originalKind or proof.kind, "return"
                     record.origins, record.qty, record.lotQty = verdict.validOrigins, verdict.valid, verdict.valid
                 end
                 local ok, info
@@ -1861,9 +1865,13 @@ reconcileOuts = function(player, p, scan, username)
                     local snapshot = record.snapshot
                     -- the letter says what the goods were worth and in which currency: a
                     -- record whose currency cannot be proved is held, never mailed back with a
-                    -- price in a guessed one (spec contract 13)
-                    local currency = L.normalizeRecord(record, L.TRUST_SERVER)
-                    if currency == nil then
+                    -- price in a guessed one (spec contract 13). A buy order's escrowed lot
+                    -- ("wanted") and a delivery paid in goods ("fill" with no price) never had a
+                    -- price or a currency: they come back as goods only.
+                    local goodsOnly = (record.originalKind == "wanted" or record.originalKind == "fill") and record.price == nil
+                    local currency = nil
+                    if not goodsOnly then currency = L.normalizeRecord(record, L.TRUST_SERVER) end
+                    if currency == nil and not goodsOnly then
                         info = { reason = "currency_unknown" }
                     elseif type(snapshot) == "table" and type(snapshot.type) == "string" and record.qty >= 1 then
                         local entry, err = M.add(S.accountOf(username), { kind = "return", item = snapshot.type,

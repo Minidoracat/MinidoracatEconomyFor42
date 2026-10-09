@@ -1055,15 +1055,45 @@ local function historyRowHeight() return historyLine() * 2 + 8 end
 
 local HISTORY_KINDS = { "listed", "sold", "bought", "cancelled", "expired", "delisted", "restored", "reclaimed",
     "auction_created", "auction_bid", "auction_outbid", "auction_sold", "auction_won",
-    "auction_unsold", "auction_cancelled", "auction_restored" }
+    "auction_unsold", "auction_cancelled", "auction_restored",
+    "wanted_created", "wanted_filled", "wanted_sold", "wanted_closed", "wanted_raised", "wanted_offer_met",
+    "wanted_returned" }
 local HISTORY_TOKENS = { sold = "positive", bought = "positive", delisted = "warn", expired = "warn", reclaimed = "warn",
     auction_sold = "positive", auction_won = "positive", auction_outbid = "warn",
-    auction_unsold = "warn", auction_cancelled = "warn", auction_created = "textFaint" }
+    auction_unsold = "warn", auction_cancelled = "warn", auction_created = "textFaint",
+    wanted_created = "textFaint", wanted_filled = "positive", wanted_sold = "positive", wanted_returned = "warn" }
+-- A buy order's record quotes its price per unit (the raise, the asking price a raise met), not a
+-- wallet movement: those amounts are spelled "each" and never signed.
+local EACH_KINDS = { wanted_raised = true, wanted_offer_met = true }
 
 -- A market/auction record kind as words (the filter chips and the rows): a kind a newer server
 -- writes reads as the translated "unknown", the kind in the log.
 local function marketKindText(kind)
     return getTextOrNull(T .. "Market_Kind_" .. tostring(kind)) or U.unknownText("market kind", kind)
+end
+
+-- A record's reason as words (U.marketReasonText), nil for none.
+function W.historyReason(rec)
+    local reason = rec.reason
+    if type(reason) ~= "string" or reason == "" then return nil end
+    return U.marketReasonText(reason, rec.kind)
+end
+
+-- What a buy order paid in items instead of coins ("3 x Bandage"), or nil.
+function W.payItemText(rec)
+    local n = tonumber(rec.payQty)
+    if n == nil or type(rec.payItem) ~= "string" then return nil end
+    return getText(T .. "Card_ItemQty", itemName(rec.payItem), tostring(math.floor(n)))
+end
+
+-- A market record's own amount, unsigned, as the admin desk lists it: the gross price, a buy
+-- order's per-unit price (a raise, an asking price it met) spelled "each", or the items a buy
+-- order was paid in. nil for a record that carries none of them -- never a made-up zero.
+function W.recordAmountText(rec)
+    local price = tonumber(rec.price)
+    if price == nil then return W.payItemText(rec) end
+    if EACH_KINDS[tostring(rec.kind)] then return getText(T .. "Wanted_Each", amountText(price)) end
+    return amountText(price)
 end
 
 -- One history line. The amount is what the record moved for this player: a sale nets the tax
@@ -1077,8 +1107,18 @@ local function historyRow(rec, offsetMin)
     local price = tonumber(rec.price)
     local amount = price
     if amount ~= nil then
-        if kind == "sold" or kind == "auction_sold" then amount = price - (tonumber(rec.tax) or 0)
-        elseif kind == "bought" or kind == "auction_bid" or kind == "auction_won" then amount = -price end
+        if kind == "sold" or kind == "auction_sold" or kind == "wanted_sold" then amount = price - (tonumber(rec.tax) or 0)
+        elseif kind == "bought" or kind == "auction_bid" or kind == "auction_won" or kind == "wanted_filled" then
+            amount = -price
+        end
+    end
+    -- a delivery paid in items moved no coins: the items are the amount, given or received
+    local paid = price == nil and W.payItemText(rec) or nil
+    local money = amount ~= nil and (amountText(amount) .. " " .. currencyLabel(rec.currency)) or nil
+    if paid then
+        money = (kind == "wanted_filled" and "-" or "+") .. paid
+    elseif money and EACH_KINDS[kind] then
+        money = getText(T .. "Wanted_Each", money)
     end
     local name = itemName(rec.item)
     local lot = lotText(qty)
@@ -1086,7 +1126,8 @@ local function historyRow(rec, offsetMin)
     if type(rec.other) == "string" and rec.other ~= "" then
         parts[#parts + 1] = getText(T .. "Market_History_Other", rec.other)
     end
-    if type(rec.reason) == "string" and rec.reason ~= "" then parts[#parts + 1] = U.marketReasonText(rec.reason) end
+    local reason = W.historyReason(rec)
+    if reason then parts[#parts + 1] = reason end
     local label = marketKindText(kind)
     local detail = table.concat(parts, "  ")
     return {
@@ -1099,7 +1140,7 @@ local function historyRow(rec, offsetMin)
         kindText = label,
         kindToken = HISTORY_TOKENS[kind] or "text",
         nameText = lot and (name .. " " .. lot) or name,
-        amountText = amount ~= nil and (amountText(amount) .. " " .. currencyLabel(rec.currency)) or "-",
+        amountText = money or "-",
         detailText = detail,
         rolledBack = rec.rolledBack == true,
         -- what the page's keyword box searches: the item (localised name and raw fullType), the
