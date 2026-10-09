@@ -1495,19 +1495,6 @@ function Shop.restoreFromPending(login, id, pend)
     return true, { reason = "buyback_returned", sku = pend.sku, qty = qty, currency = currency, mailId = entry.id, error = res.error }
 end
 
--- "Did the world keep this buyback's mint?" -> true, false, or nil for "no evidence either way".
--- The mint's own ledger idempotency record is the receipt: it rolled back with the world exactly
--- when the mint did, so it answers the question. A pending written before that key was recorded
--- carries no proof at all, and the age of its epoch/seq stamp is not proof: a stamp that still
--- looks current would call every unpaid sale paid, and a stale one would call every paid sale
--- unpaid. Those are nil, and ECMailbox keeps them held for reconciliation instead of guessing.
--- Called by Mk.hasListing.
-function Shop.hasBuyback(pend)
-    if type(pend) ~= "table" then return nil end
-    if type(pend.txRequestId) ~= "string" or pend.txRequestId == "" then return nil end
-    return L.priorResult(pend.txRequestId) ~= nil
-end
-
 -- args = { id, currency, requestId? }: what this player could sell for a SKU right now in that
 -- currency - the ids of the canonical copies at the top level of the backpack (state-checked
 -- too, so the dialog counts only what shop.sell would take), the currency's bid price and the

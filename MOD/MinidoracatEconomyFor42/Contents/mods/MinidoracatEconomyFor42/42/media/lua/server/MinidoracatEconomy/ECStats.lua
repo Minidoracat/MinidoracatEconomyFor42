@@ -750,21 +750,31 @@ end
 -- ledger's event or a tx.committed line of the daily events file). Seen from the players:
 --   i  inflow:  what a non-player account paid out (amount < 0 on a SYSTEM_ / EXTERNAL_ / MOD: row)
 --   o  outflow: what a non-player account took in (amount > 0 there)
---   t  player-to-player turnover: market_buy / auction_sale count their positive postings (the
---      price: the seller's share plus the tax), transfer counts what the recipients received.
+--   t  player-to-player turnover: market_buy / auction_sale / wanted_fill count their positive
+--      postings (the price: the seller's share plus the tax), transfer counts what the recipients
+--      received. A buy order's other coin options are released in the same wanted_fill
+--      transaction (-X reserved / +X available on the buyer's own wallet): that is a bucket move,
+--      never turnover.
 -- auction_bid / auction_refund / account_merge only post to player accounts (a bucket move, a
 -- login merge): their currencies are present (a caller counts the transaction) with i = o = t = 0.
 -- fees = { [currency] = n } or nil: the tax or fee a trade or a transfer burnt (SYSTEM_BURN).
 -- The daily breakdown, the admin money view's totals and the market report all read this one
 -- function, so a row, its day and its report can never classify the same posting differently.
-St.TRADE_KINDS = { market_buy = true, auction_sale = true }
+St.TRADE_KINDS = { market_buy = true, auction_sale = true, wanted_fill = true }
 
 function St.flows(rec)
     local out, fees = {}, nil
     local kind = rec.kind
     local trade = St.TRADE_KINDS[kind] == true
     local transfer = kind == "transfer"
-    for _, p in ipairs(type(rec.postings) == "table" and rec.postings or {}) do
+    local postings = type(rec.postings) == "table" and rec.postings or {}
+    local drawn = {}       -- account\1currency with a reserved leg going down: its +available is a release
+    for _, p in ipairs(postings) do
+        if type(p) == "table" and p.bucket == "reserved" and type(p.amount) == "number" and p.amount < 0 then
+            drawn[tostring(p.account) .. "\1" .. tostring(p.currency)] = true
+        end
+    end
+    for _, p in ipairs(postings) do
         if type(p) == "table" and type(p.account) == "string" and type(p.currency) == "string"
             and type(p.amount) == "number" then
             local f = out[p.currency]
@@ -777,7 +787,8 @@ function St.flows(rec)
             if not player then
                 if amount < 0 then f.i = f.i - amount elseif amount > 0 then f.o = f.o + amount end
             end
-            if amount > 0 and (trade or (transfer and player)) then f.t = f.t + amount end
+            local release = drawn[p.account .. "\1" .. p.currency] == true and p.bucket ~= "reserved"
+            if amount > 0 and not release and (trade or (transfer and player)) then f.t = f.t + amount end
             if amount > 0 and (trade or transfer) and p.account == "SYSTEM_BURN" then
                 fees = fees or {}
                 fees[p.currency] = (fees[p.currency] or 0) + amount

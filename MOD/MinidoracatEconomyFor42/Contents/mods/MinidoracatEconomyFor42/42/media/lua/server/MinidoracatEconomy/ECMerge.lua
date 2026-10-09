@@ -72,6 +72,8 @@ function Mg.blockers(alias, into, online)
     if listing then out[#out + 1] = listing end
     if auction then out[#out + 1] = auction end
     if mail then out[#out + 1] = mail end
+    local order = S.Wanted and S.Wanted.mergeBlocker(alias) or nil
+    if order then out[#out + 1] = order end
     return out
 end
 

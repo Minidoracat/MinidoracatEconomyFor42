@@ -215,6 +215,8 @@ function X.emit(type_, fields)
         X.changed("market")
     elseif string.sub(type_, 1, 8) == "auction." then
         X.changed("auction")
+    elseif string.sub(type_, 1, 7) == "wanted." then
+        X.changed("wanted")
     elseif type_ == "mail.claimed" and type(rec.username) == "string" then
         X.changed("mail", rec.username)
     end

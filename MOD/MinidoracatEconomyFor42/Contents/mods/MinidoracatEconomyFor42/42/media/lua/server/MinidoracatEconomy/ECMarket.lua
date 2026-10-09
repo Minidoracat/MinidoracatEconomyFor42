@@ -144,6 +144,8 @@ local function pct(amount, percent)
     if percent <= 0 then return 0 end
     return math.max(1, math.ceil(amount * percent / 100))
 end
+-- Shared with ECWanted: buy orders trade in the same currencies under the same rules.
+Mk.currencyState, Mk.tradableCurrencies, Mk.pct = currencyState, tradableCurrencies, pct
 
 local function isInt(v, lo, hi)
     return type(v) == "number" and v == math.floor(v) and v >= lo and v <= hi
@@ -650,6 +652,11 @@ function Mk.restoreFromPending(username, id, pend)
     elseif pend.kind == "buyback" then
         if S.Shop == nil then return false, { reason = "restore_failed", cause = "no_shop_module", kind = "buyback" } end
         return S.Shop.restoreFromPending(username, id, pend)
+    elseif pend.kind == "wanted" or pend.kind == "fill" then
+        -- a buy order's escrowed lot or a seller's delivery: the goods go back to whoever gave
+        -- them, the order itself is never rebuilt (ECWanted)
+        if S.Wanted == nil then return false, { reason = "restore_failed", cause = "no_wanted_module", kind = pend.kind } end
+        return S.Wanted.restoreFromPending(username, id, pend)
     end
     if md.market.listings[id] then
         return false, { reason = "restore_failed", cause = "listing_exists", kind = "listing" }
@@ -699,19 +706,23 @@ end
 -- "The world side of this pending op happened" -> true, false, or nil for "no evidence either
 -- way". The transfer receipt answers first and answers for good: it outlives a listing that has
 -- since been sold, cancelled or expired, so a pending record from an older save can never
--- resurrect one. Without a receipt the live record speaks (listing or auction). A buyback has no
--- record to look at, so it is judged by the mint's own ledger idempotency key, and when a
--- pending is too old to carry that key the answer is nil: neither "paid" nor "unpaid" can be
--- shown, and guessing from the age of the stamp would either mint twice or swallow the goods.
+-- resurrect one. Without a receipt the live record speaks (listing, auction, or a buy order's
+-- escrowed lot). A buyback and a buy-order delivery ("fill") have no record to look at, so they
+-- are judged by the ledger idempotency key their commit wrote (the mint, the payment, or the
+-- noteOperation of a fill paid in goods): it rolled back with the world exactly when that commit
+-- did. A pending too old to carry that key answers nil: neither "paid" nor "unpaid" can be
+-- shown, and guessing from the age of the stamp would either pay twice or swallow the goods.
 -- A nil is the reconcile's cue to keep the record held, not a false.
 function Mk.hasListing(id, pend)
     if M.hasOut(id) then return true end
     if md.market.listings[id] ~= nil then return true end
     local Au = S.Auction
     if Au ~= nil and Au.hasAuction(id) then return true end
-    if type(pend) == "table" and pend.kind == "buyback" then
-        if S.Shop == nil then return nil end
-        return S.Shop.hasBuyback(pend)
+    local Wd = S.Wanted
+    if Wd ~= nil and Wd.lotExists(id) then return true end
+    if type(pend) == "table" and (pend.kind == "buyback" or pend.kind == "fill") then
+        if type(pend.txRequestId) ~= "string" or pend.txRequestId == "" then return nil end
+        return L.priorResult(pend.txRequestId) ~= nil
     end
     return false
 end
