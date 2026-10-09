@@ -94,7 +94,7 @@ local result = source.registerProduct({
 - `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`（`notice.rental` 指出是哪張租約）。
 - `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id），排程自動續租的訂單帶 `auto=true`，已生效的訂單帶 `activatedAt`。每筆另帶付款交易 `txId` 與退款判斷（見「管理台」）：`refundable`、`refundEffect?`、`previousUntil?`、`rentalNo?`；已退款的訂單帶 `refund = { amount, at, txId, durable = { status } }`（不帶執行退款的管理員，那只在稽核紀錄）。
 
-Economy 玩家錢包的「名額」分頁會列出名額紀錄：客戶端送 `entitlement.list`（無參數），伺服器回呼叫者登入名下每個商品的 snapshot（上面的格式，另帶來源的 `sourceNameKey?`、`sourceName?`），最多 30 項（`E.LIST_MAX`，超過時 `more = true`）；ModData 未就緒回 `not_ready`。名額照登入名記，同一帳號的其他角色不合併。
+Economy 玩家錢包的「名額」分頁會列出名額紀錄：客戶端送 `entitlement.list`（無參數），伺服器回呼叫者登入名下每個商品的 snapshot（上面的格式，另帶來源的 `sourceNameKey?`、`sourceName?`；`sourceName` 只帶 `displayName` 的 `CH`、`EN` 兩個鍵），最多 30 項（`E.LIST_MAX`，超過時 `more = true`）；ModData 未就緒回 `not_ready`。名額照登入名記，同一帳號的其他角色不合併。
 
 舊的頂層 `paidUntil/graceUntil/autoRenew/autoRenewState/termsRevision` 已刪除，改讀各租約的同名欄位。
 

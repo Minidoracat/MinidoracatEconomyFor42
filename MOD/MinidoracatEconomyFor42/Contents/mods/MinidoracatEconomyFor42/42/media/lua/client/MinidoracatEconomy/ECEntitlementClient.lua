@@ -64,6 +64,7 @@ local appliedSeq = {}   -- key -> sequence of the newest request / push that wro
 local listeners = {}
 local pushListeners = {}
 local listKeys, listMore, listErr = nil, false, nil   -- the last list read: cache keys in server order
+local listSeq = 0       -- sequence of the newest list request whose outcome set the three above
 local lanes = {}        -- command -> { queue = { req, ... }, inflight = req | nil, sentAt = ms | nil }
 local late = {}         -- requestId -> req
 local lateOrder = {}
@@ -149,9 +150,12 @@ end
 
 -- A list reply: every envelope goes into the cache like a state reply; the list keeps only the
 -- keys, so a later push for one product shows through getList. A refusal keeps the old list.
+-- Members, `more` and the error follow the newest request only: an older read answering late
+-- (a success or a refusal) changes none of them, though its envelopes still go through adopt.
 local function adoptList(args, reqSeq)
+    local current = reqSeq >= listSeq
     if args.ok ~= true or type(args.entries) ~= "table" then
-        listErr = tostring(args.error or "unknown")
+        if current then listSeq, listErr = reqSeq, tostring(args.error or "unknown") end
         return
     end
     local keys = {}
@@ -161,7 +165,7 @@ local function adoptList(args, reqSeq)
             keys[#keys + 1] = keyOf(env.sourceMod, env.productId)
         end
     end
-    listKeys, listMore, listErr = keys, args.more == true, nil
+    if current then listSeq, listKeys, listMore, listErr = reqSeq, keys, args.more == true, nil end
 end
 
 -- ---------- lanes ----------
@@ -204,7 +208,7 @@ pump = function()
         if req ~= nil and now - req.sentAt > TIMEOUT_MS then
             lane.inflight = nil
             rememberLate(req)
-            if command == LIST then listErr = "timeout" end
+            if command == LIST and req.seq >= listSeq then listSeq, listErr = req.seq, "timeout" end
             finish(req, timeoutResult(req))
         end
         if lane.inflight == nil and #lane.queue > 0 and player ~= nil
@@ -606,7 +610,7 @@ end
 Events.OnGameStart.Add(function()
     cache, appliedSeq, late, lateOrder = {}, {}, {}, {}
     quotes, quoteOrder = {}, {}
-    listKeys, listMore, listErr = nil, false, nil
+    listKeys, listMore, listErr, listSeq = nil, false, nil, 0
     resetLanes()
     if pumping then
         pumping = false
