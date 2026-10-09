@@ -1932,6 +1932,13 @@ function Panel:resumeBuyDialog()
 end
 
 function Panel:onShop(kind, args)
+    -- a refused catalog read (ECClient kept C.shop, set C.shopError): the page only shows the
+    -- error beside its retry chip; the rows and an open dialog stay on the last good catalog
+    if kind == "error" then
+        self:layout()
+        Keys.invalidate(self)
+        return
+    end
     self:updateMailTab(args.unclaimed)
     if kind == "list" then
         self:rebuildCategories()
@@ -2020,7 +2027,8 @@ function Panel:onShop(kind, args)
     -- for the backpack prices of that catalog again
     self:resumeBuyDialog()
     if args.ok then
-        local name = (args.item and itemName(args.item)) or (pending and pending.name) or ""
+        -- the row's own name first: a named SKU's receipt reads the name the copy arrives under
+        local name = (pending and pending.name) or (args.item and itemName(args.item)) or ""
         self:closeBuy()
         if kind == "sell" then
             C.toast(getText(T .. "Shop_Sold", name, tostring(tonumber(args.qty) or 0),
@@ -3033,11 +3041,13 @@ function Panel:onDetailRow(kind, item)
     Keys.invalidate(self)
 end
 
--- The history read of the page on screen that failed, as the server's own code, or nil. One
--- answer for the three reads: the retry chip and the note line both read it.
+-- The read of the page on screen that failed, as the server's own code, or nil. One answer for
+-- the five reads: the retry chip and the note line both read it.
 function Panel:historyFault()
     if self.tab == "Wallet" then return self.historyError end
+    if self.tab == "Shop" then return C.shopError end
     if self.tab == "Market" and self.marketMode == "history" then return self.marketHistoryError end
+    if self.tab == "Market" and self.marketMode == "mine" then return C.myListingsError end
     if self.tab == "Auction" and self.auctionMode == "history" then return self.auctionHistoryError end
     return nil
 end
@@ -3049,6 +3059,13 @@ function Panel:onHistoryRetry()
     if self:historyFault() == nil then return end
     if self.tab == "Wallet" then
         self:loadHistory()
+    elseif self.tab == "Shop" then
+        C.shopError = nil
+        self.shopAt = EC.now()
+        C.requestShop()
+    elseif self.tab == "Market" and self.marketMode == "mine" then
+        C.myListingsError = nil
+        C.requestMyListings()
     elseif self.tab == "Market" then
         self.marketHistoryError = nil
         self:requestMarketHistory()

@@ -198,6 +198,13 @@ function M.layoutShop(self, workBottom, toolBand, capH, watch)
     if showTabs and tabs.y == self.shopEntry.y + math.floor((self.shopEntry.height - tabs.height) / 2) then
         tabs:setX(right - tabs.width)
     end
+    -- a refused catalog read gets a band of its own above the table: the note, and the retry chip
+    -- at its right end (L.layout places historyRetryButton there)
+    g.shopNoteY = nil
+    if C.shopError ~= nil then
+        g.shopNoteY = y
+        y = y + ROW
+    end
     g.shopHeaderY = y
     local listY = y + ROW
     local listH = math.max(ROW * 2, workBottom - listY - PAD)
@@ -288,7 +295,7 @@ end
 function M.drawShop(self)
     local g = self.g
     pageCard(self, g, getText(T .. "Shop_Title"), g.shopHeadH)
-    if not C.shop then
+    if not C.shop and not C.shopError then
         textRight(self, getText(T .. "Wallet_Loading"), g.shopPillRight,
             g.contentY + math.floor((CARD_TITLE_H - fontH.small) / 2), "textMuted")
         return
@@ -314,6 +321,15 @@ function M.drawShop(self)
     text(self, getText(T .. "Shop_Category"), self.shopCatCombo.x,
         self.shopCatCombo.y - fontH.small - 2, "textMuted")
     local list = self.shopList
+    -- a refused read: the code in words, and the rows underneath (if any) marked as the older data
+    if C.shopError ~= nil and g.shopNoteY ~= nil then
+        local retryB = self.historyRetryButton
+        local noteR = retryB:getIsVisible() and retryB.x - 6 or list.x + list.width - PAD
+        local note = W.readError(C.shopError)
+        if C.shop then note = note .. "  " .. getText(T .. "History_Stale") end
+        text(self, U.fitText(note, math.max(0, noteR - list.x - PAD)), list.x + PAD,
+            g.shopNoteY + math.floor((ROW - fontH.small) / 2), "errorText")
+    end
     local cols = list.cols
     local hx, hy = list.x, g.shopHeaderY
     fill(self, hx, hy, list.width, ROW, "well", "rect")
@@ -321,7 +337,7 @@ function M.drawShop(self)
     text(self, getText(T .. "Shop_Col_Item"), hx + cols.name, hty, "textMuted")
     textRight(self, getText(T .. "Shop_Col_Price"), hx + cols.priceR, hty, "textMuted")
     textRight(self, getText(T .. "Shop_Col_Remaining"), hx + cols.remainR, hty, "textMuted")
-    if #list:getItems() == 0 then
+    if #list:getItems() == 0 and C.shopError == nil then
         if self.shopQuery or self.shopCat then
             text(self, getText(T .. "Shop_NoMatch"), hx + PAD, list.y + math.floor((ROW - fontH.small) / 2), "textMuted")
         else

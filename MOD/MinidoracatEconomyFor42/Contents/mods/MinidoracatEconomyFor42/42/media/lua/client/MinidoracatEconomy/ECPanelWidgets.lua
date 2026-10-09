@@ -259,6 +259,13 @@ local function historyError(code)
     return getText(T .. "History_ReadFailed")
 end
 
+-- A refused snapshot read (shop catalog, own listings): the shop's own wording of the code first
+-- (Shop_Error_reply_too_large asks the player to tell an admin, not to narrow a filter the page
+-- does not have), else the history wording.
+local function readError(code)
+    return getTextOrNull(T .. "Shop_Error_" .. tostring(code)) or historyError(code)
+end
+
 -- The lines a buy confirmation spends on the room the player has, from C.deliveryPreview. It is
 -- a client-side estimate over the item's own weight: the server re-checks it before it debits
 -- anything, and an item whose weight this client does not know says so instead of quoting a
@@ -727,6 +734,9 @@ local function shopRow(it, currency, buyback)
     -- a buyback-only row has no lot to buy: its second line is what the shop pays for one
     if delisted then qtyText = getText(T .. "Shop_BidLine", moneyText(bid, currency)) end
     local tagText = delisted and getText(T .. "Shop_Tag_BuybackOnly") or nil
+    -- a row with a send name (ECShop `name`) is read by that name with the item's own name beside
+    -- it, so the player sees both what arrives and what it really is; otherwise as before
+    local sent = type(it.name) == "string" and it.name ~= "" and it.name or nil
     return {
         id = it.id, item = it.item, qty = qty, price = price, hasQuote = hasQuote, delisted = delisted,
         -- the detail window's status line: why a row with a sell button has no buy button
@@ -739,7 +749,8 @@ local function shopRow(it, currency, buyback)
             or getText(T .. "Shop_NoQuote"),
         remaining = remaining, soldOut = soldOut, currency = currency,
         currencyText = currencyLabel(currency), quotes = quotes,
-        name = itemName(it.item), altName = itemBaseName(it.item), texture = itemTexture(it.item),
+        name = sent or itemName(it.item), altName = sent and itemName(it.item) or itemBaseName(it.item),
+        texture = itemTexture(it.item),
         qtyText = qtyText,
         -- one item's own weight as the catalog quoted it: what the buy dialog estimates the
         -- backpack room with. An older snapshot carries none, and none is not zero.
@@ -1357,6 +1368,7 @@ W.marketError = marketError
 W.stateTokens = stateTokens
 W.stateMeters = stateMeters
 W.historyError = historyError
+W.readError = readError
 W.capacityLines = capacityLines
 W.stateLines = stateLines
 W.ceilPercent = ceilPercent

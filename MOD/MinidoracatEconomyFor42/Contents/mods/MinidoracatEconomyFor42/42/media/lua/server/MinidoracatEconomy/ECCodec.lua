@@ -624,8 +624,11 @@ local NOT_NEW = {
 }
 local function encoded(v) return v == nil and "" or EC.jsonEncode(v) end
 
--- true, or false and the reason (NOT_NEW's codes, "other" for anything else)
-function Codec.isCanonical(item, fullType)
+-- true, or false and the reason (NOT_NEW's codes, "other" for anything else). `allowName` is a
+-- SKU's own send name (ECShop): a copy carrying exactly that name is compared as if it carried the
+-- fresh copy's own, so what the shop sold under that name comes back as new; any other name is
+-- still "renamed". The reference stays cached per fullType, whatever name is allowed.
+function Codec.isCanonical(item, fullType, allowName)
     if call(item, "getFullType") ~= fullType then return false, "other" end
     local ref = canonical[fullType]
     if not ref then
@@ -636,6 +639,7 @@ function Codec.isCanonical(item, fullType)
         canonical[fullType] = ref
     end
     local copy = canonicalCopy(Codec.snapshot(item))
+    if allowName ~= nil and copy.name == allowName then copy.name = ref.copy.name end
     if Codec.signature(copy) == ref.sig then return true end
     for _, pair in ipairs(NOT_NEW) do
         if encoded(copy[pair[1]]) ~= encoded(ref.copy[pair[1]]) then return false, pair[2] end
@@ -904,10 +908,20 @@ local function restoreSickness(item, want, listedAge)
 end
 
 -- Fresh item from a snapshot; nil, err when the script no longer exists on this server.
+-- A `fresh` snapshot ({ type, name, fresh = true }: a named shop row, ECShop.buy) is a new item
+-- under that name and nothing else - none of the restores below runs, so the script's own state
+-- (a full bottle's fluid, a new tool's condition) stays exactly as the engine made it.
 function Codec.rebuild(s)
     if type(s) ~= "table" or type(s.type) ~= "string" then return nil, "invalid_snapshot" end
     local item = freshOf(s)
     if not item then return nil, "item_unavailable" end
+    if s.fresh == true then
+        if type(s.name) == "string" then
+            call(item, "setName", s.name)
+            call(item, "setCustomName", true)
+        end
+        return item
+    end
     if type(s.condition) == "number" then call(item, "setCondition", s.condition) end
     -- head before edge: the edge is capped by the head's share of its maximum
     if type(s.head) == "number" then call(item, "setHeadCondition", s.head) end
