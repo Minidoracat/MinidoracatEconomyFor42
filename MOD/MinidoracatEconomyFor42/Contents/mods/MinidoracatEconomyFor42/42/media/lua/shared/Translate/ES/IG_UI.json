@@ -365,6 +365,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_cancelled": "Subasta cancelada",
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Subasta reconstruida tras un fallo",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Duplicado recuperado",
+  "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "Estos objetos no son idénticos y no se pueden publicar como un solo lote: publícalos por separado",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "Esa subasta ya no existe: actualiza la lista",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "No puedes pujar en tu propia subasta",

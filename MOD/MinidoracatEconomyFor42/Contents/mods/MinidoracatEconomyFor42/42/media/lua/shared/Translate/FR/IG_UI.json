@@ -365,6 +365,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_cancelled": "Enchère annulée",
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Enchère reconstruite après un plantage",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Doublon récupéré",
+  "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "Ces objets ne sont pas identiques et ne peuvent pas être vendus en un seul lot : mettez-les en vente séparément",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "Cette enchère n'existe plus : actualisez la liste",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "Vous ne pouvez pas faire d'offre sur votre propre enchère",

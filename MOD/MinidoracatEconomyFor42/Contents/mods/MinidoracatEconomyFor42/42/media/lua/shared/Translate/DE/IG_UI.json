@@ -365,6 +365,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_cancelled": "Auktion abgebrochen",
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Auktion nach Absturz wiederhergestellt",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Duplikat eingezogen",
+  "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "Diese Gegenstände sind nicht identisch und können nicht als ein Posten eingestellt werden: Stelle sie einzeln ein",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "Diese Auktion gibt es nicht mehr: Aktualisiere die Liste",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "Du kannst nicht auf deine eigene Auktion bieten",

@@ -370,6 +370,16 @@ local function listingStatus(it)
     return table.concat(tokens, " / ", 1, math.min(3, #tokens))
 end
 
+-- An item's own name with the title vanilla gave that copy (Codec.preview `title`: a magazine's
+-- issue, a badge's owner) after it in brackets. The type's name stays first, so the row is still
+-- filed under what the item is; a name another MOD or the player gave stays in the state line.
+local function titledName(name, st)
+    if type(st) == "table" and type(st.title) == "string" and st.title ~= "" then
+        return getText(T .. "Market_Titled", name, st.title)
+    end
+    return name
+end
+
 -- The record window's full list, under its heading; food carries the escrow-ageing note.
 local function stateLines(st, out)
     local tokens = stateTokens(st)
@@ -496,6 +506,7 @@ local function listingRow(it, username, mine)
     local name = itemName(it.item)
     local alt = it.name
     if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
+    name = titledName(name, it.state)
     local seller = tostring(it.seller or "")
     local own = mine or (username ~= nil and seller == username)
     -- every row, own or not, says how long it still runs in the one shape W.remainText gives
@@ -543,6 +554,7 @@ local function auctionRow(it, context)
     local name = itemName(it.item)
     local alt = it.name
     if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
+    name = titledName(name, it.state)
     local seller = tostring(it.seller or "")
     local left = (tonumber(it.expiresAt) or 0) - EC.now()
     local ended = left <= 0
@@ -620,7 +632,7 @@ end
 -- about it) is what counts.
 local function candidateRow(it)
     local ok = it.ok == true
-    local name = itemName(it.item)
+    local name = titledName(itemName(it.item), it.state)
     local alt = itemBaseName(it.item)
     local status = listingStatus(it)
     local category = type(it.category) == "string" and it.category ~= "" and it.category or nil
@@ -1407,6 +1419,7 @@ W.sellRefusalText = sellRefusalText
 W.sellRefusedLines = sellRefusedLines
 W.marketError = marketError
 W.stateTokens = stateTokens
+W.titledName = titledName
 W.stateMeters = stateMeters
 W.historyError = historyError
 W.readError = readError

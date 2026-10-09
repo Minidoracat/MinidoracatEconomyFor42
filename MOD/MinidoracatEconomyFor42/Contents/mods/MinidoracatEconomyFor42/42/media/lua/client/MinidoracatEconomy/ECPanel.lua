@@ -1468,7 +1468,7 @@ function Panel:rebuildMail()
         -- the server's per-copy estimate (M.list): the row names the whole letter's weight, and
         -- a letter whose weight the server could not read shows none instead of a zero
         local weight = tonumber(e.weight)
-        local name = itemName(e.item)
+        local name = W.titledName(itemName(e.item), e.state)
         local seller = type(e.seller) == "string" and e.seller ~= "" and e.seller or nil
         local source = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or U.unknownText("mail kind", e.kind)
         -- a buy order's payment letter goes to the seller, so the account on it is the buyer

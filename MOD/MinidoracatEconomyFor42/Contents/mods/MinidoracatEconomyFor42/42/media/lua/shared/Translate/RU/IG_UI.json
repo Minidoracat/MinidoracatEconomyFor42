@@ -365,6 +365,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_cancelled": "Аукцион отменён",
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Аукцион восстановлен после сбоя",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Дубликат изъят",
+  "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "Эти предметы не одинаковые и не могут быть выставлены одним лотом: выставьте их по отдельности",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "Этого аукциона больше нет: обновите список",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "Нельзя делать ставки на свой аукцион",

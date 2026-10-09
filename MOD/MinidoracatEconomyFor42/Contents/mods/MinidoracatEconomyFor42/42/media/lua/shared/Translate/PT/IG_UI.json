@@ -365,6 +365,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_cancelled": "Leilão cancelado",
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Leilão reconstruído após um travamento",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Duplicata recuperada",
+  "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "Estes itens não são idênticos e não podem ser anunciados como um só lote: anuncie-os separadamente",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "Esse leilão não existe mais: atualize a lista",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "Você não pode dar lance no seu próprio leilão",

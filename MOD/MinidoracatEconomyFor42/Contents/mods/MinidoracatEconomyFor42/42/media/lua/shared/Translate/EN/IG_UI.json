@@ -365,6 +365,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_cancelled": "Auction cancelled",
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Auction rebuilt after a crash",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Duplicate reclaimed",
+  "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "These items are not identical and cannot be listed as one lot: list them separately",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "That auction is gone: refresh the list",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "You cannot bid on your own auction",

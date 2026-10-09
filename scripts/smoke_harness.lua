@@ -1131,6 +1131,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: buy-order review fixes (
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: localized buy-order search (scripts/test_wanted.lua W-11a..c: the client's resolved item types widen the query, matched before paging, bounded list)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: localized item search on every board (scripts/test_wanted.lua W-12a..f: market.browse, auction.browse, admin.listings, admin.auctions and admin.wanted match the client's item types before paging, Mk.typesOf bounds; scenario 35: auction.history / admin.auctions history match them before the tail limit, bounded)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: player free text out of Global ModData: an adjust reason in neither ring nor idempotency record, an older ring entry stripped at load, the transfer record keeps a memo digest (another memo is request_conflict) and converts an older record at load, no memo or API reasonText anywhere under the root (the ring checks of transfer and API receipts now assert no text, the statement's receipt files keep it); scripts/test_wanted.lua W-13a..g offer memos in a private file: not in ModData, read back after a restart, pruned after a rollback, dropped on dismiss / raise / delivery / close, an older offer's memo moved out at load, a refused write and an unreadable file
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: names vanilla gives an item at creation (scenario VN: an OnCreate title kept and rebuilt apart from a label, an owner's name and a recipe-named newspaper, state-derived names still unstored, a MOD's label unchanged, the buyer's preview without the type prefix, no merge across titles, the buyback still takes a fresh copy, a schematic's own recipes travel, too many recipes refused, listed / bought / delivered under the title; VN-11 the client's type name with the title in brackets)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20126,6 +20127,168 @@ ItemTag = nil
 onlinePlayers = {}
 end)()
 
+-- VN: the names vanilla gives an item when it is made (a magazine's title, a schematic's recipe,
+-- an owner on a badge, a newspaper's issue) travel as s.title, apart from a MOD's label, and come
+-- back on the rebuilt copy; names that follow the item's state stay unstored.
+io.write("scenario VN: vanilla's generated names survive the market\n")
+;(function()
+local Codec = S.Codec
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+knownItems["VN.Magazine"] = { w = 0.2, cat = "Literature", main = "Literature" }
+knownItems["VN.Schematic"] = { w = 0.1, cat = "RecipeResource", main = "Literature" }
+knownItems["VN.RecipeMag"] = { w = 0.1, cat = "RecipeResource", main = "Literature" }
+knownItems["VN.Newspaper"] = { w = 0.1, cat = "Literature", main = "Literature" }
+knownItems["VN.Badge"] = { w = 0.1, cat = "Household", main = "Normal" }
+knownItems["VN.Key"] = { w = 0.1, cat = "Household", main = "Item", itemType = "KEY" }
+ItemTag = { KEY_RING = { name = "KeyRing" }, APPLY_OWNER_NAME = { name = "ApplyOwnerName" }, MONOGRAM_OWNER_NAME = { name = "MonogramOwnerName" } }
+local function recipeList(names)
+    local list = ArrayList.new()
+    for _, n in ipairs(names) do list:add(n) end
+    return list
+end
+-- a script that teaches its own recipes (a recipe magazine's TeachedRecipes)
+local realFind = ScriptManager.instance.FindItem
+ScriptManager.instance.FindItem = function(self, name)
+    local s = realFind(self, name)
+    if s and name == "VN.RecipeMag" then s.getLearnedRecipes = function() return recipeList({ "MakeStew" }) end end
+    return s
+end
+-- each copy rolls its own title at creation, the way ItemCodeOnCreate does; an instance without a
+-- list of its own answers its script's (Literature.getLearnedRecipes, Literature.java:532-543)
+local rolls = 0
+local ONCREATE = {
+    ["VN.Magazine"] = function(it) it:setName("VN.Magazine: Fishing Weekly #" .. rolls) end,
+    ["VN.Schematic"] = function(it)
+        it:setLearnedRecipes(recipeList({ "MakeSpear" .. rolls }))
+        it:setName("VN.Schematic: MakeSpear" .. rolls)
+    end,
+    ["VN.RecipeMag"] = function(it) it.modData.literatureTitle = "VN.RecipeMag" end,
+}
+local realInstance = instanceItem
+instanceItem = function(fullType)
+    local it = realInstance(fullType)
+    if it == nil or string.sub(fullType, 1, 3) ~= "VN." then return it end
+    if knownItems[fullType].main == "Literature" then
+        it.getLearnedRecipes = function()
+            if it.learned then return it.learned end
+            local script = it.getScriptItem()
+            return script.getLearnedRecipes and script.getLearnedRecipes() or nil
+        end
+        it.setLearnedRecipes = function(_, list) it.learned = list end
+    end
+    if fullType == "VN.Badge" then it.hasTag = function(_, t) return t == ItemTag.APPLY_OWNER_NAME end end
+    if ONCREATE[fullType] then
+        rolls = rolls + 1
+        it.getLuaCreate = function() return "ItemCodeOnCreate.onCreate" .. fullType end
+        ONCREATE[fullType](it)
+    end
+    return it
+end
+local boss = fakePlayer("vn-admin"); boss.role = "admin"
+local seller = fakePlayer("vn-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+local buyer = fakePlayer("vn-buyer"); buyer.x, buyer.y = 101, 200; buyer.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller, buyer }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("vn-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "vn-seed-s", reasonCode = "t" })
+L.credit("vn-buyer", "survivor", 500, "SYSTEM_MINT", { requestId = "vn-seed-b", reasonCode = "t" })
+local function held(fullType, name)
+    local it = instanceItem(fullType)
+    if name then it:setName(name) end
+    seller.inventory:AddItem(it)
+    return it
+end
+local mag = held("VN.Magazine")
+local magName = mag.name
+local snap = Codec.snapshot(mag)
+local back = Codec.rebuild(snap)
+check(snap.title == magName and snap.label == nil and snap.name == nil and back.name == magName and back.customName == false,
+    "VN-1: a title rolled by the script's OnCreate is kept apart from a label and comes back on the rebuilt copy, not marked as renamed")
+local badge = held("VN.Badge", "VN.Badge: Alyson Doty")
+local paper = held("VN.Newspaper", "Knox Knews, July 7 1993")
+local bs, ps = Codec.snapshot(badge), Codec.snapshot(paper)
+check(bs.title == "VN.Badge: Alyson Doty" and Codec.rebuild(bs).name == "VN.Badge: Alyson Doty" and bs.label == nil
+    and ps.title == "Knox Knews, July 7 1993" and Codec.rebuild(ps).name == "Knox Knews, July 7 1993",
+    "VN-2: an owner's name on a badge and a newspaper named by its recipe travel as titles too")
+local function stored(fullType, mutate)
+    local it = instanceItem(fullType); it:setName("Vanilla name")
+    if mutate then mutate(it) end
+    local s = Codec.snapshot(it)
+    return s.title or s.label
+end
+local kept = {}
+for k, v in pairs({ food = stored("Base.CannedCorn"), key = stored("VN.Key"), furniture = stored("Base.Mov_Chair"),
+    radio = stored("Base.RadioRed"),
+    media = stored("Base.Rope", function(it) it.getRecordedMediaIndex = function() return 3 end end),
+    keyRing = stored("Base.Rope", function(it) it.hasTag = function(_, t) return t == ItemTag.KEY_RING end end) }) do
+    kept[#kept + 1] = k
+end
+check(#kept == 0, "VN-3: names that follow the item's state (food, keys, furniture, radios, recorded media, key rings) are still not stored (kept: " .. table.concat(kept, ",") .. ")")
+local mod = Codec.snapshot(held("Base.Rope", "KFC reward box"))
+check(mod.label == "KFC reward box" and mod.title == nil and Codec.preview(mod).name == "KFC reward box" and Codec.preview(mod).title == nil,
+    "VN-4: another MOD's setName-only name is still a label, shown as before")
+local mp, bp, pp = Codec.preview(snap), Codec.preview(bs), Codec.preview(ps)
+check(mp.title == string.sub(magName, #"VN.Magazine: " + 1) and mp.name == nil and bp.title == "Alyson Doty"
+    and pp.title == "Knox Knews, July 7 1993",
+    "VN-5: the buyer's preview carries the title without the type name it starts with, and a title that does not start with it whole")
+local mag2 = held("VN.Magazine")
+local magRows = 0
+for _, r in ipairs(cmd(seller, "market.candidates").items or {}) do
+    if r.item == "VN.Magazine" then magRows = magRows + 1 end
+end
+local mixed = cmd(seller, "market.list", { itemIds = { mag.id, mag2.id }, price = 30 })
+check(Codec.signature(snap) ~= Codec.signature(Codec.snapshot(mag2)) and magRows == 2 and mixed.error == "mixed_items",
+    "VN-6: copies with different titles never merge: one picker row each, and a mixed lot is refused")
+local okMag = Codec.isCanonical(instanceItem("VN.Magazine"), "VN.Magazine")
+local okSch = Codec.isCanonical(instanceItem("VN.Schematic"), "VN.Schematic")
+local renamed = instanceItem("VN.Magazine"); renamed:setName("Mine"); renamed:setCustomName(true)
+local okRen, why = Codec.isCanonical(renamed, "VN.Magazine")
+check(okMag == true and okSch == true and okRen == false and why == "renamed",
+    "VN-7: the buyback still takes a factory-fresh magazine or schematic whatever it rolled, and still refuses a renamed one")
+local sch = held("VN.Schematic")
+local ss = Codec.snapshot(sch)
+local sb = Codec.rebuild(ss)
+local learned = sb:getLearnedRecipes()
+local rm = Codec.snapshot(instanceItem("VN.RecipeMag"))
+check(type(ss.recipes) == "table" and #ss.recipes == 1 and ss.recipes[1] == sch.learned:get(0)
+    and learned:size() == 1 and learned:get(0) == ss.recipes[1] and sb.name == sch.name and ss.title == sch.name
+    and rm.recipes == nil,
+    "VN-8: a schematic's own recipe travels with the title naming it; a magazine teaching its script's recipes stores none")
+local many = instanceItem("VN.Schematic")
+local names = {}
+for i = 1, Codec.RECIPES_MAX + 1 do names[i] = "R" .. i end
+many:setLearnedRecipes(recipeList(names))
+local okMany, whyMany = Codec.stateCheck(many)
+names[#names] = nil
+many:setLearnedRecipes(recipeList(names))
+check(okMany == false and whyMany == "moddata_too_big" and Codec.stateCheck(many) == true,
+    "VN-9: more recipes than a snapshot carries is refused, not dropped; up to the cap passes")
+local listed = cmd(seller, "market.list", { itemIds = { mag.id }, price = 30 })
+local row = nil
+for _, r in ipairs(cmd(buyer, "market.browse", { sort = "time" }).items or {}) do if r.id == listed.listingId then row = r end end
+local bought = cmd(buyer, "market.buy", { listingId = listed.listingId, price = 30 })
+local got = nil
+for _, it in ipairs(buyer.inventory.items) do if it.fullType == "VN.Magazine" then got = it end end
+check(listed.ok == true and row and row.state and row.state.title == mp.title and row.name ~= magName and bought.ok == true
+    and got and got.name == magName and got.customName == false,
+    "VN-10: the buyer sees the title on a listing filed under the item's own name and receives the magazine under its original title")
+instanceItem, ScriptManager.instance.FindItem = realInstance, realFind
+ItemTag = nil
+onlinePlayers = {}
+end)()
+
 -- ===== 情境 TX：玩家端與共用文字函式不把代碼放上畫面 =====
 -- The client helpers every page words a code with (ECWidgets, ECPanelWidgets), loaded against the
 -- real four translation files: a known code reads as its sentence and never with the code beside
@@ -20253,6 +20416,13 @@ for lang, d in pairs(dicts) do
     end
 end
 check(#withArg == 0, "TX-5: no generic fallback sentence has a slot a code could be put into (" .. table.concat(withArg, ", ") .. ")")
+-- VN-11: a title vanilla gave the item follows the type's own name in brackets (Market_Titled);
+-- no title, or no preview at all, leaves the name as it was
+check(call(W.titledName, "\233\155\156\232\170\140", { title = "Fishing Weekly #3" }) == "\233\155\156\232\170\140\239\188\136Fishing Weekly #3\239\188\137"
+    and call(W.titledName, "\233\155\156\232\170\140", { cond = 3 }) == "\233\155\156\232\170\140"
+    and call(W.titledName, "\233\155\156\232\170\140", nil) == "\233\155\156\232\170\140"
+    and dicts.EN[T .. "Market_Titled"] == "%1 (%2)",
+    "VN-11: the item type's name with the original title in brackets (CH full-width, EN plain), unchanged without one")
 require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
 ISButton, ISPanel = saved.ISButton, saved.ISPanel
 end)()

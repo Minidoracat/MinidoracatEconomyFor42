@@ -365,6 +365,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_cancelled": "경매 취소",
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "서버 다운 후 경매 재구성",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "중복 회수",
+  "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "서로 같은 아이템이 아니어서 한 묶음으로 등록할 수 없습니다. 따로 등록하세요",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "해당 경매가 사라졌습니다. 목록을 새로고침하세요",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "자신의 경매에는 입찰할 수 없습니다",
