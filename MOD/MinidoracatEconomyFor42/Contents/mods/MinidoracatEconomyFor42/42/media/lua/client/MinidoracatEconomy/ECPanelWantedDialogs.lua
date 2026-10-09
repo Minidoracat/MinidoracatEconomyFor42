@@ -139,10 +139,12 @@ end
 function Dlg:onCancel() self.page:closeDialog() end
 
 -- A field, a box or a choice changed: the reader and the confirm label follow on the next frame,
--- and a refusal shown next to a field the player is now editing is dropped.
+-- and a refusal shown next to a field the player is now editing is dropped. A refusal that marks
+-- a button (no item picked yet) has no text to compare: picking the item drops it.
 function Dlg:edited()
     self.dirtySummary = true
-    if self.err and self.err.control and self.err.text0 ~= self.err.control:getText() then self:setError(nil) end
+    local c = self.err and self.err.control
+    if c and c.getText and self.err.text0 ~= c:getText() then self:setError(nil) end
 end
 
 -- The refusal on screen: `control` is the field it belongs to (nil: the request as a whole).
