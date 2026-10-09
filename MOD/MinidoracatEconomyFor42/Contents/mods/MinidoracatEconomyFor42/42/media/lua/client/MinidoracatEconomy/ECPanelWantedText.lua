@@ -161,24 +161,6 @@ function X.gateCode(action, s)
     return nil
 end
 
--- The item types whose search text (the translated name, the English name, the fullType) holds
--- `query`, at most `max`, fixed classes skipped (they are never ordered): what the server matches
--- an order against besides the raw text, which it cannot read in the player's language. Returns
--- the list sent and the same types as a set.
-function X.searchTypes(items, query, max)
-    local list, set = {}, {}
-    if query == nil or query == "" then return list, set end
-    for _, rec in ipairs(items) do
-        local t = rec.fullType
-        if not rec.fixed and type(t) == "string" and not set[t] and type(rec.search) == "string"
-            and string.find(rec.search, query, 1, true) then
-            list[#list + 1], set[t] = t, true
-            if #list >= max then break end
-        end
-    end
-    return list, set
-end
-
 -- The own-order count and limit, from whichever read answered last: the browse page (mineCount,
 -- max) or the own list (its length, max). A missing read gives way to the other one.
 function X.ownCount(browse, browseAt, mine, mineAt)

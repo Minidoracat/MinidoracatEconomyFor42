@@ -4302,7 +4302,7 @@ end
 -- so a keystroke is never silently dropped.
 function Admin:requestListings()
     local args = { action = "list", page = self.lstPage or 1, query = self.lstQuery,
-        seller = self.lstSeller, requestId = newRequestId() }
+        types = (C.ItemPicker.queryTypes(self.lstQuery)), seller = self.lstSeller, requestId = newRequestId() }
     if not send("admin.listings", args) then return false end
     self.lstRequestId = args.requestId
     self.lstSentQuery = self.lstQuery
@@ -4490,6 +4490,7 @@ function Admin:sendListings(args, dlg)
     args.requestId = newRequestId()
     args.page = self.lstPage or 1
     args.query = self.lstQuery
+    args.types = (C.ItemPicker.queryTypes(self.lstQuery))
     args.seller = self.lstSeller
     if not send("admin.listings", args) then
         self:dialogError(dlg, tr("Admin_Throttled"))
@@ -4507,7 +4508,7 @@ end
 -- (or an answer that never came) is noticed by prerender and asked for again.
 function Admin:requestAuctions()
     local args = { action = "list", page = self.aucPage or 1, query = self.aucQuery,
-        seller = self.aucSeller, requestId = newRequestId() }
+        types = (C.ItemPicker.queryTypes(self.aucQuery)), seller = self.aucSeller, requestId = newRequestId() }
     if not send("admin.auctions", args) then return false end
     self.aucRequestId = args.requestId
     self.aucSentQuery = self.aucQuery
@@ -4528,6 +4529,7 @@ function Admin:requestAuctionHistory()
         args.auctionId = self.aucHistId   -- one auction's own timeline, never a text match
     else
         args.query = self.aucQuery
+        args.types = (C.ItemPicker.queryTypes(self.aucQuery))
     end
     if not send("admin.auctions", args) then return false end
     self.pendingAucHistory = { requestId = args.requestId }
@@ -4698,6 +4700,7 @@ function Admin:sendAuctions(args, dlg)
     args.requestId = newRequestId()
     args.page = self.aucPage or 1
     args.query = self.aucQuery
+    args.types = (C.ItemPicker.queryTypes(self.aucQuery))
     args.seller = self.aucSeller
     if not send("admin.auctions", args) then
         self:dialogError(dlg, tr("Admin_Throttled"))

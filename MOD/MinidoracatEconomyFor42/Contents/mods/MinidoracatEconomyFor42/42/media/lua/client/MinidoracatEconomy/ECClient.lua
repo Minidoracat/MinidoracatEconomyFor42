@@ -970,10 +970,11 @@ handlers["market.priceRef"] = function(args)
 end
 
 -- `seller` is an exact account name: the server compares it byte for byte, and it is a condition
--- of its own -- the keyword still searches item and seller text the way it always did.
+-- of its own -- the keyword still searches item and seller text the way it always did. `types`
+-- are the item types the keyword names in the player's language (C.ItemPicker.queryTypes).
 function C.requestMarket(opts)
     opts = opts or {}
-    send("market.browse", { category = opts.category, query = opts.query, sort = opts.sort,
+    send("market.browse", { category = opts.category, query = opts.query, types = opts.types, sort = opts.sort,
         page = opts.page, seller = opts.seller, currency = opts.currency or "all" })
 end
 function C.requestMyListings() askSnapshot(listingsSnapshot) end
@@ -1066,7 +1067,7 @@ end
 
 function C.requestAuctions(opts)
     opts = opts or {}
-    send("auction.browse", { page = opts.page, sort = opts.sort, query = opts.query,
+    send("auction.browse", { page = opts.page, sort = opts.sort, query = opts.query, types = opts.types,
         seller = opts.seller, currency = opts.currency or "all" })
 end
 
@@ -1088,12 +1089,13 @@ function C.bidAuction(auctionId, amount, currency, requestId)
     send("auction.bid", { auctionId = auctionId, amount = amount, currency = currency, requestId = requestId })
 end
 function C.cancelAuction(auctionId, requestId) send("auction.cancel", { auctionId = auctionId, requestId = requestId }) end
--- `query` searches the whole visible history (auction id, account, item), `auctionId` pins one
--- auction and asks for its public timeline instead. Returns the requestId the reply will echo.
+-- `query` searches the whole visible history (auction id, account, item; `types` as in
+-- C.requestMarket), `auctionId` pins one auction and asks for its public timeline instead.
+-- Returns the requestId the reply will echo.
 function C.requestAuctionHistory(opts)
     opts = opts or {}
     local requestId = opts.requestId or C.newRequestId()
-    send("auction.history", { query = opts.query, auctionId = opts.auctionId, requestId = requestId })
+    send("auction.history", { query = opts.query, types = opts.types, auctionId = opts.auctionId, requestId = requestId })
     return requestId
 end
 
