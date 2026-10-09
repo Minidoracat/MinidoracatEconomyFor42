@@ -290,8 +290,8 @@ function Panel:createChildren()
 
     -- ----- shop -----
     self.shopEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Shop_Search"))
-    self.shopEntry.target = self
-    self.shopEntry.onTextChangeFunction = Panel.onShopSearch
+    self.shopEntry._entry.target = self
+    self.shopEntry._entry.onTextChangeFunction = Panel.onShopSearch
     self:addChild(self.shopEntry)
     self.shopCatCombo = newCombo(self, 140, Panel.onShopCat)
     self.shopCatCombo:addOptionWithData(getText(T .. "Shop_All"), "")
@@ -303,6 +303,10 @@ function Panel:createChildren()
     self.shopList.onSelect = function(_, item) self:onDetailRow("shop", item) end
     self.shopList.onRowAction = function(_, row, actionId) self:onShopAction(row, actionId) end
     self:addChild(self.shopList)
+    -- the filtered-out table's way back (ECPanelShopMail.drawShop shows it)
+    self.shopEmptyButton = Button.create(0, 0, 60, CHIP_H, "", self, Panel.onShopEmpty, "chip")
+    self.shopEmptyButton:setVisible(false)
+    self:addChild(self.shopEmptyButton)
 
     -- ----- mailbox -----
     -- A row is a read (onDetailRow opens the reader and does nothing else). Claiming one
@@ -386,8 +390,8 @@ function Panel:createChildren()
     -- the record page's own search (an auction id, an account, an item): the browse page searches
     -- through the combined box built last, with the market's
     self.auctionEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Auction_History_Search"))
-    self.auctionEntry.target = self
-    self.auctionEntry.onTextChangeFunction = Panel.onAuctionSearch
+    self.auctionEntry._entry.target = self
+    self.auctionEntry._entry.onTextChangeFunction = Panel.onAuctionSearch
     self:addChild(self.auctionEntry)
     -- the sort box is the keyboard's equivalent of the sortable header (a header is a click
     -- target and nothing else), and it offers exactly the keys that header can produce
@@ -739,13 +743,14 @@ function Panel:rowActionTargets(out, list)
 end
 
 function Panel:shopTargets(out)
-    out[#out + 1] = { kind = "entry", control = self.shopEntry, label = getText(T .. "Shop_Search") }
+    out[#out + 1] = { kind = "entry", control = self.shopEntry._entry, frame = self.shopEntry, label = getText(T .. "Shop_Search") }
     out[#out + 1] = { kind = "combo", control = self.shopCatCombo, label = getText(T .. "Shop_Category") }
     if self.shopCurTabs and self.shopCurTabs:getIsVisible() then
         out[#out + 1] = { kind = "button", control = self.shopCurTabs, label = getText(T .. "Trade_Currency") }
     end
     out[#out + 1] = { kind = "list", control = self.shopList, label = getText(T .. "Shop_Title") }
     self:rowActionTargets(out, self.shopList)
+    out[#out + 1] = { kind = "button", control = self.shopEmptyButton, label = getText(T .. "Market_ClearFilters") }
 end
 
 -- Every descriptor of the market page, in reading order. Nothing is filtered by mode here: a
@@ -776,7 +781,8 @@ function Panel:auctionTargets(out)
         label = getText(T .. "Kb_Trade_Actions") }
     for _, desc in ipairs(self.auctionSearch:keyboardTargets()) do out[#out + 1] = desc end
     out[#out + 1] = { kind = "button", control = self.auctionSellerChip, label = self.auctionSellerChip.fullTitle }
-    out[#out + 1] = { kind = "entry", control = self.auctionEntry, label = getText(T .. "Kb_Auction_Search") }
+    out[#out + 1] = { kind = "entry", control = self.auctionEntry._entry, frame = self.auctionEntry,
+        label = getText(T .. "Kb_Auction_Search") }
     out[#out + 1] = { kind = "combo", control = self.auctionCurCombo, label = getText(T .. "Trade_Currency") }
     out[#out + 1] = { kind = "combo", control = self.auctionSortCombo, label = getText(T .. "Kb_Auction_Sort") }
     for _, spec in ipairs({ { self.auctionList, "Kb_Auction_List" },
@@ -1537,6 +1543,16 @@ function Panel:onShopSearch()
     self:rebuildShop()
 end
 
+-- The shop's no-match state: the search and the category emptied the table, so drop both.
+function Panel:onShopEmpty()
+    setEntryText(self.shopEntry, "")
+    self.shopQuery, self.shopCat = nil, nil
+    comboSelect(self.shopCatCombo, "")
+    self:rebuildShop()
+    self:layout()
+    Keys.invalidate(self)
+end
+
 -- Mirror the server's write gate: a registered terminal or a nearby vanilla ATM.
 function Panel:tradeAllowed()
     if C.wallet and C.wallet.frozen then return false end
@@ -1645,7 +1661,8 @@ function Panel:onTransfer()
     self:closeCombos()
     self:updateModalGuard()
     self:layoutDialog(dlg)
-    Keys.focusControl(dlg.picker.entry, keyboard)
+    -- the picker box is a framework TextField: the keyboard holds its native entry
+    Keys.focusControl(dlg.picker.entry._entry, keyboard)
 end
 
 function Panel:closeTransfer()
@@ -3400,7 +3417,7 @@ function Panel:onCandidate(cand)
     setEntryText(dlg.priceEntry, "")
     setEntryText(dlg.qtyEntry, tostring(cand.count or 1))   -- the whole lot by default
     self:layoutMarketDialog()
-    Keys.focusControl(dlg.priceEntry, Keys.isKeyboardFocused(dlg.pickList))
+    Keys.focusControl(dlg.priceEntry._entry, Keys.isKeyboardFocused(dlg.pickList))
 end
 
 -- `forAuction` marks the picker (and the step it hands over to) as the auction page's own; the

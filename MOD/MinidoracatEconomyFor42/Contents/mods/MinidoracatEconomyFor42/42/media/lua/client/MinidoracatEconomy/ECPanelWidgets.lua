@@ -38,9 +38,7 @@ local function tileSize()
 end
 
 local function newEntry(width, height, placeholder, numbers)
-    local e = U.newEntry(width, height, { maxLen = 32, clear = true, placeholder = placeholder })
-    if numbers and e.setOnlyNumbers then e:setOnlyNumbers(true) end
-    return e
+    return U.newEntry(width, height, { maxLen = 32, clear = true, placeholder = placeholder, numbers = numbers })
 end
 
 -- "Label: value", the line shape every reader in this window uses (full-width colon in CH/JP).
@@ -84,12 +82,6 @@ local function placeField(control, w, y, want)
     control:setX(w - PAD - width)
     control:setY(y)
     return math.max(0, control.x - PAD * 2)
-end
-
--- One box, two pages (the auction search and the record search): the hint follows the mode.
-local function setPlaceholder(e, str)
-    if not e or not e.setPlaceholderText then return end
-    pcall(function() e:setPlaceholderText(str) end)
 end
 
 -- Item display: the localised engine name (getItemNameFromFullType, LuaManager.java:8579-8583)
@@ -986,8 +978,10 @@ function ListingCell:render()
         R.put(self, "history", cols.histLabel, cols.histX, chipY, cols.histW, CHIP_H, true)
     end
     if e.actionId ~= nil then
+        -- withdrawing a listing or an auction looks the same here as on its detail card
+        local danger = e.actionId == "cancel" or e.actionId == "acancel"
         R.put(self, e.actionId, e.actionLabel, cols.actionX, chipY, cols.actionW, CHIP_H,
-            self.list.actionDisabled ~= true and e.actionOff ~= true)
+            self.list.actionDisabled ~= true and e.actionOff ~= true, danger and "danger" or nil)
     else
         textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, e.actionToken or "textFaint")
     end
@@ -1399,7 +1393,6 @@ W.readerHeight = readerHeight
 W.setSummary = setSummary
 W.summaryMoved = summaryMoved
 W.placeField = placeField
-W.setPlaceholder = setPlaceholder
 W.itemBaseName = itemBaseName
 W.drawIcon = drawIcon
 W.shopError = shopError

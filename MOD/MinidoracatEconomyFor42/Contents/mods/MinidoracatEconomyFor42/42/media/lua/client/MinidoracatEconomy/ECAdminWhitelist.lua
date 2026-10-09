@@ -259,8 +259,8 @@ function Page:createChildren()
 
     self.searchEntry = newEntry(240, entryH(), { maxLen = 64, clear = true,
         placeholder = tr("Admin_Wl_CatSearch") })
-    self.searchEntry.target = self
-    self.searchEntry.onTextChangeFunction = Page.onSearch
+    self.searchEntry._entry.target = self
+    self.searchEntry._entry.onTextChangeFunction = Page.onSearch
     self:addChild(self.searchEntry)
 
     -- the keyboard's equal of every pointer path: the lists are selectable, and these act on the
@@ -532,8 +532,8 @@ function Page:keyboardTargets()
     end
     group(tr("Admin_Wl_Views"), { self.viewButtons[1], self.viewButtons[2], self.noteButton,
         self.reloadButton })
-    add("entry", tr(self.view == "cats" and "Admin_Wl_CatSearchLabel" or "Admin_Wl_ItemSearchLabel"),
-        self.searchEntry)
+    out[#out + 1] = { kind = "entry", control = self.searchEntry._entry, frame = self.searchEntry,
+        label = tr(self.view == "cats" and "Admin_Wl_CatSearchLabel" or "Admin_Wl_ItemSearchLabel") }
     group(tr("Admin_Wl_Actions"), self.actionButtons)
     -- the standing notes are a window of their own now: its own keyboard root owns them
     if self.view == "cats" then
@@ -950,7 +950,7 @@ function Page:layout()
     local hint = tr(self.view == "cats" and "Admin_Wl_CatSearch" or "Admin_Wl_ItemSearch")
     if self.searchHint ~= hint then
         self.searchHint = hint
-        pcall(self.searchEntry.setPlaceholderText, self.searchEntry, hint)
+        self.searchEntry.placeholder = hint
     end
     if not on and self.searchEntry:isFocused() then self.searchEntry:unfocus() end
     self.searchEntry:setVisible(on)

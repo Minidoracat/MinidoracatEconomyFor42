@@ -48,7 +48,7 @@ local DIALOG_W = 480
 local function tr(key) return getText(T .. key) end
 local function lineH() return fontH.small + 6 end
 local function entryH() return math.max(26, fontH.small + 12) end
-local function chipH() return math.max(20, fontH.small + 6) end
+local function chipH() return math.max(24, fontH.small + 6) end
 local function trim(s) return string.match(tostring(s or ""), "^%s*(.-)%s*$") end
 local function num(v) return math.max(0, math.floor(tonumber(v) or 0)) end
 
@@ -211,7 +211,7 @@ function Page:createChildren()
     self.ownerEntry = U.newEntry(200, entryH(), { maxLen = QUERY_MAX, clear = true, placeholder = tr("Admin_Wd_Owner") })
     self:addChild(self.ownerEntry)
     for _, box in ipairs({ self.searchEntry, self.ownerEntry }) do
-        box.onCommandEntered = function() self:applyFilters() end
+        box._entry.onCommandEntered = function() self:applyFilters() end
     end
     self.prevButton = U.Button.create(0, 0, 60, chipH(), tr("Market_Prev"), self, Page.onPage, "chip")
     self.prevButton.internal = -1
@@ -646,8 +646,8 @@ end
 function Page:keyboardTargets()
     if self.list == nil or not self:getIsVisible() then return {} end
     local out = {
-        { kind = "entry", label = tr("Admin_Wd_Search"), control = self.searchEntry },
-        { kind = "entry", label = tr("Admin_Wd_Owner"), control = self.ownerEntry },
+        { kind = "entry", label = tr("Admin_Wd_Search"), control = self.searchEntry._entry, frame = self.searchEntry },
+        { kind = "entry", label = tr("Admin_Wd_Owner"), control = self.ownerEntry._entry, frame = self.ownerEntry },
         { kind = "group", label = tr("Filter_PageNav"), controls = { self.prevButton, self.nextButton } },
         { kind = "list", label = tr("Admin_Wd_Title"), control = self.list },
     }

@@ -101,9 +101,9 @@ function Page:createChildren()
 
     -- Season length is a draft until Apply or Enter; a half-typed number is never sent.
     self.daysEntry = newEntry(80, entryH(), { maxLen = DAYS_CHARS })
-    self.daysEntry.target = self
-    self.daysEntry.onTextChangeFunction = Page.onDaysTyped
-    self.daysEntry.onCommandEntered = function() self:onApplyDays() end
+    self.daysEntry._entry.target = self
+    self.daysEntry._entry.onTextChangeFunction = Page.onDaysTyped
+    self.daysEntry._entry.onCommandEntered = function() self:onApplyDays() end
     self:addChild(self.daysEntry)
 
     local function chip(label, handler, style)
@@ -750,7 +750,8 @@ end
 function Page:keyboardTargets()
     if not self:getIsVisible() then return {} end
     local out = {}
-    out[#out + 1] = { kind = "entry", label = tr("Season_ConfigDays"), control = self.daysEntry }
+    out[#out + 1] = { kind = "entry", label = tr("Season_ConfigDays"), control = self.daysEntry._entry,
+        frame = self.daysEntry }
     local chips = {}
     for _, b in ipairs({ self.applyButton, self.startButton, self.helpButton }) do
         if b:getIsVisible() then chips[#chips + 1] = b end

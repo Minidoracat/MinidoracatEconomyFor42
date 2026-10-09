@@ -668,6 +668,13 @@ local function confirmLabel(mode)
     return nil     -- the picker confirms by picking a row
 end
 
+-- A cancel step's close button says what it keeps: "Keep listing" beside "Cancel listing", never
+-- two buttons that both start with "Cancel".
+local CLOSE_KEYS = { cancel = "Market_Keep", acancel = "Auction_Keep" }
+local function closeLabel(mode)
+    return getText(T .. (CLOSE_KEYS[mode] or "Admin_Cancel"))
+end
+
 -- The picker's status over two lines: what does not fit the first runs on into the second (cut
 -- there if it must be), and a Latin word is not split when the first line has a space to break
 -- at. CJK has no spaces and breaks at the character, as U.wrapText does.
@@ -699,13 +706,13 @@ function MarketDialog:createChildren()
     -- to stack them as lines, and none of them may be cut
     self.summaryBox = newReader(self, 240, fontH.small * 2 + 12)
     self.priceEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
-    self.priceEntry.target = self
-    self.priceEntry.onTextChangeFunction = MarketDialog.onPriceChanged
+    self.priceEntry._entry.target = self
+    self.priceEntry._entry.onTextChangeFunction = MarketDialog.onPriceChanged
     self:addChild(self.priceEntry)
     -- the lot size: only shown when the picked row carries more than one item
     self.qtyEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
-    self.qtyEntry.target = self
-    self.qtyEntry.onTextChangeFunction = MarketDialog.onPriceChanged
+    self.qtyEntry._entry.target = self
+    self.qtyEntry._entry.onTextChangeFunction = MarketDialog.onPriceChanged
     self:addChild(self.qtyEntry)
     local only = getText(T .. "Market_OnlyListable")
     self.onlyButton = Button.create(0, 0, textWidth(only) + 30, math.max(CHIP_H, fontH.small + 10),
@@ -815,10 +822,12 @@ function MarketDialog:keyboardTargets()
     out[#out + 1] = { kind = "group", controls = self.currencyButtons,
         label = getText(T .. "Trade_Currency") }
     if self.qtyEntry:getIsVisible() then
-        out[#out + 1] = { kind = "entry", control = self.qtyEntry, label = getText(T .. "Market_Col_Qty") }
+        out[#out + 1] = { kind = "entry", control = self.qtyEntry._entry, frame = self.qtyEntry,
+            label = getText(T .. "Market_Col_Qty") }
     end
     if self.priceEntry:getIsVisible() then
-        out[#out + 1] = { kind = "entry", control = self.priceEntry, label = getText(T .. "Market_Col_LotPrice") }
+        out[#out + 1] = { kind = "entry", control = self.priceEntry._entry, frame = self.priceEntry,
+            label = getText(T .. "Market_Col_LotPrice") }
     end
     if #self.hourButtons > 0 then
         out[#out + 1] = { kind = "group", controls = self.hourButtons, label = getText(T .. "Auction_Duration") }
@@ -1125,6 +1134,11 @@ function MarketDialog:layoutInside(maxW, maxH)
     if label then
         if self.confirmButton.title ~= label then self.confirmButton:setTitle(label) end
         self.confirmButton:setWidth(math.max(120, textWidth(label, UIFont.Medium) + 40))
+    end
+    local close = closeLabel(mode)
+    if self.cancelButton.title ~= close then
+        self.cancelButton:setTitle(close)
+        self.cancelButton:setWidth(textWidth(close) + 30)
     end
     local chipsX = PAD + textWidth(getText(T .. "Auction_Duration")) + PAD
     local curX = PAD + textWidth(getText(T .. "Trade_Currency")) + PAD
@@ -1882,8 +1896,10 @@ function TransferDialog:keyboardTargets()
     if self.step == "fill" then
         for _, desc in ipairs(self.picker:keyboardTargets()) do out[#out + 1] = desc end
         out[#out + 1] = { kind = "group", controls = self.currencyButtons, label = getText(T .. "Trade_Currency") }
-        out[#out + 1] = { kind = "entry", control = self.amountEntry, label = getText(T .. "Transfer_Amount") }
-        out[#out + 1] = { kind = "entry", control = self.memoEntry, label = getText(T .. "Transfer_Memo") }
+        out[#out + 1] = { kind = "entry", control = self.amountEntry._entry, frame = self.amountEntry,
+            label = getText(T .. "Transfer_Amount") }
+        out[#out + 1] = { kind = "entry", control = self.memoEntry._entry, frame = self.memoEntry,
+            label = getText(T .. "Transfer_Memo") }
     end
     -- the reader holds every value of the transfer: the ring scrolls it, and never focuses it
     out[#out + 1] = { kind = "scroll", control = self.summaryBox, focusable = false, label = getText(T .. "Kb_Detail") }
