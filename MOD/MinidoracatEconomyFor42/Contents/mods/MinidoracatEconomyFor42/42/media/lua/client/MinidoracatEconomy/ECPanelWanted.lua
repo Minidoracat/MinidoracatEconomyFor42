@@ -807,7 +807,7 @@ function Page:cardOf(row)
         local my = v.myOffer
         c.rows[#c.rows + 1] = { label = tr("Wanted_MyOfferLabel"), value = tr("Wanted_QtyEach",
             X.optionText({ kind = "coin", unitPrice = my.unitPrice, currency = (v.options[int(my.option)] or {}).currency }),
-            tostring(int(my.qty))), note = (type(my.memo) == "string" and my.memo ~= "") and my.memo or nil }
+            tostring(int(my.qty))), note = (type(my.memo) == "string" and my.memo ~= "") and tr("Wanted_MemoLine", my.memo) or nil }
     end
     local page, acts = self, {}
     for _, id in ipairs(row.actions or {}) do
