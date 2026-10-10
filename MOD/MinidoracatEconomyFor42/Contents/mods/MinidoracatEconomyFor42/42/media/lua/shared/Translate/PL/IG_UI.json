@@ -1697,6 +1697,7 @@
   "IGUI_MinidoracatEconomy_Admin_Pick_NamesPartial": "Indeks nazw jest niepełny: nie udało się odczytać angielskich nazw niektórych modów, więc angielskie słowo kluczowe może nie znaleźć ich przedmiotów.",
   "IGUI_MinidoracatEconomy_Admin_Pick_DragHint": "Nie możesz znaleźć? Przeciągnij przedmiot z ekwipunku do tego okna",
   "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncomplete": "Indeks nazw jest niepełny: nie udało się odczytać angielskich nazw przedmiotów z poniższych modów, więc wyszukiwanie po nazwie może pominąć ich transakcje. Pusty wynik nie dowodzi, że ich nie było.",
+  "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncompleteBand": "Indeks nazw niepełny: nie udało się odczytać angielskich nazw przedmiotów niektórych modów, więc wyszukiwanie po nazwie może pominąć ich transakcje (zobacz Pomoc).",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_missing": "katalog wymienia ItemName.json, ale nie udało się otworzyć pliku",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_failed": "otwarcie ItemName.json zgłosiło błąd",
   "IGUI_MinidoracatEconomy_Admin_Error_names_read_failed": "ItemName.json odczytano tylko częściowo; nazw po tym miejscu nie ma w indeksie",

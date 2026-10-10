@@ -1697,6 +1697,7 @@
   "IGUI_MinidoracatEconomy_Admin_Pick_NamesPartial": "名称インデックスが不完全です：一部の MOD の英語名を読み込めなかったため、英語キーワードではそれらのアイテムが見つからない場合があります。",
   "IGUI_MinidoracatEconomy_Admin_Pick_DragHint": "見つからない場合は、インベントリからこのウィンドウへアイテムをドラッグしてください",
   "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncomplete": "名称インデックスが不完全です：以下の MOD の英語アイテム名を読み込めなかったため、名称検索ではそれらの取引を取りこぼす可能性があります。結果が無いことは取引が無かった証拠にはなりません。",
+  "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncompleteBand": "名称インデックスが不完全です：一部の MOD の英語アイテム名を読み込めず、名称検索ではそれらの取引を取りこぼす可能性があります（「説明」を参照）。",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_missing": "ディレクトリに ItemName.json はあるが、そのファイルを開けなかった",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_failed": "ItemName.json を開く際にエラーが発生した",
   "IGUI_MinidoracatEconomy_Admin_Error_names_read_failed": "ItemName.json を途中までしか読めず、それ以降の名称はインデックスに入っていない",

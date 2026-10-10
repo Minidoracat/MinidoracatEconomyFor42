@@ -1697,6 +1697,7 @@
   "IGUI_MinidoracatEconomy_Admin_Pick_NamesPartial": "Ad dizini eksik: bazı modların İngilizce adları okunamadı, bu yüzden İngilizce bir anahtar kelime onların eşyalarını bulamayabilir.",
   "IGUI_MinidoracatEconomy_Admin_Pick_DragHint": "Bulamıyor musunuz? Eşyayı envanterinizden bu pencereye sürükleyin",
   "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncomplete": "Ad dizini eksik: aşağıdaki modların İngilizce eşya adları okunamadı, bu yüzden ada göre arama onların işlemlerini kaçırabilir. Boş sonuç, hiç olmadığını kanıtlamaz.",
+  "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncompleteBand": "Ad dizini eksik: bazı modların İngilizce eşya adları okunamadı, bu yüzden ada göre arama onların işlemlerini kaçırabilir (bkz. Yardım).",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_missing": "dizin ItemName.json dosyasını listeliyor ama dosya açılamadı",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_failed": "ItemName.json açılırken hata oluştu",
   "IGUI_MinidoracatEconomy_Admin_Error_names_read_failed": "ItemName.json yalnızca kısmen okundu; o noktadan sonraki adlar dizinde yok",

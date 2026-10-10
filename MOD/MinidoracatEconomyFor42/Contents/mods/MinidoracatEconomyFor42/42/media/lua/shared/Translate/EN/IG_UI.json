@@ -1697,6 +1697,7 @@
   "IGUI_MinidoracatEconomy_Admin_Pick_NamesPartial": "The name index is incomplete: some mods' English names could not be read, so an English keyword may not find their items.",
   "IGUI_MinidoracatEconomy_Admin_Pick_DragHint": "Can't find it? Drag the item from your inventory into this window",
   "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncomplete": "The name index is incomplete: the English item names of the mods below could not be read, so a search by name may miss their transactions. An empty result does not prove there were none.",
+  "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncompleteBand": "Name index incomplete: the English item names of some mods could not be read, so a name search may miss their transactions (see Help).",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_missing": "the directory lists ItemName.json but the file could not be opened",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_failed": "opening ItemName.json raised an error",
   "IGUI_MinidoracatEconomy_Admin_Error_names_read_failed": "ItemName.json was only read part way; the names after that point are not in the index",

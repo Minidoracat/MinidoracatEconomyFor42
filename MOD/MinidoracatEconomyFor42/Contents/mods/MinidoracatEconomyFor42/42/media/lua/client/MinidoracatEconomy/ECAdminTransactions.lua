@@ -1678,12 +1678,9 @@ function Page:rebuildTxNotes()
         warn = true
     end
     -- the keyword this snapshot was read with was resolved against an index that could not read
-    -- every MOD: the warning says what an empty result does not prove
+    -- every MOD: the warning says what an empty result does not prove. The band only points at the
+    -- help card; the card says it in full, over the list of those MODs.
     local gaps = self.txSnapGaps
-    if gaps ~= nil then
-        parts[#parts + 1] = tr("Admin_Tx_NamesIncomplete")
-        warn = true
-    end
     local help = {}
     local statusLines = {}
     for _, part in ipairs(parts) do
@@ -1691,6 +1688,11 @@ function Page:rebuildTxNotes()
         statusLines[#statusLines + 1] = { text = part }
     end
     if gaps ~= nil then
+        parts[#parts + 1] = tr("Admin_Tx_NamesIncompleteBand")
+        warn = true
+        local full = tr("Admin_Tx_NamesIncomplete")
+        help[#help + 1] = full
+        statusLines[#statusLines + 1] = { text = full }
         for _, gap in ipairs(gaps) do
             help[#help + 1] = gap.modId .. ": " .. errorText(gap.reason)
             statusLines[#statusLines + 1] = { text = gap.modId, note = errorText(gap.reason) }
@@ -1711,9 +1713,13 @@ function Page:rebuildTxNotes()
     local g = self.g
     local width = g and g.txStatusW or self.width
     local lines = {}
+    -- two lines at most; a band that has more to say ends in "..." (the help card has it all)
     for _, part in ipairs(parts) do
-        if #lines >= 2 then break end
-        for _, line in ipairs(U.wrapText(part, width, 2 - #lines)) do lines[#lines + 1] = line end
+        for _, line in ipairs(U.wrapText(part, width)) do lines[#lines + 1] = line end
+    end
+    if #lines > 2 then
+        lines[2] = fitText(lines[2] .. " " .. lines[3], width)
+        for i = #lines, 3, -1 do lines[i] = nil end
     end
     self.txStatusLines = lines
     self.txStatusToken = warn and "warn" or "textMuted"

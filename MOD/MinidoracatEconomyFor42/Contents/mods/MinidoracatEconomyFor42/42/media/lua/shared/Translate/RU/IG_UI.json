@@ -1697,6 +1697,7 @@
   "IGUI_MinidoracatEconomy_Admin_Pick_NamesPartial": "Индекс названий неполный: английские названия некоторых модов не удалось прочитать, поэтому по английскому ключевому слову их предметы могут не найтись.",
   "IGUI_MinidoracatEconomy_Admin_Pick_DragHint": "Не находите? Перетащите предмет из инвентаря в это окно",
   "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncomplete": "Индекс названий неполный: английские названия предметов модов ниже не удалось прочитать, поэтому поиск по названию может пропустить их транзакции. Пустой результат не доказывает, что их не было.",
+  "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncompleteBand": "Индекс названий неполный: английские названия предметов некоторых модов не удалось прочитать, поэтому поиск по названию может пропустить их транзакции (см. «Справка»).",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_missing": "каталог содержит ItemName.json, но файл не удалось открыть",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_failed": "при открытии ItemName.json возникла ошибка",
   "IGUI_MinidoracatEconomy_Admin_Error_names_read_failed": "ItemName.json прочитан лишь частично; названий после этого места в индексе нет",

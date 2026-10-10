@@ -1697,6 +1697,7 @@
   "IGUI_MinidoracatEconomy_Admin_Pick_NamesPartial": "名称索引不完整：部分 MOD 的英文名称读不到，用英文关键字可能找不到它们的物品。",
   "IGUI_MinidoracatEconomy_Admin_Pick_DragHint": "找不到？直接把物品从背包拖到这个窗口",
   "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncomplete": "名称索引不完整：以下 MOD 的英文物品名称读不到，用名称搜索可能漏掉它们的交易。查无结果不能证明没有交易。",
+  "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncompleteBand": "名称索引不完整：部分 MOD 的英文物品名称读不到，用名称搜索可能漏掉它们的交易（见「说明」）。",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_missing": "目录里有 ItemName.json，却打不开这个档",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_failed": "打开 ItemName.json 时发生错误",
   "IGUI_MinidoracatEconomy_Admin_Error_names_read_failed": "ItemName.json 只读到一半，后面的名称没有进索引",

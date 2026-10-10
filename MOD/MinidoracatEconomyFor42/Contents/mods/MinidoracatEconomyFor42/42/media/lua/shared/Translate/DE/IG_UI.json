@@ -1697,6 +1697,7 @@
   "IGUI_MinidoracatEconomy_Admin_Pick_NamesPartial": "Der Namensindex ist unvollständig: Die englischen Namen einiger Mods konnten nicht gelesen werden, daher findet ein englisches Stichwort deren Gegenstände eventuell nicht.",
   "IGUI_MinidoracatEconomy_Admin_Pick_DragHint": "Nicht gefunden? Ziehe den Gegenstand aus deinem Inventar in dieses Fenster",
   "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncomplete": "Der Namensindex ist unvollständig: Die englischen Gegenstandsnamen der Mods unten konnten nicht gelesen werden, daher verpasst eine Namenssuche eventuell deren Transaktionen. Ein leeres Ergebnis beweist nicht, dass es keine gab.",
+  "IGUI_MinidoracatEconomy_Admin_Tx_NamesIncompleteBand": "Namensindex unvollständig: Die englischen Gegenstandsnamen einiger Mods konnten nicht gelesen werden, eine Namenssuche verpasst eventuell deren Transaktionen (siehe Hilfe).",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_missing": "das Verzeichnis führt ItemName.json auf, aber die Datei konnte nicht geöffnet werden",
   "IGUI_MinidoracatEconomy_Admin_Error_names_reader_failed": "beim Öffnen von ItemName.json trat ein Fehler auf",
   "IGUI_MinidoracatEconomy_Admin_Error_names_read_failed": "ItemName.json wurde nur teilweise gelesen; die Namen nach dieser Stelle sind nicht im Index",
