@@ -528,7 +528,8 @@ function Dlg:optionLabel(i, n)
         return tr("Wanted_FillCoin", X.optionText({ kind = "coin", unitPrice = self:unitPrice(i), currency = opt.currency }),
             X.money(net, opt.currency), X.money(tax, opt.currency))
     end
-    return tr("Wanted_FillItem", X.optionText(opt), tostring(int(opt.perUnit) * n), W.titledName(C.itemLabel(opt.item), opt.state))
+    -- X.optionText already names the copy with its title; the second mention is the plain type
+    return tr("Wanted_FillItem", X.optionText(opt), tostring(int(opt.perUnit) * n), C.itemLabel(opt.item))
 end
 
 -- market.candidates (the create form's item option): the backpack groups were rebuilt.
@@ -551,12 +552,17 @@ function Dlg:onCandidates(args)
     self.goodRows, self.badRows, self.candError = good, bad, nil
     local keys = {}
     for i = 1, #good do keys[i] = i end
-    W.comboFill(self.groupBox, keys, fitted(self.groupBox, function(k)
+    local function label(k)
         local row = good[k]
         local tokens = W.stateTokens(row.state)
         local name = W.titledName(C.itemLabel(row.item), row.state)
         return tr("Wanted_Group", tostring(int(row.count)), tokens[1] and tr("Card_Join2", name, tokens[1]) or name)
-    end), 1)
+    end
+    -- a copy's own title makes the label long: the box grows up to the form's width before it cuts
+    local widest = 0
+    for k = 1, #good do widest = math.max(widest, textWidth(label(k))) end
+    self.groupBox:setWidth(math.max(260, math.min(widest + 30, self.fieldW or 260)))
+    W.comboFill(self.groupBox, keys, fitted(self.groupBox, label), 1)
     self:clampQty()
     self:edited()
     self.panel:layoutDialog(self)
