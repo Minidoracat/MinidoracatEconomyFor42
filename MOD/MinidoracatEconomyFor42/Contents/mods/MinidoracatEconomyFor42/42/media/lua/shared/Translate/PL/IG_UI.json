@@ -1520,7 +1520,7 @@
   "IGUI_MinidoracatEconomy_Detail_Hint": "Wybierz wiersz, aby zobaczyć tutaj wszystkie jego wartości",
   "IGUI_MinidoracatEconomy_Detail_TxId": "Transakcja",
   "IGUI_MinidoracatEconomy_Prefs_Opacity": "Krycie okna",
-  "IGUI_MinidoracatEconomy_Prefs_Toast": "Czas powiadomień (s)",
+  "IGUI_MinidoracatEconomy_Prefs_Toast": "Czas powiadomień w sekundach",
   "IGUI_MinidoracatEconomy_Prefs_Close": "Zamknij",
   "IGUI_MinidoracatEconomy_Sort_Asc": "%1, rosnąco",
   "IGUI_MinidoracatEconomy_Sort_Desc": "%1, malejąco",

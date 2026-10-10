@@ -210,13 +210,27 @@ end
 local Page = ISPanel:derive("MinidoracatEconomyAdminWhitelistPage")
 
 -- One chip row. The slot is budgeted, never natural: a long translation truncates its own label
--- instead of pushing a chip off the card.
+-- instead of pushing a chip off the card. A chip shorter than its even share keeps its own width
+-- and leaves the rest to the long ones, so only a label the whole row cannot hold is cut.
 local function chipRow(buttons, visible, x, y, width, height)
     local shown = 0
     for _, b in ipairs(buttons) do
         if b.wanted then shown = shown + 1 end
     end
-    local cap = math.max(24, (width - math.max(0, shown - 1) * 6) / math.max(1, shown))
+    local room = width - math.max(0, shown - 1) * 6
+    local cap = room / math.max(1, shown)
+    for _ = 1, shown do
+        local small, long = 0, 0
+        for _, b in ipairs(buttons) do
+            if b.wanted then
+                local need = textWidth(b.fullTitle) + 20
+                if need <= cap then small = small + need else long = long + 1 end
+            end
+        end
+        if long == 0 or (room - small) / long <= cap then break end
+        cap = (room - small) / long
+    end
+    cap = math.max(24, cap)
     for _, b in ipairs(buttons) do
         local want = visible and b.wanted == true
         b:setVisible(want)

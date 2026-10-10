@@ -3555,9 +3555,13 @@ function Page:layout()
         local fw = math.min(comboWidth(self.catCombo, 110), math.floor(rowW * 0.4))
         local searchW = math.min(260, rowW - fw - countW - 12)
         if searchW < 120 then
-            -- too tight for all three: the box keeps a usable width, the dropdown gives way
-            searchW = math.max(80, math.min(160, rowW - 60 - 12))
-            fw = math.max(60, rowW - searchW - countW - 12)
+            -- too tight for all three: the count gives way, the dropdown keeps the option it shows
+            -- whole (ISComboBox paints it unfitted; picking one re-lays the row) and the box takes
+            -- what is left, never under 80
+            local combo = self.catCombo
+            local shown = textWidth(combo:getOptionText(combo.selected) or "") + 30
+            searchW = math.max(80, math.min(160, rowW - shown - 6))
+            fw = math.max(60, math.min(shown, rowW - searchW - 6))
         end
         self.searchEntry:setVisible(true)
         self.searchEntry:setX(PAD); self.searchEntry:setY(searchY)

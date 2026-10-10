@@ -7817,11 +7817,13 @@ function Admin:layout()
     self.setEntry:setX(PAD); self.setEntry:setY(setTop)
     self.setEntry:setWidth(math.max(120, math.min(260, math.floor(w * 0.3)))); self.setEntry:setHeight(eh)
     g.setNavY = setTop + eh + 6
+    -- what a row paints (label, count, three pads) plus the list's scrollbar (10 wide + 2 margin):
+    -- the nav scrolls at small heights, and the bar takes its width out of every row
     local navNeed = 200
     for _, group in ipairs(EC.OPTION_GROUPS) do
         local total, overrides = self:optionGroupCount(group)
         local tail = overrides > 0 and getText(T .. "Admin_Set_OverrideCount", tostring(overrides)) or getText(T .. "Admin_Set_Count", tostring(total))
-        navNeed = math.max(navNeed, textWidth(tr("Admin_Set_Group_" .. group)) + textWidth(tail) + PAD * 3)
+        navNeed = math.max(navNeed, textWidth(tr("Admin_Set_Group_" .. group)) + textWidth(tail) + PAD * 3 + 12)
     end
     g.setNavW = math.max(120, math.min(navNeed, math.floor(w * 0.38)))
     g.setNavRowH = math.max(24, lh + 8)
