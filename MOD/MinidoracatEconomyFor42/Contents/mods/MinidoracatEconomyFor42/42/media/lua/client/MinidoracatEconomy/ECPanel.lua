@@ -2679,7 +2679,12 @@ function Panel:detailText(kind, e)
     out[1] = e.name or e.nameText
     if e.altName and e.altName ~= out[1] then out[#out + 1] = e.altName end
     out[#out + 1] = detailLine("Detail_ItemCode", tostring(e.item))
-    if e.statusText and e.statusText ~= "" then out[#out + 1] = e.statusText end
+    -- a unique item's own lines (W.viewLines) in full; the status line only carries the first ones
+    if e.viewLines then
+        for _, line in ipairs(e.viewLines) do out[#out + 1] = line end
+    elseif e.statusText and e.statusText ~= "" then
+        out[#out + 1] = e.statusText
+    end
     -- the whole server preview of the item (condition with its maximum, fluid, wear, food...)
     W.stateLines(e.state, out)
     if kind == "shop" then

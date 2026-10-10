@@ -136,6 +136,8 @@ function X.errorText(args)
     if code == "mail_confirmation_required" then
         return tr(args.heavy and "Delivery_ConfirmMailHeavy" or "Delivery_ConfirmMail")
     end
+    -- a unique type has its own sentence (each one is different), not the buy order's generic one
+    if code == "not_whitelisted" and args.rule == "unique" then return W.marketError(args) end
     return getTextOrNull(T .. "Wanted_Error_" .. code) or W.marketError(args)
 end
 

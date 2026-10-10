@@ -204,6 +204,39 @@ local function sellRefusedLines(refused, out)
     end
 end
 
+-- A unique item's own words (MinidoracatEconomy.v1.Client.registerItemView / registerRefusalText,
+-- kept in C.itemViews / C.refusalTexts): each hook runs in pcall, and an error or an answer of the
+-- wrong shape is no words at all, so the page falls back to its own.
+local function hookFor(set, fullType)
+    local fn = type(set) == "table" and type(fullType) == "string" and set[fullType] or nil
+    return type(fn) == "function" and fn or nil
+end
+
+-- The lines a mod gives a listing row's `view` (the server's ext.view), or nil.
+local function viewLines(fullType, view, row)
+    local fn = type(view) == "table" and hookFor(C.itemViews, fullType) or nil
+    if fn == nil then return nil end
+    local ok, lines = pcall(fn, view, row)
+    if not ok then EC.log("item view of " .. fullType .. " failed: " .. tostring(lines)) end
+    if not ok or type(lines) ~= "table" then return nil end
+    local out = {}
+    for _, line in ipairs(lines) do
+        if type(line) == "string" and line ~= "" then out[#out + 1] = line end
+    end
+    return #out > 0 and out or nil
+end
+
+-- unique_refused in the mod's own words (its detail travels as uniqueDetail), else the plain sentence.
+local function uniqueRefusal(fullType, detail)
+    local fn = hookFor(C.refusalTexts, fullType)
+    if fn then
+        local ok, s = pcall(fn, detail)
+        if ok and type(s) == "string" and s ~= "" then return s end
+        if not ok then EC.log("refusal text of " .. fullType .. " failed: " .. tostring(s)) end
+    end
+    return getText(T .. "Market_Reason_unique_refused")
+end
+
 -- market.* answers stack their own code space on top of the shop one: a listing error
 -- (Market_Error_*), a whitelist refusal the picker also paints per row (Market_Reason_*), an
 -- auction's own refusal (Auction_Error_*, e.g. currency_conflict on a held auction), then the
@@ -224,14 +257,16 @@ local function marketError(args)
         return getText(T .. "Market_Error_hours_range", tostring(args.min), tostring(args.max))
     end
     -- a whitelist refusal says which rule refused the item (Codec.check): the category a host can
-    -- open is named, and a class that is never listed, an item the host excluded or a type another
-    -- mod blocked says so instead
+    -- open is named, and a class that is never listed, an item the host excluded, a type another
+    -- mod blocked or a unique type a buy order cannot take says so instead
     if code == "not_whitelisted" and args.rule == "category" and type(args.category) == "string" then
         return getText(T .. "Market_Reason_not_whitelisted_category", U.itemCategoryText(args.category))
     end
-    if code == "not_whitelisted" and (args.rule == "fixed" or args.rule == "excluded" or args.rule == "blocked") then
-        return getText(T .. "Market_Reason_not_whitelisted_" .. args.rule)
+    local rule = args and args.rule
+    if code == "not_whitelisted" and (rule == "fixed" or rule == "excluded" or rule == "blocked" or rule == "unique") then
+        return getText(T .. "Market_Reason_not_whitelisted_" .. rule)
     end
+    if code == "unique_refused" then return uniqueRefusal(args.item, args.uniqueDetail) end
     return getTextOrNull(T .. "Market_Error_" .. code) or getTextOrNull(T .. "Market_Reason_" .. code)
         or getTextOrNull(T .. "Auction_Error_" .. code) or shopError(code, args and args.recovery)
 end
@@ -356,9 +391,11 @@ local function stateTokens(st, skipMeters)
     return out
 end
 
--- Second row line: the three most important tokens.
-local function listingStatus(it)
-    local tokens = stateTokens(it.state)
+-- Second row line: the three most important tokens - a unique item's own lines (viewLines) first.
+local function listingStatus(it, lines)
+    local tokens = {}
+    for _, line in ipairs(lines or {}) do tokens[#tokens + 1] = line end
+    for _, token in ipairs(stateTokens(it.state)) do tokens[#tokens + 1] = token end
     if #tokens == 0 then return nil end
     return table.concat(tokens, " / ", 1, math.min(3, #tokens))
 end
@@ -500,6 +537,7 @@ local function listingRow(it, username, mine)
     local alt = it.name
     if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
     name = titledName(name, it.state)
+    local lines = viewLines(it.item, it.view, it)
     local seller = tostring(it.seller or "")
     local own = mine or (username ~= nil and seller == username)
     -- every row, own or not, says how long it still runs in the one shape W.remainText gives
@@ -521,7 +559,10 @@ local function listingRow(it, username, mine)
         -- one item's own weight, as the server quoted it: the buy dialog's capacity estimate
         -- needs it, and an older reply that carries none must not be guessed at
         weight = tonumber(it.weight),
-        statusText = listingStatus(it), state = it.state, priceText = amountText(price), expiresText = expiresText,
+        -- `viewLines` are a unique item's own lines (cards and dialogs list them all), `stateText`
+        -- the state alone for a dialog that lists those lines above it
+        statusText = listingStatus(it, lines), stateText = listingStatus(it), viewLines = lines,
+        state = it.state, priceText = amountText(price), expiresText = expiresText,
         own = own, mine = mine,
         blocked = blocked,
         -- the id of the one action button this row carries, or nil for a row that offers none
@@ -554,7 +595,8 @@ local function auctionRow(it, context)
     local qty = math.max(1, math.floor(tonumber(it.qty) or 1))
     local lot = lotText(qty)
     local mine, leading = it.mine == true, it.leading == true
-    local status = listingStatus(it)
+    local lines = viewLines(it.item, it.view, it)
+    local status = listingStatus(it, lines)
     local sub = status
     if context ~= "selling" then
         sub = getText(T .. "Market_BuyFrom", seller)
@@ -606,6 +648,7 @@ local function auctionRow(it, context)
         mine = mine, leading = leading, ended = ended, canBid = canBid,
         name = name, nameText = lot and (name .. " " .. lot) or name,
         altName = alt, texture = itemTexture(it.item), statusText = sub, state = it.state,
+        stateText = listingStatus(it), viewLines = lines,
         priceText = bid and amountText(bid) or getText(T .. "Auction_StartsAt", amountText(start)),
         bidsText = bids > 0 and tostring(bids) or getText(T .. "Auction_NoBids"),
         bidsToken = bids > 0 and "accent" or "textFaint",
@@ -630,7 +673,10 @@ local function candidateRow(it)
     local status = listingStatus(it)
     local category = type(it.category) == "string" and it.category ~= "" and it.category or nil
     local reason = nil
-    if not ok then reason = marketError({ error = it.reason, rule = it.rule, category = category }) end
+    if not ok then
+        reason = marketError({ error = it.reason, rule = it.rule, category = category, item = it.item,
+            uniqueDetail = it.uniqueDetail })
+    end
     -- the server merges same-state stacks into one row: itemIds is the whole lot
     local ids = type(it.itemIds) == "table" and it.itemIds or { it.itemId }
     local count = math.max(1, math.floor(tonumber(it.count) or #ids))
@@ -647,7 +693,7 @@ local function candidateRow(it)
     -- shirt and a held axe read as such without hovering them
     local tag = (it.equipped == "worn" or it.equipped == "hand") and getText(T .. "Market_Tag_" .. it.equipped) or nil
     return {
-        itemId = it.itemId, itemIds = ids, count = count, item = it.item, ok = ok,
+        itemId = it.itemId, itemIds = ids, count = count, item = it.item, ok = ok, unique = it.unique == true,
         name = name, altName = alt, texture = itemTexture(it.item), state = it.state,
         qtyText = lot, detailText = detail, tagText = tag,
     }
@@ -1435,6 +1481,7 @@ W.historyError = historyError
 W.readError = readError
 W.capacityLines = capacityLines
 W.stateLines = stateLines
+W.viewLines = viewLines
 W.ceilPercent = ceilPercent
 W.listingFee = listingFee
 W.listingRow = listingRow

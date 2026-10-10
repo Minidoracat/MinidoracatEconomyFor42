@@ -212,7 +212,8 @@ end
 -- `weight` is one copy's estimate (the real weight when the lot was created, the script estimate
 -- for an auction that predates the field): a bidder can size the delivery before bidding. It is
 -- only that - the auction never promises the winner's future backpack space. `state` is the
--- bidder's filtered view of the snapshot (Codec.preview).
+-- bidder's filtered view of the snapshot (Codec.preview); `view` a unique item's ext.view
+-- (Codec.uniqueView), never ext or s.unique.
 local function view(a, username)
     return {
         id = a.id, seller = a.seller, item = a.item, name = a.name, category = a.category, qty = a.qty or 1,
@@ -221,7 +222,7 @@ local function view(a, username)
         bids = a.bids or 0, at = a.at, expiresAt = a.expiresAt, weight = a.weight or M.scriptWeight(a.item),
         minNext = Au.minNext(a),
         mine = a.seller == username, leading = a.highest ~= nil and a.highest.bidder == username,
-        state = Codec.preview(a.snapshot),
+        state = Codec.preview(a.snapshot), view = Codec.uniqueView(a.snapshot),
     }
 end
 
@@ -371,8 +372,11 @@ function Au.create(player, args)
     for _, id in ipairs(ids) do
         local item = M.findTopLevel(inv, id)
         if not item then return { ok = false, error = "item_not_found" } end
-        local pass, reason, rule = Codec.check(item)
-        if not pass then return { ok = false, error = reason, rule = rule, category = EC.itemCategory(item) } end
+        local pass, reason, rule, detail = Codec.check(item, player, "auction")
+        if not pass then
+            return { ok = false, error = reason, rule = rule, category = EC.itemCategory(item),
+                item = reason == "unique_refused" and item:getFullType() or nil, uniqueDetail = detail }
+        end
         local sig = Codec.signature(Codec.snapshot(item))
         if signature == nil then signature = sig
         elseif sig ~= signature then return { ok = false, error = "mixed_items" } end
@@ -389,6 +393,9 @@ function Au.create(player, args)
     local qty = #items
     local id = S.newId()
     local _, seq = EC.parseId(id)
+    -- the last refusal before anything leaves: a unique item's mod takes it into escrow here
+    local refused = Codec.escrowUnique(items, snapshot, player, "auction", id)
+    if refused then return refused end
     -- phase 1: the seller's own save records the operation and the exact origin of every unit
     -- before anything is removed. A refusal here has moved no item and charged no fee.
     local rec = { itemId = ids[1], itemIds = ids, qty = qty, lotQty = qty, snapshot = snapshot, kind = "auction",
@@ -396,12 +403,16 @@ function Au.create(player, args)
         seq = seq, epoch = md.meta.epoch, at = ms }
     local began, beginErr, beginDetail = M.beginOut(player, id, items, rec)
     if not began then
+        Codec.abortUnique(snapshot, player, id)
         return { ok = false, error = beginErr, recovery = M.recoveryStatus(login),
             recoveryDetail = beginDetail }
     end
     -- phase 2: the items leave the backpack
     local taken, takeError = M.takeOut(player, id, items)
-    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
+    if not taken then
+        Codec.abortUnique(snapshot, player, id)
+        return { ok = false, error = takeError, recovery = M.recoveryStatus(login) }
+    end
     local name, category = nil, EC.itemCategory(items[1])
     pcall(function() name = ScriptManager.instance:FindItem(snapshot.type):getDisplayName() end)
     if name == nil then pcall(function() name = items[1]:getDisplayName() end) end
@@ -409,7 +420,7 @@ function Au.create(player, args)
         id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, startPrice = startPrice,
         currency = cur, tradeSchema = L.TRADE_SCHEMA, fee = fee,
         highest = nil, bids = 0, bidders = {}, at = ms, expiresAt = ms + args.hours * 3600000, hours = args.hours,
-        weight = M.itemWeight(items[1]),
+        weight = Codec.uniqueWeight(snapshot) or M.itemWeight(items[1]),
         category = type(category) == "string" and category or "other", name = type(name) == "string" and name or nil,
     }
     add(a)
@@ -424,6 +435,7 @@ function Au.create(player, args)
             -- the snapshot, so a refused fee cannot leave a copy behind
             remove(id)
             local returned = M.abortOut(player, id, items)
+            Codec.abortUnique(snapshot, player, id)
             return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(login) }
         end
     end
@@ -724,7 +736,7 @@ function Au.restoreFromPending(username, id, pend)
         return false, { reason = "restore_failed", cause = "bad_record", kind = "auction", item = a.item,
             snapshot = pend.snapshot, qty = a.qty, lotQty = lotQty, price = a.startPrice }
     end
-    a.weight = M.scriptWeight(a.item)
+    a.weight = Codec.uniqueWeight(a.snapshot) or M.scriptWeight(a.item)
     pcall(function()
         local script = ScriptManager.instance:FindItem(a.item)
         a.name = script:getDisplayName()

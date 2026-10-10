@@ -1372,8 +1372,10 @@ function Shop.sell(player, args)
     local inv = player:getInventory()
     if not inv then return { ok = false, error = "item_not_found" } end
     local Codec = S.Codec
-    -- a type another mod blocked (Codec.blockItemType) is never bought back, whatever its state
+    -- a type another mod blocked (Codec.blockItemType) is never bought back, whatever its state,
+    -- and neither is a unique one (Codec.registerUniqueItemType: each copy is a different thing)
     if Codec.blockedTypes[sku.item] then return { ok = false, error = "blocked" } end
+    if Codec.uniqueTypes[sku.item] then return { ok = false, error = "unique" } end
     local items = {}
     for _, id in ipairs(ids) do
         local item = M.findTopLevel(inv, id)
@@ -1502,8 +1504,8 @@ end
 -- too, so the dialog counts only what shop.sell would take), the currency's bid price and the
 -- room left today - and, per reason, how many other copies of that item at the top level the
 -- shop will not take (refused = { [reason] = count }: "blocked" for every copy of a type another
--- mod blocked, a Codec.stateCheck code, or not-new reasons from Codec.isCanonical), so the dialog
--- can say why instead of only counting what it takes.
+-- mod blocked, "unique" for every copy of a unique type, a Codec.stateCheck code, or not-new
+-- reasons from Codec.isCanonical), so the dialog can say why instead of only counting what it takes.
 -- id, currency and requestId are echoed so a late reply cannot be read as the answer to the
 -- currency the player has since switched to.
 function Shop.candidates(player, args)
@@ -1534,8 +1536,8 @@ function Shop.candidates(player, args)
             local item = items:get(i)
             if item == nil then error("container row " .. tostring(i) .. " is not readable") end
             if item:getFullType() == sku.item then
-                local pass, reason = false, "blocked"
-                if not Codec.blockedTypes[sku.item] then pass, reason = Codec.stateCheck(item) end
+                local pass, reason = false, Codec.blockedTypes[sku.item] and "blocked" or (Codec.uniqueTypes[sku.item] and "unique")
+                if not reason then pass, reason = Codec.stateCheck(item) end
                 if pass then pass, reason = Codec.isCanonical(item, sku.item, sku.name) end
                 if not pass then
                     refused[reason] = (refused[reason] or 0) + 1

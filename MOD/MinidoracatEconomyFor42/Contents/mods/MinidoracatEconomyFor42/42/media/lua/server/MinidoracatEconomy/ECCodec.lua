@@ -558,7 +558,9 @@ end
 -- ok, reason. Vanilla itself writes modData (customName, condition:<type>,
 -- InventoryItem.java:3253-3256, 3262-3271), so a mod-data key is never a reason by itself: the
 -- data travels in the snapshot and only an oversized blob is refused (moddata_too_big).
-function Codec.stateCheck(item)
+-- `carriesContents`: the caller moves a container's contents itself (a unique type's mod,
+-- Codec.snapshotItem opts.contents), so container_not_empty - and only that - is skipped.
+function Codec.stateCheck(item, carriesContents)
     -- A force-drop heavy item (generator, anvil, ore: InventoryItem.java:534-538) is only ever
     -- carried with both hands on it (ISEquipHeavyItem.lua:59-86), so held is its normal state:
     -- the list-out empties the hands before it removes the item (ECMailbox M.takeOut).
@@ -596,10 +598,12 @@ function Codec.stateCheck(item)
     -- A bag's contents and a key ring's keys are items of their own (with our stamps on them), and
     -- the bag saves them with itself (InventoryContainer.java:57-60): only an empty one leaves, so
     -- nothing inside can be rebuilt away or sold off with it.
-    local inner = call(item, "getInventory")
-    if inner ~= nil and call(inner, "isEmpty") ~= true then return false, "container_not_empty" end
-    local keys = call(item, "getKeys")
-    if keys ~= nil and call(keys, "isEmpty") ~= true then return false, "container_not_empty" end
+    if carriesContents ~= true then
+        local inner = call(item, "getInventory")
+        if inner ~= nil and call(inner, "isEmpty") ~= true then return false, "container_not_empty" end
+        local keys = call(item, "getKeys")
+        if keys ~= nil and call(keys, "isEmpty") ~= true then return false, "container_not_empty" end
+    end
     return true
 end
 
@@ -610,12 +614,17 @@ end
 -- server itself hands out (shop stock, mail, restores) is not checked.
 Codec.blockedTypes = Codec.blockedTypes or {}
 
+local function validType(fullType)
+    return type(fullType) == "string" and #fullType <= 128 and string.find(fullType, "^[^%.%s]+%.[^%s]+$") ~= nil
+end
+local function validMod(modId)
+    return type(modId) == "string" and modId ~= "" and #modId <= 64
+end
+
 -- true, or false and invalid_type / invalid_mod. Idempotent; the first mod to block a type keeps it.
 function Codec.blockItemType(fullType, modId)
-    if type(fullType) ~= "string" or #fullType > 128 or not string.find(fullType, "^[^%.%s]+%.[^%s]+$") then
-        return false, "invalid_type"
-    end
-    if type(modId) ~= "string" or modId == "" or #modId > 64 then return false, "invalid_mod" end
+    if not validType(fullType) then return false, "invalid_type" end
+    if not validMod(modId) then return false, "invalid_mod" end
     if Codec.blockedTypes[fullType] == nil then
         Codec.blockedTypes[fullType] = modId
         EC.log("item type " .. fullType .. " is blocked from trading by " .. modId)
@@ -623,20 +632,95 @@ function Codec.blockItemType(fullType, modId)
     return true
 end
 
--- pass, reason[, rule]: a not_whitelisted refusal also says which rule refused the item, so the
--- picker can say what would change the answer -- "excluded" (the item itself is on excludeTypes),
--- "blocked" (another mod blocked the type, Codec.blockItemType), "fixed" (EC.LISTING_FIXED_TYPES:
--- never, whatever the file says) or "category" (its EC.itemCategory is not on the list; the
--- picker names that category).
-function Codec.check(item)
+-- Item types another mod trades through us one item at a time (MinidoracatEconomy.v1.
+-- registerUniqueItemType, API rev 6): fullType -> { mod = modId, handler }. Such an item's state
+-- lives with that mod under the item's id (a loaded vehicle capsule and its cargo), which the
+-- snapshot rebuild changes. The mod hands a payload (`ext`) to escrow; it rides inside the
+-- snapshot as s.unique = { mod, ext } and comes back to the mod with every item rebuilt from it,
+-- before that item is placed anywhere (Codec.rebuild), so the mod can give it its id and contents
+-- back. Only the market and auctions take one ("market" / "auction" channels), always one per lot;
+-- buy orders refuse the type (rule "unique") and the buyback too (ECShop, error "unique"). Kept
+-- outside `wl` like blockedTypes; an admin's excludeTypes entry still wins.
+Codec.uniqueTypes = Codec.uniqueTypes or {}
+Codec.UNIQUE_CHANNELS = { market = true, auction = true }
+Codec.UNIQUE_EXT_MAX = 4096       -- encoded payload
+Codec.UNIQUE_VIEW_MAX = 1024      -- encoded ext.view (sent with every listing row)
+Codec.UNIQUE_DETAIL_MAX = 512     -- encoded refusal detail (sent to the refused player)
+
+-- true, or false and invalid_type / invalid_mod / invalid_handler / taken (another mod registered
+-- or blocked the type). The same mod registering again replaces its handler; a type that very mod
+-- had blocked (Codec.blockItemType) is unblocked by it.
+function Codec.registerUniqueItemType(fullType, modId, handler)
+    if not validType(fullType) then return false, "invalid_type" end
+    if not validMod(modId) then return false, "invalid_mod" end
+    if type(handler) ~= "table" or type(handler.check) ~= "function" or type(handler.escrow) ~= "function"
+        or type(handler.rebuilt) ~= "function" or (handler.aborted ~= nil and type(handler.aborted) ~= "function") then
+        return false, "invalid_handler"
+    end
+    local held, blocker = Codec.uniqueTypes[fullType], Codec.blockedTypes[fullType]
+    if (held and held.mod ~= modId) or (blocker and blocker ~= modId) then return false, "taken" end
+    Codec.blockedTypes[fullType] = nil
+    if not held then EC.log("item type " .. fullType .. " is traded one by one through " .. modId) end
+    Codec.uniqueTypes[fullType] = { mod = modId, handler = handler }
+    return true
+end
+
+-- One handler method in pcall: true and its two results, or false when the method is missing or
+-- raised (logged) - an error counts as a refusal.
+local function uniqueCall(entry, name, ...)
+    local fn = entry.handler[name]
+    if type(fn) ~= "function" then return false end
+    local ok, a, b = pcall(fn, ...)
+    if not ok then
+        EC.log("unique item handler " .. name .. " of " .. entry.mod .. " failed: " .. tostring(a))
+        return false
+    end
+    return true, a, b
+end
+
+-- A copy of `v` exactly as JSON carries it, or nil when its encoding is longer than `max` or it is
+-- nothing JSON holds (EC.jsonEncode writes null for a function or userdata). The copy is what gets
+-- stored or sent, so nothing the mod keeps a reference to can change it afterwards.
+local function jsonCopy(v, max)
+    local ok, text = pcall(EC.jsonEncode, v)
+    if not ok or type(text) ~= "string" or #text > max then return nil end
+    local copy = EC.jsonDecode(text)
+    if copy == EC.JSON_NULL then return nil end
+    return copy
+end
+
+-- A refusal detail as the client may receive it: a table, small, JSON only; anything else is dropped.
+local function uniqueDetail(detail)
+    local copy = type(detail) == "table" and jsonCopy(detail, Codec.UNIQUE_DETAIL_MAX) or nil
+    return type(copy) == "table" and copy or nil
+end
+
+-- pass, reason[, rule[, detail]]: a not_whitelisted refusal also says which rule refused the item,
+-- so the picker can say what would change the answer -- "excluded" (the item itself is on
+-- excludeTypes), "blocked" (another mod blocked the type, Codec.blockItemType), "unique" (a unique
+-- type outside the market and auctions), "fixed" (EC.LISTING_FIXED_TYPES: never, whatever the
+-- file says) or "category" (its EC.itemCategory is not on the list; the picker names that category).
+-- `player` and `channel` name the intake. A unique type (above) on the "market" or "auction"
+-- channel skips the whitelist (its mod declared it tradeable) and container_not_empty (the mod
+-- carries the contents), and its handler's check(item, player, channel) is asked last: a refusal
+-- or an error is unique_refused with the handler's detail as the fourth value.
+function Codec.check(item, player, channel)
     local fullType = call(item, "getFullType")
     if type(fullType) ~= "string" then return false, "invalid_item" end
     if wl.excludeTypes[fullType] then return false, "not_whitelisted", "excluded" end
     if Codec.blockedTypes[fullType] then return false, "not_whitelisted", "blocked" end
+    local unique = Codec.uniqueTypes[fullType]
+    if unique and not Codec.UNIQUE_CHANNELS[channel] then return false, "not_whitelisted", "unique" end
     local script = call(item, "getScriptItem")
     if EC.isFixedType(script) then return false, "not_whitelisted", "fixed" end
-    if not wl.types[fullType] and not wl.categories[EC.itemCategory(item)] then return false, "not_whitelisted", "category" end
-    return Codec.stateCheck(item)
+    if not unique and not wl.types[fullType] and not wl.categories[EC.itemCategory(item)] then
+        return false, "not_whitelisted", "category"
+    end
+    local pass, reason = Codec.stateCheck(item, unique ~= nil)
+    if not pass or not unique then return pass, reason end
+    local called, verdict, detail = uniqueCall(unique, "check", item, player, channel)
+    if called and verdict == true then return true end
+    return false, "unique_refused", nil, called and uniqueDetail(detail) or nil
 end
 
 -- The whitelist verdict for an item type with no object in hand (a buy order names the item it
@@ -650,6 +734,7 @@ function Codec.typeAllowed(fullType)
     if not ok or script == nil then return false, "unknown_item" end
     if wl.excludeTypes[fullType] then return false, "not_whitelisted", "excluded" end
     if Codec.blockedTypes[fullType] then return false, "not_whitelisted", "blocked" end
+    if Codec.uniqueTypes[fullType] then return false, "not_whitelisted", "unique" end
     if EC.isFixedType(script) then return false, "not_whitelisted", "fixed" end
     if not wl.types[fullType] and not wl.categories[EC.itemCategory(script)] then return false, "not_whitelisted", "category" end
     return true
@@ -999,7 +1084,8 @@ end
 -- copy's, with a loose record kept only when all of them carry it with the same value.
 function Codec.lotSnapshot(items)
     local s = Codec.snapshot(items[1])
-    if #items < 2 or type(s.modData) ~= "table" then return s end
+    -- a unique item is its own lot (Codec.escrowUnique refuses two): nothing of it is merged
+    if #items < 2 or type(s.modData) ~= "table" or Codec.uniqueTypes[s.type] then return s end
     local others = {}
     for i = 2, #items do others[#others + 1] = call(items[i], "getModData") end
     local md, any = {}, false
@@ -1051,11 +1137,11 @@ local function restoreSickness(item, want, listedAge)
     call(item, "setFoodSicknessChange", script and call(script, "getFoodSicknessChange") or 0)
 end
 
--- Fresh item from a snapshot; nil, err when the script no longer exists on this server.
+-- The item state of a snapshot on a fresh item; nil, err when the script no longer exists here.
 -- A `fresh` snapshot ({ type, name, fresh = true }: a named shop row, ECShop.buy) is a new item
 -- under that name and nothing else - none of the restores below runs, so the script's own state
 -- (a full bottle's fluid, a new tool's condition) stays exactly as the engine made it.
-function Codec.rebuild(s)
+local function rebuildState(s)
     if type(s) ~= "table" or type(s.type) ~= "string" then return nil, "invalid_snapshot" end
     local item = freshOf(s)
     if not item then return nil, "item_unavailable" end
@@ -1203,6 +1289,101 @@ function Codec.rebuild(s)
     return item
 end
 
+-- Fresh item from a snapshot, and the one door every handover goes through (ECMailbox build, for
+-- a purchase, an auction win, every return, a claim, a redelivery and an admin restore alike).
+-- A snapshot carrying s.unique is handed to its mod's rebuilt(ext, item, player, ctx) right here,
+-- before anything reads the item's id or weight or puts it anywhere; ctx = { kind, ref, mail, to }
+-- from the caller. A mod that is not registered, or whose rebuilt raises, leaves no item
+-- (item_unavailable): the letter waits instead of handing over a capsule without its car. The
+-- handler gets a copy of ext, so the stored snapshot never changes.
+function Codec.rebuild(s, player, ctx)
+    local item, err = rebuildState(s)
+    local u = item and s.unique
+    if not u then return item, err end
+    local entry = Codec.uniqueTypes[s.type]
+    if type(u) ~= "table" or entry == nil or entry.mod ~= u.mod then
+        EC.log("unique item " .. s.type .. " has no registered handler: not rebuilt")
+        return nil, "item_unavailable"
+    end
+    if not uniqueCall(entry, "rebuilt", jsonCopy(u.ext, math.huge), item, player, ctx or {}) then
+        return nil, "item_unavailable"
+    end
+    return item
+end
+
+-- The escrow step of a listing or an auction - the last refusal before the items leave, after
+-- every price, fee, limit and terminal check. Nothing for a lot of ordinary items. A unique item
+-- (always alone: a second one is invalid_args) asks its handler's escrow(item, player, channel,
+-- ref) for the payload, `ref` being the id the listing or auction gets; the payload is stored as
+-- s.unique on `s`. Returns nil, or the refusal reply (unique_refused, with the item type and the
+-- handler's detail). A payload that is too large or not JSON (UNIQUE_EXT_MAX, ext.view within
+-- UNIQUE_VIEW_MAX) or that the recovery journal could not carry is refused after the handler
+-- already answered, so its aborted(ext, player, ref) is told.
+function Codec.escrowUnique(items, s, player, channel, ref)
+    local entry = Codec.uniqueTypes[s.type]
+    if entry == nil then return nil end
+    if #items ~= 1 then return { ok = false, error = "invalid_args" } end
+    local refusal = { ok = false, error = "unique_refused", item = s.type }
+    local called, ext, detail = uniqueCall(entry, "escrow", items[1], player, channel, ref)
+    if not called then return refusal end
+    if ext == nil or ext == false then
+        refusal.uniqueDetail = uniqueDetail(detail)
+        return refusal
+    end
+    local copy = jsonCopy(ext, Codec.UNIQUE_EXT_MAX)
+    local view = type(copy) == "table" and copy.view or nil
+    if copy ~= nil and (view == nil or (type(view) == "table" and jsonCopy(view, Codec.UNIQUE_VIEW_MAX) ~= nil)) then
+        s.unique = { mod = entry.mod, ext = copy }
+        local J = S.RecoveryJournal
+        if J == nil or J.packable == nil or J.packable(s) then return nil end
+        s.unique = nil
+    end
+    EC.log("unique item " .. s.type .. ": the payload of " .. entry.mod .. " is too large, not JSON or not journalable")
+    uniqueCall(entry, "aborted", ext, player, ref)
+    return refusal
+end
+
+-- An intake whose escrow already answered did not happen after all (the recovery record, the
+-- removal or the fee refused it): the handler's optional aborted(ext, player, ref).
+function Codec.abortUnique(s, player, ref)
+    local u = type(s) == "table" and s.unique or nil
+    local entry = type(u) == "table" and Codec.uniqueTypes[s.type] or nil
+    if entry then uniqueCall(entry, "aborted", jsonCopy(u.ext, math.huge), player, ref) end
+end
+
+local function uniqueExt(s)
+    local u = type(s) == "table" and s.unique or nil
+    local ext = type(u) == "table" and u.ext or nil
+    return type(ext) == "table" and ext or nil
+end
+
+-- ext.view: what listing rows send the client as `row.view` (never ext itself or s.unique).
+function Codec.uniqueView(s)
+    local ext = uniqueExt(s)
+    return ext and type(ext.view) == "table" and ext.view or nil
+end
+
+-- ext.weight: the real weight of a unique item with its contents, for the capacity estimates and
+-- the mail-or-backpack decision. nil when the payload has none (the item's own weight then).
+function Codec.uniqueWeight(s)
+    local ext = uniqueExt(s)
+    local w = ext and ext.weight
+    if type(w) == "number" and w >= 0 and w < math.huge then return w end
+    return nil
+end
+
+-- The snapshot of an item another mod carries itself (a capsule's cargo, MinidoracatEconomy.v1.
+-- snapshotItem): the state check and the fixed classes (reason "fixed"), but no whitelist and no
+-- blocked types; opts.contents = true lets a container with contents through (the caller carries
+-- those). Returns the snapshot, or nil and the reason. Changes nothing.
+function Codec.snapshotItem(item, opts)
+    if type(call(item, "getFullType")) ~= "string" then return nil, "invalid_item" end
+    if EC.isFixedType(call(item, "getScriptItem")) then return nil, "fixed" end
+    local pass, reason = Codec.stateCheck(item, type(opts) == "table" and opts.contents == true)
+    if not pass then return nil, reason end
+    return Codec.snapshot(item)
+end
+
 -- ---------- buyer preview ----------
 -- What a buyer sees of a snapshot before paying: filtered, never the snapshot itself. No modData
 -- (owner decision 2026-09-28), no key or remote ids (flags only), no raw per-part bytes. Maxima come
@@ -1337,14 +1518,23 @@ end
 
 S.Codec = Codec
 
--- Rev 5 of the facade (ECIntegration header). Every module that raises the revision keeps the
--- higher number, so the load order between this file and ECEntitlements / ECTransfer is free.
+-- Revs 5 and 6 of the facade (ECIntegration header). Every module that raises the revision keeps
+-- the higher number, so the load order between this file and ECEntitlements / ECTransfer is free.
 local G = EC.Integration
 if G and EC.v1 then
-    G.API_REVISION = math.max(G.API_REVISION, 5)
+    G.API_REVISION = math.max(G.API_REVISION, 6)
     EC.v1.API_REVISION = G.API_REVISION
     EC.v1.CAPABILITIES.blockItemType = true
+    EC.v1.CAPABILITIES.uniqueItemTypes = true
     EC.v1.blockItemType = Codec.blockItemType
+    EC.v1.registerUniqueItemType = Codec.registerUniqueItemType
+    EC.v1.snapshotItem = Codec.snapshotItem
+    EC.v1.rebuildItem = function(s)
+        local ok, item, err = pcall(Codec.rebuild, s)
+        if not ok then return nil, "invalid_snapshot" end
+        return item, err
+    end
+    EC.v1.detachParts = Codec.detachParts
 end
 S.onInit(Codec.init)
 return Codec

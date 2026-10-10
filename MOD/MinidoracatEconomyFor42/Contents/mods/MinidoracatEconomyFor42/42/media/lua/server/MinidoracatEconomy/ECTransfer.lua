@@ -410,7 +410,7 @@ S.Transfer = Tr
 S.onInit(Tr.init)
 
 -- The facade grows to rev 3 only now that the transfer half is loaded (ECEntitlements and
--- ECCodec, required above, have already raised it to 4 and 5, which include this one).
+-- ECCodec, required above, have already raised it to 4 and 6, which include this one).
 G.API_REVISION = math.max(G.API_REVISION, 3)
 if EC.v1 then
     EC.v1.API_REVISION = G.API_REVISION

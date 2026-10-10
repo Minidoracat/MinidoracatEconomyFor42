@@ -1133,6 +1133,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: localized item search on
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: player free text out of Global ModData: an adjust reason in neither ring nor idempotency record, an older ring entry stripped at load, the transfer record keeps a memo digest (another memo is request_conflict) and converts an older record at load, no memo or API reasonText anywhere under the root (the ring checks of transfer and API receipts now assert no text, the statement's receipt files keep it); scripts/test_wanted.lua W-13a..g offer memos in a private file: not in ModData, read back after a restart, pruned after a rollback, dropped on dismiss / raise / delivery / close, an older offer's memo moved out at load, a refused write and an unreadable file
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: names vanilla gives an item at creation (scenario VN: an OnCreate title kept and rebuilt apart from a label, an owner's name and a recipe-named newspaper, state-derived names still unstored, a MOD's label unchanged, the buyer's preview without the type prefix, no merge across titles, the buyback still takes a fresh copy, a schematic's own recipes travel, too many recipes refused, listed / bought / delivered under the title; VN-11 the client's type name with the title in brackets)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: item types another mod blocked (scenario BK: facade rev 5 and malformed input, blocked over a whitelisted type and category with an idempotent second call, others unaffected and excluded still excluded, kept across a whitelist reload, picker / listing / auction, buy order for and paid with it, shop candidates and sale; TX-6 the client's words)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 20   -- +20: unique item types (scenario UQ: facade rev 6 and registration results, the whitelist skip under excludeTypes, container_not_empty only for the registered type and snapshotItem, separate picker rows with the handler's refusal and detail, a dropped oversized detail and a raising check, check / escrow ordering and refusals at listing, s.unique and ext.weight on the listing, row.view without s.unique on market and auction rows, rebuilt before the add with the original id and contents for a buy, a cancel, an expiry claim and an auction win, a waiting letter when rebuilt raises or the type is unregistered, buy orders and the buyback refuse it, payload size / view / journal / JSON limits with aborted, no lot of two; TX-7 the client's words and hooks)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19910,6 +19911,335 @@ Codec.load()
 onlinePlayers = {}
 end)()
 
+-- ===== 情境 UQ：其他 MOD 註冊的唯一物品類型（registerUniqueItemType，API rev 6）一件一件交易 =====
+-- A fake vehicle-capsule mod registers a vanilla bag: its handler carries the bag's contents in the
+-- payload (snapshotItem) and puts them back, under the bag's own id, in rebuilt (rebuildItem +
+-- setID). The backpacks record when a bag is added, so the order rebuilt -> add can be read.
+io.write("scenario UQ: a unique item type another mod trades one at a time, contents and id carried by the mod\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local Codec, Shop, V, M = S.Codec, S.Shop, EC.v1, S.Mailbox
+local BAG, MOD = "Base.Bag_ALICEpack", "UqVehicles"
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("uq-admin"); boss.role = "admin"
+local seller = fakePlayer("uq-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+local buyer = fakePlayer("uq-buyer"); buyer.x, buyer.y = 101, 200; buyer.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller, buyer }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+for _, u in ipairs({ "uq-seller", "uq-buyer" }) do
+    L.credit(u, "survivor", 2000, "SYSTEM_MINT", { requestId = "uq-seed-" .. u, reasonCode = "t" })
+end
+local function money(u) return L.getBalance(u, "survivor").available end
+knownItems["UqMod.Crate"] = { w = 1, cat = "Tool", main = "Container" }
+-- the bag's category (Bag) is closed and its type unlisted: only the registration opens it
+local WL = '{"categories":["Tool","FirstAid"],"types":[],"excludeTypes":[]}'
+files["MinidoracatEconomy/whitelist.json"] = { lines = { WL }, opens = 0 }
+assert(Codec.load())
+local events = {}
+local function since(n) return table.concat(events, ",", n + 1) end
+local realInstance = instanceItem
+instanceItem = function(fullType)
+    local it = realInstance(fullType)
+    if it and (fullType == BAG or fullType == "UqMod.Crate") then
+        it.inner = fakeInventory(50)
+        it.getInventory = function() return it.inner end
+        it.setID = function(_, v) it.id = v end      -- InventoryItem.setID (InventoryItem.java:3597-3599)
+        it.getUnequippedWeight = function() return 1 + it.inner.weight() end
+        it.getActualWeight = it.getUnequippedWeight
+    end
+    return it
+end
+for _, p in ipairs({ seller, buyer }) do
+    local add = p.inventory.AddItem
+    p.inventory.AddItem = function(inv, it)
+        if it and it.fullType == BAG then events[#events + 1] = "add:" .. tostring(it.id) end
+        return add(inv, it)
+    end
+end
+local function newBag(p, n)
+    local bag = instanceItem(BAG)
+    for _ = 1, n do bag.inner:AddItem(instanceItem("Base.Bandage")) end
+    p.inventory:AddItem(bag)
+    return bag
+end
+-- the fake mod: what each hook saw, and switches that make a hook refuse or raise
+local calls, ctxs, refuse, broken = {}, {}, {}, {}
+local escrowSeen, escrowAnswer = nil, nil
+local handler = {
+    check = function(item, player, channel)
+        calls[#calls + 1] = "check:" .. tostring(channel)
+        if broken.check then error("check broke") end
+        if refuse[item.id] then return false, refuse[item.id] end
+        return true
+    end,
+    escrow = function(item, player, channel, ref)
+        calls[#calls + 1] = "escrow:" .. tostring(channel)
+        escrowSeen = { ref = ref, inBackpack = player:getInventory():contains(item) }
+        if broken.escrow then error("escrow broke") end
+        if escrowAnswer then return escrowAnswer() end
+        local cargo, ids = {}, {}
+        for i, c in ipairs(item.inner.items) do cargo[i], ids[i] = V.snapshotItem(c), c.id end
+        return { id = item.id, cargo = cargo, ids = ids, view = { car = "Chevalier Nyala", cond = 85 }, weight = 7 }
+    end,
+    aborted = function(ext, player, ref) calls[#calls + 1] = "aborted:" .. tostring(ref) end,
+    rebuilt = function(ext, item, player, ctx)
+        events[#events + 1] = "rebuilt:" .. tostring(ctx.kind)
+        ctxs[#ctxs + 1] = ctx
+        if broken.rebuilt then error("rebuilt broke") end
+        item:setID(ext.id)
+        for i, s in ipairs(ext.cargo) do
+            local c = V.rebuildItem(s)
+            c.id = ext.ids[i]
+            item.inner:AddItem(c)
+        end
+    end,
+}
+local function why(...)
+    local ok, w = V.registerUniqueItemType(...)
+    return ok == false and w or nil
+end
+V.blockItemType("UqMod.Other", "OtherMod")
+V.blockItemType(BAG, MOD)      -- the mod blocked its bag under rev 5 before it knew rev 6
+check(V.API_REVISION >= 6 and V.CAPABILITIES.uniqueItemTypes == true and V.CAPABILITIES.blockItemType == true
+    and type(V.snapshotItem) == "function" and type(V.rebuildItem) == "function" and type(V.detachParts) == "function"
+    and why(nil, MOD, handler) == "invalid_type" and why("NoModule", MOD, handler) == "invalid_type"
+    and why(BAG, "", handler) == "invalid_mod" and why(BAG, MOD, nil) == "invalid_handler"
+    and why(BAG, MOD, { check = handler.check, escrow = handler.escrow }) == "invalid_handler"
+    and why(BAG, MOD, { check = handler.check, escrow = handler.escrow, rebuilt = handler.rebuilt, aborted = 7 }) == "invalid_handler"
+    and why("UqMod.Other", MOD, handler) == "taken" and Codec.uniqueTypes[BAG] == nil and Codec.uniqueTypes["UqMod.Other"] == nil,
+    "UQ-1: the facade is rev 6 with registerUniqueItemType; malformed input, a handler without its hooks and a type another mod blocked are refused and register nothing")
+local first, again = V.registerUniqueItemType(BAG, MOD, handler), V.registerUniqueItemType(BAG, MOD, handler)
+check(first == true and again == true and why(BAG, "OtherMod", handler) == "taken"
+    and Codec.blockedTypes[BAG] == nil and Codec.uniqueTypes[BAG].mod == MOD,
+    "UQ-2: registering is idempotent for its mod and lifts that mod's own block; another mod is refused as taken")
+local bag = newBag(seller, 2)
+local crate = instanceItem("UqMod.Crate"); crate.inner:AddItem(instanceItem("Base.Bandage")); seller.inventory:AddItem(crate)
+local n = #calls
+local okM, okA = Codec.check(bag, seller, "market"), Codec.check(bag, seller, "auction")
+local okW, whyW, ruleW = Codec.check(bag)
+local okT, whyT, ruleT = Codec.typeAllowed(BAG)
+local okC, whyC = Codec.check(crate, seller, "market")
+check(okM == true and okA == true and okW == false and whyW == "not_whitelisted" and ruleW == "unique"
+    and okT == false and whyT == "not_whitelisted" and ruleT == "unique" and okC == false and whyC == "container_not_empty"
+    and table.concat(calls, ",", n + 1) == "check:market,check:auction",
+    "UQ-3: on the market and in auctions a registered bag passes although its category is closed and it holds items, after its handler's check; any other check refuses it as unique before a handler runs, and an unregistered full container is still container_not_empty")
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Tool","FirstAid"],"types":[],"excludeTypes":["' .. BAG .. '"]}' }, opens = 0 }
+assert(Codec.load())
+n = #calls
+local _, whyX, ruleX = Codec.check(bag, seller, "market")
+local snapC, whyS = V.snapshotItem(crate)
+local snapF = V.snapshotItem(crate, { contents = true })
+local snapMap, whyMap = V.snapshotItem(instanceItem("Base.Map"))
+check(whyX == "not_whitelisted" and ruleX == "excluded" and #calls == n
+    and snapC == nil and whyS == "container_not_empty" and type(snapF) == "table" and snapF.type == "UqMod.Crate"
+    and snapMap == nil and whyMap == "fixed",
+    "UQ-4: the host's excludeTypes still wins over a registration; snapshotItem skips container_not_empty only for a caller that carries the contents, and refuses the fixed classes")
+files["MinidoracatEconomy/whitelist.json"] = { lines = { WL }, opens = 0 }
+assert(Codec.load())
+local bag2, bag3 = newBag(seller, 0), newBag(seller, 1)
+refuse[bag3.id] = { why = "no_car" }
+local function rowsOf()
+    local out = {}
+    for _, r in ipairs(cmd(seller, "market.candidates").items or {}) do if r.item == BAG then out[r.itemId] = r end end
+    return out
+end
+local rows = rowsOf()
+check(rows[bag.id] and rows[bag.id].ok == true and rows[bag.id].unique == true and rows[bag.id].count == 1 and #rows[bag.id].itemIds == 1
+    and rows[bag2.id] and rows[bag2.id].ok == true and rows[bag2.id].count == 1
+    and rows[bag3.id] and rows[bag3.id].ok == false and rows[bag3.id].reason == "unique_refused" and rows[bag3.id].uniqueDetail.why == "no_car",
+    "UQ-5: every unique bag is a picker row of its own, never folded with an identical one, and a handler's refusal reaches its row as unique_refused with the detail")
+refuse[bag3.id] = { pad = string.rep("x", 600) }
+local bigRow = rowsOf()[bag3.id]
+broken.check = true
+local crashRow = rowsOf()[bag.id]
+broken.check, refuse[bag3.id] = nil, nil
+check(bigRow.reason == "unique_refused" and bigRow.uniqueDetail == nil
+    and crashRow.ok == false and crashRow.reason == "unique_refused" and crashRow.uniqueDetail == nil,
+    "UQ-6: a detail past 512 encoded is dropped while the refusal stands, and a check that raises is a refusal")
+refuse[bag.id] = { why = "engine_on" }
+n = #calls
+local checked = cmd(seller, "market.list", { itemIds = { bag.id }, price = 100 })
+refuse[bag.id] = nil
+check(checked.ok == false and checked.error == "unique_refused" and checked.item == BAG and checked.uniqueDetail.why == "engine_on"
+    and seller.inventory:contains(bag) and money("uq-seller") == 2000 and table.concat(calls, ",", n + 1) == "check:market",
+    "UQ-7: a listing the handler's check refuses names the type and its detail; the bag and the money stay and escrow is never asked")
+n = #calls
+seller.x = 300
+local away = cmd(seller, "market.list", { itemIds = { bag.id }, price = 100 })
+seller.x = 101
+local cheap = cmd(seller, "market.list", { itemIds = { bag.id }, price = 0 })
+escrowAnswer = function() return nil, { why = "busy" } end
+local said = cmd(seller, "market.list", { itemIds = { bag.id }, price = 100 })
+escrowAnswer, broken.escrow = nil, true
+local raised = cmd(seller, "market.list", { itemIds = { bag.id }, price = 100 })
+broken.escrow = nil
+check(away.error == "not_at_terminal" and cheap.error == "price_range"
+    and said.error == "unique_refused" and said.item == BAG and said.uniqueDetail.why == "busy"
+    and raised.error == "unique_refused" and raised.uniqueDetail == nil
+    and seller.inventory:contains(bag) and money("uq-seller") == 2000 and M.used("uq-seller") == 0
+    and table.concat(calls, ",", n + 1) == "check:market,escrow:market,check:market,escrow:market",
+    "UQ-8: escrow is asked only once the terminal and price checks passed; its refusal or error leaves the bag, the fee and the mailbox untouched")
+local origId = bag.id
+local listed = cmd(seller, "market.list", { itemIds = { bag.id }, price = 100 })
+local lst = modDataStore[EC.MODDATA_KEY].market.listings[listed.listingId or ""] or {}
+local u = type(lst.snapshot) == "table" and lst.snapshot.unique or {}
+check(listed.ok == true and listed.qty == 1 and escrowSeen.ref == listed.listingId and escrowSeen.inBackpack == true
+    and not seller.inventory:contains(bag) and u.mod == MOD and type(u.ext) == "table" and u.ext.id == origId
+    and #u.ext.cargo == 2 and lst.weight == 7 and lst.qty == 1 and money("uq-seller") == 2000 - 2,
+    "UQ-9: escrow runs with the bag still in the backpack and the new listing's id, its payload lands in the snapshot as s.unique and its weight on the listing")
+local function leaks(t, depth)
+    if type(t) ~= "table" or depth > 10 then return false end
+    for k, v in pairs(t) do
+        if k == "unique" or k == "ext" or k == "cargo" or k == "snapshot" or leaks(v, depth + 1) then return true end
+    end
+    return false
+end
+local browse = cmd(buyer, "market.browse", {})
+local brow, mrow = nil, nil
+for _, r in ipairs(browse.items or {}) do if r.id == listed.listingId then brow = r end end
+local mine = cmd(seller, "market.mine", {})
+for _, r in ipairs(mine.items or {}) do if r.id == listed.listingId then mrow = r end end
+check(brow and brow.view and brow.view.car == "Chevalier Nyala" and brow.view.cond == 85 and brow.weight == 7
+    and mrow and mrow.view and mrow.view.car == "Chevalier Nyala" and not leaks(browse, 0) and not leaks(mine, 0),
+    "UQ-10: market browse and own listings carry the mod's view as row.view and its weight; neither ext, its cargo nor s.unique reaches the client")
+buyer.inventory.maxWeight = 5
+local heavy = cmd(buyer, "market.buy", { listingId = listed.listingId, price = 100 })
+buyer.inventory.maxWeight = 80
+local mark = #events
+local bought = cmd(buyer, "market.buy", { listingId = listed.listingId, price = 100 })
+local got = buyer.inventory:getItemWithID(origId)
+local ctx = ctxs[#ctxs] or {}
+check(heavy.error == "mail_confirmation_required" and heavy.totalWeight == 7
+    and bought.ok == true and bought.delivered == true and since(mark) == "rebuilt:market,add:" .. origId
+    and got ~= nil and got.fullType == BAG and #got.inner.items == 2
+    and ctx.kind == "market" and ctx.ref == listed.listingId and ctx.to == "uq-buyer",
+    "UQ-11: the payload's weight decides mail or backpack; the bought bag goes through rebuilt once, before it is added, and arrives under its original id with its contents")
+local bagB = newBag(seller, 1)
+local idB = bagB.id
+local listedB = cmd(seller, "market.list", { itemIds = { idB }, price = 50 })
+mark = #events
+local cancelled = cmd(seller, "market.cancel", { listingId = listedB.listingId })
+local back = seller.inventory:getItemWithID(idB)
+ctx = ctxs[#ctxs] or {}
+check(listedB.ok == true and cancelled.ok == true and cancelled.delivered == true and since(mark) == "rebuilt:return,add:" .. idB
+    and back ~= nil and back ~= bagB and #back.inner.items == 1 and ctx.ref == listedB.listingId and ctx.mail == cancelled.mailId,
+    "UQ-12: a cancelled listing comes back through rebuilt before it is added, under its id and with its contents")
+local relisted = cmd(seller, "market.list", { itemIds = { idB }, price = 50 })
+nowMs = nowMs + 8 * 86400000
+fire("OnTickEvenPaused")
+local letter = nil
+for _, e in ipairs(cmd(seller, "mail.list").entries or {}) do if e.item == BAG then letter = e end end
+mark = #events
+local claimed = letter and cmd(seller, "mail.claim", { mailId = letter.id }) or {}
+ctx = ctxs[#ctxs] or {}
+check(relisted.ok == true and letter ~= nil and letter.weight == 7 and claimed.ok == true
+    and since(mark) == "rebuilt:return,add:" .. idB and ctx.mail == letter.id and ctx.ref == relisted.listingId,
+    "UQ-13: an expired listing's letter weighs what the mod said, and claiming it rebuilds the bag before it is added")
+local bagC = newBag(seller, 2)
+local idC = bagC.id
+n = #calls
+local made = cmd(seller, "auction.create", { itemIds = { idC }, startPrice = 20, hours = 24 })
+local ab = cmd(buyer, "auction.browse", {})
+local arow = nil
+for _, r in ipairs(ab.items or {}) do if r.id == made.auctionId then arow = r end end
+local bid = cmd(buyer, "auction.bid", { auctionId = made.auctionId, amount = 20 })
+nowMs = nowMs + 25 * 3600000
+mark = #events
+fire("OnTickEvenPaused")
+local won = buyer.inventory:getItemWithID(idC)
+ctx = ctxs[#ctxs] or {}
+check(made.ok == true and bid.ok == true and table.concat(calls, ",", n + 1) == "check:auction,escrow:auction"
+    and arow and arow.view and arow.view.car == "Chevalier Nyala" and arow.weight == 7 and not leaks(ab, 0)
+    and since(mark) == "rebuilt:auction,add:" .. idC and won ~= nil and #won.inner.items == 2
+    and ctx.kind == "auction" and ctx.ref == made.auctionId,
+    "UQ-14: an auction checks and escrows on the auction channel, shows bidders the view, and the winner's bag is rebuilt before it is added")
+local bagD = newBag(seller, 1)
+local idD = bagD.id
+local made2 = cmd(seller, "auction.create", { itemIds = { idD }, startPrice = 20, hours = 24 })
+nowMs = nowMs + 25 * 3600000
+fire("OnTickEvenPaused")
+local letter2 = nil
+for _, e in ipairs(cmd(seller, "mail.list").entries or {}) do if e.item == BAG then letter2 = e end end
+broken.rebuilt = true
+local failed = letter2 and cmd(seller, "mail.claim", { mailId = letter2.id }) or {}
+broken.rebuilt = nil
+local entry = Codec.uniqueTypes[BAG]
+Codec.uniqueTypes[BAG] = nil
+local orphan = letter2 and cmd(seller, "mail.claim", { mailId = letter2.id }) or {}
+Codec.uniqueTypes[BAG] = entry
+local absent = seller.inventory:getItemWithID(idD) == nil
+mark = #events
+local retried = letter2 and cmd(seller, "mail.claim", { mailId = letter2.id }) or {}
+check(made2.ok == true and letter2 ~= nil and failed.ok == false and failed.error == "item_unavailable"
+    and orphan.ok == false and orphan.error == "item_unavailable" and absent
+    and retried.ok == true and since(mark) == "rebuilt:return,add:" .. idD and (ctxs[#ctxs] or {}).ref == made2.auctionId,
+    "UQ-15: an unsold auction's letter waits while rebuilt raises or nobody has the type registered (item_unavailable), and the next claim delivers it")
+local bagE = newBag(seller, 0)
+n = #calls
+local wantType = cmd(seller, "wanted.create", { item = BAG, qty = 1,
+    options = { { kind = "coin", currency = "survivor", unitPrice = 10 } } })
+local payWith = cmd(seller, "wanted.create", { item = "Base.Bandage", qty = 1,
+    options = { { kind = "item", itemIds = { bagE.id }, perUnit = 1 } } })
+check(wantType.error == "not_whitelisted" and wantType.rule == "unique" and payWith.error == "not_whitelisted"
+    and payWith.rule == "unique" and #calls == n and seller.inventory:contains(bagE),
+    "UQ-16: a buy order for a unique type, and one paid with it, are refused as unique before any handler runs")
+files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "bag", item = BAG, qty = 1, price = 20, dailyCap = 0, buyback = true, bidPrice = 3, buybackCap = 0 },
+} }) }, opens = 0 }
+assert(Shop.load())
+local before = money("uq-seller")
+local cand = cmd(seller, "shop.candidates", { id = "bag" })
+local sold = cmd(seller, "shop.sell", { id = "bag", itemIds = { bagE.id }, revision = Shop.revision() })
+check(cand.ok == true and cand.count == 0 and (cand.refused or {}).unique ~= nil and cand.refused.unique >= 1
+    and sold.ok == false and sold.error == "unique" and seller.inventory:contains(bagE)
+    and money("uq-seller") == before and #calls == n,
+    "UQ-17: the shop's buyback counts every unique copy as refused (unique) and will not buy one; no handler runs")
+local bagF = newBag(seller, 0)
+local function tryExt(ext)
+    escrowAnswer = function() return ext end
+    local n1 = #calls
+    local r = cmd(seller, "market.list", { itemIds = { bagF.id }, price = 100 })
+    escrowAnswer = nil
+    return r.error, string.find(table.concat(calls, ",", n1 + 1), "^check:market,escrow:market,aborted:[%d:]+$") ~= nil
+end
+local many = {}
+for i = 1, 150 do many[i] = i end
+local bigErr, bigAborted = tryExt({ pad = string.rep("x", 5000) })
+local viewErr, viewAborted = tryExt({ view = { s = string.rep("x", 1100) } })
+local leafErr, leafAborted = tryExt({ many = many })
+local fnErr, fnAborted = tryExt(function() end)
+check(bigErr == "unique_refused" and bigAborted and viewErr == "unique_refused" and viewAborted
+    and leafErr == "unique_refused" and leafAborted and fnErr == "unique_refused" and fnAborted
+    and seller.inventory:contains(bagF) and money("uq-seller") == before and EC.Market.ownerCount("uq-seller") == 0,
+    "UQ-18: a payload past 4096 encoded, a view past 1024, one the recovery journal cannot carry or one that is not JSON is refused and the handler hears aborted; nothing is listed or charged")
+local pair = cmd(seller, "market.list", { itemIds = { bag2.id, bagE.id }, price = 100 })
+bag2.modData.MIC42_seen = "a,1"
+local lot = Codec.lotSnapshot({ bag2, bagE })
+check(pair.ok == false and pair.error == "invalid_args" and seller.inventory:contains(bag2) and seller.inventory:contains(bagE)
+    and type(lot.modData) == "table" and lot.modData.MIC42_seen == "a,1",
+    "UQ-19: two unique bags never make one lot: the listing is refused and lotSnapshot keeps the first copy whole instead of merging it")
+Codec.uniqueTypes[BAG], Codec.blockedTypes["UqMod.Other"] = nil, nil
+instanceItem = realInstance
+knownItems["UqMod.Crate"] = nil
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
+files["MinidoracatEconomy/whitelist.json"] = nil
+Codec.load()
+onlinePlayers = {}
+end)()
+
 -- BB: buyback takes cooked, burnt, frozen and warmed food but not eaten food, names why it refuses
 -- a copy, and the classes that left the fixed list travel (an empty bag, a padlock's key count, a lamp)
 ;(function()
@@ -20506,6 +20836,26 @@ check(okW and call(W.marketError, { error = "not_whitelisted", rule = "blocked" 
     and say("Shop_Error_blocked") ~= nil
     and call(W.marketError, { error = "not_whitelisted", rule = "zz_new_rule" }) == say("Market_Reason_not_whitelisted"),
     "TX-6: a blocked type has its own sentence in the picker, market, auction, buy order and shop words; an unknown rule falls back")
+-- TX-7: a unique type (API rev 6) reads as its own sentence where a buy order or the buyback
+-- refuses it, as the registering mod's own words for unique_refused (its detail passed along) and
+-- in its listing view lines (MinidoracatEconomy.v1.Client stores both hooks in C.refusalTexts /
+-- C.itemViews); a missing or raising hook falls back to the plain sentence or to no lines
+EC.Client.refusalTexts = { ["Uq.Bag"] = function(detail) return "no car: " .. tostring(detail and detail.why) end,
+    ["Uq.Bad"] = function() error("boom") end }
+EC.Client.itemViews = { ["Uq.Bag"] = function(view) return { "Car: " .. tostring(view.car), 7, "" } end,
+    ["Uq.Bad"] = function() error("boom") end }
+local plain = say("Market_Reason_unique_refused")
+local carLines = call(W.viewLines, "Uq.Bag", { car = "Nyala" }, {})
+check(okW and plain ~= nil and say("Market_Reason_not_whitelisted_unique") ~= nil and say("Shop_Error_unique") ~= nil
+    and call(W.marketError, { error = "not_whitelisted", rule = "unique" }) == say("Market_Reason_not_whitelisted_unique")
+    and call(W.marketError, { error = "unique_refused", item = "Uq.Bag", uniqueDetail = { why = "engine" } }) == "no car: engine"
+    and call(W.marketError, { error = "unique_refused", item = "Uq.Bad" }) == plain
+    and call(W.marketError, { error = "unique_refused", item = "Uq.None" }) == plain
+    and call(W.shopError, "unique") == say("Shop_Error_unique") and call(W.sellRefusalText, "unique") == say("Shop_Error_unique")
+    and type(carLines) == "table" and #carLines == 1 and carLines[1] == "Car: Nyala"
+    and call(W.viewLines, "Uq.Bad", { car = "x" }, {}) == nil and call(W.viewLines, "Uq.Bag", nil, {}) == nil,
+    "TX-7: a unique type has its buy-order and shop sentences, the mod's own refusal text and view lines, and falls back when a hook is missing or raises")
+EC.Client.refusalTexts, EC.Client.itemViews = nil, nil
 -- TX-5: the generic sentences a refusal falls back to carry no placeholder in any language
 local withArg = {}
 for lang, d in pairs(dicts) do

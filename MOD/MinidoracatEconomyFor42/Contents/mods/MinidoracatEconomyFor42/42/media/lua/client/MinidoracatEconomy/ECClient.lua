@@ -1339,15 +1339,29 @@ end)
 -- and decided by the server). CAPABILITIES.rentals: quote and auto-renew name a rental id (each
 -- rental order is its own lease). CAPABILITIES.freeze (rev 3): a rental can read `frozen` (its
 -- product's mod is missing on the server; times shown as if it came back now).
--- CAPABILITIES.shopAdd (rev 4): openAdminShop. API_MAJOR lives on the server table on purpose:
--- probing `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
+-- CAPABILITIES.shopAdd (rev 4): openAdminShop. CAPABILITIES.uniqueItemViews (rev 5): a mod that
+-- registered a unique item type on the server words its listings here - registerItemView(fullType,
+-- fn(view, row) -> { already translated lines }) for every listing detail (the server's row.view),
+-- registerRefusalText(fullType, fn(detail) -> text) for its unique_refused (ECPanelWidgets reads
+-- both, each call in pcall). API_MAJOR lives on the server table on purpose: probing
+-- `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
 require "MinidoracatEconomy/ECEntitlementClient"
+C.itemViews, C.refusalTexts = C.itemViews or {}, C.refusalTexts or {}
+local function registerHook(set)
+    return function(fullType, fn)
+        if type(fullType) ~= "string" or fullType == "" or type(fn) ~= "function" then return false, "invalid_args" end
+        set[fullType] = fn
+        return true
+    end
+end
 EC.v1 = EC.v1 or {}
 EC.v1.Client = {
     API_MAJOR = 1,
-    API_REVISION = 4,
+    API_REVISION = 5,
     CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true, freeze = true,
-        shopAdd = true },
+        shopAdd = true, uniqueItemViews = true },
+    registerItemView = registerHook(C.itemViews),
+    registerRefusalText = registerHook(C.refusalTexts),
     getWallet = function() return C.wallet end,
     onWalletChanged = C.onWallet,
     Entitlements = C.Entitlements,

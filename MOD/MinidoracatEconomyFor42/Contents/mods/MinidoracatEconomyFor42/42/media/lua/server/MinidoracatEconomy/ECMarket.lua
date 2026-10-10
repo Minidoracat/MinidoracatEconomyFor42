@@ -180,13 +180,14 @@ end
 -- and the script estimate for a listing that predates the field. It is what lets the buyer see
 -- whether a lot would fit before asking for it. `currency` is the listing's own - a row without
 -- one is a held legacy record and says so instead of borrowing another currency's name. `state` is
--- the buyer's filtered view of the snapshot (Codec.preview), never the snapshot itself.
+-- the buyer's filtered view of the snapshot (Codec.preview), never the snapshot itself; `view` is
+-- what a unique item's mod chose to show (Codec.uniqueView: its ext.view, never ext or s.unique).
 local function view(l)
     return {
         id = l.id, seller = l.seller, item = l.item, name = l.name, category = l.category, qty = l.qty or 1,
         price = l.price, currency = l.currency, blocked = l.blocked, at = l.at, expiresAt = l.expiresAt,
         weight = l.weight or M.scriptWeight(l.item),
-        state = Codec.preview(l.snapshot),
+        state = Codec.preview(l.snapshot), view = Codec.uniqueView(l.snapshot),
     }
 end
 
@@ -316,7 +317,9 @@ end
 -- the item is, worn or in a hand (IsoGameCharacter.isEquipped = isEquippedClothing or
 -- isHandItem, IsoGameCharacter.java:10380-10387), and the picker writes that on the tile. Every
 -- row carries the category the whitelist went by (EC.itemCategory) and a not_whitelisted one the
--- rule that refused it (Codec.check), so the picker can name what would have to change.
+-- rule that refused it (Codec.check), so the picker can name what would have to change. A unique
+-- item (Codec.uniqueTypes) is a row of its own, never folded (`unique`), and its mod's refusal
+-- comes as unique_refused with `uniqueDetail`.
 function Mk.candidates(player)
     local out, groups = {}, {}
     local inv = player:getInventory()
@@ -327,7 +330,7 @@ function Mk.candidates(player)
         if #out >= Mk.CANDIDATES_MAX then break end
         local it = items:get(i)
         if it then
-            local pass, reason, rule = Codec.check(it)
+            local pass, reason, rule, detail = Codec.check(it, player, "market")
             local id, fullType, equipped = nil, nil, nil
             pcall(function() id = it:getID() fullType = it:getFullType() end)
             if reason == "equipped" then
@@ -336,6 +339,8 @@ function Mk.candidates(player)
             end
             if id and fullType then
                 local key = fullType .. "|" .. tostring(pass == true) .. "|" .. tostring(reason or "") .. "|" .. tostring(equipped or "")
+                local unique = Codec.uniqueTypes[fullType] ~= nil
+                if unique then key = key .. "|" .. tostring(id) end
                 local snap = Codec.snapshot(it)
                 if pass then key = key .. "|" .. Codec.signature(snap) end
                 local row = groups[key]
@@ -344,7 +349,8 @@ function Mk.candidates(player)
                     row.count = row.count + 1
                 else
                     row = { itemId = id, itemIds = { id }, count = 1, item = fullType, ok = pass == true, reason = (not pass) and reason or nil,
-                        rule = (not pass) and rule or nil, equipped = equipped, state = Codec.preview(snap), category = EC.itemCategory(it) }
+                        rule = (not pass) and rule or nil, equipped = equipped, state = Codec.preview(snap), category = EC.itemCategory(it),
+                        unique = unique or nil, uniqueDetail = detail }
                     groups[key] = row
                     out[#out + 1] = row
                 end
@@ -410,8 +416,11 @@ function Mk.list(player, args)
     for _, id in ipairs(ids) do
         local item = M.findTopLevel(inv, id)
         if not item then return { ok = false, error = "item_not_found" } end
-        local pass, reason, rule = Codec.check(item)
-        if not pass then return { ok = false, error = reason, rule = rule, category = EC.itemCategory(item) } end
+        local pass, reason, rule, detail = Codec.check(item, player, "market")
+        if not pass then
+            return { ok = false, error = reason, rule = rule, category = EC.itemCategory(item),
+                item = reason == "unique_refused" and item:getFullType() or nil, uniqueDetail = detail }
+        end
         local sig = Codec.signature(Codec.snapshot(item))
         if signature == nil then signature = sig
         elseif sig ~= signature then return { ok = false, error = "mixed_items" } end
@@ -428,6 +437,9 @@ function Mk.list(player, args)
     local qty = #items
     local id = S.newId()
     local _, seq = EC.parseId(id)
+    -- the last refusal before anything leaves: a unique item's mod takes it into escrow here
+    local refused = Codec.escrowUnique(items, snapshot, player, "market", id)
+    if refused then return refused end
     -- phase 1: the seller's own save records the operation and the exact origin of every unit
     -- before anything is removed. A refusal here has moved no item and charged no fee.
     local rec = { itemId = ids[1], itemIds = ids, qty = qty, lotQty = qty, snapshot = snapshot,
@@ -437,12 +449,16 @@ function Mk.list(player, args)
     -- the refusal names the unit it happened on, so the seller is not told "the source could not
     -- be verified" for four different problems
     if not began then
+        Codec.abortUnique(snapshot, player, id)
         return { ok = false, error = beginErr, recovery = M.recoveryStatus(login),
             recoveryDetail = beginDetail }
     end
     -- phase 2: the items leave the backpack
     local taken, takeError = M.takeOut(player, id, items)
-    if not taken then return { ok = false, error = takeError, recovery = M.recoveryStatus(login) } end
+    if not taken then
+        Codec.abortUnique(snapshot, player, id)
+        return { ok = false, error = takeError, recovery = M.recoveryStatus(login) }
+    end
     -- phase 3: listing + fee in ModData (same tick). pending stays until reconcile clears it.
     local name, category = nil, EC.itemCategory(items[1])
     -- picked-up furniture (Moveables.<sprite>) has no script of its own: the item names itself
@@ -452,7 +468,8 @@ function Mk.list(player, args)
     local l = {
         id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, price = price,
         currency = currency, tradeSchema = L.TRADE_SCHEMA, fee = fee,
-        at = ms, expiresAt = ms + EC.sandbox("MarketListingDays", 7) * 86400000, weight = M.itemWeight(items[1]),
+        at = ms, expiresAt = ms + EC.sandbox("MarketListingDays", 7) * 86400000,
+        weight = Codec.uniqueWeight(snapshot) or M.itemWeight(items[1]),
         category = type(category) == "string" and category or "other", name = type(name) == "string" and name or nil,
     }
     addListing(l)
@@ -468,6 +485,7 @@ function Mk.list(player, args)
             -- rebuilt from the snapshot, so no copy can outlive the refusal.
             removeListing(id)
             local returned = M.abortOut(player, id, items)
+            Codec.abortUnique(snapshot, player, id)
             return { ok = false, error = returned and res.error or "recovery_pending", recovery = M.recoveryStatus(login) }
         end
     end
@@ -581,7 +599,7 @@ function Mk.buy(player, args)
         return { ok = false, error = "insufficient_funds", currency = currency, price = l.price }
     end
     local qty = l.qty or 1
-    local prepared, perr = M.prepare(player, { item = l.item, qty = qty, snapshot = l.snapshot })
+    local prepared, perr = M.prepare(player, { item = l.item, qty = qty, snapshot = l.snapshot, kind = "market", ref = l.id })
     if not prepared then return { ok = false, error = perr or "item_unavailable" } end
     if not prepared.fits and args.acceptMail ~= true then
         return { ok = false, error = "mail_confirmation_required", willMail = true, listingId = l.id, item = l.item,
@@ -700,7 +718,7 @@ function Mk.restoreFromPending(username, id, pend)
         return false, { reason = "restore_failed", cause = "bad_record", kind = "listing", item = l.item,
             snapshot = pend.snapshot, qty = l.qty, lotQty = lotQty, price = l.price }
     end
-    l.weight = M.scriptWeight(l.item)
+    l.weight = Codec.uniqueWeight(l.snapshot) or M.scriptWeight(l.item)
     pcall(function()
         local script = ScriptManager.instance:FindItem(l.item)
         l.name = script:getDisplayName()

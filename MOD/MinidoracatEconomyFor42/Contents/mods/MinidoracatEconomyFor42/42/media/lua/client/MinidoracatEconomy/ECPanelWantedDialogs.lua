@@ -350,11 +350,12 @@ function Dlg:onRemoveOption(b)
     Keys.invalidate(self.panel)
 end
 
--- The backpack groups an item option may pay with: the market's candidate rows that may be listed.
+-- The backpack groups an item option may pay with: the market's candidate rows that may be listed,
+-- less unique items (a buy order never takes one, ECCodec.registerUniqueItemType).
 function Dlg:fillGroups()
     local rows = {}
     for _, row in ipairs(self.panel.candidateRows or {}) do
-        if row.ok then rows[#rows + 1] = row end
+        if row.ok and not row.unique then rows[#rows + 1] = row end
     end
     self.groups = rows
     local keys = {}

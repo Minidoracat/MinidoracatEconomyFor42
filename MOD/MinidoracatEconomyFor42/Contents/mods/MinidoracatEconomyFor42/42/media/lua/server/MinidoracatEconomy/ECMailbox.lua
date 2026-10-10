@@ -372,7 +372,7 @@ function M.list(username)
             out[#out + 1] = { id = e.id, kind = e.kind, item = e.item, qty = #availableUnits(e), price = e.price,
                 currency = e.currency, seller = e.seller, txId = e.txId, at = e.at,
                 state = type(e.snapshot) == "table" and S.Codec and S.Codec.preview(e.snapshot) or nil,
-                claimable = true, weight = M.scriptWeight(e.item) }
+                claimable = true, weight = (S.Codec and S.Codec.uniqueWeight(e.snapshot)) or M.scriptWeight(e.item) }
         end
     end
     EC.sortSafe(out, function(a, b) return a.at > b.at end)
@@ -434,18 +434,21 @@ function M.scriptWeight(fullType)
 end
 
 -- One copy of the letter: the snapshot through ECCodec, a plain SKU through instanceItem.
--- Returns item or nil, error. Nothing but the returned item is touched.
-local function build(entry)
+-- Returns item or nil, error. Nothing but the returned item is touched. Codec.rebuild is where a
+-- unique item's mod gets the item (player, ctx) before anything here reads or places it.
+local function build(entry, player, ctx)
     if type(entry.snapshot) == "table" and S.Codec then
-        return S.Codec.rebuild(entry.snapshot)
+        return S.Codec.rebuild(entry.snapshot, player, ctx)
     end
     local item = instanceItem(entry.item)
     if not item then return nil, "item_unavailable" end
     return item
 end
 
--- entryLike = { item, qty, snapshot? }: build the whole letter and weigh it without touching
--- the inventory, the mailbox, the seq or the witness. Returns prepared or nil, error.
+-- entryLike = { item, qty, snapshot?, kind?, ref?, mail? }: build the whole letter and weigh it
+-- without touching the inventory, the mailbox, the seq or the witness. Returns prepared or nil,
+-- error. kind / ref / mail name the handover for a unique item's mod (Codec.rebuild ctx), and a
+-- unique item weighs at least what its mod says it does with its contents (Codec.uniqueWeight).
 -- A prepared letter is private to the synchronous handler that made it: the items are detached
 -- engine objects, they are not state, and they are never cached or carried across a request.
 -- A purchase prepares before it debits, so an unbuildable letter costs nothing and the same
@@ -458,8 +461,13 @@ function M.prepare(player, entryLike)
     if not inv then return nil, "no_inventory" end
     local n = math.max(1, math.min(M.ITEMS_MAX, tonumber(entryLike.qty) or 1))
     local items, weights, total, heaviest = {}, {}, 0, 0
+    local ctx, uniqueW = nil, nil
+    if type(entryLike.snapshot) == "table" and entryLike.snapshot.unique ~= nil then
+        ctx = { kind = entryLike.kind or "mail", ref = entryLike.ref, mail = entryLike.mail, to = S.principal(player) }
+        uniqueW = S.Codec and S.Codec.uniqueWeight(entryLike.snapshot)
+    end
     for i = 1, n do
-        local ok, item, err = pcall(build, entryLike)
+        local ok, item, err = pcall(build, entryLike, player, ctx)
         if not ok then
             EC.log("mailbox prepare " .. tostring(entryLike.item) .. " failed: " .. tostring(item))
             return nil, "item_unavailable"
@@ -470,6 +478,7 @@ function M.prepare(player, entryLike)
             EC.log("mailbox prepare " .. tostring(entryLike.item) .. ": no usable weight")
             return nil, "item_unavailable"
         end
+        if uniqueW and uniqueW > w then w = uniqueW end
         items[i], weights[i] = item, w
         total = total + w
         if w > heaviest then heaviest = w end
@@ -650,7 +659,8 @@ local function deliver(player, entry, claimSeq, prepared)
     if letter and (letter.used or letter.qty ~= n or letter.item ~= entry.item or #letter.items ~= n) then letter = nil end
     if not letter then
         local err
-        letter, err = M.prepare(player, { item = entry.item, snapshot = entry.snapshot, qty = n })
+        letter, err = M.prepare(player, { item = entry.item, snapshot = entry.snapshot, qty = n,
+            kind = entry.kind, ref = entry.listingId or entry.id, mail = entry.id })
         if not letter then return { ok = false, error = err or "item_unavailable" } end
     end
     letter.used = true

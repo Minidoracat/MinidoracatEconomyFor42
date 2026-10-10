@@ -37,6 +37,32 @@
 -- the whitelist says - for an item whose state lives on the server under its item id, which the
 -- snapshot rebuild changes. Idempotent, callable any time after the server files loaded (an
 -- OnInitGlobalModData handler included); refusals carry rule "blocked".
+-- Rev 6 (ECCodec, CAPABILITIES.uniqueItemTypes): such an item can be traded after all, one at a
+-- time, on the market and in auctions. E.registerUniqueItemType(fullType, modId, handler) -> true |
+-- false, "invalid_type" | "invalid_mod" | "invalid_handler" | "taken" (another mod registered or
+-- blocked it; the same mod again replaces its handler and lifts its own blockItemType). The type
+-- skips the whitelist (excludeTypes still wins) and container_not_empty. Handler functions, each
+-- called in pcall (an error is a refusal):
+--   check(item, player, channel) -> true | false, detail      picker rows, market.list,
+--       auction.create (channel "market" / "auction"), after our own checks; detail (a table,
+--       <= 512 encoded) reaches the client as uniqueDetail with error unique_refused
+--   escrow(item, player, channel, ref) -> ext | nil, detail   the last refusal of market.list /
+--       auction.create, after price, fee, limits and terminal, right before the item leaves in the
+--       same tick; ref = the new listing / auction id. ext (JSON, <= 4096 encoded, and the whole
+--       snapshot must still fit the recovery journal) is stored as s.unique = { mod, ext };
+--       ext.view (<= 1024) goes to clients as row.view on market and auction rows, ext.weight is
+--       the weight with contents for capacity estimates and the mail-or-backpack decision
+--   aborted(ext, player, ref)   optional: escrow answered but the intake did not happen
+--   rebuilt(ext, item, player, ctx)   every item built from such a snapshot, before anything
+--       reads its id or weight or places it (Codec.rebuild; ctx = { kind = mail kind or "market",
+--       ref = listing / auction / mail id, mail = mail id, to = account }); it may set the id and
+--       fill the container. It can run more than once for one snapshot (a claim the backpack could
+--       not take discards its build); if it raises, or the type is not registered, nothing is
+--       built and the letter waits (item_unavailable).
+-- Buy orders refuse the type before any hook (not_whitelisted, rule "unique"), the buyback with
+-- error "unique". Also E.snapshotItem(item, { contents = true? }) -> snapshot | nil, reason (state
+-- check and fixed classes, no whitelist), E.rebuildItem(snapshot) -> item | nil, reason and
+-- E.detachParts(item, container) -> count, for a mod that carries the contents itself.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Rewards then
     require "MinidoracatEconomy/ECRewards"

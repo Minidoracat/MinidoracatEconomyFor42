@@ -25,6 +25,7 @@
 - **求購可以還價**：賣方嫌價錢低，可以對貨幣選項留下想要的每件價格、件數和一句留言（最多 64 字），不動錢也不動物品；買方會收到通知，可以「加價到這個價」或「忽略」。加價只能往上，對所有賣方都有效，會補足保留款，多出來的金額照刊登費率收費。每張單最多 10 筆還價，每位賣方一筆。
 - **管理台新增「求購單」分頁**：可以搜尋物品或買家，看每張單的付款方式與保留款，必要時強制取消（要寫原因，會留稽核紀錄，保留款與物品照常退回）。總覽會提醒退款失敗的求購單。
 - **其他 MOD 可以讓自己的物品不經過經濟系統交易**：例如已裝載車輛的膠囊，它的車輛資料綁在那一件物品上，經市場轉手後收到的是新的一件、車輛就找不到了。這類物品在選物格會寫「這種物品不能透過經濟系統交易（由其他 MOD 指定）」，上架、拍賣、求購（建立、用它付款或交貨）與賣給商店都會拒絕，不受管理員白名單影響；物品留在背包，不扣任何費用。
+- **「每一件都不同」的物品可以連同裡面的東西在市場與拍賣交易**：由提供這種物品的 MOD 指定，例如已裝載車輛的膠囊——買家收到的是同一件膠囊，車輛和裡面的貨物都還在。刊登列、明細、購買與出價視窗會寫出那個 MOD 給的說明（例如車名與車況）；這類物品一件一個刊登，不會和相同的物品疊成一格，也不能合併上架。它不受管理員的分類規則限制，但管理員「排除」的物品照樣不能上架；求購（建立、用它付款或交貨）與賣給商店一律拒絕，選物格會寫「這種物品每一件都不同，求購單不能收」。那個 MOD 暫時不讓某一件交易時，選物格與上架會寫出它給的原因，物品留在背包、不扣費用。
 
 ### 變更
 
@@ -53,6 +54,8 @@
 > 技術要點（自由文字）：轉帳備註、調帳原因與整合 API 的 `reasonText` 不再寫進世界資料的收據環與冪等紀錄（只在收據檔與事件檔），還價留言存在伺服器資料夾的 `wanted-memos.json`（備份時一起帶走；檔案讀不到時帶留言的還價會被拒絕，不帶留言的照常）。舊存檔裡的這些文字在開服載入時移出。
 >
 > 技術要點（物品封鎖）：整合 API 升到 revision 5（`CAPABILITIES.blockItemType`）：伺服器端 `MinidoracatEconomy.v1.blockItemType(fullType, modId)` 回 `true` 或 `false, "invalid_type" | "invalid_mod"`，重複呼叫無害（第一個 modId 保留），伺服器 Lua 檔載入後任何時候都能呼叫（包含其他 MOD 的 `OnInitGlobalModData`）。被封鎖的類型在白名單檢查中排在 `excludeTypes` 之後、其他規則之前，回 `not_whitelisted` 並帶 `rule="blocked"`（`market.candidates`、`market.list`、`auction.create`、`wanted.create`、`wanted.candidates`、`wanted.fill`）；`shop.sell` 回 `error="blocked"`，`shop.candidates` 的 `refused` 記 `blocked`。商店出貨、信件與還原這些伺服器發出的物品不檢查封鎖。
+>
+> 技術要點（唯一物品）：整合 API 升到 revision 6（`CAPABILITIES.uniqueItemTypes`）：伺服器端 `MinidoracatEconomy.v1.registerUniqueItemType(fullType, modId, handler)` 回 `true` 或 `false, "invalid_type" | "invalid_mod" | "invalid_handler" | "taken"`；`handler` 的 `check`、`escrow`、`rebuilt`（必要）與 `aborted`（選用）都在 pcall 裡呼叫，出錯算拒絕。只有 `market.candidates`／`market.list`（通道 `market`）與 `auction.create`（通道 `auction`）收這種類型，一律一件一個刊登；`escrow` 回的 `ext`（JSON，編碼後最多 4096，整份快照還要放得進恢復日誌）存成快照的 `s.unique`，`ext.view`（最多 1024）以 `view` 隨刊登列送到客戶端，`ext.weight` 用於重量估計與寄信箱判斷；每一件從這種快照重建的物品在交出前都先交給 `rebuilt(ext, item, player, ctx)`，那個 MOD 沒註冊或出錯時信件留在信箱（`item_unavailable`）。求購回 `not_whitelisted` 帶 `rule="unique"`，`shop.sell` 回 `error="unique"`、`shop.candidates` 的 `refused` 記 `unique`，拒絕碼 `unique_refused` 帶 `uniqueDetail`。另有 `snapshotItem`、`rebuildItem`、`detachParts` 給自己搬內容物的 MOD 用。客戶端 `MinidoracatEconomy.v1.Client` 升到 revision 5（`CAPABILITIES.uniqueItemViews`）：`registerItemView(fullType, fn)`、`registerRefusalText(fullType, fn)`。完整規格在 `ECIntegration.lua` 檔頭。
 
 ## [42.21.0-0.14.0] - 2026-10-09
 

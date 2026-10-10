@@ -69,13 +69,16 @@ local function addTech(c, labelKey, value)
     c.techHint = c.techHint and (c.techHint .. tr("Admin_Set_ListSep") .. label) or label
 end
 
--- The item's state: bars for what has a maximum, one row per other fact. Food in escrow keeps
--- ageing, which the market and the auction say under it.
-local function addState(c, st, escrow)
+-- The item's state: bars for what has a maximum, one row per other fact, a unique item's own
+-- lines (`lines`, W.viewLines) leading. Food in escrow keeps ageing, which the market and the
+-- auction say under it.
+local function addState(c, st, escrow, lines)
     local meters = W.stateMeters(st)
     if #meters > 0 then c.meters = meters end
-    local tokens = W.stateTokens(st, true)
-    for i = 1, #tokens do addRow(c, i == 1 and tr("Card_State") or "", tokens[i]) end
+    local rows = {}
+    for _, line in ipairs(lines or {}) do rows[#rows + 1] = line end
+    for _, token in ipairs(W.stateTokens(st, true)) do rows[#rows + 1] = token end
+    for i = 1, #rows do addRow(c, i == 1 and tr("Card_State") or "", rows[i]) end
     if escrow and type(st) == "table" and type(st.food) == "table" then c.text = tr("Market_State_FoodAging") end
 end
 
@@ -225,7 +228,7 @@ function K.market(panel, e, list, key, title)
         chips[2] = { value = tr("Card_CanBuy"), token = "positive", dot = true }
     end
     c.chips = chips
-    addState(c, e.state, true)
+    addState(c, e.state, true, e.viewLines)
     if not e.mine then
         addRow(c, tr("Market_Col_Seller"), e.seller)
         addWeight(c, e.item, e.qty, e.weight)
@@ -269,7 +272,7 @@ function K.auction(panel, e, list, key, title)
     end
     if not e.ended then chips[#chips + 1] = { value = e.expiresText } end
     c.chips = chips
-    addState(c, e.state, true)
+    addState(c, e.state, true, e.viewLines)
     if e.bid then addRow(c, tr("Card_StartPrice"), U.amountText(e.startPrice), nil, nil, cur) end
     if e.canBid then addRow(c, tr("Card_NextMin"), U.amountText(e.minNext), nil, nil, cur) end
     if e.leading and e.bid and not e.ended then

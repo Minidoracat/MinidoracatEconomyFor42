@@ -293,6 +293,13 @@ local function unpackTable(leaves)
     return root
 end
 
+-- Whether a snapshot fits the wire form above: a unique item's payload rides inside its snapshot,
+-- and ECCodec.escrowUnique refuses one this journal could not write (J.PACK_DEPTH, PACK_LEAVES_MAX).
+function J.packable(value)
+    local _, failed = packTable(value)
+    return failed ~= true
+end
+
 -- The whole economic content of an operation, and nothing else: the commit point is excluded
 -- because it is the one thing that legitimately differs between a save and the line it came from
 -- (R.finishOut writes it back into the record after the fact). Encoded through the shared JSON

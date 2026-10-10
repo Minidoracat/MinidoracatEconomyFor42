@@ -1007,6 +1007,19 @@ C.onMarket(function(kind, args)
     dlg.panel:layoutDialog(dlg)
 end)
 
+-- A listing's item lines in a confirmation: the row's status line, or - for a unique item whose mod
+-- words it (row.viewLines, W.viewLines) - each of those lines, then the seller when `seller` is
+-- given (the auction status line carried it) and the state alone (row.stateText).
+local function itemLines(out, row, seller)
+    if row.viewLines == nil then
+        if row.statusText then out[#out + 1] = row.statusText end
+        return
+    end
+    for _, line in ipairs(row.viewLines) do out[#out + 1] = line end
+    if seller then out[#out + 1] = getText(T .. "Market_BuyFrom", seller) end
+    if row.stateText then out[#out + 1] = row.stateText end
+end
+
 -- Every value this step trades on, in reading order. The server's refusal comes first: the
 -- reader scrolls back to the top whenever its text changes, so it is the line the player lands
 -- on. Built when one of those values moves (syncSummary), never per frame.
@@ -1029,7 +1042,7 @@ function MarketDialog:summaryLines()
         local row = self.row
         out[#out + 1] = row.lotName
         if row.altName and row.altName ~= row.name then out[#out + 1] = row.altName end
-        if row.statusText then out[#out + 1] = row.statusText end
+        itemLines(out, row)
         out[#out + 1] = getText(T .. "Market_BuyFrom", row.seller)
         out[#out + 1] = detailLine("Market_Col_Qty", tostring(row.qty))
         out[#out + 1] = detailLine("Market_Col_Expires", row.expiresText)
@@ -1055,7 +1068,7 @@ function MarketDialog:summaryLines()
         local reserve = self:bidReserve(amount)
         out[#out + 1] = row.nameText
         if row.altName and row.altName ~= row.name then out[#out + 1] = row.altName end
-        if row.statusText then out[#out + 1] = row.statusText end
+        itemLines(out, row, row.seller)
         out[#out + 1] = detailLine("Auction_Col_Bid", row.priceText .. " " .. cur)
         out[#out + 1] = detailLine("Auction_Col_Bids", row.bidsText)
         out[#out + 1] = detailLine("Auction_Col_Ends", row.expiresText)
