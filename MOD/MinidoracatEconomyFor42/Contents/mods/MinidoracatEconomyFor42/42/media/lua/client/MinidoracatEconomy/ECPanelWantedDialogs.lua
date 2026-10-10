@@ -77,9 +77,15 @@ local function button(dlg, title, onClick, style)
 end
 
 -- ISComboBox paints its option text unfitted, under the arrow: a box of fixed width gets each
--- label fitted to what it shows (the arrow takes the same 30 px W.comboWidth leaves for it).
-local function fitted(combo, label)
-    return function(k) return fitText(label(k), math.max(20, combo.width - 30)) end
+-- label fitted to what it shows (the arrow takes the same 30 px W.comboWidth leaves for it), and
+-- a cut one is offered whole as that option's tooltip (ISComboBox:getOptionTooltip).
+local function fillFitted(combo, keys, label, selected)
+    local room = math.max(20, combo.width - 30)
+    W.comboFill(combo, keys, function(k) return fitText(label(k), room) end, selected)
+    for i, o in ipairs(combo.options) do
+        local full = label(keys[i])
+        if o.text ~= full then o.tooltip = full end
+    end
 end
 
 -- A whole positive number typed into a field, or nil.
@@ -123,24 +129,41 @@ local function newForm()
     return p, false
 end
 
--- A row's label, a child of the form so it scrolls (and is clipped) with the row it names.
+-- A row's label, a child of the form so it scrolls (and is clipped) with the row it names; the
+-- dialog's title is one too. A label cut to its width is offered whole as its tooltip, through
+-- the very pass a button runs (ISButton:updateTooltip; U.Button does the same for a fitted chip).
 local Label = ISPanel:derive("MinidoracatEconomyWantedLabel")
-function Label:prerender() end
+function Label:prerender()
+    if self.tooltip or self.tooltipUI then ISButton.updateTooltip(self) end
+end
 function Label:render()
-    if self.fit ~= "" then text(self, self.fit, 0, math.floor((self.height - fontH.small) / 2), "textMuted") end
+    if self.fit ~= "" then
+        text(self, self.fit, 0, math.floor((self.height - (self.textH or fontH.small)) / 2), self.token or "textMuted", self.font)
+    end
 end
 function Label:onMouseDown() return false end
 function Label:onMouseUp() return false end
 function Label:onMouseWheel() return false end
 
+-- The label shows `full` fitted to its width; a cut one keeps the whole text as its tooltip.
+local function setLabel(l, full)
+    l.fit = fitText(full, l.width, l.font)
+    l.tooltip = l.fit ~= full and full or nil
+end
+
+local function newLabel(parent)
+    local l = ISPanel:new(0, 0, 10, 10)
+    setmetatable(l, Label)
+    l.background, l.fit = false, ""
+    l:initialise()
+    parent:addChild(l)
+    return l
+end
+
 function Dlg:label(i)
     local l = self.labels[i]
     if l == nil then
-        l = ISPanel:new(0, 0, 10, 10)
-        setmetatable(l, Label)
-        l.background, l.fit = false, ""
-        l:initialise()
-        self.form:addChild(l)
+        l = newLabel(self.form)
         self.labels[i] = l
     end
     return l
@@ -167,6 +190,8 @@ function Dlg:createChildren()
     self.summaryBox = U.newReader(self, 240, fontH.small * 2 + 12)
     self.form, self.canScroll = newForm()
     self:addChild(self.form)
+    self.titleLabel = newLabel(self)
+    self.titleLabel.font, self.titleLabel.token, self.titleLabel.textH = UIFont.Medium, "text", fontH.medium
     self.combos = {}
     if self.kind == "create" then
         self:buildCreate()
@@ -337,7 +362,7 @@ function Dlg:fillGroups()
     for i = 1, OPTIONS_MAX do
         local box = self.opt[i].group
         local was = box:getOptionData(box.selected)
-        W.comboFill(box, keys, fitted(box, function(k) return rows[k].detailText end), was)
+        fillFitted(box, keys, function(k) return rows[k].detailText end, was)
     end
     self:edited()
 end
@@ -528,6 +553,7 @@ function Dlg:optionLabel(i, n)
         return tr("Wanted_FillCoin", X.optionText({ kind = "coin", unitPrice = self:unitPrice(i), currency = opt.currency }),
             X.money(net, opt.currency), X.money(tax, opt.currency))
     end
+    -- X.optionText already names the copy with its title; the second mention is the plain type
     return tr("Wanted_FillItem", X.optionText(opt), tostring(int(opt.perUnit) * n), C.itemLabel(opt.item))
 end
 
@@ -551,12 +577,17 @@ function Dlg:onCandidates(args)
     self.goodRows, self.badRows, self.candError = good, bad, nil
     local keys = {}
     for i = 1, #good do keys[i] = i end
-    W.comboFill(self.groupBox, keys, fitted(self.groupBox, function(k)
+    local function label(k)
         local row = good[k]
         local tokens = W.stateTokens(row.state)
-        local name = C.itemLabel(row.item)
+        local name = W.titledName(C.itemLabel(row.item), row.state)
         return tr("Wanted_Group", tostring(int(row.count)), tokens[1] and tr("Card_Join2", name, tokens[1]) or name)
-    end), 1)
+    end
+    -- a copy's own title makes the label long: the box grows up to the form's width before it cuts
+    local widest = 0
+    for k = 1, #good do widest = math.max(widest, textWidth(label(k))) end
+    self.groupBox:setWidth(math.max(260, math.min(widest + 30, self.fieldW or 260)))
+    fillFitted(self.groupBox, keys, label, 1)
     self:clampQty()
     self:edited()
     self.panel:layoutDialog(self)
@@ -599,10 +630,8 @@ function Dlg:fillRows(rows)
     local n = math.max(1, number(self.qtyField) or 1)
     for i, b in ipairs(self.optButtons) do
         local label = self:optionLabel(i, n)
-        if b.fullTitle ~= label then
-            b:setWidth(math.min(self.fieldW, textWidth(label) + 22))
-            U.setButtonTitle(b, label)
-        end
+        b:setWidth(math.min(self.fieldW, textWidth(label) + 22))
+        U.setButtonTitle(b, label)
         b.active = i == self.choice
     end
     rows[#rows + 1] = { label = tr("Wanted_F_PayWith"), items = self.optButtons, stack = true }
@@ -754,7 +783,7 @@ function Dlg:placeRows(rows, y)
         end
         local l = self:label(i)
         l:setX(0); l:setY(y); l:setWidth(self.labelW); l:setHeight(math.max(lineH, CHIP_H))
-        l.fit = fitText(row.label, self.labelW)
+        setLabel(l, row.label)
         l:setVisible(true)
         y = lineY + lineH + 8
     end
@@ -804,7 +833,9 @@ function Dlg:layoutInside(maxW, maxH)
     self.fieldX = self.labelW + PAD
     self.fieldW = cw - self.fieldX
     self.formRight = cw
-    self.titleY = PAD
+    local title = self.titleLabel
+    title:setX(PAD); title:setY(PAD); title:setWidth(w - PAD * 2); title:setHeight(fontH.medium)
+    setLabel(title, self:title())
     local top = PAD + fontH.medium + PAD
     if self.kind == "create" then
         -- the price hint quotes the minimum the server last named
@@ -880,7 +911,6 @@ function Dlg:prerender()
     border(self, 0, 0, w, h, "accent")
     if self.picker and self.picker:isOpen() then return end
     if self.dirtySummary then self.panel:layoutDialog(self) end
-    text(self, fitText(self:title(), w - PAD * 2, UIFont.Medium), PAD, self.titleY, "text", UIFont.Medium)
     if self.errY then
         for i, line in ipairs(self.errLines) do
             text(self, line, PAD, self.errY + (i - 1) * (fontH.small + 2), "errorText")

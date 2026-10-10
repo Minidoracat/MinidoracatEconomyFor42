@@ -388,7 +388,8 @@ end)()
     package.loaded["MinidoracatEconomy/ECPanelWidgets"] = true
     C.UI = { T = T, amountText = tostring }
     C.PanelWidgets = { currencyLabel = function(id) return "cur:" .. tostring(id) end,
-        marketError = function(args) return "market:" .. tostring(args.error) end }
+        marketError = function(args) return "market:" .. tostring(args.error) end,
+        titledName = function(name, st) return st and st.title and (name .. "|" .. st.title) or name end }
     C.itemLabel = function(t) return "item:" .. tostring(t) end
     dofile(MEDIA .. "/client/MinidoracatEconomy/ECPanelWantedText.lua")
     local X = C.WantedText
@@ -403,8 +404,10 @@ end)()
     check(X.condText(nil) == nil and X.condText({ new = true }) == T .. "Wanted_Cond_New"
         and X.condText({ minPct = 80 }) == T .. "Wanted_Cond_Min|80", "a condition reads as words, none as nothing")
     check(X.optionText({ kind = "coin", unitPrice = 2, currency = "survivor" }) == T .. "Wanted_Each|2 cur:survivor"
-        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Bandage" }) == T .. "Wanted_EachItems|1|item:Base.Bandage",
-        "a payment option names its unit price or its items per unit")
+        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Bandage" }) == T .. "Wanted_EachItems|1|item:Base.Bandage"
+        and X.optionText({ kind = "item", perUnit = 1, item = "Base.Magazine", state = { title = "Fishing Weekly #3" } })
+            == T .. "Wanted_EachItems|1|item:Base.Magazine|Fishing Weekly #3",
+        "a payment option names its unit price or its items per unit, with the title vanilla gave the escrowed copy")
     -- an own order's state pill and what it holds
     check(X.status({ qty = 50, qtyTotal = 50 }) == T .. "Wanted_Status_open"
         and X.status({ qty = 30, qtyTotal = 50 }) == T .. "Wanted_Status_partial"
@@ -448,14 +451,6 @@ end)()
         and X.gateCode("create", { atTerminal = true, known = true, max = 2, count = 2 }) == "too_many_orders"
         and X.gateCode("create", { atTerminal = true, known = true, max = 2, count = 1 }) == nil,
         "creating needs buy orders switched on and a free slot")
-    -- a translated name is resolved to types on this side (bounded, fixed classes skipped)
-    local items = { { fullType = "Base.Bandage", search = "zz-bandage base.bandage" },
-        { fullType = "Base.Bandaid", search = "zz-bandaid base.bandaid" },
-        { fullType = "Base.Fixed", search = "zz-fixed", fixed = true }, { fullType = "Base.Nails", search = "nails" } }
-    local list, set = X.searchTypes(items, "zz-", 200)
-    check(#list == 2 and set["Base.Bandage"] and set["Base.Bandaid"] and not set["Base.Fixed"]
-        and #X.searchTypes(items, "zz-", 1) == 1 and #X.searchTypes(items, nil, 200) == 0,
-        "a keyword names the item types whose translated or English name holds it, at most the bound")
     -- the own-order count from whichever read answered last
     local mine5 = { orders = { 1, 2, 3, 4, 5 }, max = 5 }
     check(X.ownCount({ mineCount = 4, max = 5 }, 200, mine5, 100) == 4
@@ -470,6 +465,36 @@ end)()
     check(f2 == 120 and t2 <= 500, "a form that fits keeps its full height")
     -- keep the words module for the page block below
     C.UI, C.PanelWidgets, C.itemLabel = nil, nil, nil
+end)()
+
+-- ---------- the keyword's item types, shared by every item search (ECItemPicker.queryTypes) ----------
+;(function()
+    for _, m in ipairs({ "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = true end
+    local EC = MinidoracatEconomy
+    local savedFixed, savedCat = EC.isFixedType, EC.itemCategory
+    EC.isFixedType = function(script) return script == "fixed" end
+    EC.itemCategory = function() return "Item" end
+    local srcs = { { fullType = "Base.Bandage", name = "ZZ-Bandage", script = "s" },
+        { fullType = "Base.Bandaid", name = "ZZ-Bandaid", script = "s" },
+        { fullType = "Base.Fixed", name = "ZZ-Fixed", script = "fixed" }, { fullType = "Base.Nails", name = "Nails", script = "s" } }
+    C.UI = { T = "IGUI_MinidoracatEconomy_", init = function()
+        return { ItemPicker = { universe = function() return { items = srcs } end } } end }
+    C.ItemNames = { revision = 0, ensure = function() end, english = function() return nil end, status = function() return "ready" end }
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECItemPicker.lua")
+    local P = C.ItemPicker
+    local list, set = P.queryTypes("  zz-  ")
+    local none, empty = P.queryTypes("")
+    check(#list == 2 and set["Base.Bandage"] and set["Base.Bandaid"] and not set["Base.Fixed"]
+        and none == nil and next(empty) == nil and P.queryTypes(nil) == nil,
+        "a keyword names the item types whose translated or English name holds it, fixed classes skipped; no keyword names none")
+    local savedMax = P.TYPES_MAX
+    P.TYPES_MAX = 1
+    C.ItemNames.revision = 1        -- a new index revision drops the cached answers
+    check(#P.queryTypes("zz-") == 1, "the list is bounded at TYPES_MAX")
+    P.TYPES_MAX = savedMax
+    EC.isFixedType, EC.itemCategory = savedFixed, savedCat
+    C.UI, C.ItemNames, C.ItemPicker = nil, nil, nil
+    for _, m in ipairs({ "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = nil end
 end)()
 
 -- ---------- buy orders: the page's state machine (ECPanelWanted, controls replaced) ----------
@@ -487,12 +512,14 @@ end)()
         amountText = tostring, itemTexture = noop }
     C.PanelWidgets = { ITEM_ICON = 32, currencyLabel = function(id) return "cur:" .. tostring(id) end,
         marketError = function(a) return "market:" .. tostring(a.error) end, readError = function(c) return "read:" .. c end,
-        itemBaseName = noop, remainText = tostring, closeCombo = noop }
+        itemBaseName = noop, remainText = tostring, closeCombo = noop, titledName = function(name) return name end }
     C.Keyboard = { invalidate = noop }
     C.DetailWindow = { close = noop, isOpen = function() return false end }
     C.itemLabel = function(t) return "item:" .. tostring(t) end
-    local universe = { items = { { fullType = "Base.Bandage", search = "zz-local base.bandage" } } }
-    C.ItemPicker = { universe = function() return universe end }
+    C.ItemPicker = { queryTypes = function(q)
+        if q == "zz-local" then return { "Base.Bandage" }, { ["Base.Bandage"] = true } end
+        return nil, {}
+    end }
     local atTerminal = true
     C.nearTerminal = function() return atTerminal end
     local wire = {}
@@ -604,6 +631,18 @@ end)()
         "admin record: a raise and an asking price met are prices per unit and say so")
     check(W.recordAmountText({ kind = "sold", price = 40 }) == "40" and W.recordAmountText({ kind = "expired" }) == nil,
         "admin record: every other record keeps its gross price; a record with none has no amount")
+    -- the statement: a reserved-bucket mirror line is not a line; a ring line or an older file
+    -- line (no availableBefore) always is; the viewer's own account is never the other side
+    check(W.isMirrorLine({ delta = 50, availableBefore = 100, availableAfter = 100 })
+        and not W.isMirrorLine({ delta = -50, availableBefore = 150, availableAfter = 100 })
+        and not W.isMirrorLine({ amount = -50, before = 150, after = 100 })
+        and not W.isMirrorLine({ delta = -50 }),
+        "statement: only a line that left the spendable balance as it was is a mirror")
+    local savedIsMe = C.isMe
+    C.isMe = function(n) return n == "me" end
+    check(W.otherParty("me") == nil and W.otherParty("bob") == "bob" and W.otherParty(nil) == nil,
+        "statement: the viewer's own account is never named as the counterparty")
+    C.isMe = savedIsMe
     ISPanel, C.UI, C.itemLabel, C.PanelWidgets = savedPanel, nil, nil, nil
     for _, m in ipairs({ "ISUI/ISPanel", "ISUI/ISComboBox", "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECKeyboard",
         "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = nil end

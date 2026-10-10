@@ -246,8 +246,8 @@ function M.create(panel)
     p.emptyButton = chip(panel, p, "Market_ClearFilters", Page.onEmpty)
     p.combos = { p.catCombo }
     -- a browse with a keyword also carries the item types the keyword names in the player's own
-    -- language (Page:queryTypes): the server matches them before it pages, so a translated name
-    -- finds orders on every page, not only on the one already on screen
+    -- language (C.ItemPicker.queryTypes): the server matches them before it pages, so a translated
+    -- name finds orders on every page, not only on the one already on screen
     p.browseGate = C.ReadGate.create(function(_, requestId) C.sendWanted("browse", p:browseArgs(requestId)) end)
     p.mineGate = C.ReadGate.create(function(_, requestId) C.sendWanted("mine", { requestId = requestId }) end)
     p.histGate = C.ReadGate.create(function(_, requestId) C.sendWanted("history", { requestId = requestId }) end)
@@ -332,24 +332,10 @@ function Page:browseKey()
 end
 
 -- What a browse read asks: the page, the category, the keyword and (with a keyword) the item types
--- it names in the player's own language (Page:queryTypes).
+-- it names in the player's own language (C.ItemPicker.queryTypes).
 function Page:browseArgs(requestId)
-    return { page = self.pageNo, query = self.query, types = self.query and (self:queryTypes()) or nil,
+    return { page = self.pageNo, query = self.query, types = (C.ItemPicker.queryTypes(self.query)),
         category = self.category, requestId = requestId }
-end
-
--- The item types the keyword names, through the session's item index (the translated name, the
--- English name and the fullType each item is searched by in every picker): a list for the server
--- (at most TYPES_MAX) and a set for this side's own filter. Kept per keyword and index revision.
-local TYPES_MAX = 200
-function Page:queryTypes()
-    local q = self.query
-    local rev = C.ItemNames and C.ItemNames.revision or 0
-    if self.typesQuery ~= q or self.typesRev ~= rev then
-        self.typesQuery, self.typesRev = q, rev
-        self.typesList, self.typesSet = X.searchTypes(q and C.ItemPicker.universe().items or {}, q, TYPES_MAX)
-    end
-    return self.typesList, self.typesSet
 end
 
 function Page:visible(mode)
@@ -441,11 +427,11 @@ end
 function Page:rebuild()
     local rows = {}
     local q = self.query
-    local _, types = self:queryTypes()
+    local _, types = C.ItemPicker.queryTypes(q)
     for _, v in ipairs(self.browseSnap and self.browseSnap.rows or {}) do
         local row = browseRow(v)
         -- the snapshot on screen is filtered at once while the next read is on its way: by the
-        -- player's own words, or by a type those words name (the server's own match, Page:queryTypes)
+        -- player's own words, or by a type those words name (the server's own match, C.ItemPicker.queryTypes)
         if q == nil or string.find(row.search, q, 1, true) or types[v.item] then rows[#rows + 1] = row end
     end
     self.rows = rows
@@ -724,7 +710,7 @@ function Page:confirmCancel(v)
             local part = X.money(opt.held, opt.currency)
             coins = coins and (coins .. tr("Admin_Set_ListSep") .. part) or part
         elseif opt.kind == "item" and int(opt.held) > 0 then
-            lines[#lines + 1] = tr("Wanted_CancelItems", tostring(int(opt.held)), C.itemLabel(opt.item))
+            lines[#lines + 1] = tr("Wanted_CancelItems", tostring(int(opt.held)), W.titledName(C.itemLabel(opt.item), opt.state))
         end
     end
     if coins then table.insert(lines, 2, tr("Wanted_CancelCoins", coins)) end
@@ -821,7 +807,7 @@ function Page:cardOf(row)
         local my = v.myOffer
         c.rows[#c.rows + 1] = { label = tr("Wanted_MyOfferLabel"), value = tr("Wanted_QtyEach",
             X.optionText({ kind = "coin", unitPrice = my.unitPrice, currency = (v.options[int(my.option)] or {}).currency }),
-            tostring(int(my.qty))), note = (type(my.memo) == "string" and my.memo ~= "") and my.memo or nil }
+            tostring(int(my.qty))), note = (type(my.memo) == "string" and my.memo ~= "") and tr("Wanted_MemoLine", my.memo) or nil }
     end
     local page, acts = self, {}
     for _, id in ipairs(row.actions or {}) do

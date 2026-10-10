@@ -200,18 +200,35 @@ local function notify(username, fields)
 end
 
 -- Search space on the server is what it can compare without translations: fullType, the script
--- DisplayName (English) and the seller; the client re-filters the page by translated names.
-local function matches(l, category, query, seller, currency)
+-- DisplayName (English) and the seller. The client adds the item types the keyword names in the
+-- player's own language (Mk.typesOf), so a translated name is matched here before the page too.
+local function matches(l, category, query, seller, currency, types)
     -- `seller` is an exact account name, compared byte for byte: asking for "bob" must never
     -- answer with "bobby", and an offline seller's rows are as visible as an online one's
     if seller and l.seller ~= seller then return false end
     if currency and l.currency ~= currency then return false end
     if category and l.category ~= category then return false end
-    if query then
+    if query and not (types and types[l.item]) then
         local hay = string.lower(tostring(l.item) .. " " .. tostring(l.name or "") .. " " .. tostring(l.seller))
         if not string.find(hay, query, 1, true) then return false end
     end
     return true
+end
+
+-- The item types a client resolved the typed keyword to through its own translated names (the
+-- server never sees the player's language): a set of at most TYPES_MAX strings of at most
+-- TYPE_CHARS bytes. Anything else is ignored, never an error: the raw query still matches on its
+-- own. Shared by every item keyword search (market, auction, auction record, buy orders, admin).
+Mk.TYPES_MAX = 200
+Mk.TYPE_CHARS = 128
+function Mk.typesOf(list)
+    if type(list) ~= "table" then return nil end
+    local set = {}
+    for i = 1, math.min(#list, Mk.TYPES_MAX) do
+        local t = list[i]
+        if type(t) == "string" and t ~= "" and #t <= Mk.TYPE_CHARS then set[t] = true end
+    end
+    return set
 end
 
 -- args.currency = "all" (default) or one registered currency id. The reply echoes the filter it
@@ -226,6 +243,7 @@ function Mk.browse(username, args)
         and S.accountOf(args.seller) or nil
     local query = type(args.query) == "string" and string.lower(string.sub((string.gsub(args.query, "^%s*(.-)%s*$", "%1")), 1, Mk.QUERY_MAX)) or ""
     if query == "" then query = nil end
+    local types = query and Mk.typesOf(args.types) or nil
     local sort = Mk.SORTS[args.sort] and args.sort or "time"
     local page = isInt(args.page, 1, 100000) and args.page or 1
     local currency = Mk.CURRENCY_ALL
@@ -243,7 +261,7 @@ function Mk.browse(username, args)
     local filter = currency ~= Mk.CURRENCY_ALL and currency or nil
     local rows = {}
     for _, l in pairs(md.market.listings) do
-        if matches(l, category, query, seller, filter) then rows[#rows + 1] = l end
+        if matches(l, category, query, seller, filter, types) then rows[#rows + 1] = l end
     end
     local key, desc = Mk.SORTS[sort].key, Mk.SORTS[sort].desc
     EC.sortSafe(rows, function(a, b)

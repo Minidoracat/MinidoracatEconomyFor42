@@ -112,7 +112,7 @@ local function tr(key) return getText(T .. key) end
 local function lineH() return fontH.small + 6 end
 local function entryH() return math.max(26, fontH.small + 12) end
 local function listRowH() return lineH() * 2 + 12 end
-local function chipH() return math.max(20, fontH.small + 6) end
+local function chipH() return math.max(24, fontH.small + 6) end
 
 local function txGroupText(group)
     return getTextOrNull(T .. "Admin_Tx_Group_" .. tostring(group)) or U.unknownText("tx group", group)
@@ -325,8 +325,8 @@ local Page = ISPanel:derive("MinidoracatEconomyAdminTxPage")
 function Page:createChildren()
     self.txEntry = newEntry(240, entryH(), { maxLen = TX_QUERY_CHARS, clear = true,
         placeholder = tr("Admin_Tx_Search") })
-    self.txEntry.target = self
-    self.txEntry.onTextChangeFunction = Page.onTxSearch
+    self.txEntry._entry.target = self
+    self.txEntry._entry.onTextChangeFunction = Page.onTxSearch
     self:addChild(self.txEntry)
     -- the keyword's own mode: one field's whole value, or any field containing the text
     self.txModeButtons = {}
@@ -1319,7 +1319,8 @@ function Page:keyboardTargets()
         out[#out + 1] = { kind = "scroll", label = tr("Admin_Tx_Filters"), control = self,
             focusable = false }
     end
-    add("entry", tr("Admin_Tx_SearchLabel"), self.txEntry)
+    out[#out + 1] = { kind = "entry", label = tr("Admin_Tx_SearchLabel"), control = self.txEntry._entry,
+        frame = self.txEntry }
     -- the shared row: the source (dropdown or chips), the days (chip or boxes with their calendar
     -- buttons), the sort and the page chips (UI.FilterBar); the compact card's own page chips
     f:appendTargets(out)
@@ -1677,12 +1678,9 @@ function Page:rebuildTxNotes()
         warn = true
     end
     -- the keyword this snapshot was read with was resolved against an index that could not read
-    -- every MOD: the warning says what an empty result does not prove
+    -- every MOD: the warning says what an empty result does not prove. The band only points at the
+    -- help card; the card says it in full, over the list of those MODs.
     local gaps = self.txSnapGaps
-    if gaps ~= nil then
-        parts[#parts + 1] = tr("Admin_Tx_NamesIncomplete")
-        warn = true
-    end
     local help = {}
     local statusLines = {}
     for _, part in ipairs(parts) do
@@ -1690,6 +1688,11 @@ function Page:rebuildTxNotes()
         statusLines[#statusLines + 1] = { text = part }
     end
     if gaps ~= nil then
+        parts[#parts + 1] = tr("Admin_Tx_NamesIncompleteBand")
+        warn = true
+        local full = tr("Admin_Tx_NamesIncomplete")
+        help[#help + 1] = full
+        statusLines[#statusLines + 1] = { text = full }
         for _, gap in ipairs(gaps) do
             help[#help + 1] = gap.modId .. ": " .. errorText(gap.reason)
             statusLines[#statusLines + 1] = { text = gap.modId, note = errorText(gap.reason) }
@@ -1710,9 +1713,13 @@ function Page:rebuildTxNotes()
     local g = self.g
     local width = g and g.txStatusW or self.width
     local lines = {}
+    -- two lines at most; a band that has more to say ends in "..." (the help card has it all)
     for _, part in ipairs(parts) do
-        if #lines >= 2 then break end
-        for _, line in ipairs(U.wrapText(part, width, 2 - #lines)) do lines[#lines + 1] = line end
+        for _, line in ipairs(U.wrapText(part, width)) do lines[#lines + 1] = line end
+    end
+    if #lines > 2 then
+        lines[2] = fitText(lines[2] .. " " .. lines[3], width)
+        for i = #lines, 3, -1 do lines[i] = nil end
     end
     self.txStatusLines = lines
     self.txStatusToken = warn and "warn" or "textMuted"
@@ -1740,7 +1747,7 @@ function Page:txSummaryText(e)
     pair(tr("Admin_Tx_Amount"), txAmountText(e.amounts))
     pair(tr("Admin_Tx_Account"), txAccountsText(e.accounts))
     if type(e.item) == "string" and e.item ~= "" then
-        local label = itemName(e.item) .. "  (" .. e.item .. ")"
+        local label = getText(T .. "Paren", itemName(e.item), e.item)
         local qty = tonumber(e.qty)
         if qty ~= nil and qty > 1 then
             label = label .. "  " .. getText(T .. "Market_Lot", tostring(math.floor(qty)))
@@ -1813,7 +1820,7 @@ function Page:txRecordText(d)
         if d[key] ~= nil then out[#out + 1] = getText(T .. "Admin_Tx_Ref_" .. key, tostring(d[key])) end
     end
     if type(d.item) == "string" and d.item ~= "" then
-        local label = itemName(d.item) .. "  (" .. d.item .. ")"
+        local label = getText(T .. "Paren", itemName(d.item), d.item)
         local qty = math.floor(tonumber(d.qty) or 0)
         if qty > 1 then label = label .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
         pair(tr("Admin_Tx_Field_Item"), label)

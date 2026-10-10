@@ -1261,11 +1261,14 @@ function Dialog:createChildren()
     self.boxes = {}
     self.fields = dialogFields(self.mode, self.optionKey)
     for _, f in ipairs(self.fields) do
-        local box = newEntry(f.width or 200, f.multiline and (rowH() * 2) or entryH(), {
-            maxLen = f.maxLen, multiline = f.multiline, maxLines = 4,
-        })
-        box.target = self
-        box.onTextChangeFunction = Dialog.onFieldChanged
+        -- the reason is multi-line, which only the native box can be; every other field is a
+        -- framework TextField whose native entry carries the callbacks
+        local box = f.multiline
+            and U.newNativeEntry(f.width or 200, rowH() * 2, { maxLen = f.maxLen, multiline = true, maxLines = 4 })
+            or newEntry(f.width or 200, entryH(), { maxLen = f.maxLen })
+        local native = box._entry or box
+        native.target = self
+        native.onTextChangeFunction = Dialog.onFieldChanged
         self.boxes[f.key] = box
         self:addChild(box)
     end
@@ -1566,8 +1569,15 @@ function Dialog:layoutInside(maxW, maxH)
         labelW = math.max(labelW, textWidth(tr("Admin_Roles_Pick")), textWidth(tr("Admin_Roles_Current")))
     end
     -- 560 wide by default, growing with the window up to 720: the dialog is the admin's main
-    -- working surface, not a confirmation popup
-    local width = math.min(maxW, math.max(560, math.min(720, math.floor(maxW * 0.7)), labelW + 380))
+    -- working surface, not a confirmation popup. A hint beside its box (the name dialog's "empty =
+    -- built-in name") widens it as far as the window allows instead of being cut at 560.
+    local hintNeed = 0
+    for _, f in ipairs(self.fields) do
+        if f.hint and not f.half then
+            hintNeed = math.max(hintNeed, PAD * 4 + labelW + (f.width or 200) + textWidth(f.hint))
+        end
+    end
+    local width = math.min(maxW, math.max(560, math.min(720, math.floor(maxW * 0.7)), labelW + 380, hintNeed))
     -- a long label is truncated instead of pushing its field out of the dialog
     labelW = math.min(labelW, math.max(60, math.floor(width * 0.45)))
     local half = math.floor((width - PAD * 4 - labelW * 2) / 2)
@@ -1626,7 +1636,11 @@ function Dialog:layoutInside(maxW, maxH)
     -- never be enabled.
     if self.requireAccept then rows[#rows + 1] = { kind = "accept" } end
     for _ = 1, #(self.info or {}) do rows[#rows + 1] = { kind = "info" } end
-    if self.message then rows[#rows + 1] = { kind = "message" } end
+    -- a message wraps (up to three lines) instead of losing its end: the source-caps rule is a
+    -- whole sentence, cut at "leave the take cap empty for u..." in English at 560 px
+    self.messageLines = self.message and U.wrapText(self.message.text, width - PAD * 2, 3) or {}
+    self.messageFor = self.message
+    for i = 1, #self.messageLines do rows[#rows + 1] = { kind = "message", line = i } end
     rows[#rows + 1] = { kind = "buttons" }
 
     -- first density level whose core rows fit the area the child can give us. Info and message
@@ -1796,7 +1810,10 @@ function Dialog:prerender()
             elseif r.kind == "roleHave" then
                 text(self, fitText(tr("Admin_Roles_Current"), self.labelW), labelX, ty, "textMuted")
             elseif r.kind == "message" and self.message then
-                text(self, fitText(self.message.text, self.width - PAD * 2), labelX, r.y, self.message.error and "errorText" or "positive")
+                -- a message set without a layout since (a late reply) shows on its first row, cut
+                local line = self.messageFor == self.message and self.messageLines[r.line]
+                    or (r.line == 1 and fitText(self.message.text, self.width - PAD * 2)) or ""
+                text(self, line, labelX, r.y, self.message.error and "errorText" or "positive")
             end
         end
     end
@@ -1810,9 +1827,10 @@ function Dialog:keyboardTargets()
         out[#out + 1] = { kind = "group", label = tr("Trade_Currency"), controls = self.currencyButtons }
     end
     for _, field in ipairs(self.fields) do
+        local box = self.boxes[field.key]
         out[#out + 1] = { kind = "entry",
             label = field.key == "reason" and tr("Admin_Adjust_Reason") or field.label,
-            control = self.boxes[field.key] }
+            control = box._entry or box, frame = box._entry and box or nil }
     end
     -- the picker walks in the order it is operated: choose a role, add it, then the set that is
     -- already authorised, remove from it, and the reader that spells the whole set out
@@ -2037,8 +2055,8 @@ function Admin:createChildren()
     -- audit page: the search box and the action chips share the top row, the dates / sort / page
     -- chips get their own line under it. Both are local filters over what the two reads carried.
     self.auditEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Admin_Audit_Hint") })
-    self.auditEntry.target = self
-    self.auditEntry.onTextChangeFunction = Admin.onAuditQueryChanged
+    self.auditEntry._entry.target = self
+    self.auditEntry._entry.onTextChangeFunction = Admin.onAuditQueryChanged
     self:addChild(self.auditEntry)
     self.auditF = newAdminFilter(self,
         { field = "action", label = auditActionText, title = false,
@@ -2053,9 +2071,9 @@ function Admin:createChildren()
     -- the candidates the server listed for the interval it read; picking one fills the box.
     self.auditActorEntry = newEntry(160, entryH(), { maxLen = ACCOUNT_BYTES, clear = true,
         placeholder = tr("Admin_Audit_ActorHint") })
-    self.auditActorEntry.target = self
-    self.auditActorEntry.onTextChangeFunction = Admin.onAuditActorTyped
-    self.auditActorEntry.onCommandEntered = function() self:applyAuditActor() end
+    self.auditActorEntry._entry.target = self
+    self.auditActorEntry._entry.onTextChangeFunction = Admin.onAuditActorTyped
+    self.auditActorEntry._entry.onCommandEntered = function() self:applyAuditActor() end
     self:addChild(self.auditActorEntry)
     local actorCombo = ISComboBox:new(0, 0, 140, entryH(), self, Admin.onAuditActorPicked)
     actorCombo:initialise()
@@ -2107,8 +2125,8 @@ function Admin:createChildren()
     -- listings page: the search box, the listing list and the two page chips. A row carries one
     -- control, so the click needs the row-local x and y.
     self.lstEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Market_Search") })
-    self.lstEntry.target = self
-    self.lstEntry.onTextChangeFunction = Admin.onListingSearch
+    self.lstEntry._entry.target = self
+    self.lstEntry._entry.onTextChangeFunction = Admin.onListingSearch
     self:addChild(self.lstEntry)
     -- The exact seller: a condition of its own, compared byte for byte on the server. Typing the
     -- box lists the accounts that really have something on the board (market.sellers -- the same
@@ -2134,7 +2152,7 @@ function Admin:createChildren()
     self:addChild(self.listingsList)
     -- the same card in history mode: the search box asks for an account (Enter, or a pause,
     -- sends admin.marketHistory) and this list replaces the listing rows
-    self.lstEntry.onCommandEntered = function() self:onListingEnter() end
+    self.lstEntry._entry.onCommandEntered = function() self:onListingEnter() end
     self.lstHistoryButton = Button.create(0, 0, 90, 22, tr("Admin_Lst_History"), self, Admin.onListingMode, "chip")
     self:addChild(self.lstHistoryButton)
     self.historyList = U.newTable(AdminHistoryCell, lineH() * 2 + 12)
@@ -2154,8 +2172,8 @@ function Admin:createChildren()
     -- shared filter row. A row carries two controls (the record jump and the cancel chip), so
     -- the click needs the row-local x and y.
     self.aucEntry = newEntry(220, entryH(), { maxLen = 64, clear = true, placeholder = tr("Market_Search") })
-    self.aucEntry.target = self
-    self.aucEntry.onTextChangeFunction = Admin.onAuctionSearch
+    self.aucEntry._entry.target = self
+    self.aucEntry._entry.onTextChangeFunction = Admin.onAuctionSearch
     self:addChild(self.aucEntry)
     self.aucSellerClearButton = Button.create(0, 0, 90, 22, tr("Admin_Mkt_SellerClear"), self,
         Admin.onAuctionSellerClear, "chip")
@@ -2201,8 +2219,8 @@ function Admin:createChildren()
     self:addChild(self.reportsPage)
     -- Native lists keep both the groups and their options scrollable and keyboard-reachable.
     self.setEntry = newEntry(200, entryH(), { maxLen = 32, clear = true, placeholder = tr("Admin_Set_Search") })
-    self.setEntry.target = self
-    self.setEntry.onTextChangeFunction = Admin.onSettingSearch
+    self.setEntry._entry.target = self
+    self.setEntry._entry.onTextChangeFunction = Admin.onSettingSearch
     self:addChild(self.setEntry)
     local resetLabel = tr("Admin_Set_ResetGroup")
     self.setResetButton = Button.create(0, 0, textWidth(resetLabel) + 24, 22, resetLabel, self, Admin.onResetGroupClick, "chip")
@@ -4302,7 +4320,7 @@ end
 -- so a keystroke is never silently dropped.
 function Admin:requestListings()
     local args = { action = "list", page = self.lstPage or 1, query = self.lstQuery,
-        seller = self.lstSeller, requestId = newRequestId() }
+        types = (C.ItemPicker.queryTypes(self.lstQuery)), seller = self.lstSeller, requestId = newRequestId() }
     if not send("admin.listings", args) then return false end
     self.lstRequestId = args.requestId
     self.lstSentQuery = self.lstQuery
@@ -4410,9 +4428,7 @@ function Admin:setListingMode(history)
         self.lstQuery = nil
         self.lstSentQuery = nil
     end
-    if self.lstEntry.setPlaceholderText then
-        pcall(function() self.lstEntry:setPlaceholderText(tr(history and "Admin_Lst_HistoryUser" or "Market_Search")) end)
-    end
+    self.lstEntry.placeholder = tr(history and "Admin_Lst_HistoryUser" or "Market_Search")
 end
 
 function Admin:onListingMode()
@@ -4490,6 +4506,7 @@ function Admin:sendListings(args, dlg)
     args.requestId = newRequestId()
     args.page = self.lstPage or 1
     args.query = self.lstQuery
+    args.types = (C.ItemPicker.queryTypes(self.lstQuery))
     args.seller = self.lstSeller
     if not send("admin.listings", args) then
         self:dialogError(dlg, tr("Admin_Throttled"))
@@ -4507,7 +4524,7 @@ end
 -- (or an answer that never came) is noticed by prerender and asked for again.
 function Admin:requestAuctions()
     local args = { action = "list", page = self.aucPage or 1, query = self.aucQuery,
-        seller = self.aucSeller, requestId = newRequestId() }
+        types = (C.ItemPicker.queryTypes(self.aucQuery)), seller = self.aucSeller, requestId = newRequestId() }
     if not send("admin.auctions", args) then return false end
     self.aucRequestId = args.requestId
     self.aucSentQuery = self.aucQuery
@@ -4528,6 +4545,7 @@ function Admin:requestAuctionHistory()
         args.auctionId = self.aucHistId   -- one auction's own timeline, never a text match
     else
         args.query = self.aucQuery
+        args.types = (C.ItemPicker.queryTypes(self.aucQuery))
     end
     if not send("admin.auctions", args) then return false end
     self.pendingAucHistory = { requestId = args.requestId }
@@ -4557,11 +4575,7 @@ function Admin:setAuctionMode(mode)
     self.aucSentPage = nil
     self.aucPage = 1
     setEntryText(self.aucEntry, "")
-    if self.aucEntry.setPlaceholderText then
-        pcall(function()
-            self.aucEntry:setPlaceholderText(tr(mode == "history" and "Auction_History_Search" or "Market_Search"))
-        end)
-    end
+    self.aucEntry.placeholder = tr(mode == "history" and "Auction_History_Search" or "Market_Search")
 end
 
 function Admin:onAuctionMode(button)
@@ -4698,6 +4712,7 @@ function Admin:sendAuctions(args, dlg)
     args.requestId = newRequestId()
     args.page = self.aucPage or 1
     args.query = self.aucQuery
+    args.types = (C.ItemPicker.queryTypes(self.aucQuery))
     args.seller = self.aucSeller
     if not send("admin.auctions", args) then
         self:dialogError(dlg, tr("Admin_Throttled"))
@@ -5079,7 +5094,7 @@ function Admin:keyboardTargets()
         addTarget(out, "list", tr("Admin_Player_Receipts"), self.receiptList)
         addGroup(out, tr("Admin_Rcpt_Actions"), R.targets(self.receiptList))
     elseif self.tab == "Listings" then
-        addTarget(out, "entry", tr("Market_Search"), self.lstEntry)
+        out[#out + 1] = { kind = "entry", label = tr("Market_Search"), control = self.lstEntry._entry, frame = self.lstEntry }
         addGroup(out, tr("Admin_Lst_Title"), { self.lstHistoryButton })
         if self.lstMode == "history" then
             addFilters(out, self.histF)
@@ -5092,7 +5107,7 @@ function Admin:keyboardTargets()
             addGroup(out, tr("Admin_Lst_RowActions"), R.targets(self.listingsList))
         end
     elseif self.tab == "Auctions" then
-        addTarget(out, "entry", tr("Market_Search"), self.aucEntry)
+        out[#out + 1] = { kind = "entry", label = tr("Market_Search"), control = self.aucEntry._entry, frame = self.aucEntry }
         addGroup(out, tr("Admin_Auc_Title"), { self.aucActiveButton, self.aucHistoryButton })
         if self.aucMode == "history" then
             addFilters(out, self.aucF)
@@ -5107,8 +5122,10 @@ function Admin:keyboardTargets()
     elseif self.tab == "Audit" then
         -- the two boxes sit between the page title and the dates: a caption above covers the
         -- title and one below the dates, and each box already shows its own placeholder
-        out[#out + 1] = { kind = "entry", label = tr("Admin_Audit_Hint"), control = self.auditEntry, captionSide = "none" }
-        out[#out + 1] = { kind = "entry", label = tr("Admin_Audit_Actor"), control = self.auditActorEntry, captionSide = "none" }
+        out[#out + 1] = { kind = "entry", label = tr("Admin_Audit_Hint"), control = self.auditEntry._entry,
+            frame = self.auditEntry, captionSide = "none" }
+        out[#out + 1] = { kind = "entry", label = tr("Admin_Audit_Actor"), control = self.auditActorEntry._entry,
+            frame = self.auditActorEntry, captionSide = "none" }
         addFilters(out, self.auditF)
         addTarget(out, "list", tr("Admin_Audit_Title"), self.auditList)
         addGroup(out, tr("Admin_Audit_Actions"),
@@ -5143,7 +5160,7 @@ function Admin:keyboardTargets()
         addTarget(out, "list", tr("Admin_Sys_State"), self.systemList)
         addGroup(out, tr("Admin_Sys_Paths"), self.copyButtons)
     elseif self.tab == "Settings" then
-        addTarget(out, "entry", tr("Admin_Set_Search"), self.setEntry)
+        out[#out + 1] = { kind = "entry", label = tr("Admin_Set_Search"), control = self.setEntry._entry, frame = self.setEntry }
         addTarget(out, "button", tr("Admin_Help"), self.setHelpButton)
         addTarget(out, "list", tr("Admin_Tab_Settings"), self.settingsNav)
         addTarget(out, "list", tr("Admin_Tab_Settings"), self.settingsList)
@@ -6247,8 +6264,13 @@ end
 
 function Admin:rebuildReceipts()
     local rows = {}
-    -- receipt file lines (delta / availableAfter) once they arrived, else the ring (amount / after)
-    local src = self.lookupFile or (self.lookup and self.lookup.receipts) or {}
+    -- receipt file lines (delta / availableAfter) once they arrived, else the ring (amount / after);
+    -- the reserved bucket's mirror lines are left out, as on the player's own statement
+    -- (W.isMirrorLine); the transaction page still shows every posting
+    local src = {}
+    for _, e in ipairs(self.lookupFile or (self.lookup and self.lookup.receipts) or {}) do
+        if not C.PanelWidgets.isMirrorLine(e) then src[#src + 1] = e end
+    end
     local chipH = math.max(20, fontH.small + 6)
     local geo = receiptActionGeo(math.max(120, self.receiptList.width - 12), chipH,
         math.max(2, math.floor((self.receiptList.rowHeight - chipH) / 2)))
@@ -6692,7 +6714,7 @@ function Admin:listingRow(l, geo, lh, rowHeight)
     item.metaText = fitText(meta, item.textW)
     local detail = name
     local alt = itemBaseName(l.item)
-    if alt then detail = detail .. "  (" .. alt .. ")" end
+    if alt then detail = getText(T .. "Paren", detail, alt) end
     item.detailText = detail .. "\n" .. tostring(l.item or "-") .. "\n" .. meta
         .. "\n" .. getText(T .. "Admin_Lst_DetailPrice", amountText(l.price))
         .. "\n" .. getText(T .. "Admin_Lst_DetailId", tostring(l.id or "-"))
@@ -6742,7 +6764,7 @@ function Admin:auctionRow(a, geo, lh, rowHeight, now)
     item.metaText = fitText(meta, item.textW)
     local detail = label
     local alt = itemBaseName(a.item)
-    if alt then detail = detail .. "  (" .. alt .. ")" end
+    if alt then detail = getText(T .. "Paren", detail, alt) end
     detail = detail .. "\n" .. tostring(a.item or "-") .. "\n" .. meta
         .. "\n" .. getText(T .. "Admin_Auc_DetailStart", amountText(a.startPrice))
     if bid then

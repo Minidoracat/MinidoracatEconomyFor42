@@ -290,8 +290,8 @@ function Panel:createChildren()
 
     -- ----- shop -----
     self.shopEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Shop_Search"))
-    self.shopEntry.target = self
-    self.shopEntry.onTextChangeFunction = Panel.onShopSearch
+    self.shopEntry._entry.target = self
+    self.shopEntry._entry.onTextChangeFunction = Panel.onShopSearch
     self:addChild(self.shopEntry)
     self.shopCatCombo = newCombo(self, 140, Panel.onShopCat)
     self.shopCatCombo:addOptionWithData(getText(T .. "Shop_All"), "")
@@ -303,6 +303,10 @@ function Panel:createChildren()
     self.shopList.onSelect = function(_, item) self:onDetailRow("shop", item) end
     self.shopList.onRowAction = function(_, row, actionId) self:onShopAction(row, actionId) end
     self:addChild(self.shopList)
+    -- the filtered-out table's way back (ECPanelShopMail.drawShop shows it)
+    self.shopEmptyButton = Button.create(0, 0, 60, CHIP_H, "", self, Panel.onShopEmpty, "chip")
+    self.shopEmptyButton:setVisible(false)
+    self:addChild(self.shopEmptyButton)
 
     -- ----- mailbox -----
     -- A row is a read (onDetailRow opens the reader and does nothing else). Claiming one
@@ -386,8 +390,8 @@ function Panel:createChildren()
     -- the record page's own search (an auction id, an account, an item): the browse page searches
     -- through the combined box built last, with the market's
     self.auctionEntry = newEntry(200, math.max(26, fontH.small + 12), getText(T .. "Auction_History_Search"))
-    self.auctionEntry.target = self
-    self.auctionEntry.onTextChangeFunction = Panel.onAuctionSearch
+    self.auctionEntry._entry.target = self
+    self.auctionEntry._entry.onTextChangeFunction = Panel.onAuctionSearch
     self:addChild(self.auctionEntry)
     -- the sort box is the keyboard's equivalent of the sortable header (a header is a click
     -- target and nothing else), and it offers exactly the keys that header can produce
@@ -739,13 +743,14 @@ function Panel:rowActionTargets(out, list)
 end
 
 function Panel:shopTargets(out)
-    out[#out + 1] = { kind = "entry", control = self.shopEntry, label = getText(T .. "Shop_Search") }
+    out[#out + 1] = { kind = "entry", control = self.shopEntry._entry, frame = self.shopEntry, label = getText(T .. "Shop_Search") }
     out[#out + 1] = { kind = "combo", control = self.shopCatCombo, label = getText(T .. "Shop_Category") }
     if self.shopCurTabs and self.shopCurTabs:getIsVisible() then
         out[#out + 1] = { kind = "button", control = self.shopCurTabs, label = getText(T .. "Trade_Currency") }
     end
     out[#out + 1] = { kind = "list", control = self.shopList, label = getText(T .. "Shop_Title") }
     self:rowActionTargets(out, self.shopList)
+    out[#out + 1] = { kind = "button", control = self.shopEmptyButton, label = getText(T .. "Market_ClearFilters") }
 end
 
 -- Every descriptor of the market page, in reading order. Nothing is filtered by mode here: a
@@ -776,7 +781,8 @@ function Panel:auctionTargets(out)
         label = getText(T .. "Kb_Trade_Actions") }
     for _, desc in ipairs(self.auctionSearch:keyboardTargets()) do out[#out + 1] = desc end
     out[#out + 1] = { kind = "button", control = self.auctionSellerChip, label = self.auctionSellerChip.fullTitle }
-    out[#out + 1] = { kind = "entry", control = self.auctionEntry, label = getText(T .. "Kb_Auction_Search") }
+    out[#out + 1] = { kind = "entry", control = self.auctionEntry._entry, frame = self.auctionEntry,
+        label = getText(T .. "Kb_Auction_Search") }
     out[#out + 1] = { kind = "combo", control = self.auctionCurCombo, label = getText(T .. "Trade_Currency") }
     out[#out + 1] = { kind = "combo", control = self.auctionSortCombo, label = getText(T .. "Kb_Auction_Sort") }
     for _, spec in ipairs({ { self.auctionList, "Kb_Auction_List" },
@@ -1119,7 +1125,7 @@ end
 
 local function normalize(e, offsetMin)
     local amount = tonumber(e.amount or e.delta) or 0
-    local cp = e.counterparty
+    local cp = W.otherParty(e.counterparty)
     local cpClass = type(cp) == "string" and EC.accountClass(cp) or nil
     local desc = "-"
     local kind = e.kind or e.type
@@ -1180,9 +1186,12 @@ local function normalize(e, offsetMin)
     }
 end
 
+-- The period's lines, newest first, without the reserved bucket's mirrors (W.isMirrorLine).
 local function newestFirst(src, offsetMin)
     local out = {}
-    for i = #src, 1, -1 do out[#out + 1] = normalize(src[i], offsetMin) end
+    for i = #src, 1, -1 do
+        if not W.isMirrorLine(src[i]) then out[#out + 1] = normalize(src[i], offsetMin) end
+    end
     return out
 end
 
@@ -1274,11 +1283,10 @@ function Panel:updateMonthTotals(history)
         or (first ~= nil and EC.monthKey(tonumber(first.ts) or 0) ~= month)
     self.monthLoaded = month
     for _, e in ipairs(entries) do
-        -- the recent window spans two months: only this month's lines count. A line that left the
-        -- spendable balance as it was is the reserved bucket's mirror of a bid hold or a refund:
-        -- the spendable side of the same transaction is what counts as money in or out.
-        local mirror = e.availableBefore ~= nil and e.availableBefore == e.availableAfter
-        if e.rolledBack ~= true and not mirror and EC.monthKey(tonumber(e.ts) or 0) == month then
+        -- the recent window spans two months: only this month's lines count, and a mirror line
+        -- (W.isMirrorLine) never does: the spendable side of the same transaction is what
+        -- counts as money in or out.
+        if e.rolledBack ~= true and not W.isMirrorLine(e) and EC.monthKey(tonumber(e.ts) or 0) == month then
             local t = totals[e.currency]
             if not t then t = { inn = 0, out = 0, byIn = {}, byOut = {} }; totals[e.currency] = t end
             local d = tonumber(e.delta or e.amount) or 0
@@ -1468,7 +1476,7 @@ function Panel:rebuildMail()
         -- the server's per-copy estimate (M.list): the row names the whole letter's weight, and
         -- a letter whose weight the server could not read shows none instead of a zero
         local weight = tonumber(e.weight)
-        local name = itemName(e.item)
+        local name = W.titledName(itemName(e.item), e.state)
         local seller = type(e.seller) == "string" and e.seller ~= "" and e.seller or nil
         local source = getTextOrNull(T .. "Mail_From_" .. tostring(e.kind)) or U.unknownText("mail kind", e.kind)
         -- a buy order's payment letter goes to the seller, so the account on it is the buyer
@@ -1535,6 +1543,16 @@ function Panel:onShopSearch()
     local query = string.lower(string.match(entryText(self.shopEntry), "^%s*(.-)%s*$"))
     self.shopQuery = query ~= "" and query or nil
     self:rebuildShop()
+end
+
+-- The shop's no-match state: the search and the category emptied the table, so drop both.
+function Panel:onShopEmpty()
+    setEntryText(self.shopEntry, "")
+    self.shopQuery, self.shopCat = nil, nil
+    comboSelect(self.shopCatCombo, "")
+    self:rebuildShop()
+    self:layout()
+    Keys.invalidate(self)
 end
 
 -- Mirror the server's write gate: a registered terminal or a nearby vanilla ATM.
@@ -1645,7 +1663,8 @@ function Panel:onTransfer()
     self:closeCombos()
     self:updateModalGuard()
     self:layoutDialog(dlg)
-    Keys.focusControl(dlg.picker.entry, keyboard)
+    -- the picker box is a framework TextField: the keyboard holds its native entry
+    Keys.focusControl(dlg.picker.entry._entry, keyboard)
 end
 
 function Panel:closeTransfer()
@@ -2272,6 +2291,7 @@ function Panel:sendBrowse()
     -- nil currency is "every currency": the server answers with `all` and refuses a price sort
     -- there, which is exactly the state the sort box is filtered for
     C.requestMarket({ category = self.marketCat, query = self.marketQuery,
+        types = (C.ItemPicker.queryTypes(self.marketQuery)),
         sort = self.marketSort, page = self.marketPage, seller = self.marketSeller,
         currency = self.marketCur or "all" })
 end
@@ -2428,14 +2448,15 @@ function Panel:rebuildMarketCategories()
     end, self.marketCat or "")
 end
 
--- The server paged and sorted this list already; the only thing it could not match is the
--- translated name (it never sees the player's language), so the search text runs over the page
--- once more here — that is also why an empty result says "no match" and not "empty market".
+-- The server paged and sorted this list already, matching the translated name through the item
+-- types the keyword names (C.ItemPicker.queryTypes); the same test runs over the page once more
+-- here — that is also why an empty result says "no match" and not "empty market".
 function Panel:rebuildMarket()
     local mine = self.marketMode == "mine"
     local snap = mine and C.myListings or C.market
     local src = (snap and snap.items) or {}
     local query = (not mine) and self.marketQuery or nil
+    local _, types = C.ItemPicker.queryTypes(query)
     -- the filter in force, applied to whatever snapshot is on screen: between choosing a
     -- currency and its answer landing, the old page must not keep showing rows of the currency
     -- the player just filtered out
@@ -2447,7 +2468,7 @@ function Panel:rebuildMarket()
         -- what its seller set, and a row that carries none says so instead of borrowing one
         local row = listingRow(it, username, mine)
         if (currency == nil or row.currency == currency)
-            and (query == nil or string.find(string.lower(row.name), query, 1, true)
+            and (query == nil or types[row.item] or string.find(string.lower(row.name), query, 1, true)
             or (row.altName and string.find(string.lower(row.altName), query, 1, true))
             or string.find(string.lower(tostring(row.item)), query, 1, true)
             or string.find(string.lower(row.seller), query, 1, true)) then
@@ -3400,7 +3421,7 @@ function Panel:onCandidate(cand)
     setEntryText(dlg.priceEntry, "")
     setEntryText(dlg.qtyEntry, tostring(cand.count or 1))   -- the whole lot by default
     self:layoutMarketDialog()
-    Keys.focusControl(dlg.priceEntry, Keys.isKeyboardFocused(dlg.pickList))
+    Keys.focusControl(dlg.priceEntry._entry, Keys.isKeyboardFocused(dlg.pickList))
 end
 
 -- `forAuction` marks the picker (and the step it hands over to) as the auction page's own; the
@@ -3720,7 +3741,8 @@ end
 function Panel:sendAuctionBrowse()
     self.auctionWanted = nil
     self.auctionSentAt = EC.now()
-    C.requestAuctions({ query = self.auctionQuery, sort = self.auctionSort,
+    C.requestAuctions({ query = self.auctionQuery, types = (C.ItemPicker.queryTypes(self.auctionQuery)),
+        sort = self.auctionSort,
         page = self.auctionPage, seller = self.auctionSeller,
         currency = self.auctionCur or "all" })
 end
@@ -3842,10 +3864,10 @@ function Panel:requestAuctionMode()
     end
 end
 
--- The server matched the untranslated name; the localised one is the client's own job, the
--- way the market page filters its page a second time.
-local function auctionMatch(row, query)
-    if query == nil then return true end
+-- The server matched the untranslated name and the item types the keyword names; the page on
+-- screen is filtered the same way at once, the way the market page filters its page a second time.
+local function auctionMatch(row, query, types)
+    if query == nil or types[row.item] then return true end
     return string.find(string.lower(row.name), query, 1, true) ~= nil
         or (row.altName ~= nil and string.find(string.lower(row.altName), query, 1, true) ~= nil)
         or string.find(string.lower(tostring(row.item)), query, 1, true) ~= nil
@@ -3855,6 +3877,7 @@ end
 function Panel:rebuildAuctions()
     local src = (C.auction and C.auction.items) or {}
     local query = self.auctionQuery
+    local _, types = C.ItemPicker.queryTypes(query)
     -- the filter in force: a browse page never keeps rows of a currency the player filtered
     -- out, not even in the gap before the new answer lands
     local currency = self.auctionCur
@@ -3862,7 +3885,7 @@ function Panel:rebuildAuctions()
     for _, it in ipairs(src) do
         -- each auction quotes the currency its seller fixed on it
         local row = auctionRow(it, "browse")
-        if (currency == nil or row.currency == currency) and auctionMatch(row, query) then
+        if (currency == nil or row.currency == currency) and auctionMatch(row, query, types) then
             rows[#rows + 1] = row
         end
     end
@@ -4535,8 +4558,9 @@ function Panel.create()
     o.auctionGate = ReadGate.create(function(_, requestId)
         -- a pinned auction is an exact lookup: the box only holds its id so the player sees it
         local pinned = o.auctionHistoryId
-        C.requestAuctionHistory({ auctionId = pinned,
-            query = (pinned == nil) and o.auctionHistoryQuery or nil, requestId = requestId })
+        local query = (pinned == nil) and o.auctionHistoryQuery or nil
+        C.requestAuctionHistory({ auctionId = pinned, query = query,
+            types = (C.ItemPicker.queryTypes(query)), requestId = requestId })
     end)
     o.marketMode = "browse"
     o.marketSort = "time"

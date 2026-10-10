@@ -668,6 +668,13 @@ local function confirmLabel(mode)
     return nil     -- the picker confirms by picking a row
 end
 
+-- A cancel step's close button says what it keeps: "Keep listing" beside "Cancel listing", never
+-- two buttons that both start with "Cancel".
+local CLOSE_KEYS = { cancel = "Market_Keep", acancel = "Auction_Keep" }
+local function closeLabel(mode)
+    return getText(T .. (CLOSE_KEYS[mode] or "Admin_Cancel"))
+end
+
 -- The picker's status over two lines: what does not fit the first runs on into the second (cut
 -- there if it must be), and a Latin word is not split when the first line has a space to break
 -- at. CJK has no spaces and breaks at the character, as U.wrapText does.
@@ -699,13 +706,13 @@ function MarketDialog:createChildren()
     -- to stack them as lines, and none of them may be cut
     self.summaryBox = newReader(self, 240, fontH.small * 2 + 12)
     self.priceEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
-    self.priceEntry.target = self
-    self.priceEntry.onTextChangeFunction = MarketDialog.onPriceChanged
+    self.priceEntry._entry.target = self
+    self.priceEntry._entry.onTextChangeFunction = MarketDialog.onPriceChanged
     self:addChild(self.priceEntry)
     -- the lot size: only shown when the picked row carries more than one item
     self.qtyEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
-    self.qtyEntry.target = self
-    self.qtyEntry.onTextChangeFunction = MarketDialog.onPriceChanged
+    self.qtyEntry._entry.target = self
+    self.qtyEntry._entry.onTextChangeFunction = MarketDialog.onPriceChanged
     self:addChild(self.qtyEntry)
     local only = getText(T .. "Market_OnlyListable")
     self.onlyButton = Button.create(0, 0, textWidth(only) + 30, math.max(CHIP_H, fontH.small + 10),
@@ -812,14 +819,17 @@ function MarketDialog:keyboardTargets()
         out[#out + 1] = { kind = "scroll", control = self.summaryBox, focusable = false,
             label = getText(T .. "Kb_Detail") }
     end
-    out[#out + 1] = { kind = "group", controls = self.currencyButtons,
-        label = getText(T .. "Trade_Currency") }
     if self.qtyEntry:getIsVisible() then
-        out[#out + 1] = { kind = "entry", control = self.qtyEntry, label = getText(T .. "Market_Col_Qty") }
+        out[#out + 1] = { kind = "entry", control = self.qtyEntry._entry, frame = self.qtyEntry,
+            label = getText(T .. "Market_Col_Qty") }
     end
     if self.priceEntry:getIsVisible() then
-        out[#out + 1] = { kind = "entry", control = self.priceEntry, label = getText(T .. "Market_Col_LotPrice") }
+        out[#out + 1] = { kind = "entry", control = self.priceEntry._entry, frame = self.priceEntry,
+            label = getText(T .. "Market_Col_LotPrice") }
     end
+    -- the currency chips are drawn under the price: Tab reaches them in that order
+    out[#out + 1] = { kind = "group", controls = self.currencyButtons,
+        label = getText(T .. "Trade_Currency") }
     if #self.hourButtons > 0 then
         out[#out + 1] = { kind = "group", controls = self.hourButtons, label = getText(T .. "Auction_Duration") }
     end
@@ -1063,21 +1073,21 @@ function MarketDialog:summaryLines()
         -- the candidate's detail line already starts with "name (alias)"
         if cand.detailText and cand.detailText ~= "" then out[#out + 1] = cand.detailText
         elseif cand.altName and cand.altName ~= cand.name then out[#out + 1] = cand.altName end
-        -- each value carries its allowed range in brackets: one label, one meaning
+        -- each value carries its allowed range in brackets (Paren: full-width in CH/CN/JP): one
+        -- label, one meaning
         local qtyText = tostring(self:qtyValue() or 0)
-        if count > 1 then qtyText = qtyText .. " (" .. getText(T .. "Market_QtyHint", tostring(count), tostring(count)) .. ")" end
+        if count > 1 then qtyText = getText(T .. "Paren", qtyText, getText(T .. "Market_QtyHint", tostring(count), tostring(count))) end
         out[#out + 1] = detailLine("Market_Qty", qtyText)
         local range = getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax))
         out[#out + 1] = detailLine(mode == "auction" and "Auction_StartPrice" or "Market_Price",
-            amountText(price) .. " " .. cur .. " (" .. range .. ")")
+            getText(T .. "Paren", amountText(price) .. " " .. cur, range))
         out[#out + 1] = detailLine("Shop_AfterBalance",
             amountText(self:available() - listingFee(price, info.feePercent)) .. " " .. cur)
         if mode == "auction" then
             local hours = panel.auctionInfo or {}
             out[#out + 1] = detailLine("Auction_Duration",
-                (self.hours and getText(T .. "Auction_Hours", tostring(self.hours)) or "-")
-                .. " (" .. getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0),
-                    tostring(hours.maxHours or 0)) .. ")")
+                getText(T .. "Paren", self.hours and getText(T .. "Auction_Hours", tostring(self.hours)) or "-",
+                    getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0), tostring(hours.maxHours or 0))))
             out[#out + 1] = detailLine("Market_Fee", amountText(listingFee(price, info.feePercent)) .. " " .. cur)
         else
             out[#out + 1] = detailLine("Market_Fee", amountText(listingFee(price, info.feePercent)) .. " " .. cur)
@@ -1123,8 +1133,21 @@ function MarketDialog:layoutInside(maxW, maxH)
     local label = confirmLabel(mode)
     self.confirmButton:setVisible(label ~= nil)
     if label then
-        if self.confirmButton.title ~= label then self.confirmButton:setTitle(label) end
+        -- fullTitle with it: Button:prerender offers a differing fullTitle as the hover tooltip and
+        -- the focus ring captions it, so a stale one names the step this button was built for
+        if self.confirmButton.title ~= label then
+            self.confirmButton:setTitle(label)
+            self.confirmButton.fullTitle = label
+        end
+        -- withdrawing a listing or an auction is the danger button, as on its row and its card
+        self.confirmButton.style = (mode == "cancel" or mode == "acancel") and "danger" or "primary"
         self.confirmButton:setWidth(math.max(120, textWidth(label, UIFont.Medium) + 40))
+    end
+    local close = closeLabel(mode)
+    if self.cancelButton.title ~= close then
+        self.cancelButton:setTitle(close)
+        self.cancelButton.fullTitle = close
+        self.cancelButton:setWidth(textWidth(close) + 30)
     end
     local chipsX = PAD + textWidth(getText(T .. "Auction_Duration")) + PAD
     local curX = PAD + textWidth(getText(T .. "Trade_Currency")) + PAD
@@ -1882,8 +1905,10 @@ function TransferDialog:keyboardTargets()
     if self.step == "fill" then
         for _, desc in ipairs(self.picker:keyboardTargets()) do out[#out + 1] = desc end
         out[#out + 1] = { kind = "group", controls = self.currencyButtons, label = getText(T .. "Trade_Currency") }
-        out[#out + 1] = { kind = "entry", control = self.amountEntry, label = getText(T .. "Transfer_Amount") }
-        out[#out + 1] = { kind = "entry", control = self.memoEntry, label = getText(T .. "Transfer_Memo") }
+        out[#out + 1] = { kind = "entry", control = self.amountEntry._entry, frame = self.amountEntry,
+            label = getText(T .. "Transfer_Amount") }
+        out[#out + 1] = { kind = "entry", control = self.memoEntry._entry, frame = self.memoEntry,
+            label = getText(T .. "Transfer_Memo") }
     end
     -- the reader holds every value of the transfer: the ring scrolls it, and never focuses it
     out[#out + 1] = { kind = "scroll", control = self.summaryBox, focusable = false, label = getText(T .. "Kb_Detail") }

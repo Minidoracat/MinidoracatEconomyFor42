@@ -442,7 +442,7 @@ function E.noticeText(notice)
     if notice == nil then return nil end
     local kind = type(notice) == "table" and notice.code or notice
     local out = enumText("Ent_Notice_", kind)
-    if type(notice) == "table" and notice.error ~= nil then out = out .. " (" .. E.errorText(notice.error) .. ")" end
+    if type(notice) == "table" and notice.error ~= nil then out = getText(T .. "Paren", out, E.errorText(notice.error)) end
     return out
 end
 

@@ -1301,13 +1301,13 @@ S.handlers["admin.listings"] = function(player, args)
         res.listingId = args.listingId
     end
     local snap = Mk.browse(S.principal(player), { page = args.page or 1, query = args.query,
-        seller = args.seller, sort = "time" })
+        types = args.types, seller = args.seller, sort = "time" })
     mergeSnapshot(res, snap)
     res.perms = { read = true, write = A.isAdmin(player) }
     S.reply(player, "admin.listings", res)
 end
 
--- admin.auctions {action=list|cancel|history, auctionId?, reason?, query?, requestId}: every active
+-- admin.auctions {action=list|cancel|history, auctionId?, reason?, query?, types?, requestId}: every active
 -- auction (read gate); cancel releases the highest bid and returns the items to the seller (write
 -- gate, audited); history is the server-wide public record (read gate, ECAuction.history - same
 -- reply shape as the player's auction.history, marked history=true, no active-auction snapshot).
@@ -1333,7 +1333,7 @@ S.handlers["admin.auctions"] = function(player, args)
         if not ok then res.ok, res.error = false, err end
     end
     local page = Au.browse(S.principal(player), { page = args.page or 1, sort = "ending",
-        query = args.query, seller = args.seller })
+        query = args.query, types = args.types, seller = args.seller })
     res.items, res.page, res.pages, res.total = page.items, page.page, page.pages, page.total
     res.perms = { read = true, write = A.isAdmin(player) }
     S.reply(player, "admin.auctions", res)

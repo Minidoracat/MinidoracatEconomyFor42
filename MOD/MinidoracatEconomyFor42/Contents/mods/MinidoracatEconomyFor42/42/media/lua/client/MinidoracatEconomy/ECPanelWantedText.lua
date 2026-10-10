@@ -62,7 +62,7 @@ end
 function X.optionText(opt)
     if type(opt) ~= "table" then return "-" end
     if opt.kind == "coin" then return tr("Wanted_Each", X.money(opt.unitPrice, opt.currency)) end
-    return tr("Wanted_EachItems", tostring(int(opt.perUnit)), C.itemLabel(opt.item))
+    return tr("Wanted_EachItems", tostring(int(opt.perUnit)), W.titledName(C.itemLabel(opt.item), opt.state))
 end
 
 -- Every option of an order on one line, in the order's own option order.
@@ -84,7 +84,7 @@ function X.heldText(order)
             local part = X.money(held, opt.currency)
             coins = coins and (coins .. tr("Admin_Set_ListSep") .. part) or part
         elseif opt.kind == "item" and held > 0 then
-            items = tr("Wanted_HeldItems", tostring(held), C.itemLabel(opt.item))
+            items = tr("Wanted_HeldItems", tostring(held), W.titledName(C.itemLabel(opt.item), opt.state))
         end
     end
     local parts = {}
@@ -159,24 +159,6 @@ function X.gateCode(action, s)
         if s.count and s.count >= s.max then return "too_many_orders" end
     end
     return nil
-end
-
--- The item types whose search text (the translated name, the English name, the fullType) holds
--- `query`, at most `max`, fixed classes skipped (they are never ordered): what the server matches
--- an order against besides the raw text, which it cannot read in the player's language. Returns
--- the list sent and the same types as a set.
-function X.searchTypes(items, query, max)
-    local list, set = {}, {}
-    if query == nil or query == "" then return list, set end
-    for _, rec in ipairs(items) do
-        local t = rec.fullType
-        if not rec.fixed and type(t) == "string" and not set[t] and type(rec.search) == "string"
-            and string.find(rec.search, query, 1, true) then
-            list[#list + 1], set[t] = t, true
-            if #list >= max then break end
-        end
-    end
-    return list, set
 end
 
 -- The own-order count and limit, from whichever read answered last: the browse page (mineCount,

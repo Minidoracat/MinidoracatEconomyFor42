@@ -757,8 +757,155 @@ do
     check(p2.total == 2 and p2.pages == 2 and #p2.rows == 1 and p2.rows[1].item ~= "Base.Nails",
         "W-11b: the types are matched before paging: the second page holds the other matching order")
     local long = {}
-    for i = 1, Wd.TYPES_MAX do long[i] = "Base.None" .. i end
+    for i = 1, Mk.TYPES_MAX do long[i] = "Base.None" .. i end
     long[#long + 1] = "Base.Axe"
     check(browse({ query = "zzlocal", types = long }).total == 0 and browse({ query = "zzlocal", types = "Base.Axe" }).total == 0,
         "W-11c: the list is bounded at TYPES_MAX and anything but a list is ignored")
+end
+
+-- ---- W-12: the same localized search on every item board: market, auction, the admin listings,
+-- auctions and buy orders (Mk.typesOf), matched before paging; one row per page proves it ----
+do
+    local admin12, buyer12, seller12 = fresh("w12")
+    local items = { "Base.Axe", "Base.Nails", "Base.Hammer" }
+    for _, item in ipairs(items) do
+        assert(cmd(seller12, "market.list", { itemIds = ids(native(seller12, item)), price = 10 }).ok)
+        assert(cmd(seller12, "auction.create", { itemIds = ids(native(seller12, item)), startPrice = 10, hours = 12 }).ok)
+        assert(coinOrder(buyer12, item, 1, 10).ok)
+    end
+    local two = { "Base.Axe", "Base.Hammer" }
+    local saved = { Mk.PAGE, S.Auction.PAGE, Wd.PAGE }
+    Mk.PAGE, S.Auction.PAGE, Wd.PAGE = 1, 1, 1
+    -- a keyword no English name holds finds nothing alone, and both typed rows with the types:
+    -- the second page holds the other one, so the match ran before the page was cut
+    local function found(p, command, args, key)
+        local bare = cmd(p, command, copy(args))
+        args.types, args.page = two, 2
+        local typed = cmd(p, command, args)
+        local rows = typed[key] or {}
+        return bare.total == 0 and typed.total == 2 and typed.pages == 2 and #rows == 1 and rows[1].item ~= "Base.Nails"
+    end
+    check(found(buyer12, "market.browse", { query = "zzlocal" }, "items"),
+        "W-12a: market.browse matches the client's item types before paging")
+    check(found(buyer12, "auction.browse", { query = "zzlocal" }, "items"),
+        "W-12b: auction.browse matches the client's item types before paging")
+    check(found(admin12, "admin.listings", { action = "list", query = "zzlocal" }, "items"),
+        "W-12c: admin.listings matches the client's item types before paging")
+    check(found(admin12, "admin.auctions", { action = "list", query = "zzlocal" }, "items"),
+        "W-12d: admin.auctions matches the client's item types before paging")
+    check(found(admin12, "admin.wanted", { action = "list", query = "zzlocal" }, "rows"),
+        "W-12e: admin.wanted list matches the client's item types before paging")
+    Mk.PAGE, S.Auction.PAGE, Wd.PAGE = saved[1], saved[2], saved[3]
+    local long = {}
+    for i = 1, Mk.TYPES_MAX do long[i] = "Base.None" .. i end
+    long[#long + 1] = "Base.Axe"
+    local set = Mk.typesOf({ string.rep("x", Mk.TYPE_CHARS + 1), "", 7, "Base.Axe" })
+    check(cmd(buyer12, "market.browse", { query = "zzlocal", types = long }).total == 0
+        and cmd(buyer12, "auction.browse", { query = "zzlocal", types = "Base.Axe" }).total == 0
+        and cmd(admin12, "admin.listings", { action = "list", types = two }).total == 3
+        and set["Base.Axe"] and EC.countKeys(set) == 1 and Mk.typesOf("Base.Axe") == nil,
+        "W-12f: the types are bounded (TYPES_MAX entries, TYPE_CHARS bytes, strings only), a non-list is ignored, and alone they filter nothing")
+end
+
+-- ---- W-13: an offer's memo lives in a server-private file, never in Global ModData ----
+do
+    local _, buyerM, sellerM = fresh("wmm")
+    local thirdM = fakePlayer("wmm-third"); thirdM.inventory = fakeInventory(50)
+    ctx.setOnline({ buyerM, sellerM, thirdM })
+    cmd(thirdM, "wanted.mine", {})
+    local su, tu = sellerM:getUsername(), thirdM:getUsername()
+    local function holds(t, needle, depth)
+        if type(t) == "string" then return string.find(t, needle, 1, true) ~= nil end
+        if type(t) ~= "table" or depth > 12 then return false end
+        for k, v in pairs(t) do
+            if holds(k, needle, depth + 1) or holds(v, needle, depth + 1) then return true end
+        end
+        return false
+    end
+    local function fileText()
+        local f = ctx.files()[Wd.MEMO_FILE]
+        return f and table.concat(f.lines, "\n") or ""
+    end
+    local function lastLine()
+        local f = ctx.files()[Wd.MEMO_FILE]
+        return f and #f.lines > 0 and EC.jsonDecode(f.lines[#f.lines]) or {}
+    end
+    local function mineMemo(orderId, from)
+        for _, o in ipairs(cmd(buyerM, "wanted.mine", {}).orders) do
+            if o.id == orderId then
+                for _, f in ipairs(o.offers) do if f.from == from then return f.memo end end
+            end
+        end
+        return nil
+    end
+    local function ask(p, orderId, price, memo)
+        return cmd(p, "wanted.offer", { orderId = orderId, option = 1, unitPrice = price, qty = 1, memo = memo })
+    end
+
+    local o = coinOrder(buyerM, "Base.Nails", 5, 10)
+    local first = ask(sellerM, o.orderId, 12, "memo-alpha-1")
+    local told = notices(buyerM, "wanted_offer")
+    check(first.ok and not holds(S.modData(), "memo-alpha-1", 0) and string.find(fileText(), "memo-alpha-1", 1, true) ~= nil
+        and mineMemo(o.orderId, su) == "memo-alpha-1" and told[#told].memo == "memo-alpha-1" and first.offer.memo == "memo-alpha-1",
+        "W-13a: an offer's memo is in the private file and nowhere under the ModData root; the buyer's mine view, the notice and the author's own reply carry it")
+    local beforeSecond = copy(S.modData())
+    assert(ask(thirdM, o.orderId, 13, "memo-beta-2").ok)
+    restart(copy(S.modData()))
+    check(mineMemo(o.orderId, su) == "memo-alpha-1" and mineMemo(o.orderId, tu) == "memo-beta-2",
+        "W-13b: the memos survive a restart: they are read back from the file")
+    restart(beforeSecond)
+    check(mineMemo(o.orderId, su) == "memo-alpha-1" and mineMemo(o.orderId, tu) == nil
+        and string.find(fileText(), "memo-beta-2", 1, true) == nil,
+        "W-13c: a world rollback that took an offer back prunes its memo from the file at the next start")
+
+    assert(ask(thirdM, o.orderId, 20, "memo-gamma-3").ok)
+    assert(cmd(buyerM, "wanted.dismiss", { orderId = o.orderId, from = tu }).ok)
+    local dismissed = lastLine()
+    assert(cmd(buyerM, "wanted.raise", { orderId = o.orderId, option = 1, unitPrice = 12 }).ok)
+    local met = lastLine()
+    local o2 = coinOrder(buyerM, "Base.Nails", 2, 10)
+    assert(ask(sellerM, o2.orderId, 11, "memo-eps-5").ok)
+    assert(cmd(sellerM, "wanted.fill", { orderId = o2.orderId, option = 1, itemIds = ids(native(sellerM, "Base.Nails", 1)), unitPrice = 10 }).ok)
+    local filled = lastLine()
+    assert(ask(thirdM, o.orderId, 15, "memo-delta-4").ok)
+    assert(cmd(buyerM, "wanted.cancel", { orderId = o.orderId }).ok)
+    local closed = lastLine()
+    restart(copy(S.modData()))
+    check(dismissed.k == "del" and dismissed.f == tu and met.k == "del" and met.f == su and filled.k == "del" and filled.f == su
+        and filled.o == o2.orderId and closed.k == "del" and closed.f == tu and closed.o == o.orderId and fileText() == "",
+        "W-13d: a dismiss, a raise that meets the offer, the seller's own delivery and closing the order each drop the memo; the next start keeps none")
+
+    local o3 = coinOrder(buyerM, "Base.Nails", 1, 10)
+    local saved = copy(S.modData())
+    saved.wanted.orders[o3.orderId].offers[1] = { from = tu, option = 1, unitPrice = 11, qty = 1, memo = "memo-legacy-6", at = ctx.now() }
+    restart(saved)
+    check(not holds(S.modData(), "memo-legacy-6", 0) and mineMemo(o3.orderId, tu) == "memo-legacy-6"
+        and string.find(fileText(), "memo-legacy-6", 1, true) ~= nil,
+        "W-13e: an offer an older build saved with its memo hands the memo to the file at load and keeps none in ModData")
+
+    local realWriter, realReader = getFileWriter, getFileReader
+    getFileWriter = function(path, create, append)
+        if path == Wd.MEMO_FILE then return nil end
+        return realWriter(path, create, append)
+    end
+    local denied = ask(sellerM, o3.orderId, 12, "memo-lost-7")
+    local plain = ask(sellerM, o3.orderId, 12)
+    getFileWriter = realWriter
+    check(denied.error == "memo_unavailable" and plain.ok and #S.modData().wanted.orders[o3.orderId].offers == 2
+        and not holds(S.modData(), "memo-lost-7", 0),
+        "W-13f: a memo the file cannot take refuses the offer and changes nothing; the same offer without one goes through")
+    local o4 = coinOrder(buyerM, "Base.Nails", 1, 10)
+    local kept = fileText()
+    getFileReader = function(path, create)
+        if path == Wd.MEMO_FILE then return nil end
+        return realReader(path, create)
+    end
+    restart(copy(S.modData()))
+    local blind = ask(thirdM, o4.orderId, 12, "memo-x-8")
+    getFileReader = realReader
+    local blindKept = fileText()
+    restart(copy(S.modData()))
+    check(blind.error == "memo_unavailable" and blindKept == kept and mineMemo(o3.orderId, tu) == "memo-legacy-6",
+        "W-13g: a memo file that exists but cannot be read is never rewritten and takes no new memo; once readable the memos are back")
+    ctx.setOnline({})
 end

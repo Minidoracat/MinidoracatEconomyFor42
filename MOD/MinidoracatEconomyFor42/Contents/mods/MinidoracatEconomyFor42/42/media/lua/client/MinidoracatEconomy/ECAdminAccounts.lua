@@ -157,9 +157,9 @@ function Page:createChildren()
 
     self.searchEntry = newEntry(240, entryH(), { maxLen = QUERY_MAX, clear = true,
         placeholder = tr("Admin_Accounts_Search") })
-    self.searchEntry.target = self
-    self.searchEntry.onTextChangeFunction = Page.onSearchTyped
-    self.searchEntry.onCommandEntered = function() self:applyQuery() end
+    self.searchEntry._entry.target = self
+    self.searchEntry._entry.onTextChangeFunction = Page.onSearchTyped
+    self.searchEntry._entry.onCommandEntered = function() self:applyQuery() end
     self:addChild(self.searchEntry)
 
     self.statusButtons = {}
@@ -321,7 +321,8 @@ function Page:keyboardTargets()
         end
         if #shown > 0 then out[#out + 1] = { kind = "group", label = label, controls = shown } end
     end
-    add("entry", tr("Admin_Accounts_Search"), self.searchEntry)
+    out[#out + 1] = { kind = "entry", label = tr("Admin_Accounts_Search"), control = self.searchEntry._entry,
+        frame = self.searchEntry }
     group(tr("Admin_Accounts_Status"), self.statusButtons)
     local sorts = {}
     for _, b in ipairs(self.sortButtons) do sorts[#sorts + 1] = b end

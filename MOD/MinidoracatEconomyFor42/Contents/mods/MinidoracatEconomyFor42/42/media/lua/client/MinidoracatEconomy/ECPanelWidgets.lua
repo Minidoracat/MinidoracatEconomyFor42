@@ -38,9 +38,7 @@ local function tileSize()
 end
 
 local function newEntry(width, height, placeholder, numbers)
-    local e = U.newEntry(width, height, { maxLen = 32, clear = true, placeholder = placeholder })
-    if numbers and e.setOnlyNumbers then e:setOnlyNumbers(true) end
-    return e
+    return U.newEntry(width, height, { maxLen = 32, clear = true, placeholder = placeholder, numbers = numbers })
 end
 
 -- "Label: value", the line shape every reader in this window uses (full-width colon in CH/JP).
@@ -84,12 +82,6 @@ local function placeField(control, w, y, want)
     control:setX(w - PAD - width)
     control:setY(y)
     return math.max(0, control.x - PAD * 2)
-end
-
--- One box, two pages (the auction search and the record search): the hint follows the mode.
-local function setPlaceholder(e, str)
-    if not e or not e.setPlaceholderText then return end
-    pcall(function() e:setPlaceholderText(str) end)
 end
 
 -- Item display: the localised engine name (getItemNameFromFullType, LuaManager.java:8579-8583)
@@ -370,6 +362,16 @@ local function listingStatus(it)
     return table.concat(tokens, " / ", 1, math.min(3, #tokens))
 end
 
+-- An item's own name with the title vanilla gave that copy (Codec.preview `title`: a magazine's
+-- issue, a badge's owner) after it in brackets. The type's name stays first, so the row is still
+-- filed under what the item is; a name another MOD or the player gave stays in the state line.
+local function titledName(name, st)
+    if type(st) == "table" and type(st.title) == "string" and st.title ~= "" then
+        return getText(T .. "Market_Titled", name, st.title)
+    end
+    return name
+end
+
 -- The record window's full list, under its heading; food carries the escrow-ageing note.
 local function stateLines(st, out)
     local tokens = stateTokens(st)
@@ -496,6 +498,7 @@ local function listingRow(it, username, mine)
     local name = itemName(it.item)
     local alt = it.name
     if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
+    name = titledName(name, it.state)
     local seller = tostring(it.seller or "")
     local own = mine or (username ~= nil and seller == username)
     -- every row, own or not, says how long it still runs in the one shape W.remainText gives
@@ -543,6 +546,7 @@ local function auctionRow(it, context)
     local name = itemName(it.item)
     local alt = it.name
     if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
+    name = titledName(name, it.state)
     local seller = tostring(it.seller or "")
     local left = (tonumber(it.expiresAt) or 0) - EC.now()
     local ended = left <= 0
@@ -620,7 +624,7 @@ end
 -- about it) is what counts.
 local function candidateRow(it)
     local ok = it.ok == true
-    local name = itemName(it.item)
+    local name = titledName(itemName(it.item), it.state)
     local alt = itemBaseName(it.item)
     local status = listingStatus(it)
     local category = type(it.category) == "string" and it.category ~= "" and it.category or nil
@@ -630,7 +634,7 @@ local function candidateRow(it)
     local ids = type(it.itemIds) == "table" and it.itemIds or { it.itemId }
     local count = math.max(1, math.floor(tonumber(it.count) or #ids))
     local lot = lotText(count)
-    local detail = alt and (name .. " (" .. alt .. ")") or name
+    local detail = alt and getText(T .. "Paren", name, alt) or name
     if lot then detail = lot .. " " .. detail end
     -- a category refusal already names the category up front
     if category and not (reason and it.rule == "category") then
@@ -986,8 +990,10 @@ function ListingCell:render()
         R.put(self, "history", cols.histLabel, cols.histX, chipY, cols.histW, CHIP_H, true)
     end
     if e.actionId ~= nil then
+        -- withdrawing a listing or an auction looks the same here as on its detail card
+        local danger = e.actionId == "cancel" or e.actionId == "acancel"
         R.put(self, e.actionId, e.actionLabel, cols.actionX, chipY, cols.actionW, CHIP_H,
-            self.list.actionDisabled ~= true and e.actionOff ~= true)
+            self.list.actionDisabled ~= true and e.actionOff ~= true, danger and "danger" or nil)
     else
         textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, e.actionToken or "textFaint")
     end
@@ -1094,6 +1100,22 @@ function W.recordAmountText(rec)
     if price == nil then return W.payItemText(rec) end
     if EACH_KINDS[tostring(rec.kind)] then return getText(T .. "Wanted_Each", amountText(price)) end
     return amountText(price)
+end
+
+-- A receipt file holds one line per posting (ECExport), so a hold or a refund also writes the
+-- reserved bucket's mirror: a line that leaves the spendable balance as it was. The statement,
+-- its month totals and the admin's copy of it follow the receipt ring, which never holds one --
+-- the spendable side of the same transaction is the line. A line without availableBefore (the
+-- ring, an older file) is never a mirror.
+function W.isMirrorLine(e)
+    return e.availableBefore ~= nil and e.availableBefore == e.availableAfter
+end
+
+-- The other side a statement line names, or nil: the viewer's own account is no other side (a
+-- hold's spendable line points at its own reserved bucket).
+function W.otherParty(cp)
+    if cp == nil or C.isMe(cp) then return nil end
+    return cp
 end
 
 -- One history line. The amount is what the record moved for this player: a sale nets the tax
@@ -1399,7 +1421,6 @@ W.readerHeight = readerHeight
 W.setSummary = setSummary
 W.summaryMoved = summaryMoved
 W.placeField = placeField
-W.setPlaceholder = setPlaceholder
 W.itemBaseName = itemBaseName
 W.drawIcon = drawIcon
 W.shopError = shopError
@@ -1407,6 +1428,7 @@ W.sellRefusalText = sellRefusalText
 W.sellRefusedLines = sellRefusedLines
 W.marketError = marketError
 W.stateTokens = stateTokens
+W.titledName = titledName
 W.stateMeters = stateMeters
 W.historyError = historyError
 W.readError = readError

@@ -687,7 +687,7 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 - **預設參數（沙盒，進 `EC.OPTIONS` group `market`，面板可改）**：刊登費 `MarketListingFeePercent`=2（上架時依定價計算、向上取整、最少 1，燒毀）、成交稅 `MarketSalesTaxPercent`=5（成交時從賣家所得扣、燒毀）、`MarketListingDays`=7（到期自動退回賣家信箱）、`MarketMaxListings`=5（每人同時掛單）、`MarketPriceMin`=1／`MarketPriceMax`=1,000,000。
 - **白名單初版**（`Lua/MinidoracatEconomy/whitelist.json`，缺檔寫預設、壞檔沿用上一份，管理頁可重載）：工具與武器（含 `HandWeapon` 自動拆配件退回）、材料、彈藥、醫療、罐頭與不腐敗食物、未讀書籍、液體容器（A7 已驗 `FluidContainer` round-trip）；排除容器類、會腐敗食物、衣物。每筆白名單列＝`{"match": "category:<DisplayCategory>" | "type:<fullType>", "fields": [...], "modData": [...]}`；快照欄位集合固定為 `type, condition, uses, age, repaired, fluid{type,amount}, modData{允許鍵}`；物品帶有不在允許清單的 modData 鍵 → 拒絕上架（`unlisted_moddata`，fail closed）。本 MOD 自己的戳記鍵 `MinidoracatEconomy` 在上架前先清除（進了託管就不再是那次領取的物品）。
 - **ModData 形狀**：`listings[id]={seller, item, snapshot, price, fee, at, expiresAt, category, name?, state=active}`（id `<epoch>:<seq>`）、`listingsByOwner[username]={ids}`；賣出／取消／到期即刪除 listing 並寫事件（歷史在事件檔與收據）；全服上限 2,000 筆（§20 預算內）。
-- **指令**：`market.browse{category?, query?, sort=time|price, page}`（server 端分頁 20 筆、不分大小寫比對譯名須由 client 做——server 只比 fullType／id，譯名比對在 client 端對本頁做二次過濾）；`market.mine`；`market.candidates`（背包可上架清單＋拒絕原因）；`market.list{itemId, price, requestId}`；`market.buy{listingId, price(確認用), requestId}`；`market.cancel{listingId, requestId}`。
+- **指令**：`market.browse{category?, query?, types?, sort=time|price, page}`（server 端分頁 20 筆、不分大小寫比對 fullType／英文名／賣家；server 讀不到譯名，client 以 `C.ItemPicker.queryTypes` 把關鍵字在自己語言對到的物品代碼（最多 200 個）放進 `types`，server 在分頁前以 `Mk.typesOf` 比對，`auction.browse`、`auction.history`、`admin.listings`、`admin.auctions`、`admin.wanted`、`wanted.browse` 同規則；client 仍對本頁做同樣的二次過濾）；`market.mine`；`market.candidates`（背包可上架清單＋拒絕原因）；`market.list{itemId, price, requestId}`；`market.buy{listingId, price(確認用), requestId}`；`market.cancel{listingId, requestId}`。
 - **list-out 規則二**：玩家 modData `pendingOuts[opId]={itemId, snapshot, kind="listing", seq, epoch}` → 移除原物（`inv:Remove`＋`sendRemoveItemFromContainer`）→ 建 listing＋刊登費 posting（同 tick）；pending 只在登入收斂（規則三第 4–6 列）或 companion 心跳水位 ≥ seq 時清。規則五第②條（死亡 carryOver `pendingOuts`）在此落地。
 - **成交**：`market.buy` 同 tick：終端、餘額、listing 存在且價格相符（不靜默換價）→ 買家 −price、賣家 +(price−tax)、稅 → `SYSTEM_BURN`、listing 刪除、快照進買家信箱 `kind="market"` → 立即 claim-in；賣家離線照樣入帳（錢包是帳號級）；買家自己的刊登不能買。
 - **退件**：取消需買家信箱空位規則（賣家信箱有空位才可取消）；到期由 `OnTickEvenPaused` 每分鐘掃（`ponytail:` 全掃，2,000 筆內夠用）→ 退回賣家信箱，`kind="return"`、允許暫超上限。
@@ -1188,6 +1188,8 @@ EconomyConfig.currencies = {
 
 原則：ModData 只放「現在的狀態」與**有上限**的短期彙總；歷史只進事件檔。每張表有硬上限，超過就淘汰或拒收，不會無界成長。
 
+玩家寫的自由文字不進 Global ModData（任何已登入 client 都能整表索取）：收據環不帶 `reasonText`（轉帳備註、調帳理由、整合 API 的 `reasonText` 只在收據檔與事件檔，錢包對帳單從收據檔讀），轉帳的冪等紀錄只存備註摘要 `memoHash`（同 requestId 換備註仍是 `request_conflict`），求購單還價留言存私有檔（§22.2）。舊版寫進環與冪等紀錄的文字在載入時移除或轉成摘要。稽核環的管理理由前 40 字是例外（§19.3 第 7 點）。
+
 | 表 | 每筆估計 | 上限規則 | 規模假設 | 估計大小 |
 |---|---|---|---|---|
 | `wallets[username][currency] = {available, reserved}` | ~200 B／帳號（2 幣別） | 只為曾有交易的帳號建立；零餘額且 180 天無活動可歸檔（寫事件後移除） | 5,000 帳號 | ~1.0 MB |
@@ -1327,6 +1329,8 @@ local res = E.debit("playerA", "survivor", 120, {
 重送一律回第一次的結果（建單的期限、費用與保留款，交貨的付款物品、付款信、剩餘件數，加價的差額、費用與被滿足的還價數，取消的退款與退回信），都存在冪等紀錄的扁平欄位裡，不從目前的單子重算。
 
 不變式：每個貨幣選項 `held == 單價 × 剩餘件數`；物品選項 `lot.qty ≥ perUnit × 剩餘件數`；每種貨幣「所有開放中的單的 held＋拍賣最高出價＝全部錢包 reserved」。釋放被帳本拒絕時單子原樣保留、標 `blocked="refund_failed"`，每分鐘重試；交貨與還價都被拒（`order_held`）。
+
+還價留言不在 `md.wanted`：存在伺服器私有檔 `Lua/MinidoracatEconomy/wanted-memos.json`（NDJSON，以單號＋還價的 `from` 為鍵、`at` 對應那一筆還價），寫檔成功才更新記憶體，寫不進去就拒絕帶留言的還價（`memo_unavailable`）；檔案存在卻讀不到時不重寫、不收新留言。忽略、加價滿足、該賣方交貨、結單都會刪留言；啟動時依世界存檔裡還在的還價清掉多餘的（含世界回滾拿掉的還價），並把舊版存在 ModData 的留言搬進檔案。只有買方的 `wanted.mine`、`wanted_offer` 通知與還價者自己的回覆帶留言。
 
 ### 22.3 崩潰語意
 

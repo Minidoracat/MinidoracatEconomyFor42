@@ -303,7 +303,9 @@ function U.itemCategoryText(category)
     return getTextOrNull("IGUI_ItemCat_" .. key) or key
 end
 
-function U.newEntry(width, height, opts)
+-- A native ISTextEntryBox: the multi-line boxes (readers, the admin dialogs' reason) the
+-- single-line framework TextField cannot be, and the shop editor's scrolling form (ECAdminShop).
+function U.newNativeEntry(width, height, opts)
     local e = ISTextEntryBox:new("", 0, 0, width, height)
     e:initialise()
     e:instantiate()
@@ -321,9 +323,39 @@ function U.newEntry(width, height, opts)
     return e
 end
 
+-- The framework TextField has focus()/isFocused() but no unfocus: blur its native entry.
+local function unfocusField(field) field._entry:unfocus() end
+
+-- The native box reports only the keys it saw itself: an IME commit fires no
+-- onTextChange (pitfalls.md UI). The field's per-frame compare is the one report, handed to the
+-- callback callers wire on field._entry; the native report is muted so a key is not told twice.
+local function relayChange(field)
+    local e = field._entry
+    if e.onTextChangeFunction then e.onTextChangeFunction(e.target, e) end
+end
+local function muted() end
+
+-- Every other box is the framework TextField (rounded well, inner padding, fitted placeholder).
+-- The native box inside is field._entry: callers wire target / onTextChangeFunction /
+-- onCommandEntered on it, and hand the keyboard { kind = "entry", control = field._entry,
+-- frame = field } and Keys.focusControl(field._entry) -- the TextField itself never matches.
+-- opts: maxLen, clear, placeholder (field.placeholder later), numbers.
+function U.newEntry(width, height, opts)
+    opts = opts or {}
+    local field = U.framework.TextField.new({ width = width, height = height, theme = U.theme,
+        maxLength = opts.maxLen, clearButton = opts.clear, placeholder = opts.placeholder,
+        onlyNumbers = opts.numbers })
+    field.unfocus = unfocusField
+    field.onChange = relayChange
+    field._entry.onTextChange = muted
+    return field
+end
+
+-- The three below take either kind of box.
 function U.entryText(entry)
     if not entry then return "" end
-    local ok, value = pcall(function() return entry:getInternalText() end)
+    local box = entry._entry or entry
+    local ok, value = pcall(function() return box:getInternalText() end)
     if ok and type(value) == "string" then return value end
     return ""
 end
@@ -334,6 +366,11 @@ end
 
 function U.setEntryEditable(entry, editable)
     if not entry then return end
+    if entry._entry then
+        -- setEnabled keeps the inner box borderless, greys the text and blurs it when off
+        entry:setEnabled(editable == true)
+        return
+    end
     pcall(function() entry:setEditable(editable == true) end)
     if not editable then pcall(function() entry:unfocus() end) end
 end
@@ -898,7 +935,7 @@ end
 
 -- One read-only, scrollable surface for player and administrative details.
 function U.newReader(owner, width, height)
-    local box = U.newEntry(width, height, { multiline = true, maxLines = 12 })
+    local box = U.newNativeEntry(width, height, { multiline = true, maxLines = 12 })
     box.target = owner
     local bg, fg = color("well"), color("text")
     box.backgroundColor = { r = bg.r, g = bg.g, b = bg.b, a = 1 }

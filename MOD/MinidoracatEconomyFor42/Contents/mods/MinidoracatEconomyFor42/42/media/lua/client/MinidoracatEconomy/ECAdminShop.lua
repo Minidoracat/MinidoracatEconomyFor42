@@ -153,7 +153,7 @@ local BATCH_NAMES_MAX = 12
 
 local function tr(key) return getText(T .. key) end
 local function lineH() return fontH.small + 6 end
-local function chipH() return math.max(20, fontH.small + 6) end
+local function chipH() return math.max(24, fontH.small + 6) end
 local function entryH() return math.max(26, fontH.small + 12) end
 
 local function numberHint(min, max)
@@ -737,8 +737,8 @@ function Page:createChildren()
         return b
     end
     self.searchEntry = newEntry(220, entryH(), { maxLen = 48, clear = true, placeholder = tr("Admin_Shop_Search") })
-    self.searchEntry.target = self
-    self.searchEntry.onTextChangeFunction = Page.onSearch
+    self.searchEntry._entry.target = self
+    self.searchEntry._entry.onTextChangeFunction = Page.onSearch
     self:addChild(self.searchEntry)
     self.list = U.newTable(ShopCell, lineH() * 2 + 12)
     -- the row index is what a Shift range is measured in, and VirtualList hands it to onSelect
@@ -781,8 +781,13 @@ function Page:createChildren()
     self.form.vscroll:setAnchorRight(false)
     self.form.vscroll:setAnchorBottom(false)
 
+    -- ponytail: the form's boxes stay native. The form hides a box scrolled out of view and the
+    -- ring reveals it through `scrollOwner`, but MinidoracatUI Focus land() scrolls only when
+    -- desc.control.parent == owner, and a TextField's control is its inner entry. Upgrade: have
+    -- land() use `desc.frame or desc.control` for that check and for scrollTo, then build these
+    -- with newEntry like every other box.
     local function field(opts)
-        local e = newEntry(120, entryH(), opts)
+        local e = U.newNativeEntry(120, entryH(), opts)
         e.target = self
         e.onTextChangeFunction = Page.onFieldEdit
         self.form:addChild(e)
@@ -3845,7 +3850,8 @@ function Page:keyboardTargets()
         return out
     end
     if self.searchEntry:getIsVisible() then
-        add("entry", tr("Admin_Shop_Search"), self.searchEntry)
+        out[#out + 1] = { kind = "entry", label = tr("Admin_Shop_Search"), control = self.searchEntry._entry,
+            frame = self.searchEntry }
         if self.catCombo:getIsVisible() then add("combo", tr("Admin_Shop_CatFilter"), self.catCombo) end
         group(tr("Admin_Shop_Title"), { self.reloadButton, self.addButton, self.masterButton,
             self.salesButton, self.buysButton, self.batchButton, self.clearSelButton })

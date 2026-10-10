@@ -252,6 +252,7 @@ function Au.browse(username, args)
     local seller = type(args.seller) == "string" and args.seller ~= "" and S.accountOf(args.seller) or nil
     local query = type(args.query) == "string" and string.lower(string.sub((string.gsub(args.query, "^%s*(.-)%s*$", "%1")), 1, 64)) or ""
     if query == "" then query = nil end
+    local types = query and Mk.typesOf(args.types) or nil
     local sort = Au.SORTS[args.sort] and args.sort or "ending"
     local page = isInt(args.page, 1, 100000) and args.page or 1
     local currency = Au.CURRENCY_ALL
@@ -273,7 +274,7 @@ function Au.browse(username, args)
         -- it narrows the whole table before the sort and the page
         if (not seller or a.seller == seller) and (not filter or a.currency == filter) then
             local hay = string.lower(tostring(a.item) .. " " .. tostring(a.name or "") .. " " .. tostring(a.seller))
-            if not query or string.find(hay, query, 1, true) then rows[#rows + 1] = a end
+            if not query or (types and types[a.item]) or string.find(hay, query, 1, true) then rows[#rows + 1] = a end
         end
     end
     local key, desc = Au.SORTS[sort].key, Au.SORTS[sort].desc
@@ -836,16 +837,19 @@ local function involves(out, username)
     return out.seller == username or out.bidder == username or out.buyer == username or out.previous == username
 end
 
-local function matchesQuery(out, query)
+local function matchesQuery(out, query, types)
+    if types and types[out.item] then return true end
     local hay = string.lower(out.auctionId .. " " .. tostring(out.seller or "") .. " " .. tostring(out.bidder or "")
         .. " " .. tostring(out.buyer or "") .. " " .. tostring(out.previous or "") .. " " .. tostring(out.item or ""))
     if string.find(hay, query, 1, true) then return true end
     return string.find(W.itemNameLower(out.item), query, 1, true) ~= nil
 end
 
--- auction.history {query?, auctionId?, requestId?}, and admin.auctions action="history" with the
--- same reply shape. Without auctionId a player sees only the auctions they took part in (seller,
--- bidder, buyer or outbid); with one they see that auction's whole public timeline, which
+-- auction.history {query?, types?, auctionId?, requestId?}, and admin.auctions action="history" with
+-- the same reply shape; `types` are the item types the client resolved the query to (Mk.typesOf),
+-- matched inside the tail before its ring keeps the newest lines. Without auctionId a player
+-- sees only the auctions they took part in (seller, bidder, buyer or outbid); with one they see
+-- that auction's whole public timeline, which
 -- auction.browse already shows live. `admin` = { write = bool } grants the server-wide view and is
 -- only ever passed by the gated admin handler.
 function Au.history(player, args, admin)
@@ -871,6 +875,7 @@ function Au.history(player, args, admin)
         extra.query = trimmed
         if trimmed ~= "" then query = string.lower(trimmed) end
     end
+    local types = query and Mk.typesOf(args.types) or nil
     local auctionId = nil
     if args.auctionId ~= nil then
         if type(args.auctionId) ~= "string" or args.auctionId == "" or #args.auctionId > Au.HISTORY_ID_CHARS
@@ -886,7 +891,7 @@ function Au.history(player, args, admin)
         elseif not admin and not involves(out, username) then
             return nil
         end
-        if query and not matchesQuery(out, query) then return nil end
+        if query and not matchesQuery(out, query, types) then return nil end
         return out
     end)
 end

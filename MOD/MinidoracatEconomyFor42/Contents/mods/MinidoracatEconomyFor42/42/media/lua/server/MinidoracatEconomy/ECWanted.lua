@@ -61,6 +61,7 @@ Wd.QTY_MAX = Mk.QTY_MAX
 Wd.CANDIDATES_MAX = 200
 Wd.OFFERS_MAX = 10                -- per order
 Wd.MEMO_MAX = 64                  -- characters (A.charCount), as a transfer memo
+Wd.MEMO_FILE = X.ROOT .. "/wanted-memos.json"
 Wd.SWEEP_EVERY_MS = 60000
 Wd.QUERY_MAX = 64
 Wd.BURN_ACCOUNT = "SYSTEM_BURN"
@@ -76,6 +77,145 @@ end
 local function requestIdOf(args)
     return type(args) == "table" and type(args.requestId) == "string" and args.requestId ~= ""
         and #args.requestId <= 96 and args.requestId or nil
+end
+
+-- ---------- offer memos (server-private file) ----------
+--
+-- A seller's note is free text, and Global ModData is not private (any logged-in client can
+-- request the whole table): the offer in ModData carries everything but the note, which lives in
+-- Wd.MEMO_FILE as NDJSON lines { k = "set", o, f, at, m } / { k = "del", o, f } keyed by the
+-- order id and the offer's own `from`; `at` ties a note to that very offer. One open, the lines,
+-- one close per write, and memory changes only after the write succeeded. A file that exists but
+-- cannot be read is never rewritten: offers then take no note until it can be read.
+
+local memos = {}                  -- orderId -> from -> { m, at } (what the file holds)
+local memoLines = 0               -- lines in the file (the start compacts it)
+local memoUnreadable = false
+
+local function memoWrite(recs, append)
+    local writer = nil
+    local opened = pcall(function() writer = getFileWriter(Wd.MEMO_FILE, true, append) end)
+    if not opened or writer == nil then
+        EC.log("buy-order memo file " .. Wd.MEMO_FILE .. " could not be opened for writing")
+        return false
+    end
+    local written = pcall(function()
+        for _, rec in ipairs(recs) do writer:writeln(EC.jsonEncode(rec)) end
+    end)
+    local closed = pcall(function() writer:close() end)
+    if not (written and closed) then
+        EC.log("buy-order memo file write failed")
+        return false
+    end
+    memoLines = append and memoLines + #recs or #recs
+    return true
+end
+
+-- An offer written before the notes moved out may still hold its own until the start moves it.
+local function memoOf(orderId, f)
+    local e = memos[orderId] and memos[orderId][f.from]
+    if e and e.at == f.at then return e.m end
+    return f.memo
+end
+
+local function setMemo(orderId, f, text)
+    if memoUnreadable or not memoWrite({ { k = "set", o = orderId, f = f.from, at = f.at, m = text } }, true) then
+        return false
+    end
+    memos[orderId] = memos[orderId] or {}
+    memos[orderId][f.from] = { m = text, at = f.at }
+    return true
+end
+
+-- The notes of offers that are gone. A "del" line that fails to land leaves a note the file still
+-- holds for an offer that no longer exists, which the next start prunes.
+local function dropMemos(orderId, offers)
+    local byFrom = memos[orderId]
+    if not byFrom then return end
+    local recs = {}
+    for _, f in ipairs(offers) do
+        if byFrom[f.from] then
+            byFrom[f.from] = nil
+            recs[#recs + 1] = { k = "del", o = orderId, f = f.from }
+        end
+    end
+    if EC.countKeys(byFrom) == 0 then memos[orderId] = nil end
+    if #recs > 0 then memoWrite(recs, true) end
+end
+
+local function memoLoad()
+    memos, memoLines, memoUnreadable = {}, 0, false
+    local reader = nil
+    local opened = pcall(function() reader = getFileReader(Wd.MEMO_FILE, false) end)
+    if not opened or reader == nil then
+        local ok, exists = pcall(cacheFileExists, Wd.MEMO_FILE)
+        if not ok or exists then
+            memoUnreadable = true
+            EC.log("buy-order memo file " .. Wd.MEMO_FILE .. " exists but could not be read: no new notes until it can be")
+        end
+        return
+    end
+    local bad = 0
+    local readOk, readErr = pcall(function()
+        while true do
+            local line = reader:readLine()
+            if line == nil then break end
+            memoLines = memoLines + 1
+            local rec = EC.jsonDecode(line)
+            local byFrom = type(rec) == "table" and type(rec.o) == "string" and type(rec.f) == "string" and memos[rec.o] or nil
+            if type(rec) ~= "table" or type(rec.o) ~= "string" or type(rec.f) ~= "string" then
+                bad = bad + 1
+            elseif rec.k == "set" and type(rec.m) == "string" and type(rec.at) == "number" then
+                memos[rec.o] = byFrom or {}
+                memos[rec.o][rec.f] = { m = rec.m, at = rec.at }
+            elseif rec.k == "del" then
+                if byFrom then byFrom[rec.f] = nil end
+            else
+                bad = bad + 1
+            end
+        end
+    end)
+    pcall(function() reader:close() end)
+    if not readOk then
+        memos, memoUnreadable = {}, true
+        EC.log("buy-order memo file read failed (" .. tostring(readErr) .. "): no new notes until it can be read")
+        return
+    end
+    if bad > 0 then EC.log("buy-order memo file: " .. bad .. " of " .. memoLines .. " lines were not usable and were skipped") end
+end
+
+-- At start, against the orders the world save holds: a note whose offer is gone (closed, or taken
+-- back by a world rollback while the file kept it) is dropped, an offer from before the notes
+-- moved out hands its note to the file, and the file is rewritten with the live notes only when
+-- it holds anything else. A note left in ModData is stripped once the file holds it.
+-- ponytail: truncate-and-rewrite; a rewrite that fails halfway loses notes (text only, no money).
+local function memoSync()
+    if memoUnreadable then return end
+    local live, kept, moved, strip = {}, {}, {}, {}
+    for id, o in pairs(md.wanted.orders) do
+        for _, f in ipairs(o.offers) do
+            local e = memos[id] and memos[id][f.from]
+            if e and e.at == f.at then
+                live[#live + 1] = { k = "set", o = id, f = f.from, at = f.at, m = e.m }
+                kept[#kept + 1] = live[#live]
+                if f.memo ~= nil then strip[#strip + 1] = f end
+            elseif type(f.memo) == "string" then
+                live[#live + 1] = { k = "set", o = id, f = f.from, at = f.at, m = f.memo }
+                moved[#moved + 1] = f
+            end
+        end
+    end
+    local wrote = (#moved == 0 and #kept == memoLines) or memoWrite(live, false)
+    if not wrote then EC.log("buy-order memo file kept as it was: pruned again at the next start") end
+    memos = {}
+    for _, rec in ipairs(wrote and live or kept) do
+        memos[rec.o] = memos[rec.o] or {}
+        memos[rec.o][rec.f] = { m = rec.m, at = rec.at }
+    end
+    for _, f in ipairs(strip) do f.memo = nil end
+    if wrote then
+        for _, f in ipairs(moved) do f.memo = nil end
+    end
 end
 
 -- ---------- state ----------
@@ -126,6 +266,7 @@ local function removeOrder(order)
     end
     local opt = lotOption(order)
     if opt then lotIndex[opt.lot.id] = nil end
+    dropMemos(order.id, order.offers)
 end
 
 local function orderOfLot(id)
@@ -170,8 +311,9 @@ end
 
 -- An offer belongs to the account that made it: a login name merged into another account since
 -- (ECMerge) is that account's offer - shown to it, deduplicated with it and told through it.
-local function offerView(f)
-    return { from = S.accountOf(f.from), option = f.option, unitPrice = f.unitPrice, qty = f.qty, memo = f.memo, at = f.at }
+-- The memo comes from the private file; only the buyer's own view and the offer's author see it.
+local function offerView(order, f)
+    return { from = S.accountOf(f.from), option = f.option, unitPrice = f.unitPrice, qty = f.qty, memo = memoOf(order.id, f), at = f.at }
 end
 
 local function offerOf(order, username)
@@ -193,12 +335,12 @@ local function view(order, viewer, mode)
     for i, opt in ipairs(order.options) do v.options[i] = optionView(opt, full) end
     if mode == "mine" then
         v.closing, v.offers = order.closing, {}
-        for i, f in ipairs(order.offers) do v.offers[i] = offerView(f) end
+        for i, f in ipairs(order.offers) do v.offers[i] = offerView(order, f) end
     elseif mode == "admin" then
         v.closing, v.offerCount = order.closing, #order.offers
     else
         local own = offerOf(order, viewer)
-        v.myOffer = own and offerView(own) or nil
+        v.myOffer = own and offerView(order, own) or nil
     end
     return v
 end
@@ -231,23 +373,7 @@ local function queryOf(args)
     return q ~= "" and q or nil
 end
 
--- The item types the client resolved the typed text to through its own translated names (the
--- server never sees the player's language). A set of at most Wd.TYPES_MAX strings; anything else
--- in the list is ignored, never an error: the raw query still matches on its own.
-Wd.TYPES_MAX = 200
-local function typesOf(args)
-    if type(args.types) ~= "table" then return nil end
-    local set, n = {}, 0
-    for i = 1, math.min(#args.types, Wd.TYPES_MAX) do
-        local t = args.types[i]
-        if type(t) == "string" and t ~= "" and #t <= 128 then
-            set[t], n = true, n + 1
-        end
-    end
-    return n > 0 and set or nil
-end
-
--- An order matches when its type is one the client resolved the query to, or when the raw query
+-- An order matches when its type is one the client resolved the query to (Mk.typesOf), or when the raw query
 -- is found in its fullType, English name or buyer. Types only widen a query; alone they are ignored.
 local function matches(o, query, types)
     if not query then return true end
@@ -272,7 +398,7 @@ end
 function Wd.browse(username, args)
     args = type(args) == "table" and args or {}
     local query = queryOf(args)
-    local types = query and typesOf(args) or nil
+    local types = query and Mk.typesOf(args.types) or nil
     local category = type(args.category) == "string" and args.category ~= "" and args.category or nil
     local currency = Mk.CURRENCY_ALL
     local base = { page = 1, pages = 1, total = 0, per = Wd.PAGE, rows = {}, currencies = Mk.tradableCurrencies() }
@@ -863,8 +989,11 @@ function Wd.fill(player, args)
         if o.kind == "coin" then o.held = o.unitPrice * order.qty end
     end
     if payQty then opt.lot.qty = opt.lot.qty - payQty end
-    local _, own = offerOf(order, username)
-    if own then table.remove(order.offers, own) end
+    local ownOffer, own = offerOf(order, username)
+    if own then
+        table.remove(order.offers, own)
+        dropMemos(order.id, { ownOffer })
+    end
     local entry = M.add(order.owner, { kind = "wanted", item = order.item, qty = n, txId = txId, price = price,
         currency = coin and opt.currency or nil, seller = username, snapshot = snapshot })
     local pay = payQty and M.add(username, { kind = "wanted_pay", item = opt.lot.item, qty = payQty, txId = txId,
@@ -930,15 +1059,17 @@ function Wd.offer(player, args)
     local pmax = EC.sandbox("MarketPriceMax", 1000000)
     if args.unitPrice > pmax then return { ok = false, error = "price_range", max = pmax } end
     local own = offerOf(order, username)
-    if own then return { ok = false, error = "offer_exists", offer = offerView(own) } end
+    if own then return { ok = false, error = "offer_exists", offer = offerView(order, own) } end
     if #order.offers >= Wd.OFFERS_MAX then return { ok = false, error = "offers_full" } end
-    local f = { from = username, option = args.option, unitPrice = args.unitPrice, qty = args.qty, memo = memo, at = EC.now() }
+    local f = { from = username, option = args.option, unitPrice = args.unitPrice, qty = args.qty, at = EC.now() }
+    -- the note goes to the private file first: an offer whose note cannot be kept is not made
+    if memo and not setMemo(order.id, f, memo) then return { ok = false, error = "memo_unavailable" } end
     order.offers[#order.offers + 1] = f
     X.emit("wanted.offered", { orderId = order.id, owner = order.owner, from = username, option = args.option,
         unitPrice = f.unitPrice, qty = f.qty, currency = opt.currency })
     notify(order.owner, { kind = "wanted_offer", orderId = order.id, item = order.item, qty = f.qty, price = f.unitPrice,
         currency = opt.currency, from = username, memo = memo })
-    return { ok = true, orderId = order.id, offer = offerView(f) }
+    return { ok = true, orderId = order.id, offer = offerView(order, f) }
 end
 
 -- args = { orderId, option, unitPrice, requestId }: the buyer raises a coin option for every
@@ -1000,6 +1131,7 @@ function Wd.raise(player, args)
     if not res.ok then return { ok = false, error = res.error, currency = opt.currency } end
     opt.unitPrice, opt.held, opt.fee = args.unitPrice, opt.held + delta, (opt.fee or 0) + fee
     order.offers = kept
+    dropMemos(order.id, met)
     X.emit("wanted.raised", { orderId = order.id, owner = username, option = args.option, currency = opt.currency,
         unitPrice = opt.unitPrice, delta = delta, fee = fee, met = #met, txId = res.txId })
     X.market(username, { kind = "wanted_raised", orderId = order.id, item = order.item, qty = order.qty,
@@ -1026,9 +1158,10 @@ function Wd.dismiss(player, args)
     local order = md.wanted.orders[args.orderId]
     if not order then return { ok = false, error = "unknown_order" } end
     if order.owner ~= username then return { ok = false, error = "not_owner" } end
-    local _, at = offerOf(order, args.from)
+    local gone, at = offerOf(order, args.from)
     if not at then return { ok = false, error = "unknown_offer" } end
     table.remove(order.offers, at)
+    dropMemos(order.id, { gone })
     X.emit("wanted.dismissed", { orderId = order.id, owner = username, from = args.from })
     return { ok = true, orderId = order.id, from = args.from }
 end
@@ -1135,7 +1268,7 @@ S.handlers["wanted.history"] = function(player, args)
     end)
 end
 
--- admin.wanted {action = "list", query?, owner?, page?, requestId} (read gate) |
+-- admin.wanted {action = "list", query?, types?, owner?, page?, requestId} (read gate) |
 --              {action = "cancel", orderId, reason, requestId} (write gate, audited)
 S.handlers["admin.wanted"] = function(player, args)
     args = type(args) == "table" and args or {}
@@ -1160,8 +1293,9 @@ S.handlers["admin.wanted"] = function(player, args)
     else
         local query = queryOf(args)
         local rows = {}
+        local types = query and Mk.typesOf(args.types) or nil
         for _, o in pairs(md.wanted.orders) do
-            if (args.owner == nil or o.owner == args.owner) and matches(o, query) then rows[#rows + 1] = o end
+            if (args.owner == nil or o.owner == args.owner) and matches(o, query, types) then rows[#rows + 1] = o end
         end
         EC.sortSafe(rows, newestFirst)
         res.rows, res.page, res.pages, res.total = page(rows, args.page, S.principal(player), "admin")
@@ -1179,6 +1313,8 @@ function Wd.init(root)
         if opt then lotIndex[opt.lot.id] = id end
     end
     lastSweep = 0
+    memoLoad()
+    memoSync()
 end
 
 S.Wanted = Wd

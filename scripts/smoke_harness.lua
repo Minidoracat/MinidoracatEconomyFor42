@@ -1129,6 +1129,9 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 7    -- +7: the wallet's slots tab (
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 74   -- +74: player buy orders (scripts/test_wanted.lua: W-R1..6 the recovery probes for the escrowed lot and a delivery - fill and lot rolled back and mailed home, a double rollback, older saves reclaimed, receipt open while escrowed, ledger-key and live-lot proof with and without a save; W-1..8 create shapes, fees and refusals, fills by coin and by goods, conditions, offers / raise / dismiss, cancel, refused and retried release, expiry, merge blocker, admin list / cancel, reply size at the caps, history)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: buy-order review fixes (scripts/test_wanted.lua: W-R7a/b a lot and a goods-paid fill partly returned twice keep their original kind; W-1b2 / W-3j2 / W-5g2 / W-6a2 resends of create, fill, raise and cancel answer the first result, a cancel id reused for another order is request_conflict; W-9 an offer under a merged login is the account's; W-10 a buy-order fill is in the market report scan)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: localized buy-order search (scripts/test_wanted.lua W-11a..c: the client's resolved item types widen the query, matched before paging, bounded list)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: localized item search on every board (scripts/test_wanted.lua W-12a..f: market.browse, auction.browse, admin.listings, admin.auctions and admin.wanted match the client's item types before paging, Mk.typesOf bounds; scenario 35: auction.history / admin.auctions history match them before the tail limit, bounded)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: player free text out of Global ModData: an adjust reason in neither ring nor idempotency record, an older ring entry stripped at load, the transfer record keeps a memo digest (another memo is request_conflict) and converts an older record at load, no memo or API reasonText anywhere under the root (the ring checks of transfer and API receipts now assert no text, the statement's receipt files keep it); scripts/test_wanted.lua W-13a..g offer memos in a private file: not in ModData, read back after a restart, pruned after a rollback, dropped on dismiss / raise / delivery / close, an older offer's memo moved out at load, a refused write and an unreadable file
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: names vanilla gives an item at creation (scenario VN: an OnCreate title kept and rebuilt apart from a label, an owner's name and a recipe-named newspaper, state-derived names still unstored, a MOD's label unchanged, the buyer's preview without the type prefix, no merge across titles, the buyback still takes a fresh copy, a schematic's own recipes travel, too many recipes refused, listed / bought / delivered under the title; VN-11 the client's type name with the title in brackets)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1916,6 +1919,15 @@ check(okAdj.ok == true and okAdj.balance == 600 and L.getBalance("SYSTEM_ADJUST"
 local again = adjust(boss, { username = "joe", currency = "survivor", delta = 500, reason = "compensation for lost order", requestId = "r8", expectedRev = 1 })
 check(again.ok == true and again.duplicate == true and L.getBalance("joe", "survivor").available == 600, "same requestId is idempotent (no double payment)")
 check(lastSent("wallet.changed") ~= nil and lastSent("wallet.changed").player == joe and lastSent("wallet.changed").args.kind == "admin_adjust", "target player receives wallet.changed for the adjustment")
+do
+    local ring, leaked = L.receipts("joe"), false
+    for _, e in ipairs(ring) do if e.reasonText ~= nil then leaked = true end end
+    for _, rec in pairs(S.modData().idempotency.map) do
+        for _, v in pairs(rec.meta or {}) do if v == "compensation for lost order" then leaked = true end end
+    end
+    check(ring[#ring].kind == "admin_adjust" and not leaked,
+        "an adjust reason is in neither the receipt ring nor the idempotency record (Global ModData)")
+end
 
 -- 每管理員每日加／減各自上限＋全服上限
 check(adjust(boss, { username = "joe", currency = "survivor", delta = 5000, reason = "big correction number one", requestId = "r9", expectedRev = 2 }).ok == true, "5,000 fits the admin daily add cap (500 + 5000 <= 10000)")
@@ -2394,8 +2406,8 @@ check(L.getBalance("joe", "survivor").available == 380 and L.getBalance("MOD:Min
     "the MOD account holds what the mod burned")
 local rc = L.receipts("joe")
 local last = rc[#rc]
-check(last.kind == "mod" and last.sourceMod == "MinidoracatMiniMapFor42" and last.reasonText == "GPS 2026-09" and last.amount == -120,
-    "the receipt ring names the mod and its wording")
+check(last.kind == "mod" and last.sourceMod == "MinidoracatMiniMapFor42" and last.reasonText == nil and last.amount == -120,
+    "the receipt ring names the mod; its wording stays out of Global ModData (the receipt file carries it)")
 local push = lastSent("wallet.changed")
 check(push == nil or push.player ~= joe or push.args.balances.survivor.available == 380, "wallet push (when online) reflects the debit")
 
@@ -4971,6 +4983,24 @@ io.write("scenario 35: buyback state and auction history\n")
     check(invalid and invalid.error == "invalid_args", "oversized history searches fail closed")
     local readonly = history(reader, "admin.auctions", { action = "cancel", auctionId = "auction-1", reason = "no" })
     check(readonly and readonly.error == "forbidden", "adding read-only history does not enable moderator cancellation")
+    -- a localized record search: the item types the client resolved the keyword to are matched
+    -- inside the tail like the raw keyword, before the 200-line ring (220 newer lines follow it)
+    table.insert(files[X.ROOT .. "/events-20260801.json"].lines,
+        event("older-nails", "bid", { item = "Base.Nails", seller = "unrelated-seller", bidder = "history-bidder", amount = 3 }))
+    local typed = { action = "history", query = "zzlocal", types = { "Base.Nails" } }
+    local bare = history(reader, "admin.auctions", { action = "history", query = "zzlocal" })
+    local byType = history(reader, "admin.auctions", typed)
+    local mineType = history(bidder, "auction.history", { query = "zzlocal", types = { "Base.Nails" } })
+    check(bare and bare.total == 0 and byType and #byType.entries == 1 and byType.entries[1].auctionId == "older-nails"
+        and not byType.truncated and mineType and #mineType.entries == 1 and mineType.entries[1].auctionId == "older-nails",
+        "auction record search (player and admin) finds an item through the client's types before the tail limit")
+    local long = {}
+    for i = 1, S.Market.TYPES_MAX do long[i] = "Base.None" .. i end
+    long[#long + 1] = "Base.Nails"
+    local capped = history(reader, "admin.auctions", { action = "history", query = "zzlocal", types = long })
+    local bareTypes = history(bidder, "auction.history", { types = "Base.Nails" })
+    check(capped and capped.total == 0 and bareTypes and not bareTypes.error and #bareTypes.entries == 3,
+        "auction record types are bounded and a non-list is ignored")
 
     local originalReader = getFileReader
     getFileReader = function(path, create)
@@ -15368,9 +15398,6 @@ check(tx and tx.kind == "transfer" and tx.reasonCode == "player_transfer" and tx
     and tx.payload.from == "xf-ann" and tx.payload.to == "xf-cat" and tx.payload.memo == "fare",
     "one tx.committed of kind transfer with payer, payee, burn postings in that order and the memo in the payload")
 local ra, rc = L.receipts("xf-ann"), L.receipts("xf-cat")
-check(ra[#ra].kind == "transfer" and ra[#ra].counterparty == "xf-cat" and ra[#ra].amount == -105 and ra[#ra].reasonText == "fare"
-    and rc[#rc].counterparty == "xf-ann" and rc[#rc].amount == 100 and rc[#rc].reasonText == "fare",
-    "both receipts name the other party and carry the memo")
 local payerLine, payeeLine = nil, nil
 for _, f in pairs(files) do for _, l in ipairs(f.lines) do
     local row = string.find(l, ok1.txId, 1, true) and EC.jsonDecode(l)
@@ -15382,6 +15409,14 @@ local wr = W.state("xf-ann").receipts
 check(ra[#ra].fee == 5 and rc[#rc].fee == nil and payerLine and payerLine.fee == 5 and payeeLine and payeeLine.fee == nil
     and wr[#wr].fee == 5,
     "the fee rides on the sender's receipt (ring, receipt file, wallet.state) and never on the recipient's")
+check(ra[#ra].kind == "transfer" and ra[#ra].counterparty == "xf-cat" and ra[#ra].amount == -105 and ra[#ra].reasonText == nil
+    and rc[#rc].counterparty == "xf-ann" and rc[#rc].amount == 100 and rc[#rc].reasonText == nil and wr[#wr].reasonText == nil
+    and payerLine.reasonText == "fare" and payeeLine.reasonText == "fare",
+    "both receipts name the other party; the memo is in both receipt files (the statement) and not in the ring")
+S.modData().receipts["xf-ann"].items[1].reasonText = "written by an older build"
+L.init()
+check(S.modData().receipts["xf-ann"].items[1].reasonText == nil and #L.receipts("xf-ann") == #ra,
+    "a ring entry an older build wrote with its text loses the text at load and keeps the line")
 local pushed, pushedToPayer = nil, false
 for _, r in ipairs(sentCommands) do
     if r.command == "wallet.transferReceived" then
@@ -15400,6 +15435,20 @@ check(dup.ok and dup.duplicate == true and dup.txId == ok1.txId and dup.fee == 5
 check(refused(send(ann, "xf-cat", 101, 6, { memo = "fare", requestId = "pay-1" }), "request_conflict", s1)
     and refused(send(ann, "xf-cat", 100, 5, { requestId = "pay-1" }), "request_conflict", s1),
     "the same requestId with another amount or without the memo is a conflict, not a second payment")
+do
+    local rec = S.modData().idempotency.map["transfer:xf-ann:pay-1"]
+    local text = false
+    for _, v in pairs(rec.meta) do if v == "fare" then text = true end end
+    check(not text and type(rec.meta.memoHash) == "string" and refused(send(ann, "xf-cat", 100, 5, { memo = "farE", requestId = "pay-1" }), "request_conflict", s1),
+        "the idempotency record keeps a digest of the memo, not its text; another memo under the same id is a conflict")
+    -- a record an older build wrote: the memo text itself, no digest
+    rec.meta.memo, rec.meta.memoHash = "fare", nil
+    Tr.init(S.modData())
+    local resend = send(ann, "xf-cat", 100, 5, { memo = "fare", requestId = "pay-1" })
+    check(rec.meta.memo == nil and type(rec.meta.memoHash) == "string" and resend.duplicate == true and resend.txId == ok1.txId
+        and refused(send(ann, "xf-cat", 100, 5, { memo = "farf", requestId = "pay-1" }), "request_conflict", s1),
+        "an older record's memo becomes a digest at load: its resend is a duplicate, another memo still a conflict")
+end
 
 -- 5. 拒絕全都零變更
 check(refused(send(ann, "xf-ann", 10, 1), "self_transfer", s1), "sending to yourself is refused")
@@ -15592,6 +15641,18 @@ check(again.ok and again.duplicate == true and again.txId == rent.txId and state
         { account = "MOD:XferMod", currency = "survivor", amount = 1 } } }).error == "request_conflict"
     and state() == s8,
     "the top-level E.transfer resends idempotently; the same id for another amount or a post is a conflict")
+do
+    local function holds(t, needle, depth)
+        if type(t) == "string" then return string.find(t, needle, 1, true) ~= nil end
+        if type(t) ~= "table" or depth > 12 then return false end
+        for k, v in pairs(t) do
+            if holds(k, needle, depth + 1) or holds(v, needle, depth + 1) then return true end
+        end
+        return false
+    end
+    check(not holds(S.modData(), "fare", 0) and not holds(S.modData(), "week 1", 0),
+        "no transfer memo and no API reasonText anywhere in the economy's Global ModData")
+end
 check(src.transfer("xf-ann", "xf-iced", "survivor", 10, { requestId = "rent-2", reasonCode = "rent" }).error == "recipient_frozen"
     and src.transfer("xf-ghost", "xf-ann", "survivor", 10, { requestId = "rent-3", reasonCode = "rent" }).error == "account_too_new"
     and src.transfer("xf-ann", "xf-ann", "survivor", 10, { requestId = "rent-4", reasonCode = "rent" }).error == "self_transfer"
@@ -20066,6 +20127,168 @@ ItemTag = nil
 onlinePlayers = {}
 end)()
 
+-- VN: the names vanilla gives an item when it is made (a magazine's title, a schematic's recipe,
+-- an owner on a badge, a newspaper's issue) travel as s.title, apart from a MOD's label, and come
+-- back on the rebuilt copy; names that follow the item's state stay unstored.
+io.write("scenario VN: vanilla's generated names survive the market\n")
+;(function()
+local Codec = S.Codec
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+knownItems["VN.Magazine"] = { w = 0.2, cat = "Literature", main = "Literature" }
+knownItems["VN.Schematic"] = { w = 0.1, cat = "RecipeResource", main = "Literature" }
+knownItems["VN.RecipeMag"] = { w = 0.1, cat = "RecipeResource", main = "Literature" }
+knownItems["VN.Newspaper"] = { w = 0.1, cat = "Literature", main = "Literature" }
+knownItems["VN.Badge"] = { w = 0.1, cat = "Household", main = "Normal" }
+knownItems["VN.Key"] = { w = 0.1, cat = "Household", main = "Item", itemType = "KEY" }
+ItemTag = { KEY_RING = { name = "KeyRing" }, APPLY_OWNER_NAME = { name = "ApplyOwnerName" }, MONOGRAM_OWNER_NAME = { name = "MonogramOwnerName" } }
+local function recipeList(names)
+    local list = ArrayList.new()
+    for _, n in ipairs(names) do list:add(n) end
+    return list
+end
+-- a script that teaches its own recipes (a recipe magazine's TeachedRecipes)
+local realFind = ScriptManager.instance.FindItem
+ScriptManager.instance.FindItem = function(self, name)
+    local s = realFind(self, name)
+    if s and name == "VN.RecipeMag" then s.getLearnedRecipes = function() return recipeList({ "MakeStew" }) end end
+    return s
+end
+-- each copy rolls its own title at creation, the way ItemCodeOnCreate does; an instance without a
+-- list of its own answers its script's (Literature.getLearnedRecipes, Literature.java:532-543)
+local rolls = 0
+local ONCREATE = {
+    ["VN.Magazine"] = function(it) it:setName("VN.Magazine: Fishing Weekly #" .. rolls) end,
+    ["VN.Schematic"] = function(it)
+        it:setLearnedRecipes(recipeList({ "MakeSpear" .. rolls }))
+        it:setName("VN.Schematic: MakeSpear" .. rolls)
+    end,
+    ["VN.RecipeMag"] = function(it) it.modData.literatureTitle = "VN.RecipeMag" end,
+}
+local realInstance = instanceItem
+instanceItem = function(fullType)
+    local it = realInstance(fullType)
+    if it == nil or string.sub(fullType, 1, 3) ~= "VN." then return it end
+    if knownItems[fullType].main == "Literature" then
+        it.getLearnedRecipes = function()
+            if it.learned then return it.learned end
+            local script = it.getScriptItem()
+            return script.getLearnedRecipes and script.getLearnedRecipes() or nil
+        end
+        it.setLearnedRecipes = function(_, list) it.learned = list end
+    end
+    if fullType == "VN.Badge" then it.hasTag = function(_, t) return t == ItemTag.APPLY_OWNER_NAME end end
+    if ONCREATE[fullType] then
+        rolls = rolls + 1
+        it.getLuaCreate = function() return "ItemCodeOnCreate.onCreate" .. fullType end
+        ONCREATE[fullType](it)
+    end
+    return it
+end
+local boss = fakePlayer("vn-admin"); boss.role = "admin"
+local seller = fakePlayer("vn-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+local buyer = fakePlayer("vn-buyer"); buyer.x, buyer.y = 101, 200; buyer.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller, buyer }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("vn-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "vn-seed-s", reasonCode = "t" })
+L.credit("vn-buyer", "survivor", 500, "SYSTEM_MINT", { requestId = "vn-seed-b", reasonCode = "t" })
+local function held(fullType, name)
+    local it = instanceItem(fullType)
+    if name then it:setName(name) end
+    seller.inventory:AddItem(it)
+    return it
+end
+local mag = held("VN.Magazine")
+local magName = mag.name
+local snap = Codec.snapshot(mag)
+local back = Codec.rebuild(snap)
+check(snap.title == magName and snap.label == nil and snap.name == nil and back.name == magName and back.customName == false,
+    "VN-1: a title rolled by the script's OnCreate is kept apart from a label and comes back on the rebuilt copy, not marked as renamed")
+local badge = held("VN.Badge", "VN.Badge: Alyson Doty")
+local paper = held("VN.Newspaper", "Knox Knews, July 7 1993")
+local bs, ps = Codec.snapshot(badge), Codec.snapshot(paper)
+check(bs.title == "VN.Badge: Alyson Doty" and Codec.rebuild(bs).name == "VN.Badge: Alyson Doty" and bs.label == nil
+    and ps.title == "Knox Knews, July 7 1993" and Codec.rebuild(ps).name == "Knox Knews, July 7 1993",
+    "VN-2: an owner's name on a badge and a newspaper named by its recipe travel as titles too")
+local function stored(fullType, mutate)
+    local it = instanceItem(fullType); it:setName("Vanilla name")
+    if mutate then mutate(it) end
+    local s = Codec.snapshot(it)
+    return s.title or s.label
+end
+local kept = {}
+for k, v in pairs({ food = stored("Base.CannedCorn"), key = stored("VN.Key"), furniture = stored("Base.Mov_Chair"),
+    radio = stored("Base.RadioRed"),
+    media = stored("Base.Rope", function(it) it.getRecordedMediaIndex = function() return 3 end end),
+    keyRing = stored("Base.Rope", function(it) it.hasTag = function(_, t) return t == ItemTag.KEY_RING end end) }) do
+    kept[#kept + 1] = k
+end
+check(#kept == 0, "VN-3: names that follow the item's state (food, keys, furniture, radios, recorded media, key rings) are still not stored (kept: " .. table.concat(kept, ",") .. ")")
+local mod = Codec.snapshot(held("Base.Rope", "KFC reward box"))
+check(mod.label == "KFC reward box" and mod.title == nil and Codec.preview(mod).name == "KFC reward box" and Codec.preview(mod).title == nil,
+    "VN-4: another MOD's setName-only name is still a label, shown as before")
+local mp, bp, pp = Codec.preview(snap), Codec.preview(bs), Codec.preview(ps)
+check(mp.title == string.sub(magName, #"VN.Magazine: " + 1) and mp.name == nil and bp.title == "Alyson Doty"
+    and pp.title == "Knox Knews, July 7 1993",
+    "VN-5: the buyer's preview carries the title without the type name it starts with, and a title that does not start with it whole")
+local mag2 = held("VN.Magazine")
+local magRows = 0
+for _, r in ipairs(cmd(seller, "market.candidates").items or {}) do
+    if r.item == "VN.Magazine" then magRows = magRows + 1 end
+end
+local mixed = cmd(seller, "market.list", { itemIds = { mag.id, mag2.id }, price = 30 })
+check(Codec.signature(snap) ~= Codec.signature(Codec.snapshot(mag2)) and magRows == 2 and mixed.error == "mixed_items",
+    "VN-6: copies with different titles never merge: one picker row each, and a mixed lot is refused")
+local okMag = Codec.isCanonical(instanceItem("VN.Magazine"), "VN.Magazine")
+local okSch = Codec.isCanonical(instanceItem("VN.Schematic"), "VN.Schematic")
+local renamed = instanceItem("VN.Magazine"); renamed:setName("Mine"); renamed:setCustomName(true)
+local okRen, why = Codec.isCanonical(renamed, "VN.Magazine")
+check(okMag == true and okSch == true and okRen == false and why == "renamed",
+    "VN-7: the buyback still takes a factory-fresh magazine or schematic whatever it rolled, and still refuses a renamed one")
+local sch = held("VN.Schematic")
+local ss = Codec.snapshot(sch)
+local sb = Codec.rebuild(ss)
+local learned = sb:getLearnedRecipes()
+local rm = Codec.snapshot(instanceItem("VN.RecipeMag"))
+check(type(ss.recipes) == "table" and #ss.recipes == 1 and ss.recipes[1] == sch.learned:get(0)
+    and learned:size() == 1 and learned:get(0) == ss.recipes[1] and sb.name == sch.name and ss.title == sch.name
+    and rm.recipes == nil,
+    "VN-8: a schematic's own recipe travels with the title naming it; a magazine teaching its script's recipes stores none")
+local many = instanceItem("VN.Schematic")
+local names = {}
+for i = 1, Codec.RECIPES_MAX + 1 do names[i] = "R" .. i end
+many:setLearnedRecipes(recipeList(names))
+local okMany, whyMany = Codec.stateCheck(many)
+names[#names] = nil
+many:setLearnedRecipes(recipeList(names))
+check(okMany == false and whyMany == "moddata_too_big" and Codec.stateCheck(many) == true,
+    "VN-9: more recipes than a snapshot carries is refused, not dropped; up to the cap passes")
+local listed = cmd(seller, "market.list", { itemIds = { mag.id }, price = 30 })
+local row = nil
+for _, r in ipairs(cmd(buyer, "market.browse", { sort = "time" }).items or {}) do if r.id == listed.listingId then row = r end end
+local bought = cmd(buyer, "market.buy", { listingId = listed.listingId, price = 30 })
+local got = nil
+for _, it in ipairs(buyer.inventory.items) do if it.fullType == "VN.Magazine" then got = it end end
+check(listed.ok == true and row and row.state and row.state.title == mp.title and row.name ~= magName and bought.ok == true
+    and got and got.name == magName and got.customName == false,
+    "VN-10: the buyer sees the title on a listing filed under the item's own name and receives the magazine under its original title")
+instanceItem, ScriptManager.instance.FindItem = realInstance, realFind
+ItemTag = nil
+onlinePlayers = {}
+end)()
+
 -- ===== 情境 TX：玩家端與共用文字函式不把代碼放上畫面 =====
 -- The client helpers every page words a code with (ECWidgets, ECPanelWidgets), loaded against the
 -- real four translation files: a known code reads as its sentence and never with the code beside
@@ -20193,6 +20416,13 @@ for lang, d in pairs(dicts) do
     end
 end
 check(#withArg == 0, "TX-5: no generic fallback sentence has a slot a code could be put into (" .. table.concat(withArg, ", ") .. ")")
+-- VN-11: a title vanilla gave the item follows the type's own name in brackets (Market_Titled);
+-- no title, or no preview at all, leaves the name as it was
+check(call(W.titledName, "\233\155\156\232\170\140", { title = "Fishing Weekly #3" }) == "\233\155\156\232\170\140\239\188\136Fishing Weekly #3\239\188\137"
+    and call(W.titledName, "\233\155\156\232\170\140", { cond = 3 }) == "\233\155\156\232\170\140"
+    and call(W.titledName, "\233\155\156\232\170\140", nil) == "\233\155\156\232\170\140"
+    and dicts.EN[T .. "Market_Titled"] == "%1 (%2)",
+    "VN-11: the item type's name with the original title in brackets (CH full-width, EN plain), unchanged without one")
 require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
 ISButton, ISPanel = saved.ISButton, saved.ISPanel
 end)()
@@ -20684,7 +20914,7 @@ check(F and F.docked == true and #regs == 1 and buttons == 0 and layouts == 0 an
 local C = EC.Client
 local idle = spec and spec.getBadge() == 0 and spec.getStatus() == nil
 C.unclaimed = 3.6
-check(idle and spec.getBadge() == 3 and spec.getStatus() == "3 item(s) waiting in your mailbox",
+check(idle and spec.getBadge() == 3 and spec.getStatus() == "Mailbox: 3 waiting",
     "DK-2: the badge counts the mail waiting and the status says so; nothing pending shows neither")
 local closed = spec and spec.isActive() == false
 C.Panel.window = { visible = true, getIsVisible = function(self) return self.visible end }
@@ -21371,7 +21601,7 @@ do
     else
         run({ check = check, fire = fire, fakePlayer = fakePlayer, lastSent = lastSent,
             now = function() return nowMs end, setNow = function(v) nowMs = v end,
-            clearFiles = function() files = {} end, clearSent = function() sentCommands = {} end,
+            files = function() return files end, clearFiles = function() files = {} end, clearSent = function() sentCommands = {} end,
             sent = function() return sentCommands end, setOnline = function(list) onlinePlayers = list end,
             store = function() return modDataStore end })
     end

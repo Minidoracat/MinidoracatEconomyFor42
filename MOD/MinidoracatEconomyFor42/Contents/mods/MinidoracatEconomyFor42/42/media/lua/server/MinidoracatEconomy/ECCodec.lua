@@ -71,6 +71,8 @@ Codec.LABEL_MAX = 256
 -- spices, and ingredients added to a dish, a food may carry each (the journal packs a whole
 -- snapshot in 128 values; vanilla recipes take at most 6 ingredients, MaxItems in evolvedrecipes.txt)
 Codec.SPICES_MAX = 16
+-- recipes a copy teaches of its own (a schematic rolls up to 5, ItemCodeOnCreate.java:388-405)
+Codec.RECIPES_MAX = 16
 Codec.FILE_LINES_MAX = 5000
 Codec.FIELDS = { "categories", "types", "excludeTypes" }
 Codec.DEFAULT = {
@@ -296,6 +298,30 @@ local function fluidOf(item)
     end)
     if ok and type(info) == "table" then return info end
     return nil
+end
+
+-- The recipes a copy teaches when they are its own and not its script's: a schematic or a recipe
+-- clipping rolls them at creation and names itself after a single one (ItemCodeOnCreate.java:352-405),
+-- and Literature.save keeps them (Literature.java:311-317); a fresh copy would roll others.
+-- A list, nil when the copy has none of its own, false when it is more than a snapshot carries.
+local function ownRecipes(item)
+    local list = call(item, "getLearnedRecipes")
+    local n = list and call(list, "size") or 0
+    if n == 0 then return nil end
+    local script = call(item, "getScriptItem")
+    local base = script and call(script, "getLearnedRecipes")
+    local out, same = {}, base ~= nil and call(base, "size") == n
+    for i = 0, n - 1 do
+        local r = call(list, "get", i)
+        out[i + 1] = r
+        if same and call(base, "get", i) ~= r then same = false end
+    end
+    if same then return nil end
+    if n > Codec.RECIPES_MAX then return false end
+    for i = 1, n do
+        if type(out[i]) ~= "string" or #out[i] > Codec.MODDATA_STRING_MAX then return false end
+    end
+    return out
 end
 
 -- Sandbox FoodRotSpeed -> the multiplier Food.getFoodRotSpeed() applies (Food.java:724-732; the
@@ -542,6 +568,7 @@ function Codec.stateCheck(item)
     if call(item, "isRotten") == true then return false, "perishable" end
     local md = call(item, "getModData")
     if type(md) == "table" and copyModData(md, 0, 0) == nil then return false, "moddata_too_big" end
+    if ownRecipes(item) == false then return false, "moddata_too_big" end
     -- Refused, not dropped: pages of up to 16 384 characters and their lock, applied poison and an
     -- egg's genome would all vanish in the rebuild; so would spices or ingredients past what a
     -- snapshot carries.
@@ -638,7 +665,12 @@ local canonical = {}
 local FOOD_PORTION = { "hunger", "calories", "proteins", "lipids", "carbs" }
 local function canonicalCopy(s)
     local copy = {}
-    for k, v in pairs(s) do if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" and k ~= "label" then copy[k] = v end end
+    -- a title and a schematic's recipes are rolled for every new copy, like a look or an alarm
+    for k, v in pairs(s) do
+        if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" and k ~= "label" and k ~= "title" and k ~= "recipes" then
+            copy[k] = v
+        end
+    end
     if type(s.food) == "table" then
         local portion = {}
         for _, key in ipairs(FOOD_PORTION) do portion[key] = s.food[key] end
@@ -683,45 +715,53 @@ function Codec.isCanonical(item, fullType, allowName)
     return false, "other"
 end
 
--- A name another MOD gave with setName alone (no setCustomName; Delirium Loot Box's boxes,
--- DLB_Server.lua:342-349) is kept apart from a player's custom name: s.label, rebuilt with
--- setName only. Vanilla names some items by itself the same way, from their state or the world,
--- and none of those is a label (42.21 engine and vanilla Lua searched 2026-10-09):
---   a script OnCreate (Item.java:1915-1918 -> InventoryItem.initialiseItem :4264-4271): book and
---     magazine titles, newspapers, fliers, photos, ID cards, lockets, fish, chum, fishing rods
---     (ItemCodeOnCreate.java, fishing_properties.lua); a fresh copy already rolls its own
+-- A name given with setName alone (no setCustomName) is kept apart from a player's custom name
+-- and rebuilt with setName only, in one of two fields (42.21 engine and vanilla Lua searched
+-- 2026-10-09 / 2026-10-10):
+--   s.title: one vanilla gave the item when it was made, a string nothing else on the item
+--     derives - a script OnCreate (Item.java:1915-1918 -> InventoryItem.initialiseItem :4264-4271:
+--     book, magazine, comic and newspaper titles, fliers, photos, postcards, lockets, ID badges,
+--     dog tags, business cards, schematics, ItemCodeOnCreate.java), a literature item named by a
+--     recipe or a story (newspapers and scratch tickets, RecipeCodeHelper.java:52, 241; RBTwiggy.java:44),
+--     an owner's name on an ID, a dog tag or a monogram (InventoryItem.java:4976-4990). The
+--     rebuild runs OnCreate again and rolls another, so the stored one is written back over it.
+--   s.label: any other, another MOD's (Delirium Loot Box's boxes, DLB_Server.lua:342-349).
+-- Neither is stored for a name that follows the item's state, which the rebuild gives it anew:
 --   recorded media: setRecordedMediaIndex names a disc or tape after its content (:4178-4191)
 --   food: dishes and evolved recipes (EvolvedRecipe.java:489, ISAddItemInRecipe.lua:75-215),
 --     bowls, muffins, coffee (RecipeCodeOnCreate.java:71, 185-197, 349), foraged wild food
---     (forageSystem.lua:2270), the herbalist's berries (ISInventoryPane.lua:2101-2118)
---   literature: newspapers and scratch tickets (RecipeCodeHelper.java:52, 241,
---     RecipeCodeOnCreate.java:887), a story's document (RBTwiggy.java:44)
+--     (forageSystem.lua:2270), the herbalist's berries (ISInventoryPane.lua:2101-2118), a fish's
+--     size (fishing_properties.lua:709-765)
 --   keys and key rings: the building, the car, the owner (ItemPickerJava.java:2366-2367,
 --     BaseVehicle.java:10751, IsoGameCharacter.java:11489)
 --   furniture and radios: the name comes from the sprite (Moveable.java:111-174) and
 --     getDisplayName adds the switched-on prefix (:61-79)
---   an owner's name on an ID, a dog tag or a monogram (InventoryItem.java:4976-4990, from
---     IsoZombie, IsoDeadBody, ItemPickerJava and the randomized buildings)
--- Animals and maps are never listed (EC.LISTING_FIXED_TYPES).
-local AUTO_NAMED_TYPES = { "FOOD", "LITERATURE", "KEY", "KEY_RING", "MOVEABLE", "RADIO" }
-local AUTO_NAMED_TAGS = { "KEY_RING", "APPLY_OWNER_NAME", "MONOGRAM_OWNER_NAME" }
-local function labelOf(item)
+-- Animals and maps are never listed (EC.LISTING_FIXED_TYPES). Returns name, given-by-vanilla.
+local STATE_NAMED_TYPES = { "FOOD", "KEY", "KEY_RING", "MOVEABLE", "RADIO" }
+local OWNER_TAGS = { "APPLY_OWNER_NAME", "MONOGRAM_OWNER_NAME" }
+local function isType(script, n)
+    local t = ItemType and ItemType[n]
+    return t ~= nil and call(script, "isItemType", t) == true
+end
+local function hasTag(item, n)
+    local t = ItemTag and ItemTag[n]
+    return t ~= nil and call(item, "hasTag", t) == true
+end
+local function givenName(item)
     local script = call(item, "getScriptItem")
-    if script == nil or call(item, "getLuaCreate") ~= nil then return nil end
+    if script == nil then return nil end
     local media = call(item, "getRecordedMediaIndex")
     if type(media) == "number" and media >= 0 then return nil end
-    for _, n in ipairs(AUTO_NAMED_TYPES) do
-        local t = ItemType and ItemType[n]
-        if t ~= nil and call(script, "isItemType", t) == true then return nil end
+    for _, n in ipairs(STATE_NAMED_TYPES) do
+        if isType(script, n) then return nil end
     end
-    for _, n in ipairs(AUTO_NAMED_TAGS) do
-        local t = ItemTag and ItemTag[n]
-        if t ~= nil and call(item, "hasTag", t) == true then return nil end
-    end
+    if hasTag(item, "KEY_RING") then return nil end
     local name = call(item, "getDisplayName")
     if type(name) ~= "string" or name == "" or #name > Codec.LABEL_MAX then return nil end
     if name == call(script, "getDisplayName") then return nil end
-    return name
+    local vanilla = call(item, "getLuaCreate") ~= nil or isType(script, "LITERATURE")
+    for _, n in ipairs(OWNER_TAGS) do vanilla = vanilla or hasTag(item, n) end
+    return name, vanilla
 end
 
 -- Bounded snapshot; call after Codec.check passed. Food keeps its edible state and the world
@@ -742,8 +782,10 @@ function Codec.snapshot(item)
         local name = call(item, "getDisplayName")
         if type(name) == "string" and name ~= "" and #name <= Codec.MODDATA_STRING_MAX then s.name = name end
     else
-        s.label = labelOf(item)
+        local name, vanilla = givenName(item)
+        if vanilla then s.title = name else s.label = name end
     end
+    s.recipes = ownRecipes(item) or nil
     if call(item, "getCategory") == "Food" then
         -- raw values: the plain getters add the burnt / stale / cooked modifiers, and writing those
         -- back would apply them a second time
@@ -1078,8 +1120,15 @@ function Codec.rebuild(s)
         call(item, "setName", s.name)
         call(item, "setCustomName", true)
     end
-    -- another MOD's name, not the player's: no custom flag (Codec.snapshot, labelOf)
+    -- a name given with setName alone, not the player's: no custom flag (Codec.snapshot, givenName);
+    -- a title goes over the one OnCreate just rolled for this copy
     if type(s.label) == "string" then call(item, "setName", s.label) end
+    if type(s.title) == "string" then call(item, "setName", s.title) end
+    if type(s.recipes) == "table" and ArrayList then
+        local list = ArrayList.new()
+        for _, r in ipairs(s.recipes) do list:add(r) end
+        call(item, "setLearnedRecipes", list)
+    end
     if type(s.device) == "table" then
         local dev = call(item, "getDeviceData")
         local d = s.device
@@ -1153,6 +1202,8 @@ local function maximaOf(s)
         if fc then m.fluidCap = call(fc, "getCapacity") end
         local dev = call(fresh, "getDeviceData")
         m.battery = dev ~= nil and call(dev, "getIsBatteryPowered") == true
+        local script = call(fresh, "getScriptItem")
+        m.base = script and call(script, "getDisplayName")
     end
     maxima[fullType] = m
     return m
@@ -1198,6 +1249,15 @@ function Codec.preview(s)
     if s.keyId ~= nil then p.keyed = true end
     if s.remote ~= nil then p.paired = true end
     if type(s.name) == "string" then p.name = s.name elseif type(s.label) == "string" then p.name = s.label end
+    -- the client writes a title after the type's own name, so a leading "<type name>: " goes
+    -- ("Badge: Alyson Doty" -> "Alyson Doty"); a title in any other shape stays whole
+    if type(s.title) == "string" then
+        local t, base = s.title, m.base
+        if type(base) == "string" and base ~= "" and #t > #base + 2 and string.sub(t, 1, #base + 2) == base .. ": " then
+            t = string.sub(t, #base + 3)
+        end
+        p.title = t
+    end
     if type(s.dish) == "table" and type(s.dish.items) == "table" and #s.dish.items > 0 then p.ingredients = s.dish.items end
     local food = s.food
     if type(food) == "table" then
