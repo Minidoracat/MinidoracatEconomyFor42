@@ -6264,8 +6264,13 @@ end
 
 function Admin:rebuildReceipts()
     local rows = {}
-    -- receipt file lines (delta / availableAfter) once they arrived, else the ring (amount / after)
-    local src = self.lookupFile or (self.lookup and self.lookup.receipts) or {}
+    -- receipt file lines (delta / availableAfter) once they arrived, else the ring (amount / after);
+    -- the reserved bucket's mirror lines are left out, as on the player's own statement
+    -- (W.isMirrorLine); the transaction page still shows every posting
+    local src = {}
+    for _, e in ipairs(self.lookupFile or (self.lookup and self.lookup.receipts) or {}) do
+        if not C.PanelWidgets.isMirrorLine(e) then src[#src + 1] = e end
+    end
     local chipH = math.max(20, fontH.small + 6)
     local geo = receiptActionGeo(math.max(120, self.receiptList.width - 12), chipH,
         math.max(2, math.floor((self.receiptList.rowHeight - chipH) / 2)))
@@ -6709,7 +6714,7 @@ function Admin:listingRow(l, geo, lh, rowHeight)
     item.metaText = fitText(meta, item.textW)
     local detail = name
     local alt = itemBaseName(l.item)
-    if alt then detail = detail .. "  (" .. alt .. ")" end
+    if alt then detail = getText(T .. "Paren", detail, alt) end
     item.detailText = detail .. "\n" .. tostring(l.item or "-") .. "\n" .. meta
         .. "\n" .. getText(T .. "Admin_Lst_DetailPrice", amountText(l.price))
         .. "\n" .. getText(T .. "Admin_Lst_DetailId", tostring(l.id or "-"))
@@ -6759,7 +6764,7 @@ function Admin:auctionRow(a, geo, lh, rowHeight, now)
     item.metaText = fitText(meta, item.textW)
     local detail = label
     local alt = itemBaseName(a.item)
-    if alt then detail = detail .. "  (" .. alt .. ")" end
+    if alt then detail = getText(T .. "Paren", detail, alt) end
     detail = detail .. "\n" .. tostring(a.item or "-") .. "\n" .. meta
         .. "\n" .. getText(T .. "Admin_Auc_DetailStart", amountText(a.startPrice))
     if bid then

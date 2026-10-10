@@ -1125,7 +1125,7 @@ end
 
 local function normalize(e, offsetMin)
     local amount = tonumber(e.amount or e.delta) or 0
-    local cp = e.counterparty
+    local cp = W.otherParty(e.counterparty)
     local cpClass = type(cp) == "string" and EC.accountClass(cp) or nil
     local desc = "-"
     local kind = e.kind or e.type
@@ -1186,9 +1186,12 @@ local function normalize(e, offsetMin)
     }
 end
 
+-- The period's lines, newest first, without the reserved bucket's mirrors (W.isMirrorLine).
 local function newestFirst(src, offsetMin)
     local out = {}
-    for i = #src, 1, -1 do out[#out + 1] = normalize(src[i], offsetMin) end
+    for i = #src, 1, -1 do
+        if not W.isMirrorLine(src[i]) then out[#out + 1] = normalize(src[i], offsetMin) end
+    end
     return out
 end
 
@@ -1280,11 +1283,10 @@ function Panel:updateMonthTotals(history)
         or (first ~= nil and EC.monthKey(tonumber(first.ts) or 0) ~= month)
     self.monthLoaded = month
     for _, e in ipairs(entries) do
-        -- the recent window spans two months: only this month's lines count. A line that left the
-        -- spendable balance as it was is the reserved bucket's mirror of a bid hold or a refund:
-        -- the spendable side of the same transaction is what counts as money in or out.
-        local mirror = e.availableBefore ~= nil and e.availableBefore == e.availableAfter
-        if e.rolledBack ~= true and not mirror and EC.monthKey(tonumber(e.ts) or 0) == month then
+        -- the recent window spans two months: only this month's lines count, and a mirror line
+        -- (W.isMirrorLine) never does: the spendable side of the same transaction is what
+        -- counts as money in or out.
+        if e.rolledBack ~= true and not W.isMirrorLine(e) and EC.monthKey(tonumber(e.ts) or 0) == month then
             local t = totals[e.currency]
             if not t then t = { inn = 0, out = 0, byIn = {}, byOut = {} }; totals[e.currency] = t end
             local d = tonumber(e.delta or e.amount) or 0

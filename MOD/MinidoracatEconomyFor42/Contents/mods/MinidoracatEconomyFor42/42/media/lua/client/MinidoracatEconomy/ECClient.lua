@@ -1155,8 +1155,9 @@ local function moveableLabel(sprite)
     pcall(function()
         local grid = spr:getSpriteGrid()
         if grid == nil then return end
-        if spr:getProperties():has("ForceSingleItem") then name = name .. " (1/1)"
-        else name = name .. " (" .. tostring(grid:getSpriteIndex(spr) + 1) .. "/" .. tostring(grid:getSpriteCount()) .. ")" end
+        local part = spr:getProperties():has("ForceSingleItem") and "1/1"
+            or (tostring(grid:getSpriteIndex(spr) + 1) .. "/" .. tostring(grid:getSpriteCount()))
+        name = getText("IGUI_MinidoracatEconomy_Paren", name, part)
     end)
     return name
 end

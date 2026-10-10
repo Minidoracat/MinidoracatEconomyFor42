@@ -369,6 +369,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "クラッシュ後にオークションを復元",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "重複品を回収",
   "IGUI_MinidoracatEconomy_Market_Titled": "%1（%2）",
+  "IGUI_MinidoracatEconomy_Paren": "%1（%2）",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "これらのアイテムは状態が異なるため1件にまとめられません。別々に出品してください",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "このオークションは存在しません。一覧を更新してください",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "自分の出品には入札できません",

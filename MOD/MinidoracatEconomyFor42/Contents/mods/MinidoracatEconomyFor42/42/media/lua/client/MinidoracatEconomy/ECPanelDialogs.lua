@@ -1073,21 +1073,21 @@ function MarketDialog:summaryLines()
         -- the candidate's detail line already starts with "name (alias)"
         if cand.detailText and cand.detailText ~= "" then out[#out + 1] = cand.detailText
         elseif cand.altName and cand.altName ~= cand.name then out[#out + 1] = cand.altName end
-        -- each value carries its allowed range in brackets: one label, one meaning
+        -- each value carries its allowed range in brackets (Paren: full-width in CH/CN/JP): one
+        -- label, one meaning
         local qtyText = tostring(self:qtyValue() or 0)
-        if count > 1 then qtyText = qtyText .. " (" .. getText(T .. "Market_QtyHint", tostring(count), tostring(count)) .. ")" end
+        if count > 1 then qtyText = getText(T .. "Paren", qtyText, getText(T .. "Market_QtyHint", tostring(count), tostring(count))) end
         out[#out + 1] = detailLine("Market_Qty", qtyText)
         local range = getText(T .. "Market_PriceHint", amountText(info.priceMin), amountText(info.priceMax))
         out[#out + 1] = detailLine(mode == "auction" and "Auction_StartPrice" or "Market_Price",
-            amountText(price) .. " " .. cur .. " (" .. range .. ")")
+            getText(T .. "Paren", amountText(price) .. " " .. cur, range))
         out[#out + 1] = detailLine("Shop_AfterBalance",
             amountText(self:available() - listingFee(price, info.feePercent)) .. " " .. cur)
         if mode == "auction" then
             local hours = panel.auctionInfo or {}
             out[#out + 1] = detailLine("Auction_Duration",
-                (self.hours and getText(T .. "Auction_Hours", tostring(self.hours)) or "-")
-                .. " (" .. getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0),
-                    tostring(hours.maxHours or 0)) .. ")")
+                getText(T .. "Paren", self.hours and getText(T .. "Auction_Hours", tostring(self.hours)) or "-",
+                    getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0), tostring(hours.maxHours or 0))))
             out[#out + 1] = detailLine("Market_Fee", amountText(listingFee(price, info.feePercent)) .. " " .. cur)
         else
             out[#out + 1] = detailLine("Market_Fee", amountText(listingFee(price, info.feePercent)) .. " " .. cur)

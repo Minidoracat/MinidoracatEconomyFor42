@@ -369,6 +369,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Aukcja odbudowana po awarii",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Odebrano duplikat",
   "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
+  "IGUI_MinidoracatEconomy_Paren": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "Te przedmioty nie są identyczne i nie można ich wystawić jako jednej partii: wystaw je osobno",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "Ta aukcja już nie istnieje: odśwież listę",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "Nie możesz licytować własnej aukcji",

@@ -1747,7 +1747,7 @@ function Page:txSummaryText(e)
     pair(tr("Admin_Tx_Amount"), txAmountText(e.amounts))
     pair(tr("Admin_Tx_Account"), txAccountsText(e.accounts))
     if type(e.item) == "string" and e.item ~= "" then
-        local label = itemName(e.item) .. "  (" .. e.item .. ")"
+        local label = getText(T .. "Paren", itemName(e.item), e.item)
         local qty = tonumber(e.qty)
         if qty ~= nil and qty > 1 then
             label = label .. "  " .. getText(T .. "Market_Lot", tostring(math.floor(qty)))
@@ -1820,7 +1820,7 @@ function Page:txRecordText(d)
         if d[key] ~= nil then out[#out + 1] = getText(T .. "Admin_Tx_Ref_" .. key, tostring(d[key])) end
     end
     if type(d.item) == "string" and d.item ~= "" then
-        local label = itemName(d.item) .. "  (" .. d.item .. ")"
+        local label = getText(T .. "Paren", itemName(d.item), d.item)
         local qty = math.floor(tonumber(d.qty) or 0)
         if qty > 1 then label = label .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
         pair(tr("Admin_Tx_Field_Item"), label)

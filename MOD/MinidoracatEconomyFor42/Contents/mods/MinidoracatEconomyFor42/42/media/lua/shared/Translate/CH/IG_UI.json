@@ -369,6 +369,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "拍賣崩潰後自動重建",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "收回重複物品",
   "IGUI_MinidoracatEconomy_Market_Titled": "%1（%2）",
+  "IGUI_MinidoracatEconomy_Paren": "%1（%2）",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "這些物品狀態不同，不能合併成一筆刊登：請分開刊登",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "這場拍賣已不存在：請重新整理清單",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "不能對自己的拍賣出價",

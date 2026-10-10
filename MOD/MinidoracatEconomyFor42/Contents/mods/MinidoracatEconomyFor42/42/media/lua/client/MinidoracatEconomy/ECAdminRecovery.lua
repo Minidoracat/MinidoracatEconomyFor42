@@ -1282,7 +1282,7 @@ end
 function Page:accountLines()
     local lines = {}
     for _, account in ipairs(self.snapshot and self.snapshot.accounts or {}) do
-        local name = tostring(account.username) .. " (" .. tr(account.online and "Admin_Player_Online" or "Admin_Player_Offline") .. ")"
+        local name = getText(T .. "Paren", tostring(account.username), tr(account.online and "Admin_Player_Online" or "Admin_Player_Offline"))
         lines[#lines + 1] = getText(T .. "Admin_Rec_AccountLine", name, tostring(account.held or 0),
             account.open ~= nil and tostring(account.open) or tr("Admin_Rec_QuantityUnknown"))
     end
@@ -1453,7 +1453,7 @@ function Page:previewLines(rec)
     if item ~= nil then
         local name = itemName(item)
         out[#out + 1] = getText(T .. "Admin_Rec_PreviewItem",
-            (name == item) and item or (name .. "  (" .. item .. ")"))
+            (name == item) and item or getText(T .. "Paren", name, item))
     else
         out[#out + 1] = getText(T .. "Admin_Rec_PreviewItem", tr("Admin_Rec_PreviewMissing"))
     end
@@ -1590,7 +1590,7 @@ function Page:recordText(rec, user)
     local item = str(rec.item)
     if item then
         local name = itemName(item)
-        lines[#lines + 1] = (name == item) and item or (name .. "  (" .. item .. ")")
+        lines[#lines + 1] = (name == item) and item or getText(T .. "Paren", name, item)
     end
     local qty, present = intOf(rec.qty), intOf(rec.presentQty)
     if qty ~= nil then lines[#lines + 1] = getText(T .. "Admin_Rec_DQty", amountText(qty)) end

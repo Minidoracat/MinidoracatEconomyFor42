@@ -726,7 +726,7 @@ function Page:rebuildCats()
         local seen = {}
         for _, e in ipairs(picked) do seen[e.label] = (seen[e.label] or 0) + 1 end
         for _, e in ipairs(picked) do
-            if seen[e.label] > 1 then e.label = e.label .. " (" .. e.cat .. ")" end
+            if seen[e.label] > 1 then e.label = getText(T .. "Paren", e.label, e.cat) end
         end
         EC.sortSafe(picked, function(a, b) return a.label < b.label end)
         self.catMatched = #picked

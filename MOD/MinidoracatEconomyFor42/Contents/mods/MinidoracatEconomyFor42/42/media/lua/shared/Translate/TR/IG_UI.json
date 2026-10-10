@@ -369,6 +369,7 @@
   "IGUI_MinidoracatEconomy_Market_Kind_auction_restored": "Açık artırma çökme sonrası yeniden oluşturuldu",
   "IGUI_MinidoracatEconomy_Market_Kind_reclaimed": "Kopya geri alındı",
   "IGUI_MinidoracatEconomy_Market_Titled": "%1 (%2)",
+  "IGUI_MinidoracatEconomy_Paren": "%1 (%2)",
   "IGUI_MinidoracatEconomy_Market_Error_mixed_items": "Bu eşyalar özdeş değil ve tek parti olarak ilana konamaz: ayrı ayrı ilana koyun",
   "IGUI_MinidoracatEconomy_Market_Error_unknown_auction": "Bu açık artırma artık yok: listeyi yenileyin",
   "IGUI_MinidoracatEconomy_Market_Error_own_auction": "Kendi açık artırmanıza teklif veremezsiniz",

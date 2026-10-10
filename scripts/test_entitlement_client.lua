@@ -631,6 +631,18 @@ end)()
         "admin record: a raise and an asking price met are prices per unit and say so")
     check(W.recordAmountText({ kind = "sold", price = 40 }) == "40" and W.recordAmountText({ kind = "expired" }) == nil,
         "admin record: every other record keeps its gross price; a record with none has no amount")
+    -- the statement: a reserved-bucket mirror line is not a line; a ring line or an older file
+    -- line (no availableBefore) always is; the viewer's own account is never the other side
+    check(W.isMirrorLine({ delta = 50, availableBefore = 100, availableAfter = 100 })
+        and not W.isMirrorLine({ delta = -50, availableBefore = 150, availableAfter = 100 })
+        and not W.isMirrorLine({ amount = -50, before = 150, after = 100 })
+        and not W.isMirrorLine({ delta = -50 }),
+        "statement: only a line that left the spendable balance as it was is a mirror")
+    local savedIsMe = C.isMe
+    C.isMe = function(n) return n == "me" end
+    check(W.otherParty("me") == nil and W.otherParty("bob") == "bob" and W.otherParty(nil) == nil,
+        "statement: the viewer's own account is never named as the counterparty")
+    C.isMe = savedIsMe
     ISPanel, C.UI, C.itemLabel, C.PanelWidgets = savedPanel, nil, nil, nil
     for _, m in ipairs({ "ISUI/ISPanel", "ISUI/ISComboBox", "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECKeyboard",
         "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = nil end

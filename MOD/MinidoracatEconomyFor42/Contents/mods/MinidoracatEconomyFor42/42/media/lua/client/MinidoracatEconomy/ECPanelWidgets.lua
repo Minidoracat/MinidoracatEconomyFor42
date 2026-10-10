@@ -634,7 +634,7 @@ local function candidateRow(it)
     local ids = type(it.itemIds) == "table" and it.itemIds or { it.itemId }
     local count = math.max(1, math.floor(tonumber(it.count) or #ids))
     local lot = lotText(count)
-    local detail = alt and (name .. " (" .. alt .. ")") or name
+    local detail = alt and getText(T .. "Paren", name, alt) or name
     if lot then detail = lot .. " " .. detail end
     -- a category refusal already names the category up front
     if category and not (reason and it.rule == "category") then
@@ -1100,6 +1100,22 @@ function W.recordAmountText(rec)
     if price == nil then return W.payItemText(rec) end
     if EACH_KINDS[tostring(rec.kind)] then return getText(T .. "Wanted_Each", amountText(price)) end
     return amountText(price)
+end
+
+-- A receipt file holds one line per posting (ECExport), so a hold or a refund also writes the
+-- reserved bucket's mirror: a line that leaves the spendable balance as it was. The statement,
+-- its month totals and the admin's copy of it follow the receipt ring, which never holds one --
+-- the spendable side of the same transaction is the line. A line without availableBefore (the
+-- ring, an older file) is never a mirror.
+function W.isMirrorLine(e)
+    return e.availableBefore ~= nil and e.availableBefore == e.availableAfter
+end
+
+-- The other side a statement line names, or nil: the viewer's own account is no other side (a
+-- hold's spendable line points at its own reserved bucket).
+function W.otherParty(cp)
+    if cp == nil or C.isMe(cp) then return nil end
+    return cp
 end
 
 -- One history line. The amount is what the record moved for this player: a sale nets the tax
