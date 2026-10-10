@@ -1636,7 +1636,11 @@ function Dialog:layoutInside(maxW, maxH)
     -- never be enabled.
     if self.requireAccept then rows[#rows + 1] = { kind = "accept" } end
     for _ = 1, #(self.info or {}) do rows[#rows + 1] = { kind = "info" } end
-    if self.message then rows[#rows + 1] = { kind = "message" } end
+    -- a message wraps (up to three lines) instead of losing its end: the source-caps rule is a
+    -- whole sentence, cut at "leave the take cap empty for u..." in English at 560 px
+    self.messageLines = self.message and U.wrapText(self.message.text, width - PAD * 2, 3) or {}
+    self.messageFor = self.message
+    for i = 1, #self.messageLines do rows[#rows + 1] = { kind = "message", line = i } end
     rows[#rows + 1] = { kind = "buttons" }
 
     -- first density level whose core rows fit the area the child can give us. Info and message
@@ -1806,7 +1810,10 @@ function Dialog:prerender()
             elseif r.kind == "roleHave" then
                 text(self, fitText(tr("Admin_Roles_Current"), self.labelW), labelX, ty, "textMuted")
             elseif r.kind == "message" and self.message then
-                text(self, fitText(self.message.text, self.width - PAD * 2), labelX, r.y, self.message.error and "errorText" or "positive")
+                -- a message set without a layout since (a late reply) shows on its first row, cut
+                local line = self.messageFor == self.message and self.messageLines[r.line]
+                    or (r.line == 1 and fitText(self.message.text, self.width - PAD * 2)) or ""
+                text(self, line, labelX, r.y, self.message.error and "errorText" or "positive")
             end
         end
     end
