@@ -1132,6 +1132,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: localized buy-order sear
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: localized item search on every board (scripts/test_wanted.lua W-12a..f: market.browse, auction.browse, admin.listings, admin.auctions and admin.wanted match the client's item types before paging, Mk.typesOf bounds; scenario 35: auction.history / admin.auctions history match them before the tail limit, bounded)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: player free text out of Global ModData: an adjust reason in neither ring nor idempotency record, an older ring entry stripped at load, the transfer record keeps a memo digest (another memo is request_conflict) and converts an older record at load, no memo or API reasonText anywhere under the root (the ring checks of transfer and API receipts now assert no text, the statement's receipt files keep it); scripts/test_wanted.lua W-13a..g offer memos in a private file: not in ModData, read back after a restart, pruned after a rollback, dropped on dismiss / raise / delivery / close, an older offer's memo moved out at load, a refused write and an unreadable file
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: names vanilla gives an item at creation (scenario VN: an OnCreate title kept and rebuilt apart from a label, an owner's name and a recipe-named newspaper, state-derived names still unstored, a MOD's label unchanged, the buyer's preview without the type prefix, no merge across titles, the buyback still takes a fresh copy, a schematic's own recipes travel, too many recipes refused, listed / bought / delivered under the title; VN-11 the client's type name with the title in brackets)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: item types another mod blocked (scenario BK: facade rev 5 and malformed input, blocked over a whitelisted type and category with an idempotent second call, others unaffected and excluded still excluded, kept across a whitelist reload, picker / listing / auction, buy order for and paid with it, shop candidates and sale; TX-6 the client's words)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19818,6 +19819,97 @@ check(loaded == true and ruleExcluded == "excluded", "WC-5: an item the host exc
 onlinePlayers = {}
 end)()
 
+-- ===== 情境 BK：其他 MOD 封鎖的物品類型（blockItemType，API rev 5）不能進任何交易 =====
+io.write("scenario BK: an item type another mod blocked from every trade\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local Codec, Shop, V = S.Codec, S.Shop, EC.v1
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("bk-admin"); boss.role = "admin"
+local seller = fakePlayer("bk-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("bk-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "bk-seed", reasonCode = "t" })
+knownItems["BkMod.Capsule"] = { w = 0.5, cat = "Tool", main = "Item" }
+knownItems["BkMod.Wrench"] = { w = 0.5, cat = "Tool", main = "Item" }
+knownItems["BkMod.Spanner"] = { w = 0.5, cat = "Tool", main = "Item" }
+-- the capsule is open twice over (its category and its own type), the spanner excluded by the host
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Tool"],"types":["BkMod.Capsule"],"excludeTypes":["BkMod.Spanner"]}' }, opens = 0 }
+assert(Codec.load())
+files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "capsule", item = "BkMod.Capsule", qty = 1, price = 20, dailyCap = 0, buyback = true, bidPrice = 3, buybackCap = 0 },
+} }) }, opens = 0 }
+assert(Shop.load())
+local capsule = instanceItem("BkMod.Capsule"); seller.inventory:AddItem(capsule)
+local function refusedArgs(fullType, modId)
+    local ok, why = V.blockItemType(fullType, modId)
+    return ok == false and why or nil
+end
+check(V.API_MAJOR == 1 and V.API_REVISION >= 5 and V.CAPABILITIES.blockItemType == true
+    and refusedArgs(nil, "BkVehicles") == "invalid_type" and refusedArgs("NoModule", "BkVehicles") == "invalid_type"
+    and refusedArgs("Bk Mod.Capsule", "BkVehicles") == "invalid_type" and refusedArgs(string.rep("a", 128) .. ".Capsule", "BkVehicles") == "invalid_type"
+    and refusedArgs("BkMod.Capsule", "") == "invalid_mod" and refusedArgs("BkMod.Capsule", 7) == "invalid_mod"
+    and Codec.blockedTypes["BkMod.Capsule"] == nil and Codec.check(capsule) == true,
+    "BK-1: the facade is rev 5 with blockItemType; a malformed type or mod id is refused and blocks nothing")
+local first, again, other = V.blockItemType("BkMod.Capsule", "BkVehicles"), V.blockItemType("BkMod.Capsule", "BkVehicles"),
+    V.blockItemType("BkMod.Capsule", "OtherMod")
+local okC, whyC, ruleC = Codec.check(capsule)
+local okT, whyT, ruleT = Codec.typeAllowed("BkMod.Capsule")
+check(first == true and again == true and other == true and Codec.blockedTypes["BkMod.Capsule"] == "BkVehicles"
+    and okC == false and whyC == "not_whitelisted" and ruleC == "blocked"
+    and okT == false and whyT == "not_whitelisted" and ruleT == "blocked",
+    "BK-2: a blocked type is refused as blocked by the item check and the type check although its type and category are whitelisted; blocking again is harmless and the first mod keeps it")
+V.blockItemType("BkMod.Spanner", "BkVehicles")
+local _, _, ruleS = Codec.check(instanceItem("BkMod.Spanner"))
+local _, _, ruleST = Codec.typeAllowed("BkMod.Spanner")
+check(Codec.check(instanceItem("BkMod.Wrench")) == true and Codec.typeAllowed("BkMod.Wrench") == true
+    and ruleS == "excluded" and ruleST == "excluded",
+    "BK-3: a type nobody blocked is unaffected, and a type the host excluded is still reported as excluded")
+check(Codec.load() == true and select(3, Codec.check(capsule)) == "blocked",
+    "BK-4: reloading the whitelist keeps the block")
+local rows = {}
+for _, r in ipairs(cmd(seller, "market.candidates").items or {}) do rows[r.item] = r end
+local listed = cmd(seller, "market.list", { itemIds = { capsule.id }, price = 30 })
+local auctioned = cmd(seller, "auction.create", { itemIds = { capsule.id }, startPrice = 20, hours = 24 })
+check(rows["BkMod.Capsule"] and rows["BkMod.Capsule"].ok == false and rows["BkMod.Capsule"].rule == "blocked"
+    and listed.error == "not_whitelisted" and listed.rule == "blocked"
+    and auctioned.error == "not_whitelisted" and auctioned.rule == "blocked"
+    and seller.inventory:contains(capsule) and L.getBalance("bk-seller", "survivor").available == 500,
+    "BK-5: the picker row, a listing and an auction are refused with rule blocked; the item and the money stay")
+local wantType = cmd(seller, "wanted.create", { item = "BkMod.Capsule", qty = 1,
+    options = { { kind = "coin", currency = "survivor", unitPrice = 10 } } })
+local payWith = cmd(seller, "wanted.create", { item = "BkMod.Wrench", qty = 1,
+    options = { { kind = "item", itemIds = { capsule.id }, perUnit = 1 } } })
+check(wantType.error == "not_whitelisted" and wantType.rule == "blocked"
+    and payWith.error == "not_whitelisted" and payWith.rule == "blocked"
+    and seller.inventory:contains(capsule) and L.getBalance("bk-seller", "survivor").available == 500,
+    "BK-6: a buy order for a blocked type, and one paid with it, are refused with rule blocked")
+local cand = cmd(seller, "shop.candidates", { id = "capsule" })
+local sold = cmd(seller, "shop.sell", { id = "capsule", itemIds = { capsule.id }, revision = Shop.revision() })
+check(cand.ok == true and cand.count == 0 and cand.refused.blocked == 1
+    and sold.ok == false and sold.error == "blocked" and seller.inventory:contains(capsule)
+    and L.getBalance("bk-seller", "survivor").available == 500,
+    "BK-7: the shop's buyback counts a blocked copy as refused (blocked) and will not buy it; nothing is minted")
+Codec.blockedTypes["BkMod.Capsule"], Codec.blockedTypes["BkMod.Spanner"] = nil, nil
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
+files["MinidoracatEconomy/whitelist.json"] = nil
+Codec.load()
+onlinePlayers = {}
+end)()
+
 -- BB: buyback takes cooked, burnt, frozen and warmed food but not eaten food, names why it refuses
 -- a copy, and the classes that left the fixed list travel (an empty bag, a padlock's key count, a lamp)
 ;(function()
@@ -20405,6 +20497,15 @@ local unknownShop, unknownHistory, unknownKind = call(W.shopError, "zz_new_code"
 check(okW and blocked == say("Auction_Error_currency_conflict") and unknownShop == say("Shop_Error_unknown")
     and unknownHistory == say("History_ReadFailed") and unknownKind == say("Common_Unknown"),
     "TX-4: a held auction says why in its own words; an unknown shop, history or record kind code is a generic sentence")
+-- TX-6: a type another mod blocked reads as its own sentence wherever a refusal is worded (picker,
+-- listing, auction, buy order through marketError; shop sale and its refused lines through the
+-- shop words); a rule this client does not know falls back to the plain whitelist sentence
+check(okW and call(W.marketError, { error = "not_whitelisted", rule = "blocked" }) == say("Market_Reason_not_whitelisted_blocked")
+    and say("Market_Reason_not_whitelisted_blocked") ~= nil
+    and call(W.shopError, "blocked") == say("Shop_Error_blocked") and call(W.sellRefusalText, "blocked") == say("Shop_Error_blocked")
+    and say("Shop_Error_blocked") ~= nil
+    and call(W.marketError, { error = "not_whitelisted", rule = "zz_new_rule" }) == say("Market_Reason_not_whitelisted"),
+    "TX-6: a blocked type has its own sentence in the picker, market, auction, buy order and shop words; an unknown rule falls back")
 -- TX-5: the generic sentences a refusal falls back to carry no placeholder in any language
 local withArg = {}
 for lang, d in pairs(dicts) do

@@ -603,14 +603,36 @@ function Codec.stateCheck(item)
     return true
 end
 
+-- Item types another mod keeps out of every trading channel (MinidoracatEconomy.v1.blockItemType,
+-- API rev 5): fullType -> the modId that asked. Kept outside `wl`, so a whitelist load never
+-- clears it, and read before the whitelist, so no admin type or category opens a blocked type.
+-- Only player intake is refused (market, auction, buy orders, the shop's buyback); what the
+-- server itself hands out (shop stock, mail, restores) is not checked.
+Codec.blockedTypes = Codec.blockedTypes or {}
+
+-- true, or false and invalid_type / invalid_mod. Idempotent; the first mod to block a type keeps it.
+function Codec.blockItemType(fullType, modId)
+    if type(fullType) ~= "string" or #fullType > 128 or not string.find(fullType, "^[^%.%s]+%.[^%s]+$") then
+        return false, "invalid_type"
+    end
+    if type(modId) ~= "string" or modId == "" or #modId > 64 then return false, "invalid_mod" end
+    if Codec.blockedTypes[fullType] == nil then
+        Codec.blockedTypes[fullType] = modId
+        EC.log("item type " .. fullType .. " is blocked from trading by " .. modId)
+    end
+    return true
+end
+
 -- pass, reason[, rule]: a not_whitelisted refusal also says which rule refused the item, so the
 -- picker can say what would change the answer -- "excluded" (the item itself is on excludeTypes),
--- "fixed" (EC.LISTING_FIXED_TYPES: never, whatever the file says) or "category" (its
--- EC.itemCategory is not on the list; the picker names that category).
+-- "blocked" (another mod blocked the type, Codec.blockItemType), "fixed" (EC.LISTING_FIXED_TYPES:
+-- never, whatever the file says) or "category" (its EC.itemCategory is not on the list; the
+-- picker names that category).
 function Codec.check(item)
     local fullType = call(item, "getFullType")
     if type(fullType) ~= "string" then return false, "invalid_item" end
     if wl.excludeTypes[fullType] then return false, "not_whitelisted", "excluded" end
+    if Codec.blockedTypes[fullType] then return false, "not_whitelisted", "blocked" end
     local script = call(item, "getScriptItem")
     if EC.isFixedType(script) then return false, "not_whitelisted", "fixed" end
     if not wl.types[fullType] and not wl.categories[EC.itemCategory(item)] then return false, "not_whitelisted", "category" end
@@ -618,7 +640,7 @@ function Codec.check(item)
 end
 
 -- The whitelist verdict for an item type with no object in hand (a buy order names the item it
--- wants before anybody owns one): the same three rules as Codec.check, read off the script, so
+-- wants before anybody owns one): the same rules as Codec.check, read off the script, so
 -- nothing is instanced. A type the server has no script for is unknown_item - a picked-up piece
 -- of furniture (`Base.<sprite>`, no script of its own) is refused here for that reason.
 -- Returns true, or false, the reason and (not_whitelisted) the rule.
@@ -627,6 +649,7 @@ function Codec.typeAllowed(fullType)
     local ok, script = pcall(function() return ScriptManager.instance:FindItem(fullType) end)
     if not ok or script == nil then return false, "unknown_item" end
     if wl.excludeTypes[fullType] then return false, "not_whitelisted", "excluded" end
+    if Codec.blockedTypes[fullType] then return false, "not_whitelisted", "blocked" end
     if EC.isFixedType(script) then return false, "not_whitelisted", "fixed" end
     if not wl.types[fullType] and not wl.categories[EC.itemCategory(script)] then return false, "not_whitelisted", "category" end
     return true
@@ -1313,5 +1336,15 @@ function Codec.init(root)
 end
 
 S.Codec = Codec
+
+-- Rev 5 of the facade (ECIntegration header). Every module that raises the revision keeps the
+-- higher number, so the load order between this file and ECEntitlements / ECTransfer is free.
+local G = EC.Integration
+if G and EC.v1 then
+    G.API_REVISION = math.max(G.API_REVISION, 5)
+    EC.v1.API_REVISION = G.API_REVISION
+    EC.v1.CAPABILITIES.blockItemType = true
+    EC.v1.blockItemType = Codec.blockItemType
+end
 S.onInit(Codec.init)
 return Codec

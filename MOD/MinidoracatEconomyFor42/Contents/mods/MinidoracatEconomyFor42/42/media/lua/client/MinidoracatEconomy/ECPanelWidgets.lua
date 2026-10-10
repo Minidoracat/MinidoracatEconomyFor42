@@ -224,11 +224,12 @@ local function marketError(args)
         return getText(T .. "Market_Error_hours_range", tostring(args.min), tostring(args.max))
     end
     -- a whitelist refusal says which rule refused the item (Codec.check): the category a host can
-    -- open is named, and a class that is never listed or an item the host excluded says so instead
+    -- open is named, and a class that is never listed, an item the host excluded or a type another
+    -- mod blocked says so instead
     if code == "not_whitelisted" and args.rule == "category" and type(args.category) == "string" then
         return getText(T .. "Market_Reason_not_whitelisted_category", U.itemCategoryText(args.category))
     end
-    if code == "not_whitelisted" and (args.rule == "fixed" or args.rule == "excluded") then
+    if code == "not_whitelisted" and (args.rule == "fixed" or args.rule == "excluded" or args.rule == "blocked") then
         return getText(T .. "Market_Reason_not_whitelisted_" .. args.rule)
     end
     return getTextOrNull(T .. "Market_Error_" .. code) or getTextOrNull(T .. "Market_Reason_" .. code)

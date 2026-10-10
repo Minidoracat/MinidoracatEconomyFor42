@@ -31,6 +31,12 @@
 -- client-originated third-party commands.
 -- Rev 4 (ECEntitlements, CAPABILITIES.freeze): registerProduct{ freezeWhenAbsent = true } - a product
 -- missing at start has its rentals frozen until it registers again.
+-- Rev 5 (ECCodec, which raises API_REVISION and sets CAPABILITIES.blockItemType once it has
+-- loaded): E.blockItemType(fullType, modId) -> true | false, "invalid_type" | "invalid_mod" keeps an
+-- item type out of every player trade (market, auction, buy orders, the shop's buyback), whatever
+-- the whitelist says - for an item whose state lives on the server under its item id, which the
+-- snapshot rebuild changes. Idempotent, callable any time after the server files loaded (an
+-- OnInitGlobalModData handler included); refusals carry rule "blocked".
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Rewards then
     require "MinidoracatEconomy/ECRewards"

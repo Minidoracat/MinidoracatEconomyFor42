@@ -24,6 +24,7 @@
 - **其他玩家在終端旁挑一種付款方式交貨，可以分批交**：收貨幣要扣市場成交稅，換物品不扣稅。交來的貨寄到買方信箱，買方不在線也能交，信箱滿了也收得到。交齊、取消或到期就結單：沒用到的保留款回到錢包，交換用的物品寄回信箱，刊登費不退。
 - **求購可以還價**：賣方嫌價錢低，可以對貨幣選項留下想要的每件價格、件數和一句留言（最多 64 字），不動錢也不動物品；買方會收到通知，可以「加價到這個價」或「忽略」。加價只能往上，對所有賣方都有效，會補足保留款，多出來的金額照刊登費率收費。每張單最多 10 筆還價，每位賣方一筆。
 - **管理台新增「求購單」分頁**：可以搜尋物品或買家，看每張單的付款方式與保留款，必要時強制取消（要寫原因，會留稽核紀錄，保留款與物品照常退回）。總覽會提醒退款失敗的求購單。
+- **其他 MOD 可以讓自己的物品不經過經濟系統交易**：例如已裝載車輛的膠囊，它的車輛資料綁在那一件物品上，經市場轉手後收到的是新的一件、車輛就找不到了。這類物品在選物格會寫「這種物品不能透過經濟系統交易（由其他 MOD 指定）」，上架、拍賣、求購（建立、用它付款或交貨）與賣給商店都會拒絕，不受管理員白名單影響；物品留在背包，不扣任何費用。
 
 ### 變更
 
@@ -50,6 +51,8 @@
 > 技術要點（求購單）：新沙盒選項 `WantedMaxPerPlayer`（每人同時求購單上限，0–50，預設 5，0＝不開放建立）；期限、刊登費、成交稅、單價上下限沿用 `MarketListingDays`、`MarketListingFeePercent`、`MarketSalesTaxPercent`、`MarketPriceMin`／`MarketPriceMax`。全服同時最多 500 張求購單。新的帳本種類 `wanted_create`、`wanted_fill`、`wanted_raise`、`wanted_release`，市場報表把 `wanted_fill` 算進成交額。伺服器崩潰時，求購單不會從玩家存檔重建：押在單上的物品與交貨途中的貨寄回原主，錢跟著世界存檔回滾。管理台對帳頁遇到這兩種待對帳紀錄只能捨棄、不能還原（同系統收購）；自動對帳證明得了的會自己寄回。
 >
 > 技術要點（自由文字）：轉帳備註、調帳原因與整合 API 的 `reasonText` 不再寫進世界資料的收據環與冪等紀錄（只在收據檔與事件檔），還價留言存在伺服器資料夾的 `wanted-memos.json`（備份時一起帶走；檔案讀不到時帶留言的還價會被拒絕，不帶留言的照常）。舊存檔裡的這些文字在開服載入時移出。
+>
+> 技術要點（物品封鎖）：整合 API 升到 revision 5（`CAPABILITIES.blockItemType`）：伺服器端 `MinidoracatEconomy.v1.blockItemType(fullType, modId)` 回 `true` 或 `false, "invalid_type" | "invalid_mod"`，重複呼叫無害（第一個 modId 保留），伺服器 Lua 檔載入後任何時候都能呼叫（包含其他 MOD 的 `OnInitGlobalModData`）。被封鎖的類型在白名單檢查中排在 `excludeTypes` 之後、其他規則之前，回 `not_whitelisted` 並帶 `rule="blocked"`（`market.candidates`、`market.list`、`auction.create`、`wanted.create`、`wanted.candidates`、`wanted.fill`）；`shop.sell` 回 `error="blocked"`，`shop.candidates` 的 `refused` 記 `blocked`。商店出貨、信件與還原這些伺服器發出的物品不檢查封鎖。
 
 ## [42.21.0-0.14.0] - 2026-10-09
 

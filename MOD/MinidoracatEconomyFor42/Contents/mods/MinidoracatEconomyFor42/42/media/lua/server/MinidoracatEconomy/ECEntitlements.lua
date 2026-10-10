@@ -1853,10 +1853,10 @@ Events.OnTickEvenPaused.Add(E.onTick)
 -- independent-rentals model (a row holds any number of rentals, see the header); `setPlan` marks
 -- source-owned plans (setPlan / getPlan / setPlanSource), instant products and no sandbox mirror.
 -- Rev 4 (`freeze`): registerProduct takes freezeWhenAbsent and rentals can read `frozen` (header).
--- Rev 3 is ECTransfer's; it loads after this file and keeps the higher number.
-G.API_REVISION = 4
+-- Rev 3 is ECTransfer's and rev 5 ECCodec's; every module keeps the higher number.
+G.API_REVISION = math.max(G.API_REVISION, 4)
 if EC.v1 then
-    EC.v1.API_REVISION = 4
+    EC.v1.API_REVISION = G.API_REVISION
     EC.v1.CAPABILITIES.entitlements = true
     EC.v1.CAPABILITIES.subscriptions = true
     EC.v1.CAPABILITIES.rentals = true
