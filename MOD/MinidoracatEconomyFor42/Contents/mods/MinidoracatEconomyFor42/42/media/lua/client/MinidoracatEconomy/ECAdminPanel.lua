@@ -1569,8 +1569,15 @@ function Dialog:layoutInside(maxW, maxH)
         labelW = math.max(labelW, textWidth(tr("Admin_Roles_Pick")), textWidth(tr("Admin_Roles_Current")))
     end
     -- 560 wide by default, growing with the window up to 720: the dialog is the admin's main
-    -- working surface, not a confirmation popup
-    local width = math.min(maxW, math.max(560, math.min(720, math.floor(maxW * 0.7)), labelW + 380))
+    -- working surface, not a confirmation popup. A hint beside its box (the name dialog's "empty =
+    -- built-in name") widens it as far as the window allows instead of being cut at 560.
+    local hintNeed = 0
+    for _, f in ipairs(self.fields) do
+        if f.hint and not f.half then
+            hintNeed = math.max(hintNeed, PAD * 4 + labelW + (f.width or 200) + textWidth(f.hint))
+        end
+    end
+    local width = math.min(maxW, math.max(560, math.min(720, math.floor(maxW * 0.7)), labelW + 380, hintNeed))
     -- a long label is truncated instead of pushing its field out of the dialog
     labelW = math.min(labelW, math.max(60, math.floor(width * 0.45)))
     local half = math.floor((width - PAD * 4 - labelW * 2) / 2)
