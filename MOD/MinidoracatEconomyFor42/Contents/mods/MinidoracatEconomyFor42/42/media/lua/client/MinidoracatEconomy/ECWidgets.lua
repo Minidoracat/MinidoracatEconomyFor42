@@ -326,6 +326,15 @@ end
 -- The framework TextField has focus()/isFocused() but no unfocus: blur its native entry.
 local function unfocusField(field) field._entry:unfocus() end
 
+-- The native box reports only the keys it saw itself: an IME commit fires no
+-- onTextChange (pitfalls.md UI). The field's per-frame compare is the one report, handed to the
+-- callback callers wire on field._entry; the native report is muted so a key is not told twice.
+local function relayChange(field)
+    local e = field._entry
+    if e.onTextChangeFunction then e.onTextChangeFunction(e.target, e) end
+end
+local function muted() end
+
 -- Every other box is the framework TextField (rounded well, inner padding, fitted placeholder).
 -- The native box inside is field._entry: callers wire target / onTextChangeFunction /
 -- onCommandEntered on it, and hand the keyboard { kind = "entry", control = field._entry,
@@ -337,6 +346,8 @@ function U.newEntry(width, height, opts)
         maxLength = opts.maxLen, clearButton = opts.clear, placeholder = opts.placeholder,
         onlyNumbers = opts.numbers })
     field.unfocus = unfocusField
+    field.onChange = relayChange
+    field._entry.onTextChange = muted
     return field
 end
 

@@ -819,8 +819,6 @@ function MarketDialog:keyboardTargets()
         out[#out + 1] = { kind = "scroll", control = self.summaryBox, focusable = false,
             label = getText(T .. "Kb_Detail") }
     end
-    out[#out + 1] = { kind = "group", controls = self.currencyButtons,
-        label = getText(T .. "Trade_Currency") }
     if self.qtyEntry:getIsVisible() then
         out[#out + 1] = { kind = "entry", control = self.qtyEntry._entry, frame = self.qtyEntry,
             label = getText(T .. "Market_Col_Qty") }
@@ -829,6 +827,9 @@ function MarketDialog:keyboardTargets()
         out[#out + 1] = { kind = "entry", control = self.priceEntry._entry, frame = self.priceEntry,
             label = getText(T .. "Market_Col_LotPrice") }
     end
+    -- the currency chips are drawn under the price: Tab reaches them in that order
+    out[#out + 1] = { kind = "group", controls = self.currencyButtons,
+        label = getText(T .. "Trade_Currency") }
     if #self.hourButtons > 0 then
         out[#out + 1] = { kind = "group", controls = self.hourButtons, label = getText(T .. "Auction_Duration") }
     end
@@ -1132,12 +1133,20 @@ function MarketDialog:layoutInside(maxW, maxH)
     local label = confirmLabel(mode)
     self.confirmButton:setVisible(label ~= nil)
     if label then
-        if self.confirmButton.title ~= label then self.confirmButton:setTitle(label) end
+        -- fullTitle with it: Button:prerender offers a differing fullTitle as the hover tooltip and
+        -- the focus ring captions it, so a stale one names the step this button was built for
+        if self.confirmButton.title ~= label then
+            self.confirmButton:setTitle(label)
+            self.confirmButton.fullTitle = label
+        end
+        -- withdrawing a listing or an auction is the danger button, as on its row and its card
+        self.confirmButton.style = (mode == "cancel" or mode == "acancel") and "danger" or "primary"
         self.confirmButton:setWidth(math.max(120, textWidth(label, UIFont.Medium) + 40))
     end
     local close = closeLabel(mode)
     if self.cancelButton.title ~= close then
         self.cancelButton:setTitle(close)
+        self.cancelButton.fullTitle = close
         self.cancelButton:setWidth(textWidth(close) + 30)
     end
     local chipsX = PAD + textWidth(getText(T .. "Auction_Duration")) + PAD
