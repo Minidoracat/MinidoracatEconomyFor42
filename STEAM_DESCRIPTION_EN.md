@@ -1,4 +1,4 @@
-[h1]💰 Minidoracat Economy for B42[/h1]
+[h1]💰 Minidoracat Economy[/h1]
 [h3]By Minidoracat[/h3]
 
 [hr][/hr]
@@ -7,7 +7,7 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 
 [h2]📦 Requirements[/h2]
 [list]
-[*] Required UI framework: [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library for B42[/url]
+[*] Required UI framework: [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library[/url]
 [*] The server and every player need both mods at the same version; after an update, restart both the server and the game
 [*] [b]Add/remove mid-save:[/b] safe to add; read the Server Setup & Administration guide before removing it
 [*] [b]Languages:[/b] 繁體中文, 简体中文, English, 日本語, 한국어, Русский, Español, Português, Türkçe, Français, Polski, Deutsch (please report any translation issues)

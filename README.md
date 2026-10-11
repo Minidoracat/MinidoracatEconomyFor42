@@ -1,4 +1,4 @@
-# Minidoracat Economy for B42
+# Minidoracat Economy
 
 提供雙貨幣、系統商店、玩家市場、拍賣、獎勵與管理查帳的 Project Zomboid Build 42 經濟系統。
 
@@ -23,8 +23,8 @@
 
 ## 安裝
 
-- Steam Workshop：[Minidoracat Economy for B42](https://steamcommunity.com/sharedfiles/filedetails/?id=3801482125)
-- 必要依賴：[Minidoracat UI Library for B42](https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701)，要求 **API rev ≥11**（鍵盤與手把導覽、日期欄與日曆、表格、篩選列、物品挑選與帳號候選由它提供；版本不足時經濟介面不會開啟）。API rev 12 另提供錢包單列篩選與表頭排序、通知避開經濟中心、焦點說明位置；rev 11 照常可用，錢包維持原本的篩選列。只核對顯示版號不夠，需確認實際 API 修訂；伺服器與客戶端都要使用相容版本。
+- Steam Workshop：[Minidoracat Economy](https://steamcommunity.com/sharedfiles/filedetails/?id=3801482125)
+- 必要依賴：[Minidoracat UI Library](https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701)，要求 **API rev ≥11**（鍵盤與手把導覽、日期欄與日曆、表格、篩選列、物品挑選與帳號候選由它提供；版本不足時經濟介面不會開啟）。API rev 12 另提供錢包單列篩選與表頭排序、通知避開經濟中心、焦點說明位置；rev 11 照常可用，錢包維持原本的篩選列。只核對顯示版號不夠，需確認實際 API 修訂；伺服器與客戶端都要使用相容版本。
 - 手動安裝：將 `MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42` 整個資料夾複製至遊戲使用者資料的 `mods/`，保留其 `42/` 子目錄；UI 函式庫也需安裝。
 - 服主在 dedicated server 啟用 `MinidoracatUIFor42` 與 `MinidoracatEconomyFor42`，依賴先載入；Workshop ID 分別為 `3789836701` 與 `3801482125`。
 - 伺服器與客戶端更新後同版完整重啟。地圖原生落地式／壁掛式 ATM 預設可在同層 2 格內直接使用，無須管理員登錄；右鍵有「使用經濟終端」。管理員可在「**經濟管理台 → 設定 → 一般**」調整「**原生 ATM 可作為終端**」（預設開啟）與「**允許玩家拆除原生 ATM**」（預設關閉）。兩者獨立、變更即時同步；關閉使用不會解除防拆。重設會清除面板覆寫、回到伺服器沙盒值；面板覆寫須隨世界存檔保存，未存檔崩潰仍可能回滾。自建機台／貓娘終端與一般終端機櫃仍須管理員登錄，不受這兩個選項影響；原生 ATM 不會自動生成電台，第三方不同貼圖不憑外觀猜測支援。

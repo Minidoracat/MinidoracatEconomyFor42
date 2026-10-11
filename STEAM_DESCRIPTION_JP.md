@@ -1,4 +1,4 @@
-[h1]💰 Minidoracat Economy for B42[/h1]
+[h1]💰 Minidoracat Economy[/h1]
 [h3]By Minidoracat[/h3]
 
 [hr][/hr]
@@ -7,7 +7,7 @@ Build 42 の[b]マルチプレイ専用サーバー[/b]向け経済システム�
 
 [h2]📦 必要なもの[/h2]
 [list]
-[*] 必須 UI フレームワーク：[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library for B42[/url]
+[*] 必須 UI フレームワーク：[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library[/url]
 [*] サーバーと全プレイヤーに両方の MOD を同じバージョンで導入してください。更新後はサーバーとゲームの両方を再起動してください
 [*] [b]途中追加・削除：[/b]追加は可能。削除する前に「Economy Server Setup & Administration」ガイドをお読みください
 [*] [b]対応言語：[/b]繁體中文、简体中文、English、日本語、한국어、Русский、Español、Português、Türkçe、Français、Polski、Deutsch（翻訳の問題はお知らせください）
