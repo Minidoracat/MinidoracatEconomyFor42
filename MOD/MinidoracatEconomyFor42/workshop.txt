@@ -1,6 +1,6 @@
 version=1
 id=3801482125
-title=[B42] Minidoracat Economy
+title=[B42] Economy by Minidoracat
 description=[h1]💰 Minidoracat Economy[/h1]
 description=[h3]By Minidoracat[/h3]
 description=
