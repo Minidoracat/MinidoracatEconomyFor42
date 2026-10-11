@@ -9,7 +9,7 @@ Build 42 [b]多人專用伺服器[/b]的經濟系統：賺取倖存幣，在 ATM
 [list]
 [*] 必裝 UI 框架：[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library[/url]
 [*] 伺服器與所有玩家都要安裝這兩個 MOD 並保持同版；更新後伺服器與遊戲都要重新啟動
-[*] [b]中途加入／移除：[/b]可加入；移除前請先看「服主安裝與管理」說明串
+[*] [b]中途加入／移除：[/b]可加入；移除前請先看完整說明
 [*] [b]介面語言：[/b]繁體中文、简体中文、English、日本語、한국어、Русский、Español、Português、Türkçe、Français、Polski、Deutsch（翻譯有問題請回報）
 [/list]
 
@@ -34,8 +34,7 @@ Build 42 [b]多人專用伺服器[/b]的經濟系統：賺取倖存幣，在 ATM
 [*] [b]管理台報表[/b]：流入流出、貨幣總量、熱門物品與商店銷量，一頁看完
 [*] [b]其他 MOD 的付費名額[/b]：用經濟貨幣買斷或租用支援 MOD 的額外名額
 [/list]
-📖 [b]每項功能的細節與常見問題：[/b][url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095761/]Economy 玩家說明[/url]
-🛠️ [b]服主安裝、權限與外部工具：[/b][url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095794/]Economy 服主安裝與管理[/url]
+📖 [b]每項功能的細節、服主安裝與管理、常見問題：[/b][url=https://steamcommunity.com/sharedfiles/filedetails/?id=3817846479]經濟系統 Economy MOD 完整說明：玩家功能、服主部署與管理[/url]
 
 [h2]🔗 Minidoracat 全系列[/h2]
 其他作品都在[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3809297109]Minidoracat 全系列收藏[/url]，依需求自選訂閱。

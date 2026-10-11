@@ -34,8 +34,7 @@ An economy system for Build 42 [b]dedicated multiplayer servers[/b]: earn Surviv
 [*] [b]Admin reports[/b]: inflow and outflow, money supply, top items and shop sales on one page
 [*] [b]Paid slots for other mods[/b]: buy or rent extra slots in supporting mods with economy currency
 [/list]
-📖 [b]Feature details and FAQ:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095779/]Economy Player Guide[/url]
-🛠️ [b]Server installation, permissions and external tools:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095807/]Economy Server Setup & Administration[/url]
+📖 [b]Feature details, server setup & administration, FAQ:[/b] [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3817846538]Economy Mod Guide: Player Features, Server Setup & Administration[/url]
 
 [h2]🔗 More Minidoracat mods[/h2]
 All my mods are in the [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3809297109]Minidoracat Mods for B42 collection[/url] — pick what you need.

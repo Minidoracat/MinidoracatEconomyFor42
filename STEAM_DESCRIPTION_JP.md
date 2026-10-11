@@ -34,8 +34,7 @@ Build 42 の[b]マルチプレイ専用サーバー[/b]向け経済システム�
 [*] [b]管理コンソールのレポート[/b]：流入と流出、通貨総量、人気アイテム、ショップ販売数を 1 ページで確認
 [*] [b]他 MOD の有料枠[/b]：対応 MOD の追加枠を経済通貨で買い切り・レンタル
 [/list]
-📖 [b]機能の詳細とよくある質問：[/b][url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095779/]Economy Player Guide[/url]（英語）
-🛠️ [b]サーバー導入・権限・外部ツール：[/b][url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095807/]Economy Server Setup & Administration[/url]（英語）
+📖 [b]機能の詳細、サーバー導入と管理、よくある質問：[/b][url=https://steamcommunity.com/sharedfiles/filedetails/?id=3817846538]Economy Mod Guide: Player Features, Server Setup & Administration[/url]（英語）
 
 [h2]🔗 Minidoracat の MOD 一覧[/h2]
 すべての MOD を[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3809297109]Minidoracat 全シリーズ コレクション[/url]にまとめています。必要なものを選んでサブスクライブしてください。

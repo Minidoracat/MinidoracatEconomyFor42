@@ -37,8 +37,7 @@ description=[*] [b]Market radio[/b]: tune a radio to a trade station's market br
 description=[*] [b]Admin reports[/b]: inflow and outflow, money supply, top items and shop sales on one page
 description=[*] [b]Paid slots for other mods[/b]: buy or rent extra slots in supporting mods with economy currency
 description=[/list]
-description=📖 [b]Feature details and FAQ:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095779/]Economy Player Guide[/url]
-description=🛠️ [b]Server installation, permissions and external tools:[/b] [url=https://steamcommunity.com/workshop/filedetails/discussion/3801482125/586187095760095807/]Economy Server Setup & Administration[/url]
+description=📖 [b]Feature details, server setup & administration, FAQ:[/b] [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3817846538]Economy Mod Guide: Player Features, Server Setup & Administration[/url]
 description=
 description=[h2]🔗 More Minidoracat mods[/h2]
 description=All my mods are in the [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3809297109]Minidoracat Mods for B42 collection[/url] — pick what you need.
