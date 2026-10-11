@@ -1,6 +1,6 @@
 version=1
 id=3801482125
-title=Minidoracat Economy for B42
+title=[B42] Minidoracat Economy
 description=[h1]💰 Minidoracat Economy for B42[/h1]
 description=[h3]By Minidoracat[/h3]
 description=
@@ -28,7 +28,7 @@ description=[h2]✨ Features[/h2]
 description=[list]
 description=[*] [b]Two-currency wallet[/b]: Survivor Coin and Cat Coin, with a searchable, filterable statement
 description=[*] [b]System shop[/b]: fixed-price purchases, and sell items back to the server when buyback is on
-description=[*] [b]Player market and auctions[/b]: sell items from your bag at a fixed price or by auction, at any terminal
+description=[*] [b]Player market, auctions and buy orders[/b]: list at a fixed price, auction, or post what you want to buy, at any terminal
 description=[*] [b]Player transfers[/b]: send currency straight to another player when the server allows it
 description=[*] [b]Guide to the nearest terminal[/b]: direction and distance, a golden arrow that stops on arrival; with MiniMap, terminals and ATMs show on the maps
 description=[*] [b]Mailbox[/b]: purchases, wins and returns arrive here and survive your character's death
