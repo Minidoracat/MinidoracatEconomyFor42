@@ -418,6 +418,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [*] [b]Adjustments[/b]: need a reason and respect version checks and limits (per transaction, per admin per day, server-wide per day), each one audited.
 [*] [b]Role management needed[/b]: changing the role lists, admin limits and seasons also needs native role-management permission; economy write access alone is not enough.
 [*] [b]Your own balance[/b]: not allowed by default; your role must be on both the write-access and self-adjustment lists.
+[*] [b]Non-English role names[/b]: if a role name has non-English characters (Chinese, accented letters, etc.), pick it in the economy admin panel; typed into the sandbox fields, those characters get corrupted on every server restart and the role silently loses its economy permissions.
 [/list]
 === ⚙️ Player identity and merging
 [h3]Identity check[/h3]
