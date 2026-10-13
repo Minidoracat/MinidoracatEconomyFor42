@@ -2273,9 +2273,12 @@ end
 
 -- The server drops a second market.browse from the same player inside its 500 ms command
 -- window without answering it (ECServer COMMAND_COOLDOWN_MS), so flipping two sort chips in a
--- row used to lose the second one for good. Every request goes through this gate: inside the
--- window nothing is sent, the wish is remembered, and prerender sends the *current* chip state
--- once the window is over (only the newest state can ever be wanted).
+-- row used to lose the second one for good. Every request goes through this gate: one browse on
+-- the wire at a time (`browseSentAt`), and the next only BROWSE_MIN_MS after the previous answer
+-- or its timeout (`browseDoneAt`) -- counted from the answer, not the send, because a stalled
+-- server handles the first late and a second sent the moment that answer lands would reach it
+-- inside the window. Until then nothing is sent, the wish is remembered, and prerender sends the
+-- *current* chip state (only the newest state can ever be wanted).
 --
 -- On top of that the page is `browseBusy` from the moment a request is wanted until the answer
 -- lands (or BROWSE_TIMEOUT_MS passes): the sort chips, the sortable header and the pager are
@@ -2326,7 +2329,7 @@ function Panel:requestBrowse(page)
     self.marketQueryAt = nil
     self.browseBusy = true
     self.browseBusyAt = EC.now()
-    if self.browseSentAt and EC.now() - self.browseSentAt < BROWSE_MIN_MS then
+    if self.browseSentAt or (self.browseDoneAt and EC.now() - self.browseDoneAt < BROWSE_MIN_MS) then
         self.browseWanted = true
         return
     end
@@ -2336,7 +2339,8 @@ end
 -- ----- the seller candidate read (market.sellers) -----
 --
 -- A public read, so the two browse pages own it the way the admin window owns its own commands:
--- one request in flight, the same 650 ms client window that covers the server's 500 ms one, and
+-- one request in flight, the same 650 ms client window (counted from the previous answer or
+-- timeout) that covers the server's 500 ms one, and
 -- a timeout that frees the slot again. Both boxes share that single slot -- only one of the two
 -- pages is ever on screen -- and each still matches an answer against its own context and
 -- requestId, so a reply that crossed a page switch is dropped instead of being shown as the
@@ -2346,9 +2350,8 @@ function Panel:sellersSend(command, args)
     if command ~= "market.sellers" or getPlayer() == nil then return false end
     local now = EC.now()
     if self.sellersPendingAt ~= nil then return false end
-    if self.sellersSentAt and now - self.sellersSentAt < BROWSE_MIN_MS then return false end
+    if self.sellersDoneAt and now - self.sellersDoneAt < BROWSE_MIN_MS then return false end
     self.sellersPendingAt = now
-    self.sellersSentAt = now
     self.sellersRequestId = args.requestId
     C.requestSellers(args.query, args.context, args.requestId)
     return true
@@ -3253,15 +3256,18 @@ function Panel:dropJudge(items)
         text = getText(T .. key, getText(T .. "Drop_Verb_" .. target), item:getDisplayName()) }
 end
 
--- market.candidates, spaced: the server drops a second one inside 500 ms (ECServer throttle), and
--- a drop may ask right after the picker itself did.
+-- market.candidates: one in flight, and the next only 650 ms after the previous answer (or its
+-- timeout) -- the server drops a second one inside 500 ms (ECServer throttle) without a reply, and
+-- counting from the send lets a stalled server's late answer be followed at once by a request it
+-- then drops. A drop may ask right after the picker itself did; prerender asks again when due.
 function Panel:askCandidates(requestId)
     local t = EC.now()
-    if self.candAskedAt and t - self.candAskedAt < 650 then
-        self.candDue, self.candDueId = self.candAskedAt + 650, requestId or self.candDueId
+    if self.candSentAt and t - self.candSentAt > TIMEOUT_MS then self.candSentAt, self.candDoneAt = nil, t end
+    if self.candSentAt or (self.candDoneAt and t - self.candDoneAt < 650) then
+        self.candDue, self.candDueId = true, requestId or self.candDueId
         return
     end
-    self.candAskedAt, self.candDue, self.candDueId = t, nil, nil
+    self.candSentAt, self.candSentId, self.candDue, self.candDueId = t, requestId, nil, nil
     C.requestCandidates(requestId)
 end
 
@@ -3396,7 +3402,7 @@ end
 function Panel:pumpDrop()
     self.dropLayer:sync(self:dropRect())
     local t = EC.now()
-    if self.candDue and t >= self.candDue then self:askCandidates(self.candDueId) end
+    if self.candDue then self:askCandidates(self.candDueId) end
     local dlg = self.marketDialog
     local want = dlg and dlg.want
     if want and not want.moving and t - want.at > TIMEOUT_MS + 2000 then
@@ -3578,7 +3584,7 @@ function Panel:onMarket(kind, args)
     -- itself.
     if kind == "sellers" then
         if args.requestId ~= nil and args.requestId == self.sellersRequestId then
-            self.sellersPendingAt, self.sellersRequestId = nil, nil
+            self.sellersPendingAt, self.sellersRequestId, self.sellersDoneAt = nil, nil, EC.now()
         end
         if not self.marketSearch:onReply(args) then self.auctionSearch:onReply(args) end
         return
@@ -3601,9 +3607,12 @@ function Panel:onMarket(kind, args)
         return
     end
     if kind == "browse" or kind == "mine" or kind == "candidates" then
+        if kind == "candidates" and args.requestId == self.candSentId then
+            self.candSentAt, self.candDoneAt = nil, EC.now()
+        end
         if kind == "browse" then
             self.marketAt = EC.now()
-            self.browseBusy = nil
+            self.browseBusy, self.browseSentAt, self.browseDoneAt = nil, nil, self.marketAt
             -- an answer to a request the player has already moved past (the throttle window
             -- swallowed the newer one): keep the chips as they are and ask again
             local page = tonumber(args.page)
@@ -3779,7 +3788,7 @@ function Panel:requestAuctionBrowse(page)
     self.auctionQueryAt = nil
     self.auctionBusy = true
     self.auctionBusyAt = EC.now()
-    if self.auctionSentAt and EC.now() - self.auctionSentAt < BROWSE_MIN_MS then
+    if self.auctionSentAt or (self.auctionDoneAt and EC.now() - self.auctionDoneAt < BROWSE_MIN_MS) then
         self.auctionWanted = true
         return
     end
@@ -4082,7 +4091,7 @@ end
 function Panel:onAuction(kind, args)
     if kind == "browse" or kind == "mine" then
         if kind == "browse" then
-            self.auctionBusy = nil
+            self.auctionBusy, self.auctionSentAt, self.auctionDoneAt = nil, nil, EC.now()
             -- an answer to a request the player has already moved past (the throttle window
             -- swallowed the newer one): keep the state as it is and ask again
             local page = tonumber(args.page)
@@ -4296,12 +4305,16 @@ function Panel:prerender()
     -- a candidate read that never came back: the slot is freed and the same text may be asked
     -- for again by whichever box was waiting for it
     if self.sellersPendingAt and sellerNow - self.sellersPendingAt > SELLERS_TIMEOUT_MS then
-        self.sellersPendingAt, self.sellersRequestId = nil, nil
+        self.sellersPendingAt, self.sellersRequestId, self.sellersDoneAt = nil, nil, sellerNow
         self.marketSearch:onTimeout()
         self.auctionSearch:onTimeout()
     end
-    -- a browse the 500 ms server throttle would have eaten: send the newest chip state now
-    if self.browseWanted and EC.now() - (self.browseSentAt or 0) >= BROWSE_MIN_MS then
+    -- a browse the 500 ms server throttle would have eaten: send the newest chip state once the
+    -- one on the wire is answered (or given up on) and the window after it is over
+    if self.browseSentAt and EC.now() - self.browseSentAt > BROWSE_TIMEOUT_MS then
+        self.browseSentAt, self.browseDoneAt = nil, EC.now()
+    end
+    if self.browseWanted and not self.browseSentAt and EC.now() - (self.browseDoneAt or 0) >= BROWSE_MIN_MS then
         self:sendBrowse()
     end
     -- a browse whose answer never came: the sort box, the header and the pager come back
@@ -4312,7 +4325,10 @@ function Panel:prerender()
     if self.auctionQueryAt and EC.now() >= self.auctionQueryAt and self.tab == "Auction" then
         self:requestAuctionBrowse(1)
     end
-    if self.auctionWanted and EC.now() - (self.auctionSentAt or 0) >= BROWSE_MIN_MS then
+    if self.auctionSentAt and EC.now() - self.auctionSentAt > BROWSE_TIMEOUT_MS then
+        self.auctionSentAt, self.auctionDoneAt = nil, EC.now()
+    end
+    if self.auctionWanted and not self.auctionSentAt and EC.now() - (self.auctionDoneAt or 0) >= BROWSE_MIN_MS then
         self:sendAuctionBrowse()
     end
     if self.auctionBusy and EC.now() - (self.auctionBusyAt or 0) > BROWSE_TIMEOUT_MS then

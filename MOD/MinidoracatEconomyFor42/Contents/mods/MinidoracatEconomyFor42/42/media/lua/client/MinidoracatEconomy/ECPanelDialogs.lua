@@ -950,13 +950,16 @@ end
 
 -- ----- the price reference (market.priceRef) -----
 -- The pricing step asks once per item what it really sold for over the last 30 days and states
--- it on one line under the price. A public, cache-only read: one in flight, never inside the
--- server's 500 ms command window, and an answer for an item (or a dialog) the player has moved
--- past is dropped. The newest "ready" answer is kept, so reopening the same item asks nothing.
+-- it on one line under the price. A public, cache-only read: one in flight, the next never inside
+-- the server's 500 ms command window -- counted from the previous answer (or timeout), not its
+-- send, since a stalled server answers late and a read sent right then would be dropped -- and an
+-- answer for an item (or a dialog) the player has moved past is dropped. The newest "ready"
+-- answer is kept, so reopening the same item asks nothing.
 local REF_GAP_MS = 650
 local REF_TIMEOUT_MS = 8000
 local REF_RETRY_MS = 15000   -- a "preparing" answer is asked again this often while the step is open
-local refSentAt = 0           -- module-wide: every dialog shares the one server window
+local refSent = nil           -- { id, at } of the read on the wire (module-wide: one server window)
+local refDoneAt = nil         -- when that read was answered or given up on
 local refDialog = nil         -- the dialog whose read is in flight
 local refLast = nil           -- the newest ready answer
 
@@ -975,10 +978,11 @@ function MarketDialog:pumpPriceRef()
     local ref = self.ref
     if ref ~= nil and (ref.state == "ready" or now - (self.refAt or 0) < REF_RETRY_MS) then return end
     if self.refId ~= nil and now - self.refAt < REF_TIMEOUT_MS then return end
-    if now - refSentAt < REF_GAP_MS then return end
-    refSentAt, self.refAt = now, now
+    if refSent ~= nil and now - refSent.at >= REF_TIMEOUT_MS then refSent, refDoneAt = nil, now end
+    if refSent ~= nil or (refDoneAt ~= nil and now - refDoneAt < REF_GAP_MS) then return end
+    self.refAt = now
     self.refId = C.newRequestId()
-    refDialog = self
+    refDialog, refSent = self, { id = self.refId, at = now }
     C.requestPriceRef(self.refItem, self.refId)
 end
 
@@ -998,6 +1002,7 @@ end
 
 C.onMarket(function(kind, args)
     if kind ~= "priceRef" or type(args) ~= "table" then return end
+    if refSent ~= nil and args.requestId == refSent.id then refSent, refDoneAt = nil, EC.now() end
     local dlg = refDialog
     if dlg == nil or args.requestId == nil or args.requestId ~= dlg.refId then return end
     refDialog, dlg.refId = nil, nil
@@ -1570,10 +1575,10 @@ function TransferDialog:onCancel() self.panel:closeTransfer() end
 -- dropped command is never answered). false keeps the box's query armed for the next frame.
 function TransferDialog:sendRecipients(args)
     local now = EC.now()
-    if self.recipientsAt ~= nil or (self.recipientsSentAt and now - self.recipientsSentAt < READ_GAP_MS) then
+    if self.recipientsAt ~= nil or (self.recipientsDoneAt and now - self.recipientsDoneAt < READ_GAP_MS) then
         return false
     end
-    self.recipientsAt, self.recipientsSentAt, self.recipientsId = now, now, args.requestId
+    self.recipientsAt, self.recipientsId = now, args.requestId
     C.requestTransferRecipients(args.query, args.requestId)
     return true
 end
@@ -1581,12 +1586,14 @@ end
 -- The two reads this dialog asked for; anything it did not ask for is left alone.
 function TransferDialog:onRead(kind, args)
     if kind == "transfer.recipients" then
-        if args.requestId == self.recipientsId then self.recipientsAt, self.recipientsId = nil, nil end
+        if args.requestId == self.recipientsId then
+            self.recipientsAt, self.recipientsId, self.recipientsDoneAt = nil, nil, EC.now()
+        end
         self.picker:onReply(args)
         return
     end
     if args.requestId == nil or args.requestId ~= self.infoId then return end
-    self.infoId, self.infoAt = nil, nil
+    self.infoId, self.infoAt, self.infoDoneAt = nil, nil, EC.now()
     if args.ok == false then
         self.infoError = args.error or "other"
     else
@@ -1596,19 +1603,20 @@ function TransferDialog:onRead(kind, args)
     self.panel:layoutDialog(self)
 end
 
--- Reads are safe to repeat: a lost transfer.info is simply asked again, paced like every read.
+-- Reads are safe to repeat: a lost transfer.info is simply asked again, paced like every read
+-- (one in flight, the next READ_GAP_MS after the previous answer or timeout, not its send).
 function TransferDialog:pumpReads()
     local now = EC.now()
     if self.infoId ~= nil and now - self.infoAt > READ_TIMEOUT_MS then
-        self.infoId, self.infoAt, self.infoWanted, self.infoError = nil, nil, true, "timeout"
+        self.infoId, self.infoAt, self.infoWanted, self.infoError, self.infoDoneAt = nil, nil, true, "timeout", now
     end
-    if self.infoWanted and self.infoId == nil and now - (self.infoSentAt or 0) >= READ_GAP_MS then
+    if self.infoWanted and self.infoId == nil and now - (self.infoDoneAt or 0) >= READ_GAP_MS then
         self.infoWanted = nil
-        self.infoId, self.infoAt, self.infoSentAt = C.newRequestId(), now, now
+        self.infoId, self.infoAt = C.newRequestId(), now
         C.requestTransferInfo(self.infoId)
     end
     if self.recipientsAt ~= nil and now - self.recipientsAt > READ_TIMEOUT_MS then
-        self.recipientsAt, self.recipientsId = nil, nil
+        self.recipientsAt, self.recipientsId, self.recipientsDoneAt = nil, nil, now
         self.picker:onTimeout()
     end
 end

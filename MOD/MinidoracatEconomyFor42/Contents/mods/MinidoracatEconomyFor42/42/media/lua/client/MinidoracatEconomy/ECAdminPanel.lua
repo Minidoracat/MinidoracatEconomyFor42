@@ -18,8 +18,9 @@
 -- Transport rules (no framework, ECClient stays untouched):
 --   * replies land in C.handlers["admin.*"] (registered at the bottom of this file) and are routed
 --     to the live instance only;
---   * one in-flight request per command; the 650 ms client cooldown covers the server's 500 ms
---     throttle window (ECServer.lua COMMAND_COOLDOWN_MS), with a timeout after TIMEOUT_MS;
+--   * one in-flight request per command; the next one leaves 650 ms after the previous one's
+--     reply (or timeout), which covers the server's 500 ms throttle window (ECServer.lua
+--     COMMAND_COOLDOWN_MS) even when the server handled the previous one late; timeout TIMEOUT_MS;
 --   * every reply is matched against the request that is still open (username / requestId), so a
 --     late answer cannot land on a different player or a closed dialog.
 --
@@ -190,7 +191,7 @@ end
 
 -- ---------- transport ----------
 
-local sentAt = {}        -- command -> ms of the last send (client cooldown)
+local doneAt = {}        -- command -> ms the previous request was answered or timed out (client cooldown)
 local pendingAt = {}     -- command -> ms of the request still waiting for a reply
 local deferred = {}      -- command -> { args, at }: held until the server's 500 ms window has passed
 local requestSeq = 0
@@ -199,19 +200,20 @@ local requestSeq = 0
 -- (ECServer COMMAND_COOLDOWN_MS) without replying. A click that lands right after an automatic
 -- request (status re-check, page poll) used to be refused with a red "too fast": instead the
 -- request is held and sent when the window has passed. `pendingAt` is set at once so the
--- buttons disable and the timeout clock starts from the click.
+-- buttons disable and the timeout clock starts from the click. The window is counted from the
+-- previous reply, not the previous send: a stalled server handles a request late, and one sent
+-- the moment that reply lands would reach it inside its window and never be answered.
 local function send(command, args)
     local player = getPlayer()
     if not player then return false, "no_player" end
     local now = EC.now()
     if pendingAt[command] then return false, "busy" end
     pendingAt[command] = now
-    local last = sentAt[command]
+    local last = doneAt[command]
     if last and now - last < COOLDOWN_MS then
         deferred[command] = { args = args or {}, at = last + COOLDOWN_MS }
         return true
     end
-    sentAt[command] = now
     sendClientCommand(player, EC.COMMAND_MODULE, command, args or {})
     return true
 end
@@ -222,7 +224,6 @@ local function flushDeferred(now)
     for command, d in pairs(deferred) do
         if now >= d.at then
             deferred[command] = nil
-            sentAt[command] = now
             sendClientCommand(player, EC.COMMAND_MODULE, command, d.args)
         end
     end
@@ -9009,7 +9010,11 @@ function Admin:clearData()
     -- nor the one whose outcome was unknown may come back and repaint a desk this actor is no
     -- longer allowed to read
     self.pendingSeason, self.seasonUnknown = nil, nil
-    pendingAt["admin.seasons"], pendingAt["admin.option"] = nil, nil
+    -- an abandoned request that already left still counts as the previous one for the cooldown
+    for _, command in ipairs({ "admin.seasons", "admin.option" }) do
+        if pendingAt[command] ~= nil and deferred[command] == nil then doneAt[command] = EC.now() end
+        pendingAt[command] = nil
+    end
     self.seasonsPage:clear()
     self.identityPage:clear()
     self.pendingCatalog, self.pendingWhitelist, self.pendingOption = nil, nil, nil
@@ -9150,6 +9155,8 @@ function Admin:prerender()
         if now - at > TIMEOUT_MS then stale = command end
     end
     if stale then
+        -- one that never left (still deferred) leaves no window behind
+        if deferred[stale] == nil then doneAt[stale] = now end
         pendingAt[stale] = nil
         deferred[stale] = nil
         self:onTimeout(stale)
@@ -9610,7 +9617,7 @@ for _, command in ipairs(COMMANDS) do
             elseif kind == "whitelist" then id = inst.whitelistRequestId end
             if id ~= nil and args.requestId ~= id then return end
         end
-        pendingAt[command] = nil
+        pendingAt[command], doneAt[command] = nil, EC.now()
         if inst then inst:onReply(kind, args or {}) end
     end
 end
@@ -9628,7 +9635,7 @@ C.onMarket(function(kind, args)
     -- stale answer never releases a newer read, and a box folded away by a page switch does not
     -- hold the command until the timeout. Which box still wants the candidates is separate.
     if args.requestId ~= nil and args.requestId == lastSellersRequestId then
-        pendingAt["market.sellers"] = nil
+        pendingAt["market.sellers"], doneAt["market.sellers"] = nil, EC.now()
         lastSellersRequestId = nil
     end
     if not inst.lstSellerPicker:onReply(args) then inst.aucSellerPicker:onReply(args) end

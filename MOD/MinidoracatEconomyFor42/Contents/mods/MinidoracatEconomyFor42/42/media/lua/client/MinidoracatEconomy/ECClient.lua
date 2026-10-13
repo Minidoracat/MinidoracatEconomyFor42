@@ -197,6 +197,8 @@ handlers["config"] = function(args)
         if changed then
             C.leaderboard, C.leaderboardError = nil, nil
             leaderboardGate:clear()
+            -- the read on the wire is abandoned, not answered: the next one still waits the window
+            if leaderboardGate.pending ~= nil then leaderboardGate.doneAt = EC.now() end
             leaderboardGate.pending, leaderboardGate.sentId = nil, nil
             leaderboardGate.query, leaderboardGate.settled = nil, true
             notify(C.leaderboardListeners, "leaderboard", "config", args)
@@ -359,6 +361,7 @@ handlers["seasons.changed"] = function(args)
     local selected = query and leaderboardArgs(query) or nil
     if selected and selected.kind == "survival" and selected.season == "current" then
         leaderboardGate:clear()
+        if leaderboardGate.pending ~= nil then leaderboardGate.doneAt = EC.now() end
         leaderboardGate.pending, leaderboardGate.sentId = nil, nil
         leaderboardGate.query, leaderboardGate.settled = nil, true
     end
@@ -1294,7 +1297,7 @@ local function onGameStart()
     if not isClient() then return end
     for _, gate in ipairs(snapshotGates) do
         gate.query, gate.wanted, gate.pending = nil, nil, nil
-        gate.sentAt, gate.sentId, gate.sentQuery = nil, nil, nil
+        gate.doneAt, gate.sentId, gate.sentQuery = nil, nil, nil
         gate.settled, gate.timedOut = nil, nil
     end
     if snapshotPumping then

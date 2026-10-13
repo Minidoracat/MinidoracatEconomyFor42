@@ -5,7 +5,8 @@ MOD file. Standard Lua 5.x, run from the repo root:
     lua scripts/test_entitlement_client.lua
 
 What it pins is what a consumer mod (VehicleManager) relies on: one request in flight per
-command and the server's 500 ms window respected, every caller's callback kept, stale replies
+command and the server's 500 ms window respected (counted from the previous reply or timeout,
+here and in the read gate ECReadGate), every caller's callback kept, stale replies
 never overwriting a newer snapshot, a timeout reported as unknown without a re-send (keeping the
 quote / order identity), a late answer updating the cache without a second callback, public
 refresh signals, the one shared reading of an order lookup (instant products included), rental
@@ -149,6 +150,67 @@ E.onChanged(function(env) changed[#changed + 1] = env end)
     check(#gotB == 1 and #gotA2 == 1, "both callers of the shared read answered exactly once")
 end)()
 
+-- ---------- the window is counted from the reply (or the timeout), never from the send ----------
+-- A stalled server handles a request late; a queued request sent the moment that late reply lands
+-- would reach the server inside its 500 ms window and be dropped without an answer.
+;(function()
+    tick(700)
+    local base = #sent
+    local idA = E.requestState(SRC, PROD)
+    local idB = E.requestState(SRC, "other_slot")
+    check(#sent == base + 1 and sent[#sent].args.requestId == idA, "late reply: the first read leaves, the second waits")
+    tick(2000)
+    check(#sent == base + 1, "late reply: nothing more while the first is unanswered")
+    reply("entitlement.state", envelope(3, 1, { requestId = idA }))
+    tick(0)
+    check(#sent == base + 1, "late reply: the queued read does not leave when a late reply lands")
+    tick(649)
+    check(#sent == base + 1, "late reply: still held 649 ms after the reply")
+    tick(1)
+    check(#sent == base + 2 and sent[#sent].args.requestId == idB, "late reply: the queued read leaves 650 ms after it")
+    local idC = E.requestState(SRC, PROD)
+    tick(10001)
+    check(#sent == base + 2, "timeout: the queued read does not leave when the lane times out")
+    tick(649)
+    check(#sent == base + 2, "timeout: still held 649 ms after the timeout")
+    tick(1)
+    check(#sent == base + 3 and sent[#sent].args.requestId == idC, "timeout: the queued read leaves 650 ms after it")
+    reply("entitlement.state", envelope(3, 1, { requestId = idC }))
+end)()
+
+;(function()
+    local saved = C.ReadGate
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECReadGate.lua")
+    local G = C.ReadGate
+    C.ReadGate = saved
+    local ids = {}
+    local gate = G.create(function(_, rid) ids[#ids + 1] = rid end)
+    gate:want("a", true)
+    gate:want("b", true)
+    nowMs = nowMs + 2000
+    gate:pump(true)
+    check(#ids == 1, "read gate: one read in flight, the newer wish waits")
+    gate:accept({ requestId = ids[1] }, nil)
+    gate:pump(true)
+    check(#ids == 1, "read gate: the owed read does not leave when a late reply lands")
+    nowMs = nowMs + 649
+    gate:pump(true)
+    check(#ids == 1, "read gate: still held 649 ms after the reply")
+    nowMs = nowMs + 1
+    gate:pump(true)
+    check(#ids == 2, "read gate: the owed read leaves 650 ms after the reply")
+    gate:want("c", true)
+    nowMs = nowMs + 8001
+    gate:pump(true)
+    check(#ids == 2 and gate:expired(), "read gate: a timeout frees the gate without sending at once")
+    nowMs = nowMs + 649
+    gate:pump(true)
+    check(#ids == 2, "read gate: still held 649 ms after the timeout")
+    nowMs = nowMs + 1
+    gate:pump(true)
+    check(#ids == 3, "read gate: the owed read leaves 650 ms after the timeout")
+end)()
+
 -- ---------- stale and reordered replies never overwrite ----------
 ;(function()
     reply("entitlement.changed", envelope(5, 1))
@@ -264,6 +326,7 @@ end)()
     local second = E.purchase(sources[2], "shared-quote", function(r) results[2] = r end)
     check(first ~= nil and second ~= nil, "equal quote ids from different sources do not share pending writes")
     tick(10001)
+    tick(650)
     tick(10001)
     check(results[1] and results[1].orderId == "order-1" and results[1].sourceMod == sources[1],
         "first source timeout retains its own quote identity")
@@ -349,8 +412,10 @@ end)()
     tick(700)
     local a1 = E.requestList()
     tick(10001)
+    tick(650)
     local a2 = E.requestList()
     tick(10001)
+    tick(650)
     local b = E.requestList()
     reply("entitlement.list", { ok = true, requestId = b, more = true, entries = {
         envelope(21, 3), envelope(4, 1, { productId = "other_slot" }), envelope(1, 1, { productId = "third_slot" }) } })

@@ -281,6 +281,8 @@ Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action 
 
 `requestState/getState/quote/purchase/setAutoRenew/getOrder/onChanged` 對應上述用途；送出方法回 requestId，若回 `nil, reason` 代表本機未送出且不會呼叫 callback。逾時 callback 包含 unknown 與原付款識別。客戶端只保存投影，不自行授權。
 
+傳輸規則：每個指令一條佇列，同時只有一筆在路上；下一筆在上一筆**回覆（或 10 秒逾時）之後**至少 650 ms 才送出——伺服器會丟掉 500 ms 內重複的同一指令且不回覆，而伺服器卡頓時第一筆會晚處理，從送出算間隔的話，第二筆會在回覆一到就送出、落進那 500 ms 被丟掉。同一商品已在排隊的讀取合併成一筆、各 callback 都會被呼叫一次。
+
 - `quote(sourceMod, productId, kind, quantity, cb, rental?)`：`rental` 省略為買斷或新租約，給租約 id 為續租該張；只有 `kind == "rental"` 能帶 `rental`。
 - `setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental)`：`rental` 必填；同一產品一次只送一筆同意或取消，前一筆未回時回 `nil, "pending"`。
 - 租約 id 與其他 id 同規則（1–96 字元字串、不含控制字元），不合格時本機回 `nil, "invalid_args"`。

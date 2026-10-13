@@ -4,7 +4,10 @@
 -- market ring, the auction record) need the very same four rules:
 --
 --   * the server drops a second command from the same player inside its own window
---     (ECServer COMMAND_COOLDOWN_MS), so a wish made too soon waits instead of being lost;
+--     (ECServer COMMAND_COOLDOWN_MS), so a wish made too soon waits instead of being lost. The
+--     window is counted from the previous read's answer (or its timeout), never from its send: a
+--     server that stalls handles the first read late, and a second sent the moment that answer
+--     lands would reach it inside the window and be dropped without a reply;
 --   * only one read may be in flight, and only the newest question is ever remembered;
 --   * a page that is not on screen reads nothing at all -- it only owes a read, which goes out
 --     the moment it is looked at again (views.changed never makes a hidden page talk);
@@ -53,13 +56,14 @@ function Gate:pump(visible)
         if now - pending.at <= TIMEOUT_MS then return end
         self.pending = nil
         self.timedOut = true
+        self.doneAt = now
     end
     if not self.wanted or visible ~= true then return end
-    if self.sentAt ~= nil and now - self.sentAt < MIN_MS then return end
+    if self.doneAt ~= nil and now - self.doneAt < MIN_MS then return end
     local query = self.query
     local requestId = C.newRequestId()
     self.wanted, self.settled = nil, nil
-    self.sentAt, self.sentId = now, requestId
+    self.sentId = requestId
     self.pending = { at = now }
     self.send(query, requestId)
 end
@@ -78,7 +82,7 @@ function Gate:accept(args, query)
     local current = self.query
     local id = args ~= nil and args.requestId or nil
     local owns = id ~= nil and id == self.sentId
-    if owns then self.pending, self.timedOut = nil, nil end
+    if owns then self.pending, self.timedOut, self.doneAt = nil, nil, EC.now() end
     if query ~= nil and current ~= nil and query ~= current then return "stale" end
     if not owns then
         if id == nil or self.settled == true then return "stale" end

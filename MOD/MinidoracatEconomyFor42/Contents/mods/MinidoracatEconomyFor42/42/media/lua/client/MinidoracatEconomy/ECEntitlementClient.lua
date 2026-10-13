@@ -25,9 +25,11 @@
 -- without it opens a new rental, with it renews that one; auto-renew is always per rental.
 --
 -- Transport rules:
---   * one lane per command: a FIFO of requests, one in flight, sends spaced by the read gate's
---     650 ms (the server drops a repeat of the same command inside its 500 ms window without a
---     reply). Every request keeps its own callback; two consumers never share a pending slot.
+--   * one lane per command: a FIFO of requests, one in flight, and the next sent no sooner than
+--     the read gate's 650 ms after the previous one's reply (or timeout) -- the server drops a
+--     repeat of the same command inside its 500 ms window without a reply, and counting from the
+--     send would let a request queued behind a reply the server handled late reach it inside that
+--     window. Every request keeps its own callback; two consumers never share a pending slot.
 --   * a callback is called exactly once with one table: the reply as the server sent it, or
 --     { ok = false, error = "timeout", unknown = true, requestId, ... } when no answer came. A
 --     timeout says "unknown" and nothing more: nothing is re-sent or re-quoted, a purchase is
@@ -65,7 +67,7 @@ local listeners = {}
 local pushListeners = {}
 local listKeys, listMore, listErr = nil, false, nil   -- the last list read: cache keys in server order
 local listSeq = 0       -- sequence of the newest list request whose outcome set the three above
-local lanes = {}        -- command -> { queue = { req, ... }, inflight = req | nil, sentAt = ms | nil }
+local lanes = {}        -- command -> { queue = { req, ... }, inflight = req | nil, doneAt = ms | nil }
 local late = {}         -- requestId -> req
 local lateOrder = {}
 local quotes, quoteOrder = {}, {}   -- source/quote key -> { productId, orderId }
@@ -206,17 +208,17 @@ pump = function()
         local lane = lanes[command]
         local req = lane.inflight
         if req ~= nil and now - req.sentAt > TIMEOUT_MS then
-            lane.inflight = nil
+            lane.inflight, lane.doneAt = nil, now
             rememberLate(req)
             if command == LIST and req.seq >= listSeq then listSeq, listErr = req.seq, "timeout" end
             finish(req, timeoutResult(req))
         end
         if lane.inflight == nil and #lane.queue > 0 and player ~= nil
-            and (lane.sentAt == nil or now - lane.sentAt >= GAP_MS) then
+            and (lane.doneAt == nil or now - lane.doneAt >= GAP_MS) then
             req = table.remove(lane.queue, 1)
             seq = seq + 1
             req.seq, req.sentAt = seq, now
-            lane.inflight, lane.sentAt = req, now
+            lane.inflight = req
             sendClientCommand(player, EC.COMMAND_MODULE, command, req.args)
         end
         if lane.inflight ~= nil or #lane.queue > 0 then busy = true end
@@ -272,7 +274,7 @@ local function onReply(command, args)
     local req = lane.inflight
     local id = args.requestId
     if req ~= nil and id ~= nil and id == req.requestId then
-        lane.inflight = nil
+        lane.inflight, lane.doneAt = nil, EC.now()
         if command == QUOTE then rememberQuote(req, args) end
         local env = envelopeOf(args)
         if env ~= nil then adopt(env, req.seq) end
