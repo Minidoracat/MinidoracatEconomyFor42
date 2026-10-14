@@ -207,7 +207,10 @@ knownItems = {
     ["Base.Pistol"] = { w = 1, cat = "Weapon", main = "Weapon", weapon = true, gun = true, maxAmmo = 15 }, ["Base.9mmClip"] = { w = 0.1, cat = "Ammo", main = "Normal", maxAmmo = 15 },
     ["Base.RadioRed"] = { w = 1, cat = "Communications", main = "Item", itemType = "RADIO", device = true },
     ["Base.Mov_Chair"] = { w = 5, cat = "Furniture", main = "Item", itemType = "MOVEABLE" },
+    -- 地圖（MapItem）：城市地圖的 mapId 來自腳本 Map=（Item.java:1806-1812）；Base.Map 沒寫，新建時亂數挑一個
     ["Base.Map"] = { w = 0.1, cat = "Cartography", main = "Item", itemType = "MAP" },
+    ["Base.WestpointMap"] = { w = 0.2, cat = "Cartography", main = "Item", itemType = "MAP", mapId = "WestpointMap" },
+    ["Base.Sheep"] = { w = 20, cat = "Animal", main = "Item", itemType = "ANIMAL" },
     -- 衣物（Clothing.java）：scratch / bite = 腳本 ScratchDefense / BiteDefense；牛仔褲是補丁探針
     ["Base.Tshirt_DefaultTEXTURE"] = { w = 0.2, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 0, bite = 0 } },
     ["Base.Trousers_Denim"] = { w = 0.5, cat = "Clothing", main = "Clothing", itemType = "CLOTHING", clothing = { scratch = 20, bite = 0 } },
@@ -234,7 +237,8 @@ ScriptManager = { instance = { FindItem = function(_, name)
     local itemType = ItemType[k.itemType or MAIN_TO_TYPE[k.main] or "NORMAL"]
     return { name = name, getDisplayName = function() return name end, getDisplayCategory = function() return k.cat end,
         getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end,
-        containsComponent = function(_, c) return c == ComponentType.FluidContainer and k.fluid == true end }
+        containsComponent = function(_, c) return c == ComponentType.FluidContainer and k.fluid == true end,
+        getMapID = function() return k.mapId end }
 end } }
 Fluid = { Get = function(name) return { name = name } end }
 -- BloodBodyPartType（BloodBodyPartType.java:10-47，MAX 之前 18 個部位）、ImmutableColor／Color 建構子
@@ -589,6 +593,15 @@ function instanceItem(fullType)
         it.setMinute = function(_, v) it.alarmMinutes = v end
         it.isAlarmSet = function() return it.alarmSet end
         it.setAlarmSet = function(_, v) it.alarmSet = v end
+    end
+    if k.itemType == "MAP" then
+        -- MapItem.mapId（存檔、MapItem.java:147-159）；stashMap 是藏寶圖的連結（StashSystem.doStashItem、
+        -- InventoryItem.java:3666-3672），一般地圖是 nil
+        it.mapId = k.mapId or ("Rolled" .. id)
+        it.getMapID = function() return it.mapId end
+        it.setMapID = function(_, v) it.mapId = v end
+        it.getStashMap = function() return it.stashMap end
+        it.setStashMap = function(_, v) it.stashMap = v end
     end
     return it
 end
@@ -1134,6 +1147,8 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: player free text out of
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: names vanilla gives an item at creation (scenario VN: an OnCreate title kept and rebuilt apart from a label, an owner's name and a recipe-named newspaper, state-derived names still unstored, a MOD's label unchanged, the buyer's preview without the type prefix, no merge across titles, the buyback still takes a fresh copy, a schematic's own recipes travel, too many recipes refused, listed / bought / delivered under the title; VN-11 the client's type name with the title in brackets)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: item types another mod blocked (scenario BK: facade rev 5 and malformed input, blocked over a whitelisted type and category with an idempotent second call, others unaffected and excluded still excluded, kept across a whitelist reload, picker / listing / auction, buy order for and paid with it, shop candidates and sale; TX-6 the client's words)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 20   -- +20: unique item types (scenario UQ: facade rev 6 and registration results, the whitelist skip under excludeTypes, container_not_empty only for the registered type and snapshotItem, separate picker rows with the handler's refusal and detail, a dropped oversized detail and a raising check, check / escrow ordering and refusals at listing, s.unique and ext.weight on the listing, row.view without s.unique on market and auction rows, rebuilt before the add with the original id and contents for a buy, a cancel, an expiry claim and an auction win, a waiting letter when rebuilt raises or the type is unregistered, buy orders and the buyback refuse it, payload size / view / journal / JSON limits with aborted, no lot of two; TX-7 the client's words and hooks)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: plain maps trade (scenario MP: the item and type checks with stash_map and the animal still fixed, snapshotItem still refuses a map; the region and condition rebuilt; market picker, listing and purchase; auction; buy order wanted, delivered and paid with a map; TX-8 the second-press warning and the new sentences); the old "maps stay fixed" check now says animals
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: map review fixes (MP-6 a region too long to keep is moddata_too_big; MP-7 the buyback refuses a lot of different regions as mixed_items; TX-9 the warning asks again for another map or a map after another item)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -3567,7 +3582,7 @@ local okL, errL = Codec.load()
 check(okL == false and type(errL) == "table" and errL.code == "not_array" and errL.field == "categories"
     and Codec.status().errorCode == "whitelist_invalid" and Codec.status().errorDetail.code == "not_array" and Codec.status().error == nil
     and Codec.check(instanceItem("Base.Nails")) == true, "a broken file is rejected as a code with the field it names, and the previous whitelist stays")
--- 家具不再是固定類別：分類開著就能上架（地圖仍固定：情境 BB-8）
+-- 家具不再是固定類別：分類開著就能上架（活的動物仍固定：情境 BB-8）
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Furniture","Communications","Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
 check(Codec.load() == true and Codec.check(instanceItem("Base.Mov_Chair")) == true and Codec.check(instanceItem("Base.Saw")) == true,
     "furniture is listable once its category is")
@@ -3773,8 +3788,8 @@ end
 files["MinidoracatEconomy/whitelist.json"] = nil
 check(Codec.load() == true and select(2, Codec.check(instanceItem(TEE))) == "not_whitelisted"
     and EC.isFixedType(ScriptManager.instance:FindItem(TEE)) == false and EC.isFixedType(ScriptManager.instance:FindItem("Base.Bag_ALICEpack")) == false
-    and EC.isFixedType(ScriptManager.instance:FindItem("Base.Map")) == true,
-    "clothing and bags are no longer fixed classes, but the shipped default list does not open clothing; maps stay fixed")
+    and EC.isFixedType(ScriptManager.instance:FindItem("Base.Map")) == false and EC.isFixedType(ScriptManager.instance:FindItem("Base.Sheep")) == true,
+    "clothing, bags and maps are not fixed classes, but the shipped default list does not open clothing; live animals stay fixed")
 files["MinidoracatEconomy/whitelist.json"] = { lines = { EC.jsonEncode({ categories = { "Clothing" } }) }, opens = 0 }
 check(Codec.load() == true and Codec.check(instanceItem(TEE)) == true, "a host that enables the Clothing category can list a plain shirt")
 local worn = instanceItem(TEE); worn.equipped = true
@@ -19781,8 +19796,8 @@ local function give(fullType)
     seller.inventory:AddItem(it)
     return it
 end
-local jerky, gadget, brain, map = give("WcMod.Jerky"), give("WcMod.Gadget"), give("Base.Animal_Brain"), give("Base.Map")
-local _, _, ruleMap = Codec.check(map)
+local jerky, gadget, brain, sheep = give("WcMod.Jerky"), give("WcMod.Gadget"), give("Base.Animal_Brain"), give("Base.Sheep")
+local _, _, ruleMap = Codec.check(sheep)
 local _, _, ruleBrain = Codec.check(brain)
 check(ruleMap == "fixed" and ruleBrain == "category" and Codec.check(jerky) == true,
     "WC-1: a fixed class is refused as fixed, a closed category as category, and a MOD food with no DisplayCategory goes by its class (Food is open)")
@@ -19803,7 +19818,7 @@ for _, r in ipairs(cmd(seller, "market.candidates").items) do rows[r.item] = r e
 check(rows["WcMod.Jerky"].ok == true and rows["WcMod.Jerky"].category == "Food"
     and rows["WcMod.Gadget"].ok == false and rows["WcMod.Gadget"].category == "Item" and rows["WcMod.Gadget"].rule == "category"
     and rows["Base.Animal_Brain"].category == "AnimalPart" and rows["Base.Animal_Brain"].rule == "category"
-    and rows["Base.Map"].rule == "fixed",
+    and rows["Base.Sheep"].rule == "fixed",
     "WC-3: every picker row carries the category the whitelist went by and a refused one the rule that refused it")
 local listed = cmd(seller, "market.list", { itemIds = { jerky.id }, price = 30 })
 local lot = listed.ok and S.modData().market.listings[listed.listingId]
@@ -19905,6 +19920,125 @@ check(cand.ok == true and cand.count == 0 and cand.refused.blocked == 1
     and L.getBalance("bk-seller", "survivor").available == 500,
     "BK-7: the shop's buyback counts a blocked copy as refused (blocked) and will not buy it; nothing is minted")
 Codec.blockedTypes["BkMod.Capsule"], Codec.blockedTypes["BkMod.Spanner"] = nil, nil
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
+files["MinidoracatEconomy/whitelist.json"] = nil
+Codec.load()
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 MP：一般地圖可以交易，藏寶圖與活的動物不行（使用者裁定 2026-10-14）=====
+-- A map lists on the market, at auction and in buy orders (the markers drawn on it stay behind:
+-- the client warns, TX-8); what a map carries besides them -- its region (mapId) and its
+-- condition -- comes back on the buyer's copy. A stash map (getStashMap set by StashSystem) is
+-- refused as stash_map everywhere a player hands an item over; a live animal stays fixed even with
+-- its category open; another mod's snapshotItem still refuses a map.
+io.write("scenario MP: plain maps trade, stash maps and live animals do not\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local Codec = S.Codec
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("mp-admin"); boss.role = "admin"
+local seller = fakePlayer("mp-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+local buyer = fakePlayer("mp-buyer"); buyer.x, buyer.y = 101, 200; buyer.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller, buyer }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function give(fullType)
+    local it = instanceItem(fullType); seller.inventory:AddItem(it); return it
+end
+local function stash(fullType)
+    local it = give(fullType); it:setStashMap("MulStashMap1"); return it
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("mp-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "mp-seed1", reasonCode = "t" })
+L.credit("mp-buyer", "survivor", 500, "SYSTEM_MINT", { requestId = "mp-seed2", reasonCode = "t" })
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Cartography","FirstAid","Animal"]}' }, opens = 0 }
+assert(Codec.load())
+local WP = "Base.WestpointMap"
+local plain, marked, sheep = instanceItem(WP), instanceItem(WP), instanceItem("Base.Sheep")
+marked:setStashMap("MulStashMap1")
+local okS, whyS = Codec.check(marked)
+local okA, whyA, ruleA = Codec.check(sheep)
+local _, _, ruleAT = Codec.typeAllowed("Base.Sheep")
+local capsuleSnap, capsuleWhy = Codec.snapshotItem(plain)
+check(EC.isMapType(plain:getScriptItem()) == true and EC.isFixedType(plain:getScriptItem()) == false
+    and Codec.check(plain) == true and Codec.typeAllowed(WP) == true
+    and okS == false and whyS == "stash_map" and select(2, Codec.stateCheck(marked)) == "stash_map"
+    and okA == false and whyA == "not_whitelisted" and ruleA == "fixed" and ruleAT == "fixed"
+    and capsuleSnap == nil and capsuleWhy == "fixed",
+    "MP-1: a plain map passes the item and type checks with its category open; a stash map is stash_map, a live animal still fixed; another mod's snapshotItem still refuses a map")
+local rolled = instanceItem("Base.Map"); rolled.condition = 4
+local sRolled, sCity = Codec.snapshot(rolled), Codec.snapshot(plain)
+local back, backCity, fresh = Codec.rebuild(sRolled), Codec.rebuild(sCity), instanceItem("Base.Map")
+check(sRolled.mapId == rolled.mapId and sCity.mapId == nil and back.mapId == rolled.mapId and back.mapId ~= fresh.mapId
+    and back.condition == 4 and backCity.mapId == "WestpointMap" and back:getStashMap() == nil
+    and Codec.signature(sCity) == Codec.signature(Codec.snapshot(instanceItem(WP)))
+    and Codec.isCanonical(fresh, "Base.Map") == true,
+    "MP-2: a plain map's rolled region and its condition come back on the rebuilt copy, a city map's region is its script's and not stored; two new maps of a type fold together and a new map of another region is still new")
+local cityMap, stashMap, rolledMap = give(WP), stash(WP), give("Base.Map")
+local rows = {}
+for _, r in ipairs(cmd(seller, "market.candidates").items or {}) do rows[r.item .. "|" .. tostring(r.ok)] = r end
+local refusedList = cmd(seller, "market.list", { itemIds = { stashMap.id }, price = 30 })
+local listed = cmd(seller, "market.list", { itemIds = { rolledMap.id }, price = 30 })
+local bought = cmd(buyer, "market.buy", { listingId = listed.listingId, price = 30 })
+local got = nil
+for _, it in ipairs(buyer.inventory.items) do if it.fullType == "Base.Map" then got = it end end
+check(rows[WP .. "|true"] ~= nil and rows[WP .. "|false"] ~= nil and rows[WP .. "|false"].reason == "stash_map"
+    and refusedList.error == "stash_map" and seller.inventory:contains(stashMap)
+    and listed.ok == true and not seller.inventory:contains(rolledMap) and bought.ok == true
+    and got ~= nil and got.mapId == rolledMap.mapId and got:getStashMap() == nil,
+    "MP-3: market: the picker splits a plain map from a stash map (stash_map), the stash map stays home, the plain one lists and the buyer gets a map of the same region")
+local refusedAuction = cmd(seller, "auction.create", { itemIds = { stashMap.id }, startPrice = 20, hours = 24 })
+local animal = give("Base.Sheep")
+local refusedAnimal = cmd(seller, "auction.create", { itemIds = { animal.id }, startPrice = 20, hours = 24 })
+local auctioned = cmd(seller, "auction.create", { itemIds = { cityMap.id }, startPrice = 20, hours = 24 })
+check(refusedAuction.error == "stash_map" and refusedAnimal.error == "not_whitelisted" and refusedAnimal.rule == "fixed"
+    and seller.inventory:contains(stashMap) and seller.inventory:contains(animal)
+    and auctioned.ok == true and not seller.inventory:contains(cityMap),
+    "MP-4: auction: a stash map is refused as stash_map and a live animal as fixed, both stay; a plain map goes up for auction")
+local order = cmd(buyer, "wanted.create", { item = WP, qty = 2, options = { { kind = "coin", currency = "survivor", unitPrice = 10 } } })
+local deliver = give(WP)
+local refusedFill = cmd(seller, "wanted.fill", { orderId = order.orderId, option = 1, itemIds = { stashMap.id }, unitPrice = 10 })
+local filled = cmd(seller, "wanted.fill", { orderId = order.orderId, option = 1, itemIds = { deliver.id }, unitPrice = 10 })
+local payMap = give(WP)
+local refusedPay = cmd(seller, "wanted.create", { item = "Base.Bandage", qty = 1,
+    options = { { kind = "item", itemIds = { stashMap.id }, perUnit = 1 } } })
+local paid = cmd(seller, "wanted.create", { item = "Base.Bandage", qty = 1,
+    options = { { kind = "item", itemIds = { payMap.id }, perUnit = 1 } } })
+check(order.ok == true and refusedFill.error == "stash_map" and filled.ok == true and not seller.inventory:contains(deliver)
+    and refusedPay.error == "stash_map" and paid.ok == true and not seller.inventory:contains(payMap)
+    and seller.inventory:contains(stashMap),
+    "MP-5: buy orders: a map type can be wanted, a plain map delivered and offered as the item payment; a stash map is refused as stash_map both ways and stays")
+local longMap = give("Base.Map"); longMap:setMapID(string.rep("x", Codec.MODDATA_STRING_MAX + 1))
+local okL, whyL = Codec.check(longMap)
+check(okL == false and whyL == "moddata_too_big" and select(2, Codec.stateCheck(longMap)) == "moddata_too_big"
+    and Codec.snapshot(longMap).mapId == nil and Codec.check(instanceItem(WP)) == true,
+    "MP-6: a map whose own region is longer than the snapshot keeps is refused (moddata_too_big), not rebuilt as another region")
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+files[S.Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "map", item = "Base.Map", qty = 1, price = 20, dailyCap = 0, buyback = true, bidPrice = 3, buybackCap = 0 },
+} }) }, opens = 0 }
+assert(S.Shop.load())
+local m1, m2, m3 = give("Base.Map"), give("Base.Map"), give("Base.Map")
+m3:setMapID(m2.mapId)
+local before = L.getBalance("mp-seller", "survivor").available
+local mixed = cmd(seller, "shop.sell", { id = "map", itemIds = { m1.id, m2.id }, revision = S.Shop.revision() })
+local kept = seller.inventory:contains(m1) and seller.inventory:contains(m2) and L.getBalance("mp-seller", "survivor").available == before
+local same = cmd(seller, "shop.sell", { id = "map", itemIds = { m2.id, m3.id }, revision = S.Shop.revision() })
+check(m1.mapId ~= m2.mapId and mixed.ok == false and mixed.error == "mixed_items" and kept and same.ok == true
+    and not seller.inventory:contains(m2) and not seller.inventory:contains(m3) and seller.inventory:contains(m1)
+    and L.getBalance("mp-seller", "survivor").available == before + 6,
+    "MP-7: the buyback takes two maps of one region as one lot, but refuses a lot of different regions (mixed_items) and moves nothing: one snapshot stands for the lot a rollback returns")
 SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
 files["MinidoracatEconomy/whitelist.json"] = nil
 Codec.load()
@@ -20361,12 +20495,12 @@ local lampBack = Codec.rebuild(Codec.snapshot(lamp))
 check(lockBack.keys == 1 and lockBack.keyId == 4321 and lampBack.light.battery == true and lampBack.light.hasBattery == true
     and lampBack.light.bulb == "Base.LightBulbRed" and lampBack.light.power == 0.6 and lampBack.light.r == 0.2 and lampBack.light.g == 1,
     "BB-7: a padlock keeps its key count and id, a lamp its battery, bulb, power and colour")
-files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Cartography","Bag","Security","Furniture"],"types":["Base.Map"],"excludeTypes":[]}' }, opens = 0 }
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Animal","Bag","Security","Furniture"],"types":["Base.Sheep"],"excludeTypes":[]}' }, opens = 0 }
 local loadedBB = Codec.load()
-local _, whyMap, ruleMap = Codec.check(instanceItem("Base.Map"))
+local _, whyMap, ruleMap = Codec.check(instanceItem("Base.Sheep"))
 check(loadedBB == true and whyMap == "not_whitelisted" and ruleMap == "fixed" and Codec.check(bag) == true
     and Codec.check(lock) == true and Codec.check(lamp) == true,
-    "BB-8: a map stays fixed even when its category and the item itself are listed; a bag, a padlock and furniture are listable")
+    "BB-8: a live animal stays fixed even when its category and the item itself are listed; a bag, a padlock and furniture are listable")
 local floor = instanceItem("Moveables.lighting_indoor_01_8"); floor.light.power = 0.3
 lamp.getWorldSprite = function() return "lighting_indoor_01_9" end
 local floorSnap = Codec.snapshot(floor)
@@ -20856,6 +20990,31 @@ check(okW and plain ~= nil and say("Market_Reason_not_whitelisted_unique") ~= ni
     and call(W.viewLines, "Uq.Bad", { car = "x" }, {}) == nil and call(W.viewLines, "Uq.Bag", nil, {}) == nil,
     "TX-7: a unique type has its buy-order and shop sentences, the mod's own refusal text and view lines, and falls back when a hook is missing or raises")
 EC.Client.refusalTexts, EC.Client.itemViews = nil, nil
+-- TX-8: a map is listed, auctioned or handed to a buy order only on the second press (owner
+-- decision 2026-10-14): the first one is told the markers drawn on it stay behind; anything else
+-- goes at once. A stash map and a live animal read as their own refusals, the animal one no longer
+-- naming maps.
+local A1 = { item = "Base.WestpointMap", itemIds = { 11 } }
+local A2 = { item = "Base.WestpointMap", itemIds = { 12 } }
+local B1 = { item = "Base.Bandage", itemIds = { 13 } }
+local mapDlg, mixDlg, otherDlg = {}, {}, {}
+local first, second = call(W.mapWarning, mapDlg, { A1 }), call(W.mapWarning, mapDlg, { A1 })
+local fixedText = call(W.marketError, { error = "not_whitelisted", rule = "fixed" })
+check(okW and first ~= nil and first == say("Market_MapMarkings") and second == nil
+    and call(W.mapWarning, mixDlg, { B1, { item = "Base.Map", itemIds = { 14 } } }) == first
+    and call(W.mapWarning, otherDlg, { B1 }) == nil and otherDlg.mapWarned == nil
+    and call(W.marketError, { error = "stash_map" }) == say("Market_Reason_stash_map") and say("Market_Reason_stash_map") ~= nil
+    and call(W.sellRefusalText, "stash_map") == say("Shop_Error_stash_map") and say("Shop_Error_stash_map") ~= nil
+    and call(W.shopError, "mixed_items") == say("Shop_Error_mixed_items") and say("Shop_Error_mixed_items") ~= nil
+    and fixedText == say("Market_Reason_not_whitelisted_fixed") and not string.find(fixedText, "\229\156\176\229\156\150", 1, true),
+    "TX-8: a map's first press is told its markers stay behind and the second goes; other items go at once; a stash map, a mixed buyback lot and an animal have their own sentences")
+-- TX-9: the warning follows what is handed over: another map, or a map again after something
+-- else, is asked about once more
+local swapDlg = {}
+local s1, s2, s3 = call(W.mapWarning, swapDlg, { A1 }), call(W.mapWarning, swapDlg, { A2 }), call(W.mapWarning, swapDlg, { A2 })
+local s4, s5 = call(W.mapWarning, swapDlg, { B1 }), call(W.mapWarning, swapDlg, { A2 })
+check(s1 == first and s2 == first and s3 == nil and s4 == nil and s5 == first,
+    "TX-9: switching to another map, or back to a map after another item, asks again; pressing again on the same map goes")
 -- TX-5: the generic sentences a refusal falls back to carry no placeholder in any language
 local withArg = {}
 for lang, d in pairs(dicts) do

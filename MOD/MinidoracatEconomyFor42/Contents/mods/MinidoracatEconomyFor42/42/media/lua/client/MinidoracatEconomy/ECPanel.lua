@@ -3527,6 +3527,9 @@ function Panel:submitMarket(dlg)
         -- the lot the player asked for, taken off the front of the server's own id list
         itemIds, name = {}, dlg.cand.name
         for i = 1, qty do itemIds[i] = dlg.cand.itemIds[i] end
+        -- a map: the first press says what stays behind (W.mapWarning), the second one goes
+        dlg.message = W.mapWarning(dlg, { dlg.cand })
+        if dlg.message then return end
     else
         listingId, price, name = dlg.row.id, dlg.row.price, dlg.row.name
         -- a lot that does not fit is parked in the mailbox: the estimate says so, and the
@@ -4082,6 +4085,8 @@ function Panel:submitAuction(dlg)
     end
     local itemIds = {}
     for i = 1, qty do itemIds[i] = dlg.cand.itemIds[i] end
+    dlg.message = W.mapWarning(dlg, { dlg.cand })
+    if dlg.message then return end
     dlg.message = nil
     pending.name, pending.qty, pending.price = dlg.cand.name, qty, price
     self.marketPending = pending

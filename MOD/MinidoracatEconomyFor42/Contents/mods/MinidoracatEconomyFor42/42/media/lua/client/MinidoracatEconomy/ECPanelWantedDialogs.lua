@@ -713,12 +713,29 @@ local function keyOf(v)
     return "{" .. table.concat(parts, ",") .. "}"
 end
 
+-- The backpack groups this press hands over: the chosen group on a delivery, the group of an item
+-- payment on a new order (W.mapWarning asks before a map goes, and again when the maps change).
+function Dlg:handedGroups()
+    if self.kind == "fill" then return { self:group() } end
+    local out = {}
+    if self.kind ~= "create" then return out end
+    for i = 1, self.optCount do
+        local o = self.opt[i]
+        local g = o.kind == "item" and self.groups and self.groups[o.group:getOptionData(o.group.selected)]
+        if g then out[#out + 1] = g end
+    end
+    return out
+end
+
 function Dlg:onConfirm()
     if self.page:busy() then return end
     local gate = self.page:gateReason(self.kind)
     if gate then return self:setError(gate, nil) end
     local msg, control = self[CHECKS[self.kind]](self)
     if msg then return self:setError(msg, control) end
+    -- a map: the first press says what stays behind and sends nothing, the second one goes
+    local warning = W.mapWarning(self, self:handedGroups())
+    if warning then return self:setError(warning, nil) end
     local args = self[ARGS[self.kind]](self)
     local key = keyOf(args)
     if not (self.sent and self.sent.key == key) then self.sent = { key = key, requestId = C.newRequestId() } end

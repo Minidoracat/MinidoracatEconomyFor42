@@ -1386,10 +1386,17 @@ function Shop.sell(player, args)
         if not new then return { ok = false, error = "not_canonical", reason = why } end
         items[#items + 1] = item
     end
+    -- One snapshot (the first copy's) stands for the lot in the pending record a rollback returns
+    -- the goods from. A plain map's region is left out of the "new" comparison (every new
+    -- Base.Map rolls one, Codec.isCanonical), so copies of different regions would all come back
+    -- as the first one's: they are sold one region at a time.
+    local snapshot = Codec.snapshot(items[1])
+    for i = 2, #items do
+        if Codec.snapshot(items[i]).mapId ~= snapshot.mapId then return { ok = false, error = "mixed_items" } end
+    end
 
     local id = S.newId()
     local _, seq = EC.parseId(id)
-    local snapshot = Codec.snapshot(items[1])
     -- phase 1: the player's own save records the sale and the exact origin of every unit before
     -- anything leaves the backpack. A refusal here destroys nothing and mints nothing. The
     -- ledger key of the mint is recorded with it: that receipt, not the age of the stamp, is

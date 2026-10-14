@@ -9,15 +9,17 @@
 -- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
 -- or one item per write, written straight back, refused with whitelist_stale when the file on disk
 -- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
--- the file: none of EC.LISTING_FIXED_TYPES (maps and animals; radios travel with their DeviceData,
+-- the file: none of EC.LISTING_FIXED_TYPES (live animals; radios travel with their DeviceData,
 -- clothing with its per-part holes / blood / dirt / patches and its look, a watch or alarm clock
 -- with its alarm, a key with its id and a padlock with its key count, furniture with its sprite
--- and light), nothing rotten, equipped (worn clothing and bags included) or favourite or broken,
--- no bag or key ring with anything in it, and no modData
+-- and light, a map with its map id), nothing rotten, equipped (worn clothing and bags included) or
+-- favourite or broken, no bag or key ring with anything in it, and no modData
 -- larger than the snapshot may carry (the data itself travels: vanilla writes customName /
 -- condition:* there). State a snapshot cannot carry is refused instead of dropped: a notebook's
 -- writing or author lock, applied poison, a prepared dish's ingredients, a fertilized egg, a
--- patch sewn over a hole, a disc or tape left inside a device.
+-- patch sewn over a hole, a disc or tape left inside a device, a stash map. The one exception
+-- is the markers a player drew on a map (owner decision 2026-10-14): Lua cannot read them, the
+-- buyer gets a clean map, and the client warns the player before the map leaves (EC.isMapType).
 --
 -- Engine references (snapshot 42.20.4-20260826, all exercised in A7):
 --   instanceItem                    LuaManager.java:5610-5620
@@ -47,6 +49,8 @@
 --   wristwatch alarm (hour, minute, set)            AlarmClockClothing.java:71-79, 232-254, 262-310
 --                                                   (42.21.0; the server sets it the same way,
 --                                                   SyncPlayerAlarmClockPacket.java:45-58)
+--   map id / stash map (42.21.0)                    MapItem.java:134-140, 147-159 ; Item.java:1387-1389, 1806-1812 ;
+--                                                   InventoryItem.java:1774-1777, 3656-3672 ; StashSystem.java:148-191
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Shop then
     require "MinidoracatEconomy/ECShop"
@@ -554,6 +558,16 @@ local function clothRebuild(item, s)
     end
 end
 
+-- A map's region (MapItem.mapId, saved with it, MapItem.java:147-159) when it is not the one its
+-- script gives every new copy (Item.java:1806-1812; the plain Base.Map rolls one), else nil.
+local function ownMapId(item)
+    local mapId = call(item, "getMapID")
+    if type(mapId) ~= "string" or mapId == "" then return nil end
+    local script = call(item, "getScriptItem")
+    if script ~= nil and mapId == call(script, "getMapID") then return nil end
+    return mapId
+end
+
 -- State an item must not be in to leave a backpack through us, whatever the list says. Returns
 -- ok, reason. Vanilla itself writes modData (customName, condition:<type>,
 -- InventoryItem.java:3253-3256, 3262-3271), so a mod-data key is never a reason by itself: the
@@ -591,6 +605,15 @@ function Codec.stateCheck(item, carriesContents)
     -- number converts. The rebuilt device would come out empty and the disc would be gone.
     local dev = call(item, "getDeviceData")
     if dev and call(dev, "hasMedia") == true then return false, "device_media" end
+    -- A stash map (StashSystem.doStashItem, StashSystem.java:148-191) is a city map with the stash's
+    -- markers printed into its symbols, which Lua cannot read (MapItem.getSymbols is @HiddenFromLua,
+    -- MapItem.java:142-145), and a stash link that spawns the cache when it is read
+    -- (InventoryItem.doBuildingStash, :3656-3663): a rebuild would hand over a plain map.
+    local stash = call(item, "getStashMap")
+    if type(stash) == "string" and stash ~= "" then return false, "stash_map" end
+    -- a region the snapshot cannot carry (longer than any string it keeps) would come back as another
+    local mapId = ownMapId(item)
+    if mapId and #mapId > Codec.MODDATA_STRING_MAX then return false, "moddata_too_big" end
     -- The snapshot keeps one fluid and the total (fluidOf): a mixture (FluidContainer.isMixture,
     -- FluidContainer.java:855-857) would come back as the whole amount of its primary fluid.
     local fc = call(item, "getFluidContainer")
@@ -698,8 +721,9 @@ end
 -- pass, reason[, rule[, detail]]: a not_whitelisted refusal also says which rule refused the item,
 -- so the picker can say what would change the answer -- "excluded" (the item itself is on
 -- excludeTypes), "blocked" (another mod blocked the type, Codec.blockItemType), "unique" (a unique
--- type outside the market and auctions), "fixed" (EC.LISTING_FIXED_TYPES: never, whatever the
--- file says) or "category" (its EC.itemCategory is not on the list; the picker names that category).
+-- type outside the market and auctions), "fixed" (EC.LISTING_FIXED_TYPES, live animals: never,
+-- whatever the file says) or "category" (its EC.itemCategory is not on the list; the picker names
+-- that category).
 -- `player` and `channel` name the intake. A unique type (above) on the "market" or "auction"
 -- channel skips the whitelist (its mod declared it tradeable) and container_not_empty (the mod
 -- carries the contents), and its handler's check(item, player, channel) is asked last: a refusal
@@ -773,9 +797,11 @@ local canonical = {}
 local FOOD_PORTION = { "hunger", "calories", "proteins", "lipids", "carbs" }
 local function canonicalCopy(s)
     local copy = {}
-    -- a title and a schematic's recipes are rolled for every new copy, like a look or an alarm
+    -- a title and a schematic's recipes are rolled for every new copy, like a look, an alarm or the
+    -- region of a plain map
     for k, v in pairs(s) do
-        if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" and k ~= "label" and k ~= "title" and k ~= "recipes" then
+        if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" and k ~= "label" and k ~= "title" and k ~= "recipes"
+            and k ~= "mapId" then
             copy[k] = v
         end
     end
@@ -844,7 +870,8 @@ end
 --     BaseVehicle.java:10751, IsoGameCharacter.java:11489)
 --   furniture and radios: the name comes from the sprite (Moveable.java:111-174) and
 --     getDisplayName adds the switched-on prefix (:61-79)
--- Animals and maps are never listed (EC.LISTING_FIXED_TYPES). Returns name, given-by-vanilla.
+-- Animals are never listed (EC.LISTING_FIXED_TYPES); a map is named by its script. Returns name,
+-- given-by-vanilla.
 local STATE_NAMED_TYPES = { "FOOD", "KEY", "KEY_RING", "MOVEABLE", "RADIO" }
 local OWNER_TAGS = { "APPLY_OWNER_NAME", "MONOGRAM_OWNER_NAME" }
 local function isType(script, n)
@@ -1030,6 +1057,9 @@ function Codec.snapshot(item)
     if type(hour) == "number" then
         s.alarm = { hour = hour, minute = call(item, "getMinute"), set = call(item, "isAlarmSet") == true }
     end
+    -- a map's region, when it is not its script's (ownMapId); stateCheck refuses one too long to keep
+    local mapId = ownMapId(item)
+    if mapId and #mapId <= Codec.MODDATA_STRING_MAX then s.mapId = mapId end
     clothSnapshot(item, s)
     local fluid = fluidOf(item)
     if fluid and fluid.name ~= "" and (fluid.amount or 0) > 0 then s.fluid = { name = fluid.name, amount = fluid.amount } end
@@ -1258,6 +1288,7 @@ local function rebuildState(s)
         if type(s.alarm.minute) == "number" then call(item, "setMinute", s.alarm.minute) end
         call(item, "setAlarmSet", s.alarm.set == true)
     end
+    if type(s.mapId) == "string" then call(item, "setMapID", s.mapId) end
     if type(s.keys) == "number" then call(item, "setNumberOfKey", s.keys) end
     if type(s.reduction) == "number" then call(item, "setWeightReduction", s.reduction) end
     if type(s.light) == "table" then
@@ -1375,10 +1406,13 @@ end
 -- The snapshot of an item another mod carries itself (a capsule's cargo, MinidoracatEconomy.v1.
 -- snapshotItem): the state check and the fixed classes (reason "fixed"), but no whitelist and no
 -- blocked types; opts.contents = true lets a container with contents through (the caller carries
--- those). Returns the snapshot, or nil and the reason. Changes nothing.
+-- those). A map is "fixed" here too: the markers drawn on it would be dropped, and only the
+-- trading pages warn the player about that. Returns the snapshot, or nil and the reason. Changes
+-- nothing.
 function Codec.snapshotItem(item, opts)
     if type(call(item, "getFullType")) ~= "string" then return nil, "invalid_item" end
-    if EC.isFixedType(call(item, "getScriptItem")) then return nil, "fixed" end
+    local script = call(item, "getScriptItem")
+    if EC.isFixedType(script) or EC.isMapType(script) then return nil, "fixed" end
     local pass, reason = Codec.stateCheck(item, type(opts) == "table" and opts.contents == true)
     if not pass then return nil, reason end
     return Codec.snapshot(item)

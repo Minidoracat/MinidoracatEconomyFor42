@@ -661,6 +661,25 @@ local function auctionRow(it, context)
     }
 end
 
+-- A map leaves without the markers drawn on it (EC.isMapType; owner decision 2026-10-14). The
+-- listing, auction and buy-order dialogs ask before one goes. `groups` are the backpack groups
+-- this press hands over ({ item = fullType, itemIds = {...} }, a candidate row): when they hold
+-- maps the dialog has not warned about yet, this returns the text (the dialog shows it and sends
+-- nothing) and remembers those maps, so pressing again goes; handing over other maps -- or no map
+-- in between -- asks again. No map: nil.
+function W.mapWarning(dlg, groups)
+    local maps = {}
+    for _, g in ipairs(groups) do
+        if type(g) == "table" and type(g.item) == "string" and EC.isMapType(ScriptManager.instance:FindItem(g.item)) then
+            maps[#maps + 1] = g.item .. "#" .. tostring(g.itemIds and g.itemIds[1])
+        end
+    end
+    local key = #maps > 0 and table.concat(maps, ",") or nil
+    if key == dlg.mapWarned then return nil end
+    dlg.mapWarned = key
+    return key and getText(T .. "Market_MapMarkings") or nil
+end
+
 -- One backpack candidate. The tile itself only has room for the name, so everything else the
 -- player may want (the script name, the category the whitelist goes by, the item-state line, and
 -- the server's refusal when the item may not be listed) is joined once here for the picker's

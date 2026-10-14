@@ -127,29 +127,37 @@ function EC.nearMapAtm(player)
     return false
 end
 
+-- Whether a script item is of an ItemType class (Item.java:1375-1385 getItemType/isItemType; the
+-- registry names are the static fields of ItemType.java:7-22, exposed to Lua by LuaManager.java:2311).
+local function scriptIs(script, name)
+    local t = script ~= nil and ItemType ~= nil and ItemType[name] or nil
+    if t == nil then return false end
+    local ok, hit = pcall(script.isItemType, script, t)
+    return ok and hit == true
+end
+
 -- Item classes the market can never list, whatever whitelist.json says, because Lua can neither
--- read nor rebuild their Java-side state: a map's own markers (MapItem.getSymbols is
--- @HiddenFromLua, MapItem.java:142-152, so an annotated map cannot even be told from a clean one)
--- and the live animal an AnimalInventoryItem carries. Script items carry their class as an
--- ItemType (Item.java:1375-1385 getItemType/isItemType; the registry names are the static fields
--- of ItemType.java:7-22, exposed to Lua by LuaManager.java:2311). Shared: the server refuses in
--- Codec.check, the admin page hides these classes from the category list. Every other class
--- travels in the snapshot (Codec.snapshot / rebuild): radios with their DeviceData, clothing with
--- its per-part wear, alarm clocks and watches with their alarm, keys and padlocks with their id
--- and key count, furniture with its sprite and light, bags and key rings only empty
--- (Codec.stateCheck container_not_empty); worn clothing and bags are refused as equipped.
-EC.LISTING_FIXED_TYPES = { "MAP", "ANIMAL" }
+-- read nor rebuild their Java-side state: the live animal an AnimalInventoryItem carries. Shared:
+-- the server refuses in Codec.check, the admin page hides these classes from the category list.
+-- Every other class travels in the snapshot (Codec.snapshot / rebuild): radios with their
+-- DeviceData, clothing with its per-part wear, alarm clocks and watches with their alarm, keys and
+-- padlocks with their id and key count, furniture with its sprite and light, maps with their map
+-- id, bags and key rings only empty (Codec.stateCheck container_not_empty); worn clothing and bags
+-- are refused as equipped.
+EC.LISTING_FIXED_TYPES = { "ANIMAL" }
 function EC.isFixedType(script)
-    if script == nil or ItemType == nil then return false end
     for _, name in ipairs(EC.LISTING_FIXED_TYPES) do
-        local t = ItemType[name]
-        if t ~= nil then
-            local ok, hit = pcall(script.isItemType, script, t)
-            if ok and hit == true then return true end
-        end
+        if scriptIs(script, name) then return true end
     end
     return false
 end
+
+-- A map lists (owner decision 2026-10-14) without the markers drawn on it: MapItem.getSymbols is
+-- @HiddenFromLua (MapItem.java:142-145), so Lua can neither read nor rebuild them and the receiver
+-- gets a clean map. The client warns before a map leaves through the market, an auction or a buy
+-- order; a stash map, whose printed markers point at a cache, is refused (Codec.stateCheck
+-- stash_map).
+function EC.isMapType(script) return scriptIs(script, "MAP") end
 
 -- The category vanilla's inventory column paints for an item (ISInventoryPane.lua:2546-2549):
 -- its DisplayCategory, else the item class's own getCategory() -- "Item" from the base class

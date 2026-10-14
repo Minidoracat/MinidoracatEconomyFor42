@@ -352,10 +352,11 @@ A server option.
 [tr][td]Keys[/td][td]Security[/td][/tr]
 [tr][td]Picked-up furniture[/td][td]Furniture[/td][/tr]
 [tr][td]Pocket watches[/td][td]Memento[/td][/tr]
+[tr][td]Maps[/td][td]Cartography[/td][/tr]
 [/table]
 [list]
 [*] [b]Open by default[/b]: the categories holding placed alarm clocks (Household), hollow books (Literature) and the few movables in Camping, Gardening and Material, so they become listable with 0.7.0; exclude them in the whitelist if you don't want that.
-[*] [b]Never listable[/b]: maps and live animals, whatever the whitelist says.
+[*] [b]Never listable[/b]: live animals and annotated maps (stash maps), whatever the whitelist says. Plain maps can be traded once their category is open, but markers a player drew on them don't go along; the Economy Center warns once before a map is sent.
 [*] [b]Empty first[/b]: bags and key rings must be empty.
 [/list]
 [h3]Items marked by other mods[/h3]
@@ -549,7 +550,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]Why can't I list my item?[/h3]
 [list]
 [*] Listing needs the server whitelist plus supported item types and state checks, so [b]not every modded item can be traded[/b]. The picker shows each item's category and why it is refused; ask an admin to open a closed category.
-[*] Maps and live animals can never be listed, whatever the whitelist; neither can rotten food, equipped or broken items, bags or key rings with something inside, written or locked notes and paper, poisonous or poisoned food, fertilized eggs, containers with more than one fluid, or devices holding a disc or tape.
+[*] Live animals and annotated maps (stash maps) can never be listed, whatever the whitelist; neither can rotten food, equipped or broken items, bags or key rings with something inside, written or locked notes and paper, poisonous or poisoned food, fertilized eggs, containers with more than one fluid, or devices holding a disc or tape.
 [*] The listing picker's verdict is what counts; it explains why and what to do.
 [/list]
 [h3]Why won't the shop buy my item?[/h3]
@@ -627,7 +628,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]Server owners: a new shop item still can't be listed?[/h3]
 [list]
 [*] Shop catalog and Listing whitelist are separate lists; allow it on the Listing whitelist page as well.
-[*] Only maps and live animals never can; other items depend on whether their category is open, and the player's picker names each item's category and why it is refused.
+[*] Only live animals and annotated maps (stash maps) never can; plain maps and other items depend on whether their category is open (maps are Cartography, closed by default), and the player's picker names each item's category and why it is refused.
 [/list]
 [h3]Server owners: is there a backup feature?[/h3]
 [list]
