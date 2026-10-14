@@ -1346,7 +1346,9 @@ end)
 -- registered a unique item type on the server words its listings here - registerItemView(fullType,
 -- fn(view, row) -> { already translated lines }) for every listing detail (the server's row.view),
 -- registerRefusalText(fullType, fn(detail) -> text) for its unique_refused (ECPanelWidgets reads
--- both, each call in pcall). API_MAJOR lives on the server table on purpose: probing
+-- both, each call in pcall). CAPABILITIES.rentalPeriods (rev 6): Entitlements.quote takes a
+-- trailing `periods` (1..RENTAL_PERIODS_MAX), one order paying that many rental periods.
+-- API_MAJOR lives on the server table on purpose: probing
 -- `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
 require "MinidoracatEconomy/ECEntitlementClient"
 C.itemViews, C.refusalTexts = C.itemViews or {}, C.refusalTexts or {}
@@ -1360,9 +1362,10 @@ end
 EC.v1 = EC.v1 or {}
 EC.v1.Client = {
     API_MAJOR = 1,
-    API_REVISION = 5,
+    API_REVISION = 6,
     CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true, freeze = true,
-        shopAdd = true, uniqueItemViews = true },
+        shopAdd = true, uniqueItemViews = true, rentalPeriods = true },
+    RENTAL_PERIODS_MAX = C.Entitlements.RENTAL_PERIODS_MAX,
     registerItemView = registerHook(C.itemViews),
     registerRefusalText = registerHook(C.refusalTexts),
     getWallet = function() return C.wallet end,

@@ -11,16 +11,18 @@
 --           perm,                        -- committed permanent units (durable or not)
 --           pp    = { q, o, epoch, seq, ts, tx } | nil,   -- the part of perm not proven saved
 --           rentals = { Rental, ... },   -- creation order, <= RENTALS_MAX; an ended one is pruned
---           orders = { { id, kind, q, amt, cur, tr, rental?, auto?, renewal?, st, epoch, seq, ts, tx,
+--           orders = { { id, kind, q, amt, cur, tr, rental?, periods?, auto?, renewal?, st, epoch, seq, ts, tx,
 --                        activatedAt?, prev?, rf? }, ... newest first, <= ORDERS_KEEP },
 --           notice = { code, at, error?, rental? } | nil }
 --   Rental = { id,                       -- the order id that created it
 --              q,                        -- its units, fixed for its whole life
---              lease = { price, D, G, R, cur, amt, tr, start, paidUntil, cycle, last, phase?, reminded? } | nil,
---              pend  = { o, q, price, D, G, R, cur, amt, tr, renewal?, auto?, epoch, seq, ts, tx } | nil,
+--              lease = { price, D, G, R, cur, amt, tr, k?, start, paidUntil, cycle, last, phase?, reminded? } | nil,
+--              pend  = { o, q, price, D, G, R, cur, amt, tr, k?, renewal?, auto?, epoch, seq, ts, tx } | nil,
 --              auto  = { on, gen, price?, cur?, D?, tr, rev, why?, epoch, seq, at } | nil }
 --   D/G/R are milliseconds (period, grace, reminder); price is the rent per unit; tr is the plan
---   revision the terms came from.
+--   revision the terms came from. A player's order may pay k consecutive periods at once (API rev 7,
+--   quote `periods`): D stays one period, amt is the whole order, k (periods? on the order) is kept
+--   only when above 1. Auto-renew always pays one period.
 --   A rental is a contract: each period records the terms it was paid under, and an auto-renew
 --   consent records the money terms the player agreed to (unit price, currency, period). Renewals run
 --   only while the plan still offers exactly those; any other plan edit leaves the consent alone.
@@ -96,6 +98,8 @@ local E = EC.Entitlements
 
 E.QUOTE_TTL_MS = 120000
 E.PERMANENT_QTY_MAX = 100
+-- the most periods one rental order may pay at once (quote `periods`)
+E.RENTAL_PERIODS_MAX = 365
 E.ORDERS_KEEP = 20
 -- ponytail: the admin order list sorts every row's ring on each page (rows x ORDERS_KEEP orders);
 -- index orders by time if a server grows to many thousands of paying accounts.
@@ -409,14 +413,14 @@ end
 
 -- ---------- activation ----------
 
--- The period payment `pend` buys for a rental whose lease is `lease`, starting at `at`: a lease
+-- The period(s) payment `pend` buys for a rental whose lease is `lease`, starting at `at`: a lease
 -- still live (or in grace) continues from its paidUntil, anything else starts at `at`.
 local function nextLeaseOf(pend, lease, at)
     local continuing = lease ~= nil and at < lease.paidUntil + lease.G
     return {
         price = pend.price, D = pend.D, G = pend.G, R = pend.R, cur = pend.cur, amt = pend.amt, tr = pend.tr,
-        start = continuing and lease.start or at,
-        paidUntil = (continuing and lease.paidUntil or at) + pend.D,
+        k = pend.k, start = continuing and lease.start or at,
+        paidUntil = (continuing and lease.paidUntil or at) + pend.D * (pend.k or 1),
         cycle = (lease and lease.cycle or 0) + 1, last = pend.o, phase = "active",
     }, continuing
 end
@@ -615,6 +619,7 @@ end
 local function orderView(o, w, ds, row)
     local v = { orderId = o.id, kind = o.kind, quantity = o.q, amount = o.amt, currency = o.cur,
         termsRevision = o.tr, status = o.st, paid = true, at = o.ts, renewal = o.renewal, rental = o.rental,
+        periods = o.kind == "rental" and (o.periods or 1) or nil,
         auto = o.auto, activatedAt = o.activatedAt, txId = o.tx,
         durable = { status = verdict(o, w), source = ds.source, seq = ds.seq } }
     v.refundable, v.refundEffect, v.previousUntil, v.rentalNo = refundFacts(row, o)
@@ -677,8 +682,9 @@ local function rentalView(r, planRow, now, w, blocked, over, ref, instant, shift
         paidUntil = paidUntil or nil, graceUntil = paidUntil and (paidUntil + lease.G) or nil,
         autoRenew = auto ~= nil and auto.on == true, autoRenewState = autoStateOf(r, planRow, w, blocked, over, instant, owed),
         termsRevision = t and t.tr or nil,
+        -- days is one period; amount is what the order that started this term paid for its periods
         terms = t and { price = t.price, amount = t.amt, currency = t.cur, days = t.D / E.DAY_MS,
-            graceHours = t.G / E.HOUR_MS } or nil,
+            periods = t.k or 1, graceHours = t.G / E.HOUR_MS } or nil,
         autoTerms = (auto and auto.on and auto.price) and { price = auto.price, currency = auto.cur,
             days = auto.D / E.DAY_MS } or nil,
         pendingOrderId = pend and pend.o or nil, autoPending = (pend and pend.auto) or nil }
@@ -794,9 +800,9 @@ local function currencyGate(src, cur)
 end
 
 -- Every rule a new payment must pass, shared by quote, purchase and auto-renew. `rentalId` names the
--- rental a "rental" payment renews (nil: a new rental). Returns { kind, q, amt, cur, renewal, rental }
--- or nil, error.
-local function priceOf(modId, planRow, row, username, kind, quantity, now, w, rentalId)
+-- rental a "rental" payment renews (nil: a new rental); `periods` how many periods it pays (nil: 1,
+-- callers have checked it). Returns { kind, q, amt, cur, renewal, rental, periods } or nil, error.
+local function priceOf(modId, planRow, row, username, kind, quantity, now, w, rentalId, periods)
     local plan = planRow.values
     if planRow.provisional then return nil, "product_unavailable" end
     local src = G.source(modId)
@@ -829,14 +835,15 @@ local function priceOf(modId, planRow, row, username, kind, quantity, now, w, re
             if committed(row, now, r) + r.q > plan.rentalLimit then return nil, "limit_reached" end
             q, renewal, target = r.q, leaseLive(r.lease, now), r.id
         end
-        cur, amt = plan.rentalCurrency, plan.rentalPrice * q
+        periods = periods or 1
+        cur, amt = plan.rentalCurrency, plan.rentalPrice * q * periods
     else
         return nil, "invalid_args"
     end
     local bad = currencyGate(src, cur)
     if bad then return nil, bad end
     if L.getBalance(username, cur).available < amt then return nil, "insufficient_funds" end
-    return { kind = kind, q = q, amt = amt, cur = cur, renewal = renewal == true, rental = target }
+    return { kind = kind, q = q, amt = amt, cur = cur, renewal = renewal == true, rental = target, periods = periods }
 end
 
 -- What the row would look like after the payment, for the consumer's own gate.
@@ -888,9 +895,10 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
     local user = bySource[username] and copyTable(bySource[username]) or {}
     local nextRow = nextRowOf(row)
     local auto = reasonCode == "entitlement_renewal" or nil
+    local k = (terms.periods or 1) > 1 and terms.periods or nil
     local order = { id = orderId, kind = terms.kind, q = terms.q, amt = terms.amt, cur = terms.cur,
         tr = planRow.revision, renewal = terms.renewal or nil, st = "paid", auto = auto,
-        activatedAt = instant and now or nil }
+        activatedAt = instant and now or nil, periods = k }
     table.insert(nextRow.orders, 1, order)
     while #nextRow.orders > E.ORDERS_KEEP do table.remove(nextRow.orders) end
     local stamps = { order }
@@ -909,7 +917,7 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
         local plan = planRow.values
         local pend = { o = orderId, q = terms.q, price = plan.rentalPrice, D = plan.rentalDays * E.DAY_MS,
             G = plan.graceHours * E.HOUR_MS, R = plan.reminderHours * E.HOUR_MS, cur = terms.cur, amt = terms.amt,
-            tr = planRow.revision, renewal = terms.renewal or nil, auto = auto }
+            tr = planRow.revision, k = k, renewal = terms.renewal or nil, auto = auto }
         local r
         if terms.rental then
             local old, i = rentalOf(nextRow, terms.rental)
@@ -951,7 +959,7 @@ local function settle(spec, planRow, username, row, terms, orderId, reasonCode)
     if lease then trackLease(ref) end
     X.emit("entitlement.order", { sourceMod = modId, username = username, productId = productId, orderId = orderId,
         kind = terms.kind, quantity = terms.q, amount = terms.amt, currency = terms.cur, txId = res.txId,
-        termsRevision = planRow.revision, renewal = terms.renewal or nil, rental = order.rental })
+        termsRevision = planRow.revision, renewal = terms.renewal or nil, rental = order.rental, periods = terms.periods })
     if instant then
         X.emit("entitlement.activated", { sourceMod = modId, username = username, productId = productId, orderId = orderId,
             kind = terms.kind, rental = order.rental, at = now, paidUntil = lease and lease.paidUntil or nil,
@@ -974,10 +982,12 @@ local function closeQuote(q, err)
     closed[q.id] = { key = q.key, error = err or q.lastError }
 end
 
-function E.quote(modId, username, productId, kind, quantity, rental)
+-- `periods` (rental only, nil: 1): pay that many consecutive periods in this one order.
+function E.quote(modId, username, productId, kind, quantity, rental, periods)
     if not ent then return fail("not_ready") end
     if not validMod(modId) or not validUser(username) or not validProduct(productId)
-        or (rental ~= nil and not validId(rental)) then
+        or (rental ~= nil and not validId(rental))
+        or (periods ~= nil and (kind ~= "rental" or not isInt(periods) or periods < 1 or periods > E.RENTAL_PERIODS_MAX)) then
         return fail("invalid_args")
     end
     local planRow = P.row(modId, productId)
@@ -986,14 +996,14 @@ function E.quote(modId, username, productId, kind, quantity, rental)
     if not spec then return withSnapshot(fail("product_unavailable"), modId, username, productId) end
     local now, w = EC.now(), S.durableStatus().seq
     local row = rowOf(modId, username, productId)
-    local terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w, rental)
+    local terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w, rental, periods)
     if not terms then return withSnapshot(fail(err), modId, username, productId) end
     local refusal = consumerCheck(spec, username, terms.kind, terms.q,
         projection(row, terms.kind, terms.q, now, w, terms.rental))
     if refusal then return withSnapshot(fail(refusal), modId, username, productId) end
     -- the callback may have changed anything: price again from what is there now
     planRow, row = P.row(modId, productId), rowOf(modId, username, productId)
-    terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w, rental)
+    terms, err = priceOf(modId, planRow, row, username, kind, quantity, now, w, rental, periods)
     if not terms then return withSnapshot(fail(err), modId, username, productId) end
     local k = rowKey(modId, username, productId)
     local old = quoteOf[k] and quotes[quoteOf[k]]
@@ -1001,11 +1011,11 @@ function E.quote(modId, username, productId, kind, quantity, rental)
     local id = S.newId()
     local q = { id = id, key = k, m = modId, u = username, p = productId, kind = terms.kind, q = terms.q,
         amt = terms.amt, cur = terms.cur, tr = planRow.revision, rev = row and row.rev or 0,
-        renewal = terms.renewal, rental = terms.rental, expiresAt = now + E.QUOTE_TTL_MS }
+        renewal = terms.renewal, rental = terms.rental, periods = terms.periods, expiresAt = now + E.QUOTE_TTL_MS }
     quotes[id], quoteOf[k] = q, id
     return withSnapshot({ ok = true, quote = { id = id, orderId = id, kind = q.kind, quantity = q.q, currency = q.cur,
         amount = q.amt, termsRevision = q.tr, expiresAt = q.expiresAt, ttlMs = E.QUOTE_TTL_MS, renewal = q.renewal,
-        rental = q.rental } },
+        rental = q.rental, periods = q.periods } },
         modId, username, productId)
 end
 
@@ -1048,9 +1058,9 @@ function E.purchase(modId, username, orderId)
         closeQuote(q, "stale_quote")
         return withSnapshot(fail("stale_quote"), modId, username, productId)
     end
-    local terms, err = priceOf(modId, planRow, row, username, q.kind, q.q, now, w, q.rental)
+    local terms, err = priceOf(modId, planRow, row, username, q.kind, q.q, now, w, q.rental, q.periods)
     if terms and (terms.amt ~= q.amt or terms.cur ~= q.cur or terms.q ~= q.q or terms.renewal ~= q.renewal
-        or terms.rental ~= q.rental) then
+        or terms.rental ~= q.rental or terms.periods ~= q.periods) then
         terms, err = nil, "stale_quote"
     end
     if not terms then
@@ -1677,7 +1687,7 @@ end
 
 S.handlers["entitlement.quote"] = function(player, args)
     answer(player, "entitlement.quote", args,
-        E.quote(args.sourceMod, S.login(player), args.productId, args.kind, args.quantity, args.rental))
+        E.quote(args.sourceMod, S.login(player), args.productId, args.kind, args.quantity, args.rental, args.periods))
 end
 
 S.handlers["entitlement.purchase"] = function(player, args)
@@ -1793,6 +1803,7 @@ local function adminOrders(args)
         local v = { username = f.u, sourceMod = f.m, productId = f.p, nameKey = planRow and planRow.nameKey or nil,
             instant = instant, orderId = o.id, txId = o.tx, kind = o.kind, renewal = o.renewal, auto = o.auto,
             quantity = o.q, amount = o.amt, currency = o.cur, status = o.st, at = o.ts, rental = o.rental,
+            periods = o.kind == "rental" and (o.periods or 1) or nil,
             -- a refund is saved (or not) on its own: a product that waits for the save says which
             refund = o.rf and { amount = o.rf.amt, at = o.rf.ts, txId = o.rf.tx,
                 durable = (not instant) and { status = verdict(o.rf, w) } or nil } or nil,
@@ -1853,15 +1864,18 @@ Events.OnTickEvenPaused.Add(E.onTick)
 -- independent-rentals model (a row holds any number of rentals, see the header); `setPlan` marks
 -- source-owned plans (setPlan / getPlan / setPlanSource), instant products and no sandbox mirror.
 -- Rev 4 (`freeze`): registerProduct takes freezeWhenAbsent and rentals can read `frozen` (header).
+-- Rev 7 (`rentalPeriods`): quote takes `periods`, one order paying that many rental periods.
 -- Rev 3 is ECTransfer's and revs 5 and 6 ECCodec's; every module keeps the higher number.
-G.API_REVISION = math.max(G.API_REVISION, 4)
+G.API_REVISION = math.max(G.API_REVISION, 7)
 if EC.v1 then
     EC.v1.API_REVISION = G.API_REVISION
+    EC.v1.RENTAL_PERIODS_MAX = E.RENTAL_PERIODS_MAX
     EC.v1.CAPABILITIES.entitlements = true
     EC.v1.CAPABILITIES.subscriptions = true
     EC.v1.CAPABILITIES.rentals = true
     EC.v1.CAPABILITIES.setPlan = true
     EC.v1.CAPABILITIES.freeze = true
+    EC.v1.CAPABILITIES.rentalPeriods = true
 end
 
 return E

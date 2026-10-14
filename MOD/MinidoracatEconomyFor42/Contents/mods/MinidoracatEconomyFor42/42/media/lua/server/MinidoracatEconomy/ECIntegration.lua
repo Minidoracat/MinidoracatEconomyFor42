@@ -63,6 +63,8 @@
 -- error "unique". Also E.snapshotItem(item, { contents = true? }) -> snapshot | nil, reason (state
 -- check and fixed classes, no whitelist), E.rebuildItem(snapshot) -> item | nil, reason and
 -- E.detachParts(item, container) -> count, for a mod that carries the contents itself.
+-- Rev 7 (ECEntitlements, CAPABILITIES.rentalPeriods): quote(username, productId, "rental", quantity,
+-- rental, periods) pays periods (1..E.RENTAL_PERIODS_MAX, nil = 1) consecutive periods in one order.
 
 if not MinidoracatEconomy or not MinidoracatEconomy.Rewards then
     require "MinidoracatEconomy/ECRewards"

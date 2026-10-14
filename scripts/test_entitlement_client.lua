@@ -121,6 +121,14 @@ local SRC, PROD = "MinidoracatVehicleManagerFor42", "claim_slot"
     check(id == nil and why == "invalid_args", "auto-renew without a rental refused locally")
     id, why = E.setAutoRenew(SRC, PROD, true, 1, 1, function() end, string.rep("x", 97))
     check(id == nil and why == "invalid_args", "over-long rental id refused locally")
+    local badPeriods = true
+    for _, k in ipairs({ 0, E.RENTAL_PERIODS_MAX + 1, 1.5, "3" }) do
+        id, why = E.quote(SRC, PROD, "rental", nil, function() end, nil, k)
+        if id ~= nil or why ~= "invalid_args" then badPeriods = false end
+    end
+    check(badPeriods and E.RENTAL_PERIODS_MAX == 365, "periods outside 1..365 or not a whole number refused locally")
+    id, why = E.quote(SRC, PROD, "permanent", 1, function() end, nil, 2)
+    check(id == nil and why == "invalid_args", "a permanent quote cannot pay periods")
     check(#sent == 0, "nothing sent for refused arguments")
 end)()
 
@@ -353,6 +361,12 @@ end)()
     check(renew.args.rental == "1:42" and renew.args.quantity == nil and renew.args.requestId ~= newRental.args.requestId,
         "a renewal quote carries its rental id")
     reply("entitlement.quote", { ok = false, error = "rental_unknown", requestId = renew.args.requestId })
+    tick(700)
+    E.quote(SRC, PROD, "rental", nil, nil, "1:42", 30)
+    local multi = sent[#sent]
+    check(multi.args.rental == "1:42" and multi.args.periods == 30 and newRental.args.periods == nil,
+        "a quote carries its periods on the wire; one without them sends none")
+    reply("entitlement.quote", { ok = false, error = "rental_unknown", requestId = multi.args.requestId })
     local results = {}
     local id = E.setAutoRenew(SRC, PROD, true, 9, 1, function(r) results[#results + 1] = r end, "1:42")
     local consent = sent[#sent]

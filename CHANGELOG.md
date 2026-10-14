@@ -12,6 +12,14 @@
 
 格式基於 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循 `{PZ版本}-{主版本}.{次版本}.{修訂}` 格式。
 
+## [Unreleased]
+
+### 新增
+
+- **其他 MOD 的租用名額可以一次付好幾期**：串接經濟系統的 MOD（例如安全屋的保險）可以讓玩家一次買好幾期的租用時間，只付一筆錢、只留一筆訂單，到期時間一次往後延這麼多期。錢包「名額」分頁與經濟管理台的訂單照樣顯示這筆的總金額；管理員退款時整筆退回，租約回到這筆購買之前的到期時間。自動續租照舊每次只續一期。
+
+> 技術要點：伺服器整合 API rev 7 新增 `CAPABILITIES.rentalPeriods` 與 `RENTAL_PERIODS_MAX = 365`，`quote(username, productId, "rental", quantity, rental, periods)`；客戶端 facade rev 6 同名能力，`Entitlements.quote(sourceMod, productId, kind, quantity, cb, rental, periods)`。金額＝名額數 × 每期租金 × 期數；租約 `terms` 多了 `periods`，`amount` 是那筆訂單的總額；訂單列多了 `periods`。
+
 ## [42.21.0-0.16.0] - 2026-10-14
 
 ### 變更

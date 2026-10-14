@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+118 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+123 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1037,6 +1037,100 @@ do
         and L.getBalance("mx1", "survivor").available == bal and #s.rentals == 1 and (s.rentals[1] or {}).id == mx.d
         and s.rentalCommitted == 2 and vm.quote("mx1", "vehicle_slot", "rental", nil, mx.d).ok == true,
         "over the limit a due rental is never charged: at the end of its grace its consent lapses and it ends, and the rest renew again")
+end
+
+-- 10b. several periods in one order (API rev 7, quote `periods`): one payment and one order whose
+-- lease runs that many periods; a refund takes the whole order back; auto-renew stays one period.
+-- A one-day product (like a daily insurance). Shared state in `pk` (locals budget, see above).
+local pk = {}
+do
+    local reg = vm.registerProduct({ id = "multi_slot", nameKey = "K", defaults = defaults({ rentalDays = 1,
+        graceHours = 1, reminderHours = 0, rentalLimit = 1 }) })
+    L.credit("pk1", "survivor", 40 * DEFAULTS.rentalPrice, "SYSTEM_MINT", { requestId = "ent-fix-pk1", reasonCode = "t" })
+    fire("OnTickEvenPaused")
+    pk.price = DEFAULTS.rentalPrice
+    pk.bal = function() return L.getBalance("pk1", "survivor").available end
+    pk.ent = function() return vm.getEntitlement("pk1", "multi_slot").entitlement end
+    pk.quote = function(rental, periods) return vm.quote("pk1", "multi_slot", "rental", nil, rental, periods) end
+    local refused = true
+    for _, k in ipairs({ 0, E.RENTAL_PERIODS_MAX + 1, 1.5, "3" }) do
+        if pk.quote(nil, k).error ~= "invalid_args" then refused = false end
+    end
+    local perm = vm.quote("pk1", "multi_slot", "permanent", 1, nil, 2)
+    local one = pk.quote(nil, nil)
+    check(reg.ok and refused and perm.error == "invalid_args" and one.ok and one.quote.periods == 1
+        and one.quote.amount == pk.price and V.API_REVISION >= 7 and V.CAPABILITIES.rentalPeriods == true
+        and V.RENTAL_PERIODS_MAX == 365 and E.RENTAL_PERIODS_MAX == 365,
+        "rev 7 periods: 0, 366, a fraction, a string and periods on a permanent quote are invalid_args; none is one period at the one-period price")
+end
+do
+    fire("OnTickEvenPaused")
+    local before = pk.bal()
+    local q = pk.quote(nil, 3)
+    local p = vm.purchase("pk1", q.quote.id)
+    local paid = before - pk.bal()
+    confirmAll()                               -- saved: the three periods start now
+    local t0 = ctx.now()
+    local r = rent1(pk.ent())
+    local t = r.terms or {}
+    local o = vm.getOrder("pk1", "multi_slot", p.orderId).order or {}
+    local row = E.peek("TestVM", "pk1", "multi_slot")
+    local evPeriods = nil
+    for _, ev in ipairs(eventsOf("entitlement.order")) do
+        if ev.orderId == p.orderId then evPeriods = ev.periods end
+    end
+    pk.r, pk.until3 = r, r.paidUntil
+    check(q.ok and q.quote.periods == 3 and q.quote.amount == 3 * pk.price and p.ok and paid == 3 * pk.price
+        and #row.orders == 1 and row.orders[1].periods == 3 and r.paidUntil == t0 + 3 * DAY
+        and t.days == 1 and t.periods == 3 and t.amount == 3 * pk.price and t.price == pk.price
+        and o.periods == 3 and o.amount == 3 * pk.price and evPeriods == 3,
+        "a new rental paying 3 periods is one payment of 3 x the rent and one order; its lease runs 3 periods from activation")
+end
+do
+    fire("OnTickEvenPaused")
+    advance(HOUR)
+    local q2 = pk.quote(pk.r.id, 2)
+    local q5 = pk.quote(pk.r.id, 5)            -- the product's newer quote replaces q2
+    local before = pk.bal()
+    local stale = vm.purchase("pk1", q2.quote.id)
+    local again = pk.quote(pk.r.id, 2)
+    local renew = vm.purchase("pk1", again.quote.id)
+    local paid = before - pk.bal()
+    confirmAll()
+    local r = rent1(pk.ent())
+    pk.renew = renew.orderId
+    check(q2.ok and q5.ok and q5.quote.amount == 5 * pk.price and stale.ok == false and stale.error == "quote_unknown"
+        and again.quote.renewal == true and again.quote.periods == 2 and renew.ok and paid == 2 * pk.price
+        and r.paidUntil == pk.until3 + 2 * DAY and (r.terms or {}).periods == 2,
+        "a renewal paying 2 periods continues from paidUntil by 2 periods; a payment is bound to its own quote's periods")
+end
+do
+    local view = vm.getOrder("pk1", "multi_slot", pk.renew).order or {}
+    local desk = cmd(boss, "admin.entitlements", { action = "orders", username = "pk1" })
+    local d1, d2 = (desk.orders or {})[1] or {}, (desk.orders or {})[2] or {}
+    local before = pk.bal()
+    local rf = vm.refund("pk1", "multi_slot", pk.renew, { reason = "periods back" })
+    local r = rent1(pk.ent())
+    check(view.refundEffect == "previous" and view.previousUntil == pk.until3 and d1.periods == 2 and d2.periods == 3
+        and rf.ok and pk.bal() - before == 2 * pk.price and r.paidUntil == pk.until3 and (r.terms or {}).periods == 3,
+        "refunding a 2-period renewal returns all of it and the lease goes back to the paidUntil before it; desk rows say how many periods each paid")
+end
+do
+    local sc = vm.getEntitlement("pk1", "multi_slot")
+    local on = vm.setAutoRenew("pk1", "multi_slot", true, sc.entitlement.revision, sc.plan.revision, pk.r.id)
+    confirmAll()                               -- the consent is saved
+    local before = pk.bal()
+    ctx.setNow(pk.until3 + 1000)
+    fire("OnTickEvenPaused")                   -- due: the scheduler charges
+    local charged = before - pk.bal()
+    confirmAll()                               -- saved: the renewal continues inside grace
+    local o = E.peek("TestVM", "pk1", "multi_slot").orders[1]
+    local s = vm.getEntitlement("pk1", "multi_slot")
+    local r = rent1(s.entitlement)
+    local off = vm.setAutoRenew("pk1", "multi_slot", false, s.entitlement.revision, s.plan.revision, pk.r.id)
+    check(on.ok and charged == pk.price and o.auto == true and o.periods == nil
+        and r.paidUntil == pk.until3 + DAY and (r.terms or {}).periods == 1 and off.ok,
+        "auto-renew after a several-period order still pays and adds one period")
 end
 
 -- 11. instant products (2026-10-04): a payment takes effect in its own commit, with nothing to wait

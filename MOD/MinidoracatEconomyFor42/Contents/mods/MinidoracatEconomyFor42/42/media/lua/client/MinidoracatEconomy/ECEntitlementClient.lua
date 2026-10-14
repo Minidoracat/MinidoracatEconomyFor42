@@ -7,7 +7,7 @@
 --
 --   requestState(sourceMod, productId, cb?)                          -> requestId | nil, why
 --   getState(sourceMod, productId)                                   -> last accepted envelope | nil
---   quote(sourceMod, productId, kind, quantity, cb, rental?)         -> requestId | nil, why
+--   quote(sourceMod, productId, kind, quantity, cb, rental?, periods?) -> requestId | nil, why
 --   purchase(sourceMod, quoteId, cb)                                 -> requestId | nil, why
 --   setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental) -> requestId | nil, why
 --   getOrder(sourceMod, productId, orderId, cb)                      -> requestId | nil, why
@@ -23,6 +23,8 @@
 --
 -- `rental` is a rental id from entitlement.rentals[i].id (CAPABILITIES.rentals): a rental quote
 -- without it opens a new rental, with it renews that one; auto-renew is always per rental.
+-- `periods` (CAPABILITIES.rentalPeriods, 1..RENTAL_PERIODS_MAX, rental only) pays that many
+-- consecutive periods in one order; nil is one period.
 --
 -- Transport rules:
 --   * one lane per command: a FIFO of requests, one in flight, and the next sent no sooner than
@@ -49,6 +51,7 @@ local C = EC.Client
 
 local E = {}
 C.Entitlements = E
+E.RENTAL_PERIODS_MAX = 365   -- the server's MinidoracatEconomy.v1.RENTAL_PERIODS_MAX
 
 local T = "IGUI_MinidoracatEconomy_"
 local GAP_MS = (C.ReadGate and C.ReadGate.MIN_MS) or 650
@@ -341,16 +344,19 @@ function E.getState(sourceMod, productId)
     return cache[keyOf(sourceMod, productId)]
 end
 
-function E.quote(sourceMod, productId, kind, quantity, cb, rental)
+-- `periods` (rental only, nil: 1): one order paying that many consecutive periods (rev 6).
+function E.quote(sourceMod, productId, kind, quantity, cb, rental, periods)
     if not validSource(sourceMod) or not validProduct(productId)
         or (kind ~= "permanent" and kind ~= "rental")
         or (quantity ~= nil and not whole(quantity, 1, 1000))
-        or (rental ~= nil and (kind ~= "rental" or not validId(rental))) then
+        or (rental ~= nil and (kind ~= "rental" or not validId(rental)))
+        or (periods ~= nil and (kind ~= "rental" or not whole(periods, 1, E.RENTAL_PERIODS_MAX))) then
         return nil, "invalid_args"
     end
     return enqueue(QUOTE, { sourceMod = sourceMod, productId = productId, kind = kind, quantity = quantity,
-        rental = rental }, cb,
-        { sourceMod = sourceMod, productId = productId, kind = kind, quantity = quantity, rental = rental })
+        rental = rental, periods = periods }, cb,
+        { sourceMod = sourceMod, productId = productId, kind = kind, quantity = quantity, rental = rental,
+            periods = periods })
 end
 
 function E.purchase(sourceMod, quoteId, cb)
