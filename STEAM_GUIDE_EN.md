@@ -507,6 +507,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [*] [b]Pending, not guessed[/b]: with incomplete source or save evidence the system keeps a pending entry rather than reissuing or deleting.
 [*] [b]Server-wide overview[/b]: Admin - Reconciliation can recheck the whole server and resolve one by one or in batches (Ctrl/Shift); each needs a reason and is re-verified. Read-only roles can only view.
 [*] [b]Never clear by hand[/b]: check companion, world saves and the save confirmation status on the System page first.
+[*] [b]Vouch for source[/b]: when a mailbox item's claim is too old for the server to judge, listing it is refused and a record appears here. Once you have confirmed the purchase or return was real, Vouch for source lets the item trade. It only marks the source as confirmed and creates no item or money; it is unavailable while the listing, auction or buy order it came from still holds it.
 [/list]
 [h3]Crash duplicates[/h3]
 [list]
@@ -597,6 +598,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [list]
 [*] The message lists the affected items and the next step, shown separately: something you can do (such as claiming first), a world save to wait for, or an admin check.
 [*] If an admin is needed, give them the Player ID at the bottom of the navigation rail.
+[*] For an item claimed from the mailbox long ago, the refusal leaves a record in Reconciliation, where an admin can vouch for its source.
 [/list]
 [h3]I paid for a slot but it is not active yet?[/h3]
 [list]
