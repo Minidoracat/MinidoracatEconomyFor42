@@ -2226,6 +2226,7 @@
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_admin_discard_rolledback": "この操作は管理者により破棄され完了しています。再審査はサーバー記録の前バージョンに基づいて再構築され、自動では行われません。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_source_state_changed": "照合中に元アイテムの状態が変化したため、サーバーはこの記録を保守的に保留し、自動的には処理しません。確認のためにアイテムを移動した場合は、バックパック（または元のコンテナ）に戻してから再照会を押してください。この記録は破棄されておらず、破棄済みとして扱ってはいけません。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Blocked_admin_discard_rolledback": "この操作は管理者により破棄され、再構築できる前バージョンの証拠がありません。したがって再度完了させるのみで、アイテムは一切生成されません。",
+  "IGUI_MinidoracatEconomy_Admin_Rec_Blocked_claim_source_alive": "この配送の出所（市場出品・オークション・買い注文・分割交付の元の手紙）がまだこれらの実体を保持しているため、二重に存在するおそれがあります。それが解決するまで出所を承認できません。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Previous": "サーバーが証明した前バージョンの記録があり、再審査に使用できます。再構築される内容は下に表示されたアイテム・数量・出所です。",
   "IGUI_MinidoracatEconomy_Admin_Rec_EvidenceConflict": "この 1 件の操作に対し、コミット点が矛盾する 2 行が存在します。記録は壊れていません。サーバーが一方を選ぶことを拒否しているため、なぜ 2 行あるのか調査が必要です。",
   "IGUI_MinidoracatEconomy_Admin_Rec_EvidenceConflictTag": "証拠が矛盾",

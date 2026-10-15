@@ -272,6 +272,24 @@ local function writeEpochLines(lines, append)
     pcall(function() writer:close() end)
 end
 
+-- Rollback points of epochs the bounded history has let go, `epoch -> loadedSeq`, oldest dropped
+-- first past this many. Only S.claimVerdict reads it (see there).
+S.EPOCH_ARCHIVE_MAX = 1000
+
+-- The archive keeps its newest S.EPOCH_ARCHIVE_MAX epochs. A stamp a test or an older build
+-- wrote with a non-numeric epoch counts as the oldest.
+local function trimArchive(archive)
+    local count = EC.countKeys(archive)
+    while count > S.EPOCH_ARCHIVE_MAX do
+        local oldest, oldestAt = nil, nil
+        for epoch in pairs(archive) do
+            local at = tonumber(epoch) or 0
+            if oldestAt == nil or at < oldestAt then oldest, oldestAt = epoch, at end
+        end
+        archive[oldest], count = nil, count - 1
+    end
+end
+
 -- Returns the root table; creates the meta block on first run. `seq` survives restarts (it is
 -- part of the saved table); `loadedSeq` is the rollback point of this process; `epoch` is new
 -- for every start so ids from a rolled-back branch never collide (spec 19.7 rule four).
@@ -316,7 +334,15 @@ function S.initModData()
         end
     end
     EC.sortSafe(history, function(a, b) return (tonumber(a.epoch) or 0) < (tonumber(b.epoch) or 0) end)
-    while #history > 20 do table.remove(history, 1) end
+    -- What leaves the history is still a fact about that epoch: it moves to the archive, which
+    -- answers for delivery stamps only (S.claimVerdict).
+    local archive = type(prevMeta.archive) == "table" and prevMeta.archive or {}
+    while #history > 20 do
+        local gone = table.remove(history, 1)
+        local loaded = tonumber(gone.loadedSeq)
+        if type(gone.epoch) == "string" and loaded ~= nil then archive[gone.epoch] = loaded end
+    end
+    trimArchive(archive)
     md.meta = {
         realmId = type(prevMeta.realmId) == "string" and prevMeta.realmId or ("realm-" .. tostring(EC.now())),
         epoch = tostring(EC.now()),
@@ -324,6 +350,7 @@ function S.initModData()
         loadedSeq = prevSeq,
         startedAt = EC.now(),
         history = history,
+        archive = archive,
     }
     local lastN = 0
     for _, h in ipairs(fileLines) do
@@ -487,6 +514,19 @@ end
 function S.isRolledBack(epoch, seq)
     if type(seq) ~= "number" then return false end
     return S.epochVerdict(epoch, seq) == "rolledback"
+end
+
+-- The same question about the claim behind a delivered object, which a save can carry for months:
+-- an epoch the history has let go is still answered from md.meta.archive. Only the delivery stamps
+-- read this (beginOut, the durable mark, the reconciliation page). Receipts, pending transfers and
+-- the rollback ledger keep S.epochVerdict: what they retire, and when, is tied to that bounded
+-- history (R.reclaimClosed, the ledger harvest), and an archived "rolledback" would pin them.
+function S.claimVerdict(epoch, seq)
+    local verdict = S.epochVerdict(epoch, seq)
+    if verdict ~= "unknown" or type(epoch) ~= "string" or not finiteInt(seq) then return verdict end
+    local loaded = type(md.meta.archive) == "table" and tonumber(md.meta.archive[epoch]) or nil
+    if loaded == nil then return "unknown" end
+    return seq > loaded and "rolledback" or "survived"
 end
 
 function S.modData()

@@ -1150,6 +1150,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 20   -- +20: unique item types (scen
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: plain maps trade (scenario MP: the item and type checks with stash_map and the animal still fixed, snapshotItem still refuses a map; the region and condition rebuilt; market picker, listing and purchase; auction; buy order wanted, delivered and paid with a map; TX-8 the second-press warning and the new sentences); the old "maps stay fixed" check now says animals
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: map review fixes (MP-6 a region too long to keep is moddata_too_big; MP-7 the buyback refuses a lot of different regions as mixed_items; TX-9 the warning asks again for another map or a map after another item)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: several rental periods in one order (scripts/test_entitlements.lua scenario 10b: refused periods and rev 7, a new rental paying 3 periods, a 2-period renewal bound to its quote, the whole-order refund and desk rows, auto-renew still one period)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the epoch archive and vouching for a forgotten claim (scenario 42 EA-1..10 and EA-3b: the archive answers delivery stamps while receipts keep the bounded answer, the login marks a backpack unit durable on it, a unit taken out of a box later lists, that list-out rolled back with the world is rebuilt once, the archive bound, a forgotten claim refused and held under its letter, a live source blocks vouching, the row offers vouching only, approve marks both units durable and is audited, the vouched unit lists, the record closes once no unvouched unit is in the backpack); FINAL-REC-B now drops its epoch from the archive to stay forgotten
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -6603,6 +6604,8 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             fire("OnServerStarted")
         end
         assert(S.epochVerdict(claimEpoch, claimSeq) == "unknown")
+        -- an epoch that left the history before the archive kept anything (S.claimVerdict)
+        S.modData().meta.archive[claimEpoch] = nil
         local certified = cmd(seller, "market.list", { itemId = seller.inventory.items[1].id, price = 10 })
         check(certified.ok and Mk.listingExists(certified.listingId) and tally(seller, "Base.Bandage") == 2,
             "a verdict this server wrote onto the unit when it was still readable survives twenty later starts")
@@ -6614,6 +6617,106 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             and buyer.modData[KEY].pendingOuts[buyerOut.listingId] ~= nil
             and not Mk.listingExists(buyerOut.listingId) and buyer.inventory.count("Base.Bandage") == 1,
             "an unprovable origin holds the rolled-back operation instead of rebuilding a listing from it")
+    end
+
+    -- EA: a claim outlives the twenty-start history in the epoch archive, for delivery stamps
+    -- only; one nothing remembers any more is held at its refusal and an administrator may vouch
+    -- for it on the reconciliation page.
+    do
+        local admin, seller, buyer = fresh()
+        local function key(mailId) return "stamp:" .. mailId end
+        local function row(p, mailId)
+            local reply = cmd(admin, "admin.recovery", { action = "list", username = p:getUsername() })
+            for _, r in ipairs(reply.records or {}) do if r.key == key(mailId) then return r end end
+            return nil
+        end
+        local mine = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 2, kind = "shop" })
+        assert(M.claim(seller, mine.id).ok)
+        local theirs = M.add(buyer:getUsername(), { item = "Base.Bandage", qty = 2, kind = "shop" })
+        assert(M.claim(buyer, theirs.id).ok)
+        local single = M.add(buyer:getUsername(), { item = "Base.Lighter", qty = 1, kind = "shop" })
+        assert(M.claim(buyer, single.id).ok)
+        local boxed = seller.inventory.items[2]
+        local claimEpoch, claimSeq = boxed:getModData()[KEY].epoch, boxed:getModData()[KEY].seq
+        confirmWorld()
+        nowMs = nowMs + M.CLAIMED_TTL_MS + 60000
+        fire("OnTickEvenPaused")                    -- the letters are pruned after their day
+        local starts = 0
+        while S.epochVerdict(claimEpoch, claimSeq) ~= "unknown" and starts < 40 do
+            starts = starts + 1
+            nowMs = nowMs + 1000
+            fire("OnServerStarted")
+        end
+        check(M.entryOf(seller:getUsername(), mine.id) == nil and S.epochVerdict(claimEpoch, claimSeq) == "unknown"
+            and S.isRolledBack(claimEpoch, claimSeq + 1000) == false
+            and S.claimVerdict(claimEpoch, claimSeq) == "survived" and S.claimVerdict(claimEpoch, claimSeq + 1000) == "rolledback",
+            "EA-1: an epoch the history let go still answers a delivery stamp from the archive; receipts keep the bounded answer")
+        seller.inventory:Remove(boxed)              -- kept in a box while the player logs in
+        reconcileNow(seller)
+        check(seller.inventory.items[1]:getModData()[KEY].durable == true and boxed:getModData()[KEY].durable == nil,
+            "EA-2: the login marks a unit in the backpack durable on the archive's word")
+        seller.inventory:AddItem(boxed)             -- taken out after that login's reconcile
+        local beforeList = copy(S.modData())
+        local listed = cmd(seller, "market.list", { itemId = boxed.id, price = 10 })
+        check(listed.ok and Mk.listingExists(listed.listingId) and M.recoveryStatus(seller:getUsername()).held == 0,
+            "EA-3: a unit taken out of a box later in the session lists too: beginOut reads the archive itself")
+        restart(beforeList)                         -- the world rolls back below that listing; the save keeps it out
+        reconcileNow(seller)
+        check(tally(seller, "Base.Bandage") == 2 and M.recoveryStatus(seller:getUsername()).held == 0,
+            "EA-3b: that list-out, rolled back with the world, is rebuilt once: the archive's proof went with its origins")
+        local keep = S.EPOCH_ARCHIVE_MAX
+        S.EPOCH_ARCHIVE_MAX = 3
+        for _ = 1, 4 do
+            nowMs = nowMs + 1000
+            fire("OnServerStarted")
+        end
+        S.EPOCH_ARCHIVE_MAX = keep
+        check(EC.countKeys(S.modData().meta.archive) == 3 and S.claimVerdict(claimEpoch, claimSeq) == "unknown",
+            "EA-4: the archive keeps only its newest epochs, and past them a claim is unknown again")
+
+        local coins, bandages = L.getBalance(buyer:getUsername(), "survivor").available, buyer.inventory.count("Base.Bandage")
+        local unit = buyer.inventory.items[1]
+        local refused = cmd(buyer, "market.list", { itemId = unit.id, price = 10 })
+        local d = refused.recoveryDetail or {}
+        local hold = S.Recovery.heldRecord(buyer:getUsername(), key(theirs.id))
+        check(refused.error == "recovery_unverified" and d.reason == "source_outcome_unknown" and d.heldKey == key(theirs.id)
+            and hold ~= nil and not hold.resolvedAt and hold.reason == "claim_epoch_unknown"
+            and buyer.inventory.count("Base.Bandage") == bandages and L.getBalance(buyer:getUsername(), "survivor").available == coins,
+            "EA-5: a claim nothing remembers is refused, held for review under the letter, and moves nothing")
+        local live = cmd(seller, "market.list", { itemId = seller.inventory.items[1].id, price = 10 })
+        unit:getModData()[KEY].srcRef = live.listingId
+        local alive = row(buyer, theirs.id)
+        unit:getModData()[KEY].srcRef = nil
+        check(alive ~= nil and alive.actions.approve == false and alive.blocked == "claim_source_alive",
+            "EA-6: a unit whose source listing still holds it may not be vouched for")
+        local r = row(buyer, theirs.id)
+        check(r ~= nil and r.reason == "claim_epoch_unknown" and r.sourceState == "unknown" and r.verdict == "unknown"
+            and r.presentQty == 2 and #r.nativeIds == 2 and r.item == "Base.Bandage"
+            and r.actions.approve == true and r.actions.remove == false and r.actions.restore == false and r.actions.discard == false,
+            "EA-7: the row names both objects of the letter and offers vouching for them, nothing else")
+        local approved = cmd(admin, "admin.recovery", { action = "resolve", username = buyer:getUsername(),
+            key = key(theirs.id), decision = "approve", revision = r.revision, note = "bought on the market, receipts checked" })
+        local audit = nil
+        for _, e in ipairs(X.auditEntries()) do
+            if audit == nil and e.action == "recovery" and e.field == key(theirs.id) then audit = e end
+        end
+        check(approved.ok == true and approved.refused == 0 and unit:getModData()[KEY].durable == true
+            and buyer.inventory.items[2]:getModData()[KEY].durable == true
+            and S.Recovery.heldRecord(buyer:getUsername(), key(theirs.id)).resolvedAt ~= nil
+            and audit ~= nil and audit.after == "approve" and audit.before == "claim_epoch_unknown" and audit.qty == 2
+            and buyer.inventory.count("Base.Bandage") == bandages and L.getBalance(buyer:getUsername(), "survivor").available == coins,
+            "EA-8: vouching marks both units durable, closes the record, is audited and creates nothing")
+        local sold = cmd(buyer, "market.list", { itemId = unit.id, price = 10 })
+        check(sold.ok and Mk.listingExists(sold.listingId), "EA-9: a unit an administrator vouched for lists")
+
+        local lighter = nil
+        for _, it in ipairs(buyer.inventory.items) do if it.fullType == "Base.Lighter" then lighter = it end end
+        cmd(buyer, "market.list", { itemId = lighter.id, price = 10 })
+        local open = S.Recovery.heldRecord(buyer:getUsername(), key(single.id))
+        buyer.inventory:Remove(lighter)
+        reconcileNow(buyer)
+        check(open ~= nil and open.resolvedAt ~= nil and M.recoveryStatus(buyer:getUsername()).held == 0,
+            "EA-10: once no unvouched unit of the letter is in the backpack, the next pass closes its record")
     end
 
     -- FINAL-REC-B, same uptime: no restart ever happened, so the letter's absence is this very

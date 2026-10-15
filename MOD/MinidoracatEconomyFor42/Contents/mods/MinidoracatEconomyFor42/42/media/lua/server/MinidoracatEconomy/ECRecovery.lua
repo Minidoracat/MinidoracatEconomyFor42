@@ -384,6 +384,13 @@ function R.verdict(epoch, seq)
     return S.epochVerdict(epoch, seq)
 end
 
+-- The claim written on a delivered object (S.claimVerdict): the same four answers, with epochs the
+-- history has let go still answered from its archive. Delivery stamps only.
+function R.claimVerdict(epoch, seq)
+    if not md then return "unknown" end
+    return S.claimVerdict(epoch, seq)
+end
+
 -- ---------- player save ----------
 
 -- The retired claim-witness table (`claims`) is dropped on sight: the client can replace this
@@ -660,6 +667,11 @@ function R.resolveObserved(username, playerData, scan)
                 if not scan.duplicates[unit] then R.resolveHold(username, key, "single_unit") end
             elseif string.sub(key, 1, 6) == "abort:" and playerData.pendingOuts[held.opId] == nil then
                 R.resolveHold(username, key, "returned")
+            elseif string.sub(key, 1, 6) == "stamp:" and held.reason == "claim_epoch_unknown"
+                and #R.unverifiedClaimRows(scan, held.mailId) == 0 then
+                -- Nothing in this backpack is still unvouched for: moved away, vouched for, or
+                -- answered by the epoch archive. The next refusal or login holds it again.
+                R.resolveHold(username, key, "no_unverified_item")
             elseif string.sub(key, 1, 8) == "receipt:" and held.reason == "replay_unavailable" then
                 -- This key carries whichever condition was written first, and an insured replay
                 -- only answers one of them: the record that could not be copied into the save
@@ -2021,6 +2033,46 @@ function R.originState(origin, username)
     return "unknown"
 end
 
+-- The objects of one letter in this scan whose source the server cannot vouch for by itself:
+-- protocol 2 deliveries whose letter is gone, never marked durable, and whose claim no history
+-- or archive remembers (R.claimVerdict "unknown"). That is what beginOut refuses as
+-- source_outcome_unknown, and the evidence behind a claim_epoch_unknown record.
+function R.unverifiedClaimRows(scan, mailId)
+    local out = {}
+    local letter = type(scan) == "table" and type(mailId) == "string" and scan.stamped[mailId] or nil
+    for _, row in ipairs(letter and letter.items or {}) do
+        local origin = not row.gone and R.originOf(row.item) or nil
+        if origin and origin.src == "mail" and origin.mailId == mailId and not origin.durable
+            and mailEntry(origin.owner, mailId) == nil
+            and R.claimVerdict(origin.epoch, origin.seq) == "unknown" then
+            out[#out + 1] = row
+        end
+    end
+    return out
+end
+
+-- Why an administrator may not vouch for one of those objects (ECAdmin, decision approve), or
+-- nil. Vouching answers only "did that claim reach a save"; anything that says the object may
+-- exist somewhere else as well refuses it: another object wearing the token, a transfer that
+-- already consumed the unit, or a source - the listing, auction or order the letter came back
+-- from, or the parent letter of a split - that still holds it. A question nobody could ask is
+-- never read as "no".
+function R.vouchBlock(origin, row)
+    if row.duplicate then return "duplicate_unit" end
+    local consumed, _, proof = R.consumer(origin)
+    if proof == "unreadable" then return "source_state_unknown" end
+    -- worded for any unit despite its name: "already transferred out, the world holds the receipt"
+    if consumed then return "legacy_unit_consumed" end
+    if origin.parentMailId then
+        local parent = mailEntry(origin.owner, origin.parentMailId)
+        if parent and letterHoldsUnit(parent, origin.unit) then return "claim_source_alive" end
+    end
+    local alive = R.sourceAlive(origin.srcRef)
+    if alive == nil then return "source_state_unknown" end
+    if alive then return "claim_source_alive" end
+    return nil
+end
+
 -- ---------- generation zero binding (report #2 / #4) ----------
 --
 -- Everything below is the cold path for units delivered before unit tokens existed. Their stamp
@@ -2947,16 +2999,35 @@ function R.beginOut(player, id, items, rec)
                           qty = tonumber(source.qty), action = not S.sameAccount(origin.owner, username) and "admin_review" or "retry" })
                 end
             else
-                local verdict = origin.durable == true and "survived" or R.verdict(origin.epoch, origin.seq)
+                local verdict = origin.durable == true and "survived" or R.claimVerdict(origin.epoch, origin.seq)
                 if verdict ~= "survived" and verdict ~= "current" then
                     -- The letter is gone, so the claim decides. "rolledback" is an answer (that
                     -- delivery did not survive the save); "unknown" is the absence of one (the
-                    -- epoch is past the history). Neither says the item itself is broken.
+                    -- epoch is past the history and its archive). Neither says the item itself is
+                    -- broken. An unknown one is held for the reconciliation page, where an
+                    -- administrator may vouch for it (R.vouchBlock); the refusal names that record.
+                    local heldKey = nil
+                    if verdict ~= "rolledback" then
+                        heldKey = "stamp:" .. origin.mailId
+                        R.hold(username, heldKey, "claim_epoch_unknown", { mailId = origin.mailId,
+                            item = origin.item, epoch = origin.epoch, seq = origin.seq, srcRef = origin.srcRef })
+                    end
                     return false, "recovery_unverified",
                         detail(verdict == "rolledback" and "source_claim_rolledback" or "source_outcome_unknown",
                             { index = i, item = origin.item, itemId = origin.nativeId,
                               mailId = origin.mailId, epoch = origin.epoch, seq = origin.seq,
-                              verdict = verdict })
+                              verdict = verdict, heldKey = heldKey })
+                end
+                if verdict == "survived" and not origin.durable then
+                    -- Proven here, perhaps only by the archive. The proof goes with this operation's
+                    -- origins and with the unit (as the login reconcile writes it): a recovery judged
+                    -- later reads origin.durable (R.originState), never the history alone, so a
+                    -- rolled-back list-out still rebuilds instead of stopping at origin_unverified.
+                    origin.durable = true
+                    if pcall(function() items[i]:getModData()[EC.PLAYER_MODDATA_KEY].durable = true end) then
+                        local synced, syncError = pcall(syncItemModData, player, items[i])
+                        if not synced then EC.log("recovery item metadata notification failed: " .. tostring(syncError)) end
+                    end
                 end
             end
         end

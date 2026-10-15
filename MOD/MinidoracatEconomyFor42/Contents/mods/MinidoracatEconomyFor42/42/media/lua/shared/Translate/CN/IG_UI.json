@@ -2226,6 +2226,7 @@
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_admin_discard_rolledback": "此操作已被管理舍弃并结案；重审将依服务器记录的前一版重建，不会自动进行。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_source_state_changed": "查证期间来源物品的状态变了，服务器保守地先搁置这笔，并不会自动处理。若是你为了查证把物品从原处移走，请先放回背包（或原本的容器）再按重查；这笔并未被销毁，也不要当成已经销毁。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Blocked_admin_discard_rolledback": "此操作已被管理舍弃，且没有可重建的前一版证据，因此只能再次结案，不会产生任何物品。",
+  "IGUI_MinidoracatEconomy_Admin_Rec_Blocked_claim_source_alive": "这笔交付的来源（市场刊登、拍卖、求购单或分次交付的原信件）仍然持有这些实体，可能同时存在两份；来源处理好之前不能承认来源。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Previous": "有服务器证明过的前一版记录可供重审，重建内容即为下方显示的物品、数量与来源。",
   "IGUI_MinidoracatEconomy_Admin_Rec_EvidenceConflict": "同一笔操作有两行提交点互相矛盾。记录本身没有损毁，是服务器拒绝替你挑一份，需要有人去查为什么会有两行。",
   "IGUI_MinidoracatEconomy_Admin_Rec_EvidenceConflictTag": "证据冲突",

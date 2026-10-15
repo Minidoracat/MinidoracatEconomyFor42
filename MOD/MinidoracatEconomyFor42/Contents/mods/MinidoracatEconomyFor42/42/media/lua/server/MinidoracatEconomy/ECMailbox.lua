@@ -1046,10 +1046,14 @@ local function reconcileMissingLetters(username, scan, blockedLetters)
                     else removed = false end
                 else
                     removed = false
-                    -- "could not ask" counts as alive here: an unreadable source is not proof
-                    -- that the letter behind this object is gone (report ER-10)
-                    if verdict == "unknown" and R.sourceAlive(rowStamp and rowStamp.srcRef) ~= false then unknownAlive = true end
                 end
+            end
+            -- The open question is the one beginOut refuses on and the reconciliation page vouches
+            -- for (R.unverifiedClaimRows), so all three read it alike; removal above stays on the
+            -- bounded history. "Could not ask" counts as alive here: an unreadable source is not
+            -- proof that the letter behind this object is gone (report ER-10).
+            for _, row in ipairs(R.unverifiedClaimRows(scan, mailId)) do
+                if R.sourceAlive(row.stamp.srcRef) ~= false then unknownAlive = true; break end
             end
             if dropped > 0 then
                 anomaly(username, mailId, "removed-rolled-back", { count = dropped, txId = stamp.txId })
@@ -1588,11 +1592,11 @@ function M.reconcile(player)
             return false, "read_failed"
         end
     end
-    -- Keep a proven verdict with its unit before the bounded epoch history forgets it.
+    -- Keep a proven verdict with its unit before the epoch archive forgets it too (R.claimVerdict).
     for _, row in pairs(scan.byToken) do
         local stamp = row.stamp
         if stamp and stamp.proto == R.PROTOCOL and stamp.durable ~= true
-            and R.verdict(stamp.epoch, tonumber(stamp.seq)) == "survived" then
+            and R.claimVerdict(stamp.epoch, tonumber(stamp.seq)) == "survived" then
             stamp.durable = true
             syncStamp(player, row.item)
         end

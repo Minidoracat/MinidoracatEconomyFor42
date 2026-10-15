@@ -2226,6 +2226,7 @@
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_admin_discard_rolledback": "이 작업은 관리자가 폐기하고 종결했습니다. 검토 시 서버 기록의 이전 버전으로 재구성하며, 자동으로 일어나는 것은 없습니다.",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_source_state_changed": "출처 아이템이 검증 도중 상태가 바뀌어, 서버가 이 기록을 보류하고 자동으로 처리하지 않습니다. 확인하려고 아이템을 다른 곳으로 옮겼다면 가방(또는 원래 보관함)에 다시 넣고 재확인을 누르세요. 이 기록은 파기되지 않았으며, 파기된 것처럼 다루어서는 안 됩니다.",
   "IGUI_MinidoracatEconomy_Admin_Rec_Blocked_admin_discard_rolledback": "이 작업은 관리자가 폐기했고 재구성할 이전 증거가 없으므로 다시 종결만 할 수 있습니다 -- 아이템은 생성되지 않습니다.",
+  "IGUI_MinidoracatEconomy_Admin_Rec_Blocked_claim_source_alive": "이 배송의 출처(마켓 등록 물품, 경매, 구매 주문 또는 분할 배송의 원래 우편)가 아직 이 오브젝트를 보유하고 있어 두 개가 존재할 수 있습니다. 해결될 때까지 출처를 보증할 수 없습니다.",
   "IGUI_MinidoracatEconomy_Admin_Rec_Previous": "서버가 증명한 이전 기록을 검토할 수 있습니다. 재구성될 아이템, 수량, 출처는 아래와 같습니다.",
   "IGUI_MinidoracatEconomy_Admin_Rec_EvidenceConflict": "이 작업 하나에 대한 저널 줄 두 개가 서로 모순되는 커밋 지점을 가리킵니다. 기록이 손상된 것은 아닙니다: 서버가 대신 하나를 고르지 않으므로, 왜 두 줄이 있는지 누군가 조사해야 합니다.",
   "IGUI_MinidoracatEconomy_Admin_Rec_EvidenceConflictTag": "증거 충돌",

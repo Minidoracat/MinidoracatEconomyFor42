@@ -1711,6 +1711,34 @@ local function legacyRows(scan, mailId, consumedOnly)
     return rows, blocked
 end
 
+-- A delivery whose letter is gone and whose claim no epoch history or archive remembers
+-- (claim_epoch_unknown, held by beginOut's refusal or the login reconcile). The objects of that
+-- letter still in this backpack are the evidence, and vouching for them is the only decision:
+-- nothing is removable on it (the claim may well have reached a save) and nothing is rebuilt.
+-- Rcv.vouchBlock names whatever says an object may exist somewhere else as well.
+local function claimRow(out, fingerprint, rec, scan)
+    local rows = scan and Rcv.unverifiedClaimRows(scan, rec.mailId) or {}
+    local blocked = nil
+    fingerprint.units = {}
+    for _, row in ipairs(rows) do
+        blocked = blocked or Rcv.vouchBlock(Rcv.originOf(row.item), row)
+        out.nativeIds[#out.nativeIds + 1] = row.nativeId
+        fingerprint.units[#fingerprint.units + 1] = { id = row.nativeId, item = row.fullType, stamp = row.stamp }
+    end
+    local first = rows[1]
+    if first then
+        out.item = out.item or first.fullType
+        out.epoch, out.seq = first.stamp.epoch, tonumber(first.stamp.seq)
+    end
+    -- an empty backpack read is the record's own condition gone: the next recheck closes it
+    if scan and #rows == 0 then blocked = "recovery_not_actionable" end
+    out.presentQty = scan and #rows or nil
+    out.sourceState, out.verdict = "unknown", "unknown"
+    out.actions.approve = #rows > 0 and blocked == nil
+    out.blocked = blocked
+    fingerprint.present, fingerprint.blocked = out.presentQty, blocked
+end
+
 -- What the page may do with this record, and the fingerprint of the evidence that says so.
 -- `detailCode` plus its own fields (mailId, epoch / seq, unitToken, claimSeq, removed / stuck) is
 -- the fact behind the reason, worded by the page; `detail` is only prose an older build stored.
@@ -1772,6 +1800,8 @@ local function recoveryRow(username, rec, scan, pdata)
         fingerprint.blocked = blocked
         fingerprint.letter = entry and { state = entry.state, claimSeq = entry.claimSeq,
             owner = entry.owner, units = entry.units, outUnits = entry.outUnits } or "none"
+    elseif rec.reason == "claim_epoch_unknown" and type(rec.mailId) == "string" then
+        claimRow(out, fingerprint, rec, scan)
     elseif type(rec.opId) == "string" and (A.RECOVERY_MANUAL_REASONS[rec.reason]
         or A.RECOVERY_JOURNAL_REASONS[rec.reason] or rec.reason == "receipt_forgotten") then
         local pend = pdata and pdata.pendingOuts[rec.opId] or nil
@@ -2070,6 +2100,26 @@ local function approveLegacy(username, target, rows)
                     refused = refused + 1
                 end
             end
+        end
+    end
+    return named, refused
+end
+
+-- approve on a claim row (claimRow): the administrator vouches, in writing, that these deliveries
+-- reached a save. Nothing is created and no token changes; each stamp only gains durable=true,
+-- which every origin check reads as "survived" from then on. Each object is asked Rcv.vouchBlock
+-- again, from the scan taken for this write.
+local function approveClaims(target, scan, mailId)
+    local named, refused = {}, 0
+    for _, row in ipairs(Rcv.unverifiedClaimRows(scan, mailId)) do
+        local origin = Rcv.originOf(row.item)
+        local ok = Rcv.vouchBlock(origin, row) == nil and pcall(function() row.stamp.durable = true end)
+        if ok then
+            named[#named + 1] = origin.unit
+            local synced, err = pcall(syncItemModData, target, row.item)
+            if not synced then EC.log("recovery approve notification failed: " .. tostring(err)) end
+        else
+            refused = refused + 1
         end
     end
     return named, refused
@@ -2395,8 +2445,12 @@ S.handlers["admin.recovery"] = function(player, args)
         sourceState = row.sourceState, presentQty = row.presentQty, after = decision, reason = note,
         item = row.item, mailId = row.mailId }
     if decision == "approve" then
-        local observed = legacyRows(scan, row.mailId)
-        local named, refused = approveLegacy(target, online, observed)
+        local named, refused
+        if row.kind == "legacy" then
+            named, refused = approveLegacy(target, online, legacyRows(scan, row.mailId))
+        else
+            named, refused = approveClaims(online, scan, row.mailId)
+        end
         if #named == 0 then
             return recoveryReply(player, target, requestId, page, { ok = false,
                 error = "recovery_not_actionable", key = key, refused = refused })
