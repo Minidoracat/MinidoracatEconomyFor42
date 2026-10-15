@@ -337,6 +337,16 @@ local function reopen(o, entry)
     entry.claimedAt = nil
     entry.claimHours, entry.claimSess, entry.claimLife, entry.lifeBreak = nil, nil, nil, nil
     entry.claimEpoch, entry.brkE, entry.brkS = nil, nil, nil
+    entry.proof = nil
+end
+
+-- The claim point a proof gives its letter, a seq of this process: once this world saves the
+-- proof, the objects moved onto it (anchorProven) read "survived", where the stamps they came with
+-- name a claim the rollback forgot. `c` is the letter's claim seq at that moment: any later
+-- delivery of the letter issues a new one, and from then on the proof no longer speaks for what
+-- is in hand.
+local function noteProof(entry)
+    entry.proof = { e = md.meta.epoch, s = S.nextSeq(), c = entry.claimSeq or false }
 end
 
 -- Evidence the save carries that the world lost it (a stamp on an object in that backpack).
@@ -349,6 +359,7 @@ local function acceptClaimProof(entry, ms, login, player)
     settle(o, entry, "claimed", ms)
     entry.claimLogin = login
     R.anchorClaim(entry, player, login, true)
+    noteProof(entry)
     return true
 end
 
@@ -1137,6 +1148,39 @@ local function reclaimStaleCopies(player, username, scan)
     for _, notice in ipairs(notices) do S.reply(player, "recovery.reclaimed", notice) end
 end
 
+-- A letter claimed on proof (acceptClaimProof, settleLostClaims) delivered nothing new: the objects
+-- in hand are its units, still stamped with the claim the world forgot. Left so, they read as a
+-- rolled-back delivery once the claimed letter is pruned, and the login after that takes them back
+-- (reconcileMissingLetters). While the proof still speaks for the letter - this login's, and no
+-- delivery of it since - each of its units here that is not doubled, not transferred out and not
+-- provable already moves onto the proof's claim point; token, letter and owner stay. A save that
+-- loads without the moved stamp (the world kept the proof, the player save did not) is moved again
+-- at its next login. A copy that came back from somewhere else after a real redelivery is never
+-- moved: that delivery issued a new claim seq, and `proof.c` no longer matches.
+local function anchorProven(player, login, entry, scan)
+    local proof = entry.proof
+    if type(proof) ~= "table" or counted(entry.state) or claimedBy(entry) ~= login
+        or proof.c ~= (entry.claimSeq or false) then return 0 end
+    local owed = {}
+    for _, t in ipairs(availableUnits(entry)) do owed[t] = true end
+    local letter, n = scan.stamped[entry.id], 0
+    for _, row in ipairs(letter and letter.items or {}) do
+        local stamp = row.stamp
+        if not row.gone and not row.duplicate and type(stamp) == "table" and stamp.proto == R.PROTOCOL
+            and type(stamp.unit) == "string" and owed[stamp.unit] and stamp.durable ~= true then
+            local verdict = R.claimVerdict(stamp.epoch, tonumber(stamp.seq))
+            local consumed, _, readable = R.consumer(R.originOf(row.item))
+            if (verdict == "rolledback" or verdict == "unknown") and consumed == nil and readable ~= "unreadable" then
+                stamp.epoch, stamp.seq = proof.e, proof.s
+                syncStamp(player, row.item)
+                n = n + 1
+            end
+        end
+    end
+    if n > 0 then anomaly(login, entry.id, "proof-anchored", { qty = n }) end
+    return n
+end
+
 -- The mail's existence proves its creation survived; its later claim need not have survived.
 -- A stamp on an object this server walked in the backpack is the save's evidence that it took
 -- the letter (item modData only ever comes back from the server, SyncItemModDataPacket.java:
@@ -1152,6 +1196,7 @@ local function proveClaims(player, login, account, scan, blockedLetters, ms)
             anomaly(login, mailId, "mark-claimed", entry.owner ~= account and { owner = entry.owner } or nil)
             changed = true
         end
+        if entry and anchorProven(player, login, entry, scan) > 0 then changed = true end
     end
     return changed
 end
@@ -1368,6 +1413,8 @@ local function settleLostClaims(login, ms)
                     if c then
                         entry.claimSeq, entry.claimEpoch, entry.claimHours, entry.claimLife = c.s, c.e, c.h, tonumber(c.life) or 0
                     end
+                    -- the objects this save holds keep the lost claim's stamp (anchorProven)
+                    if state == "claimed" then noteProof(entry) end
                     anomaly(login, mailId, state == "claimed" and "mark-claimed-ledger" or "settled-old-life",
                         why and { reason = why } or nil)
                 end

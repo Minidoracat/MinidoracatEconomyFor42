@@ -1151,6 +1151,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: plain maps trade (scenar
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: map review fixes (MP-6 a region too long to keep is moddata_too_big; MP-7 the buyback refuses a lot of different regions as mixed_items; TX-9 the warning asks again for another map or a map after another item)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: several rental periods in one order (scripts/test_entitlements.lua scenario 10b: refused periods and rev 7, a new rental paying 3 periods, a 2-period renewal bound to its quote, the whole-order refund and desk rows, auto-renew still one period)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the epoch archive and vouching for a forgotten claim (scenario 42 EA-1..10 and EA-3b: the archive answers delivery stamps while receipts keep the bounded answer, the login marks a backpack unit durable on it, a unit taken out of a box later lists, that list-out rolled back with the world is rebuilt once, the archive bound, a forgotten claim refused and held under its letter, a live source blocks vouching, the row offers vouching only, approve marks both units durable and is audited, the vouched unit lists, the record closes once no unvouched unit is in the backpack); FINAL-REC-B now drops its epoch from the archive to stay forgotten
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a claim proven after a world rollback keeps its objects once the claimed letter is pruned (scenario LG-proof-1..4: proved from the ledger, proved only by the objects, a save that lost the moved stamps is moved again, a later delivery stops the proof from moving old copies)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -17901,6 +17902,85 @@ p2 = login("rl-f", 1)
 hello(p2)
 check(M.entryOf("rl-f", l.id).state == "settled" and p2.inventory.count("Base.Bandage") == 0,
     "LG-11: a rollback to before the death settles the dead character's claim instead of redelivering it")
+-- LG-proof: a letter claimed on proof keeps the objects the save holds. They came with the claim
+-- the world forgot; once the claimed letter is pruned a day later, the login after that must not
+-- take them back as a rolled-back delivery (the money for them stayed paid).
+local KEY = EC.PLAYER_MODDATA_KEY
+local function crashLost(snap)             -- the claim's ledger line was still queued: lost too
+    onlinePlayers = {}
+    modDataStore[EC.MODDATA_KEY] = deep(snap)
+    nowMs = nowMs + 1000
+    fire("OnServerStarted")
+end
+local function afterPrune(name, hours, held)
+    nowMs = nowMs + M.CLAIMED_TTL_MS + 60000
+    fire("OnTickEvenPaused")                -- the claimed letter is pruned after its day
+    crash(proofSnapshot())                  -- an ordinary restart: the world saved all of it
+    local again = login(name, hours, held.inventory, held.modData)
+    hello(again)
+    return again
+end
+local function anchored(p, entry)
+    for _, it in ipairs(p.inventory.items) do
+        local st = it:getModData()[KEY]
+        if not (st and entry and entry.proof and st.epoch == entry.proof.e and st.seq == entry.proof.s) then return false end
+    end
+    return #p.inventory.items > 0
+end
+p, l, snap = claimed("rl-p", 10)
+assert(M.claim(p, l.id).ok)
+local removedBefore, ledgerBefore = count("removed-rolled-back"), count("mark-claimed-ledger")
+crash(snap)
+p2 = login("rl-p", 12, p.inventory, p.modData)
+hello(p2)
+local proofOk = count("mark-claimed-ledger") == ledgerBefore + 1 and anchored(p2, M.entryOf("rl-p", l.id))
+local p3 = afterPrune("rl-p", 13, p2)
+check(proofOk and M.entryOf("rl-p", l.id) == nil and p3.inventory.count("Base.Bandage") == 2
+    and count("removed-rolled-back") == removedBefore,
+    "LG-proof-1: a claim the ledger proves moves the objects onto the proof, and the pruned letter leaves them in place")
+p, l, snap = claimed("rl-q", 10)
+assert(M.claim(p, l.id).ok)
+local markedBefore = count("mark-claimed")
+removedBefore = count("removed-rolled-back")
+crashLost(snap)
+p2 = login("rl-q", 12, p.inventory, p.modData)
+hello(p2)
+proofOk = count("mark-claimed") == markedBefore + 1 and anchored(p2, M.entryOf("rl-q", l.id))
+p3 = afterPrune("rl-q", 13, p2)
+check(proofOk and p3.inventory.count("Base.Bandage") == 2 and count("removed-rolled-back") == removedBefore,
+    "LG-proof-2: a claim only the objects prove (its ledger line lost) keeps them after the letter is pruned")
+p, l, snap = claimed("rl-r", 10)
+assert(M.claim(p, l.id).ok)
+local oldStamps = {}
+for i, it in ipairs(p.inventory.items) do oldStamps[i] = deep(it:getModData()[KEY]) end
+crashLost(snap)
+removedBefore = count("removed-rolled-back")
+p2 = login("rl-r", 12, p.inventory, p.modData)
+hello(p2)
+local kept = proofSnapshot()                -- the world saves the proof ...
+for i, it in ipairs(p2.inventory.items) do it:getModData()[KEY] = deep(oldStamps[i]) end
+crash(kept)                                 -- ... the player save loads from before the move
+p3 = login("rl-r", 13, p2.inventory, p2.modData)
+hello(p3)
+proofOk = anchored(p3, M.entryOf("rl-r", l.id))
+local p4 = afterPrune("rl-r", 14, p3)
+check(proofOk and p4.inventory.count("Base.Bandage") == 2 and count("removed-rolled-back") == removedBefore,
+    "LG-proof-3: a save that lost the moved stamps is moved again from the letter's proof at its next login")
+p, l, snap = claimed("rl-t", 10)
+assert(M.claim(p, l.id).ok)
+oldStamps = {}
+for i, it in ipairs(p.inventory.items) do oldStamps[i] = deep(it:getModData()[KEY]) end
+crashLost(snap)
+p2 = login("rl-t", 12, p.inventory, p.modData)
+hello(p2)
+local letterT = M.entryOf("rl-t", l.id)
+letterT.claimSeq = S.nextSeq()               -- a later delivery of the letter issued a new claim seq
+for i, it in ipairs(p2.inventory.items) do it:getModData()[KEY] = deep(oldStamps[i]) end
+p3 = login("rl-t", 13, p2.inventory, p2.modData)
+hello(p3)
+check(p3.inventory.items[1]:getModData()[KEY].seq == oldStamps[1].seq
+    and p3.inventory.items[1]:getModData()[KEY].epoch == oldStamps[1].epoch,
+    "LG-proof-4: after a later delivery the proof no longer speaks for old copies: they keep the forgotten claim")
 
 -- list-outs: the save that comes back must really have had the objects taken out
 local function listed(name, hours)
