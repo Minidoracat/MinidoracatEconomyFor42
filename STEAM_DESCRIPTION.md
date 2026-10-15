@@ -9,7 +9,7 @@ Build 42 [b]多人專用伺服器[/b]的經濟系統：賺取倖存幣，在 ATM
 [list]
 [*] 必裝 UI 框架：[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3789836701]Minidoracat UI Library[/url]
 [*] 伺服器與所有玩家都要安裝這兩個 MOD 並保持同版；更新後伺服器與遊戲都要重新啟動
-[*] [b]中途加入／移除：[/b]可加入；移除前請先看完整說明
+[*] [b]中途加入／移除：[/b]可加入；伺服器開過的存檔不能移除，否則所有玩家都進不了世界（原版 B42 機制，詳見完整說明）
 [*] [b]介面語言：[/b]繁體中文、简体中文、English、日本語、한국어、Русский、Español、Português、Türkçe、Français、Polski、Deutsch（翻譯有問題請回報）
 [/list]
 

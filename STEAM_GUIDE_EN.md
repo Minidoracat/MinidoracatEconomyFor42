@@ -402,11 +402,6 @@ A server option.
 [*] [b]Once on[/b]: it still needs server voice chat enabled and follows each player's push-to-talk or voice activation; nearby and lower-floor devices may hear it, so it is not private chat.
 [*] [b]Not fully tested yet[/b]: general chat relay and the various distance cases.
 [/list]
-[h3]Before removing this mod[/h3]
-[list]
-[*] Unregister each trade station while its area is loaded, check its speaker is gone, then save normally.
-[*] Just disabling the mod runs no cleanup.
-[/list]
 === ⚙️ Permissions
 Three separate role lists, picked from the server's native roles, custom roles included:
 [table]
@@ -538,7 +533,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [*] [b]Protection has limits[/b]: map ATMs are not protected from fire, explosions or removal by other mods, and removed ATMs are not put back; registered vanilla cabinets can still burn.
 [*] [b]Radio voice[/b]: not private chat; general chat relay and the various distance cases are not fully tested yet.
 [*] [b]No backup feature[/b]: this mod never changes server settings by itself or forces extra saves; back up with your host's tools.
-[*] [b]Disabling runs no cleanup[/b]: unregister trade stations first, see "Terminal and market radio settings".
+[*] [b]Can't be removed from a world that has used it[/b]: every player would be unable to load the world; this is vanilla B42 behavior, see the FAQ "Server owners: can I remove this mod from a world that has used it?".
 [*] [b]Freeze time[/b]: after a crash rollback, freeze time since the last save can be undercounted.
 [/list]
 === ❓ FAQ
@@ -633,6 +628,15 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]Server owners: is there a backup feature?[/h3]
 [list]
 [*] No. Use your host's backup tools; economy data is saved with the world save.
+[/list]
+[h3]Server owners: can I remove this mod from a world that has used it?[/h3]
+[list]
+[*] [b]No[/b]: once the server has run a world with this mod, taking it out still lets the server start, but every player gets an error when joining and can't load the world.
+[*] [b]This is vanilla B42 behavior[/b]: the game records the names of build-menu objects (here, the machine and catgirl terminals) in the world's dictionary and from then on requires every player's game to have them. Every mod that adds furniture or structures through the vanilla build menu works the same way; it isn't caused by this mod's code, and this mod can't clear that record from the save.
+[*] [b]Building one doesn't matter[/b]: it happens even if no terminal was ever built; demolishing or unregistering terminals doesn't help either, because the dictionary stores names, not placed objects.
+[*] [b]What the error looks like[/b]: the player's console.txt has Missing dictionary script on client: Base.MinidoracatEconomyTerminal (or Base.MinidoracatEconomyCatTerminal).
+[*] [b]To recover[/b]: put the mod back on the server (in both Mods= and WorkshopItems=) and players can join again; to remove it for good, start a new world.
+[*] [b]Don't delete the save's WorldDictionary file[/b]: items in the save are stored by its ID numbers, so every item in the world would stop matching.
 [/list]
 === 💬 Feedback
 [list]
