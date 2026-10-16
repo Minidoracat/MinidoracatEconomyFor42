@@ -4,7 +4,7 @@
 --   wallet.changed (push)   balances after every transaction that touched the player
 --   wallet.history{month}   last entries of receipts/<safeName>/<YYYYMM>.json, read in batches of
 --                           HISTORY_LINES_PER_TICK lines per tick (the cost is EC.jsonDecode, about
---                           0.3 ms for a 540-byte event line on the server; readLine is about 1 us)
+--                           60 us for a 500-byte event line on the server; readLine is about 1 us)
 --
 -- Engine: getFileReader(filename, createIfNull) LuaManager.java:5933-5963 ; LuaFileReader.readLine
 -- returns nil at EOF; close() releases the handle.
@@ -23,7 +23,7 @@ end
 EC.Wallet = EC.Wallet or {}
 local W = EC.Wallet
 
-W.HISTORY_LINES_PER_TICK = 200
+W.HISTORY_LINES_PER_TICK = 500      -- parsed lines per tick and job: about 40 ms of a 100 ms server tick
 W.SKIP_LINES_PER_TICK = 2000         -- lines a needle passes over unparsed per tick (stepJob)
 W.HISTORY_MAX_ENTRIES = 200          -- newest entries kept per reply (packet budget ~60 KB)
 W.HISTORY_MAX_JOBS = 8               -- concurrent readers across all players

@@ -611,9 +611,77 @@ decodeValue = function(s, pos)
     end
 end
 
+-- Our own lines (EC.jsonEncode) are compact - no whitespace between tokens - so they are read here
+-- with one pattern call per key and per plain string instead of the general reader's whitespace
+-- skips and per-token checks (about 60 us instead of 180 us for a 500-byte event line on the
+-- server). A key or string holding an escape or a raw control character (%c: 0-31 and 127, the
+-- same in Kahlua, StringLib.isControl) is handed to decodeString, which refuses control characters.
+-- It returns nil for anything it does not take (whitespace, a bad token); EC.jsonDecode then reads
+-- that line the general way, which also writes every error message.
+local decodeCompact
+decodeCompact = function(s, pos)
+    local c = string.sub(s, pos, pos)
+    if c == '"' then
+        local str, np = string.match(s, '^"([^"\\%c]*)"()', pos)
+        if str then return str, np end
+        return decodeString(s, pos)
+    elseif c == "{" then
+        local obj = {}
+        pos = pos + 1
+        if string.sub(s, pos, pos) == "}" then return obj, pos + 1 end
+        while true do
+            local key, np = string.match(s, '^"([^"\\%c]*)":()', pos)
+            if not key then
+                if string.sub(s, pos, pos) ~= '"' then return nil end
+                key, np = decodeString(s, pos)
+                if not key or string.sub(s, np, np) ~= ":" then return nil end
+                np = np + 1
+            end
+            local value
+            value, pos = decodeCompact(s, np)
+            if value == nil then return nil end
+            obj[key] = value
+            local d = string.sub(s, pos, pos)
+            if d == "}" then return obj, pos + 1 end
+            if d ~= "," then return nil end
+            pos = pos + 1
+        end
+    elseif c == "[" then
+        local arr, n = {}, 0
+        pos = pos + 1
+        if string.sub(s, pos, pos) == "]" then return arr, pos + 1 end
+        while true do
+            local value
+            value, pos = decodeCompact(s, pos)
+            if value == nil then return nil end
+            n = n + 1
+            arr[n] = value
+            local d = string.sub(s, pos, pos)
+            if d == "]" then return arr, pos + 1 end
+            if d ~= "," then return nil end
+            pos = pos + 1
+        end
+    elseif c == "t" then
+        if string.sub(s, pos, pos + 3) == "true" then return true, pos + 4 end
+        return nil
+    elseif c == "f" then
+        if string.sub(s, pos, pos + 4) == "false" then return false, pos + 5 end
+        return nil
+    elseif c == "n" then
+        if string.sub(s, pos, pos + 3) == "null" then return EC.JSON_NULL, pos + 4 end
+        return nil
+    end
+    local numStr = string.match(s, "^-?%d+%.?%d*[eE]?[-+]?%d*", pos)
+    local num = numStr and tonumber(numStr)
+    if not num then return nil end
+    return num, pos + #numStr
+end
+
 function EC.jsonDecode(s)
     if type(s) ~= "string" then return nil, "not a string" end
-    local value, np = decodeValue(s, 1)
+    local value, np = decodeCompact(s, 1)
+    if value ~= nil and np == #s + 1 then return value end
+    value, np = decodeValue(s, 1)
     if type(np) ~= "number" then return nil, np end
     np = skipSpace(s, np)
     if np <= #s then return decodeError(s, np, "trailing garbage") end

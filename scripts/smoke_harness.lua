@@ -1153,6 +1153,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: several rental periods i
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the epoch archive and vouching for a forgotten claim (scenario 42 EA-1..10 and EA-3b: the archive answers delivery stamps while receipts keep the bounded answer, the login marks a backpack unit durable on it, a unit taken out of a box later lists, that list-out rolled back with the world is rebuilt once, the archive bound, a forgotten claim refused and held under its letter, a live source blocks vouching, the row offers vouching only, approve marks both units durable and is audited, the vouched unit lists, the record closes once no unvouched unit is in the backpack); FINAL-REC-B now drops its epoch from the archive to stay forgotten
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a claim proven after a world rollback keeps its objects once the claimed letter is pruned (scenario LG-proof-1..4: proved from the ledger, proved only by the objects, a save that lost the moved stamps is moved again, a later delivery stops the proof from moving old copies)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: auction durations in minutes and faster record reads (scenario 32: a 90-minute auction is open at 89 minutes and ends at 90, a rebuilt auction keeps its end; scenario 35: lines without an auction record are skipped unparsed, a pinned auction's timeline skips the days before its id, the JSON decoder's strictness on raw control characters; scenario 36: an exact transaction lookup skips the days before its id)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: compact JSON lines take a faster path (scenario 35: a compact line and the same value written with whitespace decode alike; malformed compact lines are refused)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1863,6 +1864,9 @@ for i = 1, 250 do L.credit("frank", "survivor", 1, "SYSTEM_MINT", { requestId = 
 for _ = 1, 12 do fire("OnTickEvenPaused") end
 local rpath = X.receiptsPath("frank", nowMs)
 check(#files[rpath].lines == 251, "251 receipt lines on disk")
+-- the batch size is a tuning knob; this checks the batching itself, so it reads 200 lines a tick
+local linesPerTick = EC.Wallet.HISTORY_LINES_PER_TICK
+EC.Wallet.HISTORY_LINES_PER_TICK = 200
 fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", frank, { month = EC.monthKey(nowMs) })
 check(lastSent("wallet.history") == nil or lastSent("wallet.history").args.month ~= EC.monthKey(nowMs), "history is not answered synchronously (batched over ticks)")
 nowMs = nowMs + 600
@@ -1876,6 +1880,7 @@ check(h1.args.error == "busy", "after one tick (200 lines) the job is still runn
 fire("OnTickEvenPaused")
 local h2 = lastSent("wallet.history")
 check(h2.args.month == EC.monthKey(nowMs) and h2.args.total == 251 and #h2.args.entries == 200 and h2.args.truncated == true, "second tick finishes: newest 200 of 251 entries, truncated flag")
+EC.Wallet.HISTORY_LINES_PER_TICK = linesPerTick
 check(h2.args.entries[1].delta == 1 and h2.args.entries[200].availableAfter == 290 and h2.args.entries[200].rolledBack == false, "entries are oldest-first among the kept window, decoded from JSON")
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "wallet.history", frank, { month = "bad" })
@@ -5080,6 +5085,20 @@ io.write("scenario 35: buyback state and auction history\n")
         and EC.jsonDecode('{"a":"x\31"}') == nil and EC.jsonDecode('{"a":"open') == nil
         and EC.jsonEncode(EC.jsonDecode(line)) == line,
         "the JSON decoder refuses a raw control character inside a string and reads escapes and plain runs exactly")
+    -- Compact lines (what jsonEncode writes) take a faster path than hand-written files: both
+    -- read the same value, and what the fast path cannot read gets the general reader's verdict.
+    local compact = '{"a":[1,-2.5,{"b":"x\\"y","c":[]},true,false,null],"d":{},"e":"caf\195\169","f\\n":"g"}'
+    local spaced = ' { "a" : [ 1 , -2.5 , { "b" : "x\\"y" , "c" : [ ] } , true , false , null ] , "d" : { } ,\n "e" : "caf\195\169" , "f\\n" : "g" } '
+    local c1, c2 = EC.jsonDecode(compact), EC.jsonDecode(spaced)
+    local refused = true
+    for _, bad in ipairs({ '{"a":1,}', '{"a":1}x', '[1,2', '{"a":tru}', '{"a":1e}', '{"a" 1}', '{"a":1;"b":2}', '{,}', '["a"', '',
+        '{"a\1":1}', '["x\31"]' }) do
+        if EC.jsonDecode(bad) ~= nil then refused = false end
+    end
+    check(c1 and c2 and c1.a[6] == EC.JSON_NULL and c1["f\n"] == "g" and c1.a[3].b == 'x"y'
+        and EC.jsonEncode(c1) == EC.jsonEncode(c2) and refused and EC.jsonDecode('{"a":1} ').a == 1
+        and EC.jsonDecode('{"a":"x\127"}').a == "x\127",
+        "a compact line and the same value written with whitespace decode alike; malformed compact lines are refused")
 
     local originalReader = getFileReader
     getFileReader = function(path, create)
