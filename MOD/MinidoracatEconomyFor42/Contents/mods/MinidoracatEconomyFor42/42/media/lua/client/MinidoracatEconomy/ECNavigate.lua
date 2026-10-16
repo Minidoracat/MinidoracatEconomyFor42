@@ -1,17 +1,19 @@
 -- MinidoracatEconomyFor42 - "take me to the nearest terminal" (client only).
 --
 -- Picks the nearest place the player can trade at, names it as a compass direction and a distance,
--- and on request points the vanilla direction arrow at it until the player is within trading range.
--- Nothing here is saved, sent or written to the player's map: the arrow lives in this client's
--- memory only, and whether a trade is allowed is still the server's call (ECTerminal.near).
+-- and on request points an arrow beside the character at it until the player is within trading
+-- range. Nothing here is saved, sent or written to the player's map: the arrow lives in this
+-- client's memory only, and whether a trade is allowed is still the server's call (ECTerminal.near).
 --
--- Engine references (snapshot 42.20.4-20260826; .claude/skills/economy-dev/references/api-sources.md):
---   getWorldMarkers():addDirectionArrow(player, x, y, z, texname, r, g, b, a)
---                     LuaManager.java:11514-11520, WorldMarkers.java:181-201 - per player index,
---                     texname nil = media/textures/highlights/dir_arrow_up; arrow:remove() at :768-790
---   floors            WorldMarkers.java:301 draws the stairs-up glyph for a target downstairs too,
---                     so the words say upstairs / downstairs, never the arrow
---   world exit        IngameState.java:908 clears every arrow; OnGameStart drops our handle to it
+-- Engine references (snapshot 42.21.0-20260928; .claude/skills/economy-dev/references/api-sources.md):
+--   getWorldMarkers():addPlayerHomingPoint(player, x, y, r, g, b, a)
+--                     LuaManager.java:11514-11520, WorldMarkers.java:105-129 - per player index; the
+--                     vanilla foraging triangle: circles the character pointing at the target, glides
+--                     toward it once it is on screen within 20 tiles (:358-451); arrow:remove() at :1237
+--   floors            the point projects its target onto floor 0 (:388-391): setHomeOnOffsetY lifts it
+--                     to the target's floor (IsoUtils.java:100-105). No floor glyph, so the words say
+--                     upstairs / downstairs
+--   world exit        IngameState.java:908 clears every point; OnGameStart drops our handle to it
 
 require "MinidoracatEconomy/ECClient"
 
@@ -146,7 +148,9 @@ local function placeArrow()
     dropArrow()
     local player, t = getPlayer(), N.target
     if not player or player:isDead() or t == nil then return end
-    N.arrow = getWorldMarkers():addDirectionArrow(player, t.x, t.y, t.z, nil, 1, 0.85, 0.4, 1)
+    N.arrow = getWorldMarkers():addPlayerHomingPoint(player, t.x, t.y, 1, 0.85, 0.4, 1)
+    -- aim at the middle of the target's square on its own floor, as vanilla foraging does (ISBaseIcon)
+    N.arrow:setHomeOnOffsetY(IsoUtils.YToScreen(0.5, 0.5, t.z, 0))
     N.arrowPlayer = player
 end
 

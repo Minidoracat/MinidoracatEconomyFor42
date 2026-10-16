@@ -21399,7 +21399,7 @@ end)()
 -- tiles north-west a floor up; a floor costs six tiles, so the upstairs one (13 + 6) wins over 20.
 ;(function()
 local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client,
-    getPlayer = getPlayer, getWorldMarkers = getWorldMarkers }
+    getPlayer = getPlayer, getWorldMarkers = getWorldMarkers, IsoUtils = IsoUtils }
 local dict = EC.jsonDecode(io.open(MEDIA .. "/shared/Translate/EN/IG_UI.json", "rb"):read("*a"))
 getTextOrNull = function(key, ...)
     local s, args = dict[key], { ... }
@@ -21411,10 +21411,12 @@ local removed, placed = 0, nil
 local player = { getX = function() return 100.5 end, getY = function() return 100.5 end, getZ = function() return 0 end,
     isDead = function() return false end }
 getPlayer = function() return player end
-getWorldMarkers = function() return { addDirectionArrow = function(_, p, x, y, z)
-    placed = { x = x, y = y, z = z }
-    return { remove = function() removed = removed + 1 end }
+getWorldMarkers = function() return { addPlayerHomingPoint = function(_, p, x, y)
+    placed = { x = x, y = y }
+    return { remove = function() removed = removed + 1 end, setHomeOnOffsetY = function(_, dy) placed.dy = dy end }
 end } end
+-- the engine's projection at tile scale 2 (IsoUtils.java:100-105): 32 px down per tile on each axis, 192 up per floor
+IsoUtils = { YToScreen = function(x, y, z, screenZ) return (x + y) * 32 + (screenZ - z) * 192 end }
 EC.Client = { terminals = { { id = "a", x = 100, y = 80, z = 0 }, { id = "b", x = 91, y = 91, z = 1 } } }
 local ok = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECNavigate.lua")
 local N = EC.Client.Navigate or {}
@@ -21427,11 +21429,12 @@ if ok then N.stop() end
 check(ok and best and best.id == "b" and best.dirKey == "NW" and best.dist == 13 and best.dz == 1
     and hint == "Nearest terminal: 13 tiles northwest, upstairs"
     and refusal == "Stand next to a terminal. Nearest terminal: 13 tiles northwest, upstairs"
-    and started == true and active == true and placed and placed.x == 91 and placed.z == 1
+    and started == true and active == true and placed and placed.x == 91 and placed.y == 91
+    and placed.dy == 32 - 192   -- the middle of the square (+32), lifted one floor (-192)
     and removed == 1 and not N.active(),
-    "NV: the nearest terminal ranks a floor as six tiles, reads as an 8-way direction with its floor, rides on a refusal, and the arrow comes and goes")
+    "NV: the nearest terminal ranks a floor as six tiles, reads as an 8-way direction with its floor, rides on a refusal, and the arrow aims at its floor, comes and goes")
 require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
-getPlayer, getWorldMarkers = saved.getPlayer, saved.getWorldMarkers
+getPlayer, getWorldMarkers, IsoUtils = saved.getPlayer, saved.getWorldMarkers, saved.IsoUtils
 end)()
 
 -- NA: map ATMs the server has seen (ECAtmMap) and where they show up on the client (ECNavigate,
@@ -21515,7 +21518,7 @@ EC.log = realLog
 -- the client
 local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client,
     getPlayer = getPlayer, getWorldMarkers = getWorldMarkers, getTexture = getTexture, api = MinidoracatMiniMapAPI,
-    world = ISWorldMap_instance, mini = getPlayerMiniMap }
+    world = ISWorldMap_instance, mini = getPlayerMiniMap, IsoUtils = IsoUtils }
 local dict = EC.jsonDecode(io.open(MEDIA .. "/shared/Translate/EN/IG_UI.json", "rb"):read("*a"))
 getTextOrNull = function(key, ...)
     local s, args = dict[key], { ... }
@@ -21526,7 +21529,10 @@ require = function() end
 local player = { getX = function() return 100.5 end, getY = function() return 100.5 end, getZ = function() return 0 end,
     isDead = function() return false end }
 getPlayer = function() return player end
-getWorldMarkers = function() return { addDirectionArrow = function() return { remove = function() end } end } end
+getWorldMarkers = function() return { addPlayerHomingPoint = function()
+    return { remove = function() end, setHomeOnOffsetY = function() end }
+end } end
+IsoUtils = { YToScreen = function() return 0 end }
 getTexture = function(path) return { path = path } end
 local registered = nil
 local sections = {}
@@ -21641,7 +21647,7 @@ M.layer = nil
 worldObjects["110,100,0"] = nil
 require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
 getPlayer, getWorldMarkers, getTexture, MinidoracatMiniMapAPI = saved.getPlayer, saved.getWorldMarkers, saved.getTexture, saved.api
-ISWorldMap_instance, getPlayerMiniMap = saved.world, saved.mini
+ISWorldMap_instance, getPlayerMiniMap, IsoUtils = saved.world, saved.mini, saved.IsoUtils
 end)()
 
 -- DK: the entry button joins the framework's family toolbar (MinidoracatUI rev 13 Dock) when the
