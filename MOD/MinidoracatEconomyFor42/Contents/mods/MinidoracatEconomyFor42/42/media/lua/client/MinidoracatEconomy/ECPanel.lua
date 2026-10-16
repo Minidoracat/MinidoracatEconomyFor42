@@ -4072,8 +4072,8 @@ function Panel:submitAuction(dlg)
         dlg.message = getText(T .. "Market_Error_price_range", amountText(info.priceMin), amountText(info.priceMax))
         return
     end
-    local hours = dlg.hours
-    if hours == nil or hours < aInfo.minHours or hours > aInfo.maxHours then
+    local minutes = dlg:minutesValue()
+    if minutes == nil or minutes < aInfo.minHours * 60 or minutes > aInfo.maxHours * 60 then
         dlg.message = marketError({ error = "hours_range", min = aInfo.minHours, max = aInfo.maxHours })
         return
     end
@@ -4090,7 +4090,7 @@ function Panel:submitAuction(dlg)
     dlg.message = nil
     pending.name, pending.qty, pending.price = dlg.cand.name, qty, price
     self.marketPending = pending
-    C.createAuction(itemIds, price, hours, currency, pending.requestId)
+    C.createAuction(itemIds, price, minutes, currency, pending.requestId)
 end
 
 function Panel:onAuction(kind, args)

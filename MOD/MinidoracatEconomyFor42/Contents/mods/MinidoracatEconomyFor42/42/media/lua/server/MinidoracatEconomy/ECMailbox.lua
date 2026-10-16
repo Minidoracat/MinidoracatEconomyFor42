@@ -1832,7 +1832,8 @@ end
 
 -- pendingOuts[opId] = { protocol = 2, origins = { {src, unit (token)?, nativeId, mailId?, owner?,
 -- epoch?, seq?, parentMailId?, srcRef?}, ... }, itemIds, qty, lotQty, snapshot, price, kind,
--- seq, epoch, at } plus the kind's own fields (hours; sku/unitPrice/unitQty/count/txRequestId).
+-- seq, epoch, at } plus the kind's own fields (an auction's minutes, or hours on a record written
+-- before minutes; sku/unitPrice/unitQty/count/txRequestId).
 -- ECRecovery judges each record against the world, the receipts and one inventory snapshot;
 -- this applies the verdict. Returns changed, handledKeys (the unit keys this pass owns).
 -- The table itself is the client's (ObjectModDataPacket.java:61): a key this server never writes

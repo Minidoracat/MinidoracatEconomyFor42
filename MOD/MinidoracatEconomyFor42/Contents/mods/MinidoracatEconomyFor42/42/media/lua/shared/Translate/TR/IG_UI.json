@@ -992,6 +992,7 @@
   "IGUI_MinidoracatEconomy_Auction_Duration": "Süre",
   "IGUI_MinidoracatEconomy_Auction_Hours": "%1 sa",
   "IGUI_MinidoracatEconomy_Auction_HoursHint": "%1 - %2 saat",
+  "IGUI_MinidoracatEconomy_Auction_CustomMinutes": "Özel (dakika)",
   "IGUI_MinidoracatEconomy_Auction_Col_Bid": "Mevcut teklif",
   "IGUI_MinidoracatEconomy_Auction_Col_Bids": "Teklifler",
   "IGUI_MinidoracatEconomy_Auction_Col_Ends": "Bitiş",

@@ -992,6 +992,7 @@
   "IGUI_MinidoracatEconomy_Auction_Duration": "Durée",
   "IGUI_MinidoracatEconomy_Auction_Hours": "%1 h",
   "IGUI_MinidoracatEconomy_Auction_HoursHint": "De %1 à %2 heures",
+  "IGUI_MinidoracatEconomy_Auction_CustomMinutes": "Personnalisée (minutes)",
   "IGUI_MinidoracatEconomy_Auction_Col_Bid": "Offre actuelle",
   "IGUI_MinidoracatEconomy_Auction_Col_Bids": "Offres",
   "IGUI_MinidoracatEconomy_Auction_Col_Ends": "Fin",

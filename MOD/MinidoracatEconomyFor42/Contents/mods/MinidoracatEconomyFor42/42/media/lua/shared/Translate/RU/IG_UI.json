@@ -992,6 +992,7 @@
   "IGUI_MinidoracatEconomy_Auction_Duration": "Длительность",
   "IGUI_MinidoracatEconomy_Auction_Hours": "%1 ч",
   "IGUI_MinidoracatEconomy_Auction_HoursHint": "От %1 до %2 ч",
+  "IGUI_MinidoracatEconomy_Auction_CustomMinutes": "Своё (минуты)",
   "IGUI_MinidoracatEconomy_Auction_Col_Bid": "Текущая ставка",
   "IGUI_MinidoracatEconomy_Auction_Col_Bids": "Ставки",
   "IGUI_MinidoracatEconomy_Auction_Col_Ends": "Окончание",

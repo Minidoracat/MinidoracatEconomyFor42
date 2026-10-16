@@ -716,6 +716,8 @@ A1–A5、A9、A10 決定儲存與一致性設計能否成立，先做；A7、A1
 
 **紀錄入口（2026-09-08 補充）**：玩家「拍賣 → 紀錄」查自己的參與紀錄，每場旁的「紀錄」可用 exact `auctionId` 查看整場公開出價時間線；管理「拍賣 → 全部紀錄」查全服並搜尋拍賣 ID／帳號／物品。server `auction.history{query?,auctionId?,requestId?}` 與 `admin.auctions{action="history",…}` 共用 `Au.history`，讀上月 1 日到今天的 `events-YYYYMMDD.json`（最多 62 個路徑），不另建帳本或補造舊資料。只投影六種公開 `auction_*` 紀錄，排除 postings／餘額／管理原因；不指定 ID 時玩家只看 seller／bidder／buyer／previous 與自己相符的行，管理路徑仍受 read gate。`W.tail` 在最新 200 筆限制前過濾，回覆含 `total`／`truncated`；client 每頁 25，出價金額不是錢包增減、舊事件缺欄位不捏造。慢查詢同時僅一筆讀取、保留最新排隊條件；錯誤不清既有快照，切模式不再送排隊查詢。
 
+**時長與紀錄讀取（2026-10-16 更新）**：`auction.create` 的時長欄位改為 `minutes`（整數分鐘，取代上面的 `hours`），伺服器只接受 `AuctionMinHours`×60 到 `AuctionMaxHours`×60 之間，拒絕時仍回以小時表示的 `hours_range{min,max}`；拍賣紀錄、恢復紀錄與 `auction.created` 事件都記 `minutes`，更新前寫的紀錄只有 `hours` 時換算成分鐘重建。建立框的時長膠囊為 1／2／3／6／12／24／48／72 小時（落在沙盒範圍內的才出現），另有「自訂（分鐘）」欄；`AuctionMinHours` 預設改為 1。`Au.history` 讀日檔時以純字串比對略過不含拍賣紀錄的行、不解析（`W.tail` 的 `needle`，每 tick 另有 `W.SKIP_LINES_PER_TICK` 額度）；指定 `auctionId` 時只讀該 ID epoch（開服時間）前一天起的日檔。`admin.transaction` 以同樣方式從 txId 的 epoch 起讀；金流列表與其他嚴格讀取照舊逐行解析。
+
 ### 階段 G：系統收購（mint）
 
 - `bidPrice`、canonical 白名單、同 tick 銷毀原物、帳號／全服／SKU 分層 gross mint cap、faucet kill switch、轉換環路稽核；

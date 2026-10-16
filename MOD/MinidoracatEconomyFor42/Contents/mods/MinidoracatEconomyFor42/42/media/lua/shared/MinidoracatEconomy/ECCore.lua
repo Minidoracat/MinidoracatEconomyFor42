@@ -511,51 +511,52 @@ local function unicodeChar(code)
     return string.char(55296 + math.floor(code / 1024), 56320 + code % 1024)
 end
 
+-- A raw control character (below 32) anywhere in a string is malformed JSON. The plain run before
+-- the next quote or backslash is checked and copied whole: a character-at-a-time loop costs a
+-- Kahlua call per character, which made a 540-byte event line take about 270 us to decode.
 local function decodeString(s, pos)
     -- pos is at the opening quote
     local out = {}
     local i = pos + 1
-    local n = #s
-    while i <= n do
-        local c = string.sub(s, i, i)
-        if c == '"' then
-            return table.concat(out), i + 1
-        elseif c == "\\" then
-            local e = string.sub(s, i + 1, i + 1)
-            if e == "n" then out[#out + 1] = "\n"
-            elseif e == "t" then out[#out + 1] = "\t"
-            elseif e == "r" then out[#out + 1] = "\r"
-            elseif e == "b" then out[#out + 1] = "\b"
-            elseif e == "f" then out[#out + 1] = "\f"
-            elseif e == "u" then
-                local hex = string.sub(s, i + 2, i + 5)
-                if not string.match(hex, "^%x%x%x%x$") then return nil, i end
-                local code = tonumber(hex, 16)
-                if code >= 55296 and code <= 56319 then
-                    local lowHex = string.sub(s, i + 8, i + 11)
-                    if string.sub(s, i + 6, i + 7) ~= "\\u" or not string.match(lowHex, "^%x%x%x%x$") then return nil, i end
-                    local low = tonumber(lowHex, 16)
-                    if low < 56320 or low > 57343 then return nil, i end
-                    code = 65536 + (code - 55296) * 1024 + low - 56320
-                    i = i + 6
-                elseif code >= 56320 and code <= 57343 then
-                    return nil, i
-                end
-                out[#out + 1] = unicodeChar(code)
-                i = i + 4
-            elseif e == '"' or e == "\\" or e == "/" then
-                out[#out + 1] = e
-            else
+    while true do
+        local j = string.find(s, '["\\]', i)
+        if not j then return nil, pos end
+        if j > i then
+            local run = string.sub(s, i, j - 1)
+            if string.find(run, "[\1-\31]") or string.find(run, "\0", 1, true) then return nil, i end
+            out[#out + 1] = run
+        end
+        if string.sub(s, j, j) == '"' then return table.concat(out), j + 1 end
+        i = j
+        local e = string.sub(s, i + 1, i + 1)
+        if e == "n" then out[#out + 1] = "\n"
+        elseif e == "t" then out[#out + 1] = "\t"
+        elseif e == "r" then out[#out + 1] = "\r"
+        elseif e == "b" then out[#out + 1] = "\b"
+        elseif e == "f" then out[#out + 1] = "\f"
+        elseif e == "u" then
+            local hex = string.sub(s, i + 2, i + 5)
+            if not string.match(hex, "^%x%x%x%x$") then return nil, i end
+            local code = tonumber(hex, 16)
+            if code >= 55296 and code <= 56319 then
+                local lowHex = string.sub(s, i + 8, i + 11)
+                if string.sub(s, i + 6, i + 7) ~= "\\u" or not string.match(lowHex, "^%x%x%x%x$") then return nil, i end
+                local low = tonumber(lowHex, 16)
+                if low < 56320 or low > 57343 then return nil, i end
+                code = 65536 + (code - 55296) * 1024 + low - 56320
+                i = i + 6
+            elseif code >= 56320 and code <= 57343 then
                 return nil, i
             end
-            i = i + 2
+            out[#out + 1] = unicodeChar(code)
+            i = i + 4
+        elseif e == '"' or e == "\\" or e == "/" then
+            out[#out + 1] = e
         else
-            if string.byte(c) < 32 then return nil, i end
-            out[#out + 1] = c
-            i = i + 1
+            return nil, i
         end
+        i = i + 2
     end
-    return nil, pos
 end
 
 decodeValue = function(s, pos)
@@ -717,7 +718,7 @@ EC.OPTIONS = {
     { key = "MailboxPerAccount", group = "market", kind = "int", min = 5, max = 500, step = 5, default = 50 },
     { key = "MarketPriceMin", group = "market", kind = "int", min = 1, max = 1000000, step = 1, default = 1, unit = "coin" },
     { key = "MarketPriceMax", group = "market", kind = "int", min = 1, max = 1000000000, step = 1000, default = 1000000, unit = "coin" },
-    { key = "AuctionMinHours", group = "auction", kind = "int", min = 1, max = 168, step = 1, default = 6, unit = "hour" },
+    { key = "AuctionMinHours", group = "auction", kind = "int", min = 1, max = 168, step = 1, default = 1, unit = "hour" },
     { key = "AuctionMaxHours", group = "auction", kind = "int", min = 1, max = 168, step = 1, default = 72, unit = "hour" },
     { key = "AuctionMaxPerPlayer", group = "auction", kind = "int", min = 1, max = 50, step = 1, default = 3 },
     { key = "AuctionMinIncrementPercent", group = "auction", kind = "int", min = 1, max = 100, step = 1, default = 5, unit = "percent" },

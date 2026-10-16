@@ -1152,6 +1152,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: map review fixes (MP-6 a
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: several rental periods in one order (scripts/test_entitlements.lua scenario 10b: refused periods and rev 7, a new rental paying 3 periods, a 2-period renewal bound to its quote, the whole-order refund and desk rows, auto-renew still one period)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the epoch archive and vouching for a forgotten claim (scenario 42 EA-1..10 and EA-3b: the archive answers delivery stamps while receipts keep the bounded answer, the login marks a backpack unit durable on it, a unit taken out of a box later lists, that list-out rolled back with the world is rebuilt once, the archive bound, a forgotten claim refused and held under its letter, a live source blocks vouching, the row offers vouching only, approve marks both units durable and is audited, the vouched unit lists, the record closes once no unvouched unit is in the backpack); FINAL-REC-B now drops its epoch from the archive to stay forgotten
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a claim proven after a world rollback keeps its objects once the claimed letter is pruned (scenario LG-proof-1..4: proved from the ledger, proved only by the objects, a save that lost the moved stamps is moved again, a later delivery stops the proof from moving old copies)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: auction durations in minutes and faster record reads (scenario 32: a 90-minute auction is open at 89 minutes and ends at 90, a rebuilt auction keeps its end; scenario 35: lines without an auction record are skipped unparsed, a pinned auction's timeline skips the days before its id, the JSON decoder's strictness on raw control characters; scenario 36: an exact transaction lookup skips the days before its id)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -4427,15 +4428,17 @@ cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "trade" })
 for _, u in ipairs({ "ann", "bob", "cat" }) do L.credit(u, "survivor", 500, "SYSTEM_MINT", { requestId = "au-seed-" .. u, reasonCode = "t" }) end
 -- create: validation, fee, escrow, slot
 local axe = instanceItem("Base.Axe"); axe.condition = 6; ann.inventory:AddItem(axe)
-check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 2 }).error == "hours_range", "duration below the sandbox minimum is refused")
-check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 0, hours = 24 }).error == "price_range", "start price must be in the market range")
-local created = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 24 })
+local short = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, minutes = 30 })
+check(short.error == "hours_range" and short.min == 1 and short.max == 72,
+    "a duration under the one-hour sandbox minimum is refused, quoting the window in hours")
+check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 0, minutes = 1440 }).error == "price_range", "start price must be in the market range")
+local created = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, minutes = 1440 })
 check(created.ok == true and created.fee == 2 and ann.inventory.count("Base.Axe") == 0 and Au.hasAuction(created.auctionId) and bal("ann").available == 498,
     "creating an auction escrows the item and burns the listing fee on the start price")
-check(ann.modData[KEY].pendingOuts[created.auctionId].kind == "auction" and ann.modData[KEY].pendingOuts[created.auctionId].hours == 24, "the pending record is an auction with its duration")
+check(ann.modData[KEY].pendingOuts[created.auctionId].kind == "auction" and ann.modData[KEY].pendingOuts[created.auctionId].minutes == 1440, "the pending record is an auction with its duration")
 check(M.used("ann") == 1 and M.usage("ann").auctions == 1 and M.usage("ann").marketListings == 0, "an auction occupies a named auction slot")
 local browse = cmd(bob, "auction.browse", {})
-check(browse.total == 1 and browse.items[1].startPrice == 100 and browse.items[1].bid == nil and browse.items[1].minNext == 100 and browse.items[1].bids == 0 and browse.minHours == 6,
+check(browse.total == 1 and browse.items[1].startPrice == 100 and browse.items[1].bid == nil and browse.items[1].minNext == 100 and browse.items[1].bids == 0 and browse.minHours == 1,
     "browse shows the auction with the start price as the first acceptable bid")
 -- bids: seller refused, too low refused, reserve moves the bucket, outbid releases in the same tick
 local id = created.auctionId
@@ -4476,11 +4479,14 @@ check(cat.inventory.count("Base.Axe") == 1 and cat.inventory.items[#cat.inventor
 check(notices(ann, "auction_sold") == 1 and notices(cat, "auction_won") == 1, "seller and winner are told")
 check(L.conservation("survivor") == 0, "settlement keeps the currency conserved")
 check(M.used("ann") == 0, "the seller's slot is free again")
--- unsold: back to the seller through the mailbox
+-- unsold: back to the seller through the mailbox; a length typed in minutes runs exactly that long
 local saw = instanceItem("Base.Saw"); ann.inventory:AddItem(saw)
-local c2 = cmd(ann, "auction.create", { itemId = saw.id, startPrice = 50, hours = 6 })
+local c2 = cmd(ann, "auction.create", { itemId = saw.id, startPrice = 50, minutes = 90 })
 sentCommands = {}
-nowMs = nowMs + 6 * 3600000 + 60000
+nowMs = nowMs + 89 * 60000
+fire("OnTickEvenPaused")
+check(c2.ok == true and Au.hasAuction(c2.auctionId), "a 90-minute auction is still running after 89 minutes")
+nowMs = nowMs + 2 * 60000
 fire("OnTickEvenPaused")
 check(not Au.hasAuction(c2.auctionId) and M.unclaimed("ann") == 1 and notices(ann, "auction_unsold") == 1, "an unsold auction returns to the seller's mailbox")
 cmd(ann, "mail.list")
@@ -4490,11 +4496,11 @@ cmd(ann, "mail.claim", { mailId = entries[1].id })
 check(ann.inventory.count("Base.Saw") == 1, "claiming brings the saw back")
 -- seller cancel without bids; admin cancel with a bid releases the reserve
 local h1 = instanceItem("Base.Hammer"); ann.inventory:AddItem(h1)
-local c3 = cmd(ann, "auction.create", { itemId = h1.id, startPrice = 20, hours = 6 })
+local c3 = cmd(ann, "auction.create", { itemId = h1.id, startPrice = 20, minutes = 360 })
 local cx = cmd(ann, "auction.cancel", { auctionId = c3.auctionId })
 check(cx.ok == true and cx.delivered == true and ann.inventory.count("Base.Hammer") == 1 and not Au.hasAuction(c3.auctionId), "a seller cancels an unbid auction and gets the item back at once")
 local h2 = instanceItem("Base.Hammer"); ann.inventory:AddItem(h2)
-local c4 = cmd(ann, "auction.create", { itemId = h2.id, startPrice = 20, hours = 6 })
+local c4 = cmd(ann, "auction.create", { itemId = h2.id, startPrice = 20, minutes = 360 })
 cmd(bob, "auction.bid", { auctionId = c4.auctionId, amount = 30 })
 check(bal("bob").reserved == 30, "setup: bob holds a reserve")
 check(cmd(bob, "admin.auctions", { action = "cancel", auctionId = c4.auctionId, reason = "x" }).error == "forbidden", "a player cannot admin-cancel")
@@ -4515,7 +4521,7 @@ check(table.concat(kinds, ",") == "auction_created,auction_sold,auction_created,
 fire("OnTickEvenPaused")
 local saved = deepCopyTable(modDataStore[EC.MODDATA_KEY])
 local n1 = instanceItem("Base.Nails"); ann.inventory:AddItem(n1)
-local c5 = cmd(ann, "auction.create", { itemId = n1.id, startPrice = 10, hours = 12 })
+local c5 = cmd(ann, "auction.create", { itemId = n1.id, startPrice = 10, minutes = 720 })
 proofSettle()              -- 證據要先真的落盤：journal 在檔案層，不隨 ModData 回滾
 local playerInv, playerMd = deepCopyTable(ann.inventory.items), deepCopyTable(ann.modData)
 modDataStore[EC.MODDATA_KEY] = saved
@@ -4525,6 +4531,8 @@ ann.inventory.items = playerInv; ann.modData = playerMd
 cmd(ann, "hello")
 proofPump("ann")           -- journal 查詢是非同步的：有界 pump 到該帳號讀取收斂
 check(S.Auction.hasAuction(c5.auctionId) and ann.inventory.count("Base.Nails") == 0, "a pending auction is rebuilt from the player save after a rollback")
+check(modDataStore[EC.MODDATA_KEY].auctions.items[c5.auctionId].expiresAt == c5.expiresAt,
+    "the rebuilt auction ends when the original would have: its minutes travel with the recovery record")
 -- downtime policy: 6 h of downtime extends every active auction; 25 h cancels them
 local before = modDataStore[EC.MODDATA_KEY].auctions.items[c5.auctionId].expiresAt
 local action, downtime = S.Auction.applyDowntime(nowMs + 6 * 3600000, nowMs)
@@ -5021,6 +5029,57 @@ io.write("scenario 35: buyback state and auction history\n")
     local bareTypes = history(bidder, "auction.history", { types = "Base.Nails" })
     check(capped and capped.total == 0 and bareTypes and not bareTypes.error and #bareTypes.entries == 3,
         "auction record types are bounded and a non-list is ignored")
+    -- Auction lines are a small share of the daily files: every other line is passed over
+    -- unparsed and does not count against the parsed budget, so thousands of them still answer in
+    -- a few ticks. A line that names an auction type only inside a nested field passes the text
+    -- filter and is still refused by the projector.
+    local filler = {}
+    for i = 1, 5000 do
+        filler[i] = EC.jsonEncode({ type = "tx.committed", epoch = "history-crash", seq = i, ts = nowMs,
+            txId = "history-crash:" .. i, kind = "shop_buy" })
+    end
+    filler[#filler + 1] = EC.jsonEncode({ type = "tx.committed", epoch = "history-crash", seq = 5001, ts = nowMs,
+        payload = { ref = { type = "auction.bid", auctionId = "auction-1" } } })
+    files[X.ROOT .. "/events-20260902.json"] = { opens = 0, lines = filler }
+    cmd(reader, "admin.auctions", { action = "history" })
+    local ticks, all = 0, nil
+    while all == nil and ticks < 100 do
+        ticks = ticks + 1
+        fire("OnTickEvenPaused")
+        local reply = lastSent("admin.auctions")
+        all = reply and reply.args
+    end
+    check(all and not all.error and all.total == 225 and ticks < #filler / EC.Wallet.HISTORY_LINES_PER_TICK,
+        "lines without an auction record are skipped unparsed: thousands of them answer in a few ticks, and a nested mention is no record")
+    -- One auction's timeline starts at the day its id was minted (the epoch is the server start
+    -- that minted it): an unreadable earlier file in the window is never opened.
+    local minted = nowMs
+    for _ = 1, 62 do
+        if EC.dayKey(minted) == "20260908" then break end
+        minted = minted - 86400000
+    end
+    local pinnedId = tostring(minted) .. ":7"
+    table.insert(files[currentPath].lines, event(pinnedId, "created", { startPrice = 5, qty = 1 }))
+    local readerBefore = getFileReader
+    getFileReader = function(path, create)
+        if path == X.ROOT .. "/events-20260902.json" then return nil end
+        return readerBefore(path, create)
+    end
+    local pinned = history(bidder, "auction.history", { auctionId = pinnedId })
+    local unpinned = history(bidder, "auction.history", {})
+    getFileReader = readerBefore
+    check(EC.dayKey(minted) == "20260908" and pinned and not pinned.error and #pinned.entries == 1
+        and unpinned and unpinned.error == "read_failed",
+        "one auction's timeline is read from the day its id was minted: an unreadable earlier file is never opened")
+    -- The decoder's strictness is what turns a damaged financial line into read_failed: a raw
+    -- control character inside a string (a crash can leave NUL bytes) is malformed, escapes are not.
+    local escaped = EC.jsonDecode('{"a":"x\\ny\\u00e9\\"z","b":[1,2.5,-3e2],"c":true,"d":null}')
+    local line = EC.jsonEncode({ type = "tx.committed", note = 'a plain run with "quotes", \\ and /', n = 12 })
+    check(escaped and escaped.a == "x\ny\195\169\"z" and escaped.b[3] == -300 and escaped.c == true and escaped.d == EC.JSON_NULL
+        and EC.jsonDecode('{"a":"x\1y"}') == nil and EC.jsonDecode('{"a":"x' .. "\0" .. 'y"}') == nil
+        and EC.jsonDecode('{"a":"x\31"}') == nil and EC.jsonDecode('{"a":"open') == nil
+        and EC.jsonEncode(EC.jsonDecode(line)) == line,
+        "the JSON decoder refuses a raw control character inside a string and reads escapes and plain runs exactly")
 
     local originalReader = getFileReader
     getFileReader = function(path, create)
@@ -5186,6 +5245,24 @@ io.write("scenario 36: administrator transaction ledger\n")
     detail = cmd(reader, "admin.transaction", { txId = oldEpoch .. ":1", fromMs = oldTs, toMs = oldTs + 2 * 86400000 })
     check(detail and not detail.error and #detail.entries == 1,
         "an exact transaction lookup finishes once found and does not depend on unrelated later files")
+    -- an id minted by the server start at 2026-06-01 00:00 has no line before 2026-05-31: an
+    -- unreadable file two days earlier inside the window is never opened
+    local mintedEpoch = tostring(oldTs)
+    table.insert(files[X.ROOT .. "/events-20260601.json"].lines, EC.jsonEncode({
+        type = "tx.committed", txId = mintedEpoch .. ":2", epoch = mintedEpoch, seq = 2, ts = oldTs + 1000,
+        kind = "shop_buy", requestId = "later-purchase", reasonCode = "shop_buy",
+        postings = { { account = "historical-buyer", currency = "survivor", amount = -9 },
+            { account = "SYSTEM_BURN", currency = "survivor", amount = 9 } },
+    }))
+    local earlierPath = X.ROOT .. "/events-20260530.json"
+    files[earlierPath] = { opens = 0, lines = {} }
+    getFileReader = function(path, create)
+        if path == earlierPath then return nil end
+        return originalReader(path, create)
+    end
+    detail = cmd(reader, "admin.transaction", { txId = mintedEpoch .. ":2", fromMs = oldTs - 2 * 86400000, toMs = oldTs + 86400000 })
+    check(detail and not detail.error and #detail.entries == 1 and detail.entries[1].txId == mintedEpoch .. ":2",
+        "an exact transaction lookup starts at the day its id was minted: an unreadable earlier file in the window is never opened")
     getFileReader = originalReader
     local deniedList = cmd(buyer, "admin.transactions", {})
     local deniedDetail = cmd(buyer, "admin.transaction", { txId = integration.txId })
@@ -6352,7 +6429,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         local oldId = list(seller, native(seller, "Base.CannedCorn"))
         local saved = copy(S.modData())
         assert(cmd(seller, "market.cancel", { listingId = oldId }).ok)
-        local auction = cmd(seller, "auction.create", { itemId = seller.inventory.items[1]:getID(), startPrice = 10, hours = 12 })
+        local auction = cmd(seller, "auction.create", { itemId = seller.inventory.items[1]:getID(), startPrice = 10, minutes = 720 })
         assert(auction.ok, tostring(auction.error))
         restart(saved)
         reconcileNow(seller)
@@ -6929,7 +7006,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         for i, item in ipairs(seller.inventory.items) do oldItems[i] = { item = item, data = copy(item:getModData()) } end
         local axeListing = list(seller, listedAxe)
         local lot = cmd(seller, "market.list", { itemIds = { bandages[1].id, bandages[2].id }, price = 20 })
-        local auction = cmd(seller, "auction.create", { itemId = hammer.id, startPrice = 20, hours = 24 })
+        local auction = cmd(seller, "auction.create", { itemId = hammer.id, startPrice = 20, minutes = 1440 })
         local sold = cmd(seller, "shop.sell", { id = "axe", itemIds = { soldAxe.id }, revision = Shop.revision() })
         assert(lot.ok and auction.ok and sold.ok, tostring(lot.error or auction.error or sold.error))
         local coins = L.getBalance(user, "survivor").available
@@ -7322,7 +7399,7 @@ check(listed.ok == true and zed.inventory.count("Base.CannedCorn") == 1,
     "#4: a named generation zero unit can be listed on the market")
 check(cornEntry.outUnits[s1.unit] == listed.listingId and cornEntry.outQty == 1,
     "the listing consumes exactly that unit out of its own letter")
-local auctioned = cmd(zed, "auction.create", { itemId = cornItems[2].id, startPrice = 30, hours = 24 })
+local auctioned = cmd(zed, "auction.create", { itemId = cornItems[2].id, startPrice = 30, minutes = 1440 })
 check(auctioned.ok == true and zed.inventory.count("Base.CannedCorn") == 0 and Au.hasAuction(auctioned.auctionId)
     and cornEntry.outUnits[s2.unit] == auctioned.auctionId and cornEntry.outQty == 2,
     "#4: the second named unit can be auctioned, and each unit is consumed exactly once")
@@ -8412,7 +8489,7 @@ check(okD == false and errD == "recovery_conflict" and dD.reason == "duplicate_u
 local axeF = native("Base.Axe")
 put(axeF, { proto = 2, mailId = "9999:2", unit = "9999:2#1", owner = "ann", epoch = "9999", seq = 2 })
 local coinsF, axesF = bal(), axes()
-local rAu = cmd(ann, "auction.create", { itemId = axeF.id, startPrice = 100, hours = 24 })
+local rAu = cmd(ann, "auction.create", { itemId = axeF.id, startPrice = 100, minutes = 1440 })
 local dAu = det(rAu)
 check(rAu.ok == false and dAu.reason == "source_outcome_unknown" and dAu.itemId == axeF.id
     and dAu.action == "admin_review" and bal() == coinsF and axes() == axesF,
@@ -8747,7 +8824,7 @@ L.credit("cap-ann", "survivor", 500, "SYSTEM_MINT", { requestId = "cap-ann-seed"
 L.credit("cap-bob", "survivor", 5000, "SYSTEM_MINT", { requestId = "cap-bob-seed", reasonCode = "t" })
 L.credit("cap-cid", "survivor", 5000, "SYSTEM_MINT", { requestId = "cap-cid-seed", reasonCode = "t" })
 local axe = instanceItem("Base.Axe"); ann.inventory:AddItem(axe)
-local created = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 24, currency = "survivor" })
+local created = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, minutes = 1440, currency = "survivor" })
 local aid = created.auctionId
 local firstBid = cmd(bob, "auction.bid", { auctionId = aid, amount = 1000, currency = "survivor" })
 check(firstBid.ok == true and L.getBalance("cap-bob", "survivor").reserved == 1000, "setup: an auction with 1000 held in reserve")
@@ -9079,7 +9156,7 @@ check(okLegacy.ok == true and okLegacy.currency == "survivor" and L.getBalance("
     "the rebuilt listing trades in the currency it was rebuilt with")
 -- 拍賣：幣別在建立時固化，出價只能核對
 local axe = instanceItem("Base.Axe"); ann.inventory:AddItem(axe)
-local auction = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 20, hours = 24, currency = "cat", requestId = "mkc-auction" })
+local auction = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 20, minutes = 1440, currency = "cat", requestId = "mkc-auction" })
 local aid = auction.auctionId
 check(auction.ok == true and cmd(bob, "auction.bid", { auctionId = aid, amount = 30, currency = "survivor", requestId = "mkc-bid-wrong" }).error == "currency_mismatch"
     and L.getBalance("mkc-bob", "survivor").reserved == 0,
@@ -9437,7 +9514,7 @@ check(spend.ok == true and mint.error == "balance_cap" and L.getBalance("rest-an
 Cfg.setBalanceMax("survivor", nil, "rest-admin", "back to the default")
 -- 退款失敗的管理取消：拍賣不得消失，highest 不得消失
 local axe = instanceItem("Base.Axe"); ann.inventory:AddItem(axe)
-local auction = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 24, currency = "survivor", requestId = "rest-auction" })
+local auction = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, minutes = 1440, currency = "survivor", requestId = "rest-auction" })
 local aid = auction.auctionId
 cmd(bob, "auction.bid", { auctionId = aid, amount = 200, currency = "survivor", requestId = "rest-bid-1" })
 S.modData().wallets["rest-bob"].survivor.reserved = 0
@@ -9460,7 +9537,7 @@ check(swapped.error == "request_conflict" and swapped.currency == "survivor"
     "the fingerprint of a request includes its currency: reusing the id with another currency is a conflict, and both answers name the currency on record")
 -- 拍賣讀邊界：能證明的舊紀錄採用 highest 的幣，矛盾的新紀錄 fail-closed
 local t2 = instanceItem("Base.Axe"); ann.inventory:AddItem(t2)
-local second = cmd(ann, "auction.create", { itemId = t2.id, startPrice = 100, hours = 24, currency = "survivor", requestId = "rest-auction-2" })
+local second = cmd(ann, "auction.create", { itemId = t2.id, startPrice = 100, minutes = 1440, currency = "survivor", requestId = "rest-auction-2" })
 cmd(bob, "auction.bid", { auctionId = second.auctionId, amount = 150, currency = "survivor", requestId = "rest-bid-3" })
 local legacy = S.modData().auctions.items[aid]
 legacy.currency, legacy.tradeSchema = nil, nil
@@ -9766,9 +9843,9 @@ check(sameList.duplicate == true and #Mk.mine("fp-ann") == 1,
 -- 拍賣：同幣同起標價換時數
 local logs = {}
 for i = 1, 4 do logs[i] = instanceItem("Base.Twine"); ann.inventory:AddItem(logs[i]) end
-local auctioned = cmd(ann, "auction.create", { itemIds = { logs[1].id, logs[2].id }, startPrice = 100, hours = 24, currency = "survivor", requestId = "fp-auction" })
-local rehoured = cmd(ann, "auction.create", { itemIds = { logs[1].id, logs[2].id }, startPrice = 100, hours = 48, currency = "survivor", requestId = "fp-auction" })
-local sameAuction = cmd(ann, "auction.create", { itemIds = { logs[2].id, logs[1].id }, startPrice = 100, hours = 24, currency = "survivor", requestId = "fp-auction" })
+local auctioned = cmd(ann, "auction.create", { itemIds = { logs[1].id, logs[2].id }, startPrice = 100, minutes = 1440, currency = "survivor", requestId = "fp-auction" })
+local rehoured = cmd(ann, "auction.create", { itemIds = { logs[1].id, logs[2].id }, startPrice = 100, minutes = 2880, currency = "survivor", requestId = "fp-auction" })
+local sameAuction = cmd(ann, "auction.create", { itemIds = { logs[2].id, logs[1].id }, startPrice = 100, minutes = 1440, currency = "survivor", requestId = "fp-auction" })
 check(auctioned.ok == true and rehoured.error == "request_conflict" and sameAuction.duplicate == true
     and Au.ownerCount("fp-ann") == 1 and ann.inventory.count("Base.Twine") == 2,
     "a different duration under the same request id is a conflict while the identical order is a resend: one auction either way")
@@ -9986,7 +10063,7 @@ check(blind.ok == false and blind.error == "read_failed" and blind.id == "pack" 
     "a backpack the server cannot read is reported as unreadable instead of being offered as an empty list of nothing to sell")
 -- 已宣告新 schema 的拍賣，缺幣的 highest 不得被補上
 local axe = instanceItem("Base.Axe"); ann.inventory:AddItem(axe)
-local auction = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 20, hours = 24, currency = "cat", requestId = "r3-auction" })
+local auction = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 20, minutes = 1440, currency = "cat", requestId = "r3-auction" })
 cmd(bob, "auction.bid", { auctionId = auction.auctionId, amount = 30, currency = "cat", requestId = "r3-bid" })
 local record = S.modData().auctions.items[auction.auctionId]
 record.tradeSchema, record.currency = 2, "cat"
@@ -10475,7 +10552,7 @@ do
 
     -- 零費也有證據：費率 0 不是「不算交易」
     local corn = native(seller, "Base.CannedCorn")
-    local auction = cmd(seller, "auction.create", { itemId = corn:getID(), startPrice = 40, hours = 12 })
+    local auction = cmd(seller, "auction.create", { itemId = corn:getID(), startPrice = 40, minutes = 720 })
     assert(auction.ok, tostring(auction.error))
     assert(proofSettle() == 0)
     local aRow = proofJournalRowOf(user, auction.auctionId)
@@ -13038,7 +13115,7 @@ check(part.error == "delivery_partial" and childEntry ~= nil and childEntry.sell
     "a split carries the seller into the delivered child and keeps it on the remainder")
 -- 拍賣結算時得標者不在終端旁：信件留在信箱，一樣說得出是跟誰標來的
 local saw = instanceItem("Base.Saw"); sel.inventory:AddItem(saw)
-local created = cmd(sel, "auction.create", { itemId = saw.id, startPrice = 10, hours = 6 })
+local created = cmd(sel, "auction.create", { itemId = saw.id, startPrice = 10, minutes = 360 })
 cmd(win, "auction.bid", { auctionId = created.auctionId, amount = 10 })
 win.x = 150
 nowMs = nowMs + 6 * 3600000 + 60000
@@ -15860,7 +15937,7 @@ local bobs = instanceItem("Base.Hammer"); bob.inventory:AddItem(bobs)
 local s0 = state()
 check(cmd(ann, "market.list", { itemId = bobs.id, price = 50 }).error == "item_not_found" and state() == s0,
     "listing an item id that is not in the seller's backpack is item_not_found and moves nothing")
-check(cmd(ann, "auction.create", { itemId = bobs.id, startPrice = 50, hours = 24 }).error == "item_not_found" and state() == s0,
+check(cmd(ann, "auction.create", { itemId = bobs.id, startPrice = 50, minutes = 1440 }).error == "item_not_found" and state() == s0,
     "auctioning an item id that is not in the seller's backpack is item_not_found and moves nothing")
 -- market_full: the server-wide cap counts every seller's listings
 local maxListings = Mk.MAX_LISTINGS
@@ -15870,14 +15947,14 @@ check(cmd(ann, "market.list", { itemId = axe.id, price = 50 }).error == "market_
 Mk.MAX_LISTINGS = maxListings
 local maxAuctions = Au.MAX_AUCTIONS
 Au.MAX_AUCTIONS = S.modData().auctions.count
-check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 50, hours = 24 }).error == "market_full" and state() == s0,
+check(cmd(ann, "auction.create", { itemId = axe.id, startPrice = 50, minutes = 1440 }).error == "market_full" and state() == s0,
     "an auction house at its server-wide cap refuses a new auction, charges no fee and keeps the item")
 Au.MAX_AUCTIONS = maxAuctions
 -- too_many_auctions: the per-player cap
 SandboxVars.MinidoracatEconomy.AuctionMaxPerPlayer = 1
-local first = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, hours = 24 })
+local first = cmd(ann, "auction.create", { itemId = axe.id, startPrice = 100, minutes = 1440 })
 local s1 = state()
-check(first.ok == true and cmd(ann, "auction.create", { itemId = saw.id, startPrice = 50, hours = 24 }).error == "too_many_auctions"
+check(first.ok == true and cmd(ann, "auction.create", { itemId = saw.id, startPrice = 50, minutes = 1440 }).error == "too_many_auctions"
     and state() == s1 and ann.inventory.contains(nil, saw), "a seller at AuctionMaxPerPlayer is refused the next auction, with no fee and the item kept")
 SandboxVars.MinidoracatEconomy.AuctionMaxPerPlayer = nil
 -- unknown_auction: bidding on / cancelling an id that does not exist
@@ -19833,7 +19910,7 @@ check(blocked.error == "hands_full" and blocked.heavy == true and secondClaim.ok
 -- HV-7: an auction and a sale to the system take the item out through the same hands-first removal
 local auctioned = carry(seller, instanceItem(STONE))
 equips = #sentEquips
-local auction = cmd(seller, "auction.create", { itemId = auctioned.id, startPrice = 100, hours = 24 })
+local auction = cmd(seller, "auction.create", { itemId = auctioned.id, startPrice = 100, minutes = 1440 })
 check(auction.ok == true and releasedFirst(seller, auctioned, equips),
     "HV-7a: putting a held heavy item up for auction clears the hands before the removal")
 local sold = carry(seller, instanceItem(STONE))
@@ -19936,7 +20013,7 @@ local md = lot and lot.snapshot.modData or {}
 check(listed.ok == true and lot.qty == 3 and md["Base.Twine"] == 2 and md.customName == true
     and md["Base.Rope"] == nil and md.MIC42_t == nil and md.MIC42_d == nil,
     "LM-2: the lot keeps a record only when every copy has the same one: the shared twine count stays, the first copy's rope and the differing stamps do not")
-local auction = cmd(seller, "auction.create", { itemIds = { f.id, g.id }, startPrice = 20, hours = 24 })
+local auction = cmd(seller, "auction.create", { itemIds = { f.id, g.id }, startPrice = 20, minutes = 1440 })
 local held = auction.ok and S.modData().auctions.items[auction.auctionId]
 check(auction.ok == true and held.qty == 2 and held.snapshot.modData == nil,
     "LM-3: an auction lot is stored the same way: the first copy's stamp does not reach the copy that had none")
@@ -20008,7 +20085,7 @@ local listed = cmd(seller, "market.list", { itemIds = { jerky.id }, price = 30 }
 local lot = listed.ok and S.modData().market.listings[listed.listingId]
 check(listed.ok == true and lot.category == "Food", "WC-4: the listing files a MOD item under the same category the whitelist used")
 local refusedList = cmd(seller, "market.list", { itemIds = { gadget.id }, price = 30 })
-local refusedAuction = cmd(seller, "auction.create", { itemIds = { gadget.id }, startPrice = 20, hours = 24 })
+local refusedAuction = cmd(seller, "auction.create", { itemIds = { gadget.id }, startPrice = 20, minutes = 1440 })
 check(refusedList.error == "not_whitelisted" and refusedList.rule == "category" and refusedList.category == "Item"
     and refusedAuction.error == "not_whitelisted" and refusedAuction.rule == "category" and refusedAuction.category == "Item",
     "WC-6: a listing or an auction refused by the whitelist names the rule and the category, as the picker does")
@@ -20083,7 +20160,7 @@ check(Codec.load() == true and select(3, Codec.check(capsule)) == "blocked",
 local rows = {}
 for _, r in ipairs(cmd(seller, "market.candidates").items or {}) do rows[r.item] = r end
 local listed = cmd(seller, "market.list", { itemIds = { capsule.id }, price = 30 })
-local auctioned = cmd(seller, "auction.create", { itemIds = { capsule.id }, startPrice = 20, hours = 24 })
+local auctioned = cmd(seller, "auction.create", { itemIds = { capsule.id }, startPrice = 20, minutes = 1440 })
 check(rows["BkMod.Capsule"] and rows["BkMod.Capsule"].ok == false and rows["BkMod.Capsule"].rule == "blocked"
     and listed.error == "not_whitelisted" and listed.rule == "blocked"
     and auctioned.error == "not_whitelisted" and auctioned.rule == "blocked"
@@ -20182,10 +20259,10 @@ check(rows[WP .. "|true"] ~= nil and rows[WP .. "|false"] ~= nil and rows[WP .. 
     and listed.ok == true and not seller.inventory:contains(rolledMap) and bought.ok == true
     and got ~= nil and got.mapId == rolledMap.mapId and got:getStashMap() == nil,
     "MP-3: market: the picker splits a plain map from a stash map (stash_map), the stash map stays home, the plain one lists and the buyer gets a map of the same region")
-local refusedAuction = cmd(seller, "auction.create", { itemIds = { stashMap.id }, startPrice = 20, hours = 24 })
+local refusedAuction = cmd(seller, "auction.create", { itemIds = { stashMap.id }, startPrice = 20, minutes = 1440 })
 local animal = give("Base.Sheep")
-local refusedAnimal = cmd(seller, "auction.create", { itemIds = { animal.id }, startPrice = 20, hours = 24 })
-local auctioned = cmd(seller, "auction.create", { itemIds = { cityMap.id }, startPrice = 20, hours = 24 })
+local refusedAnimal = cmd(seller, "auction.create", { itemIds = { animal.id }, startPrice = 20, minutes = 1440 })
+local auctioned = cmd(seller, "auction.create", { itemIds = { cityMap.id }, startPrice = 20, minutes = 1440 })
 check(refusedAuction.error == "stash_map" and refusedAnimal.error == "not_whitelisted" and refusedAnimal.rule == "fixed"
     and seller.inventory:contains(stashMap) and seller.inventory:contains(animal)
     and auctioned.ok == true and not seller.inventory:contains(cityMap),
@@ -20469,7 +20546,7 @@ check(relisted.ok == true and letter ~= nil and letter.weight == 7 and claimed.o
 local bagC = newBag(seller, 2)
 local idC = bagC.id
 n = #calls
-local made = cmd(seller, "auction.create", { itemIds = { idC }, startPrice = 20, hours = 24 })
+local made = cmd(seller, "auction.create", { itemIds = { idC }, startPrice = 20, minutes = 1440 })
 local ab = cmd(buyer, "auction.browse", {})
 local arow = nil
 for _, r in ipairs(ab.items or {}) do if r.id == made.auctionId then arow = r end end
@@ -20486,7 +20563,7 @@ check(made.ok == true and bid.ok == true and table.concat(calls, ",", n + 1) == 
     "UQ-14: an auction checks and escrows on the auction channel, shows bidders the view, and the winner's bag is rebuilt before it is added")
 local bagD = newBag(seller, 1)
 local idD = bagD.id
-local made2 = cmd(seller, "auction.create", { itemIds = { idD }, startPrice = 20, hours = 24 })
+local made2 = cmd(seller, "auction.create", { itemIds = { idD }, startPrice = 20, minutes = 1440 })
 nowMs = nowMs + 25 * 3600000
 fire("OnTickEvenPaused")
 local letter2 = nil

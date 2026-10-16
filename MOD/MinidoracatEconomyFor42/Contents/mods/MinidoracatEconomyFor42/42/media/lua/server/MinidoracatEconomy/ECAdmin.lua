@@ -3015,7 +3015,11 @@ S.handlers["admin.transaction"] = function(player, args)
     end
     extra.txId = txId
 
-    W.tail(player, "admin.transaction", W.eventPaths(EC.now(), from, to), extra, function(rec)
+    -- the days of the window before the id was minted cannot hold it (W.idFloorMs); a floor
+    -- past the window leaves its last day, where the lookup ends as "not in this window"
+    local floor = W.idFloorMs(txId, EC.now())
+    local fromDay = floor and math.max(from, math.min(floor, to - 1)) or from
+    W.tail(player, "admin.transaction", W.eventPaths(EC.now(), fromDay, to), extra, function(rec)
         if not txHeader(rec) then return nil end
         if rec.txId ~= txId then return nil end
         local out = txSummary(rec)

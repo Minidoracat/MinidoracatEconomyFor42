@@ -310,7 +310,7 @@ end
 -- read back out of a line are compared in the one form that keeps key types and exact numbers.
 -- A snapshot that cannot be packed has no comparable form, so the record cannot be matched.
 local MATCH_FIELDS = { "protocol", "kind", "origins", "itemId", "itemIds", "qty",
-    "lotQty", "price", "currency", "tradeSchema", "sku", "hours", "unitPrice", "unitQty",
+    "lotQty", "price", "currency", "tradeSchema", "sku", "hours", "minutes", "unitPrice", "unitQty",
     "count", "txRequestId", "at", "returnMailId", "originalKind" }
 
 local function contentKey(rec)
@@ -395,7 +395,7 @@ end
 
 -- ---------- line validation ----------
 
-local NUMBER_FIELDS = { "qty", "lotQty", "price", "unitPrice", "unitQty", "count", "hours",
+local NUMBER_FIELDS = { "qty", "lotQty", "price", "unitPrice", "unitQty", "count", "hours", "minutes",
     "at", "seq" }
 local STRING_FIELDS = { "kind", "currency", "sku", "txRequestId", "returnMailId", "originalKind",
     "epoch" }

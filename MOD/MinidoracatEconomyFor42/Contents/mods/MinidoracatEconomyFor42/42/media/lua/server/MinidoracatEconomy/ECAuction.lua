@@ -57,19 +57,21 @@ Au.SWEEP_EVERY_MS = 60000
 Au.DOWNTIME_IGNORE_MS = 5 * 60000
 Au.DOWNTIME_CANCEL_MS = 24 * 3600000
 Au.CURRENCY_ALL = "all"
--- The widest duration the wire shape accepts. The host's own window is AuctionMinHours /
--- AuctionMaxHours, read after the idempotency record has been looked up so a narrowed window
--- cannot re-judge an auction that is already standing. This one only keeps a request that is
--- not a sane integer out of the fingerprint.
-Au.HOURS_CEILING = 24 * 365
+-- The longest duration (minutes) the wire shape accepts. The host's own window is
+-- AuctionMinHours / AuctionMaxHours, read after the idempotency record has been looked up so a
+-- narrowed window cannot re-judge an auction that is already standing. This one only keeps a
+-- request that is not a sane integer out of the fingerprint.
+Au.MINUTES_CEILING = 60 * 24 * 365
 
 local md = nil
 local lastSweep = 0
 
 -- ---------- options ----------
 
+-- The host's window in whole hours (the sandbox unit, and what the pages quote); a seller picks
+-- any whole number of minutes inside it.
 local function hoursRange()
-    local lo, hi = EC.sandbox("AuctionMinHours", 6), EC.sandbox("AuctionMaxHours", 72)
+    local lo, hi = EC.sandbox("AuctionMinHours", 1), EC.sandbox("AuctionMaxHours", 72)
     if hi < lo then hi = lo end
     return lo, hi
 end
@@ -319,7 +321,7 @@ end
 
 -- ---------- list-out (rule two, shared shape with ECMarket) ----------
 
--- args = { itemIds | itemId, startPrice, hours, currency, requestId }
+-- args = { itemIds | itemId, startPrice, minutes, currency, requestId }
 function Au.create(player, args)
     -- the account sells; the recovery record (receipt, pending out) belongs to this login's save
     local username, login = S.principal(player), S.login(player)
@@ -334,6 +336,7 @@ function Au.create(player, args)
     end
     local cur = args.currency
     local startPrice = args.startPrice
+    local minutes = args.minutes
     -- The shape is checked here; what the live configuration currently allows is checked after
     -- the record has been looked up. An auction whose fee was already charged and whose items
     -- already left the backpack must not be re-judged by settings that changed since: an admin
@@ -342,7 +345,7 @@ function Au.create(player, args)
     -- price_range or hours_range, and the seller would never learn the auction id or its terms
     -- (report FINAL-LEDGER-2).
     if not isInt(startPrice, 1, Mk.PRICE_CEILING) then return { ok = false, error = "price_range" } end
-    if not isInt(args.hours, 1, Au.HOURS_CEILING) then return { ok = false, error = "hours_range" } end
+    if not isInt(minutes, 1, Au.MINUTES_CEILING) then return { ok = false, error = "hours_range" } end
     -- a new auction has no id yet: its order is the currency, the start price, how long it runs
     -- and the exact batch it puts up. The same requestId with another pile of items or another
     -- duration is a different auction, not a resend of this one.
@@ -352,15 +355,16 @@ function Au.create(player, args)
     if not L.validRequestKey(requestId) then return { ok = false, error = "request_too_long" } end
     local batch = L.batchKey(ids, Mk.QTY_MAX)
     if batch == nil then return { ok = false, error = "invalid_args" } end
-    local prior = priorOrder(requestId, { currency = cur, amount = startPrice, items = batch, hours = args.hours })
+    local prior = priorOrder(requestId, { currency = cur, amount = startPrice, items = batch, minutes = minutes })
     if prior then return prior end
     -- a new request: from here the live configuration decides
     local def, cerr = currencyState(cur)
     if not def then return { ok = false, error = cerr, currency = cur } end
     local pmin, pmax = EC.sandbox("MarketPriceMin", 1), EC.sandbox("MarketPriceMax", 1000000)
     if not isInt(startPrice, pmin, pmax) then return { ok = false, error = "price_range", min = pmin, max = pmax } end
+    -- the window is whole hours; the reply quotes it in hours, as the pages do
     local lo, hi = hoursRange()
-    if not isInt(args.hours, lo, hi) then return { ok = false, error = "hours_range", min = lo, max = hi } end
+    if not isInt(minutes, lo * 60, hi * 60) then return { ok = false, error = "hours_range", min = lo, max = hi } end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
     if L.isFrozen(username) then return { ok = false, error = "account_frozen" } end
     if Au.ownerCount(username) >= EC.sandbox("AuctionMaxPerPlayer", 3) then return { ok = false, error = "too_many_auctions" } end
@@ -399,7 +403,7 @@ function Au.create(player, args)
     -- phase 1: the seller's own save records the operation and the exact origin of every unit
     -- before anything is removed. A refusal here has moved no item and charged no fee.
     local rec = { itemId = ids[1], itemIds = ids, qty = qty, lotQty = qty, snapshot = snapshot, kind = "auction",
-        price = startPrice, hours = args.hours, currency = cur, tradeSchema = L.TRADE_SCHEMA,
+        price = startPrice, minutes = minutes, currency = cur, tradeSchema = L.TRADE_SCHEMA,
         seq = seq, epoch = md.meta.epoch, at = ms }
     local began, beginErr, beginDetail = M.beginOut(player, id, items, rec)
     if not began then
@@ -419,7 +423,7 @@ function Au.create(player, args)
     local a = {
         id = id, seller = username, item = snapshot.type, snapshot = snapshot, qty = qty, startPrice = startPrice,
         currency = cur, tradeSchema = L.TRADE_SCHEMA, fee = fee,
-        highest = nil, bids = 0, bidders = {}, at = ms, expiresAt = ms + args.hours * 3600000, hours = args.hours,
+        highest = nil, bids = 0, bidders = {}, at = ms, expiresAt = ms + minutes * 60000, minutes = minutes,
         weight = Codec.uniqueWeight(snapshot) or M.itemWeight(items[1]),
         category = type(category) == "string" and category or "other", name = type(name) == "string" and name or nil,
     }
@@ -427,7 +431,7 @@ function Au.create(player, args)
     if fee > 0 then
         local res = L.debit(username, cur, fee, Mk.BURN_ACCOUNT, {
             kind = "auction_fee", requestId = requestId, reasonCode = "auction_fee",
-            idemMeta = { auctionId = id, currency = cur, amount = startPrice, items = batch, hours = args.hours },
+            idemMeta = { auctionId = id, currency = cur, amount = startPrice, items = batch, minutes = minutes },
             payload = { item = snapshot.type, qty = qty, auctionId = id, currency = cur },
         })
         if not res.ok then
@@ -450,13 +454,13 @@ function Au.create(player, args)
         -- The key was validated before the items moved, so a refusal can only be a key the
         -- window already holds: it is reported, never swallowed.
         if not L.noteOperation(requestId, id, { auctionId = id, currency = cur, amount = startPrice,
-            items = batch, hours = args.hours }) then
+            items = batch, minutes = minutes }) then
             EC.log("auction " .. id .. ": the idempotency record was refused")
             X.emit("ledger.anomaly", { kind = "auction", auctionId = id, username = username,
                 resolution = "idempotency-record-refused" })
         end
     end
-    X.emit("auction.created", { auctionId = id, seller = username, item = snapshot.type, qty = qty, startPrice = startPrice, fee = fee, hours = args.hours, currency = cur, expiresAt = a.expiresAt })
+    X.emit("auction.created", { auctionId = id, seller = username, item = snapshot.type, qty = qty, startPrice = startPrice, fee = fee, minutes = minutes, currency = cur, expiresAt = a.expiresAt })
     X.market(username, { kind = "auction_created", listingId = id, item = snapshot.type, qty = qty, price = startPrice, fee = fee, currency = cur })
     return { ok = true, auctionId = id, qty = qty, fee = fee, currency = cur, startPrice = startPrice, expiresAt = a.expiresAt }
 end
@@ -725,12 +729,14 @@ function Au.restoreFromPending(username, id, pend)
         return false, { reason = "currency_unknown", kind = "auction", item = pend.snapshot and pend.snapshot.type or nil,
             snapshot = pend.snapshot, qty = qty, lotQty = lotQty, price = pend.price }
     end
-    local hours = isInt(pend.hours, 1, 8760) and pend.hours or 24
+    -- a record written before durations were minutes carries whole `hours`
+    local minutes = (isInt(pend.minutes, 1, Au.MINUTES_CEILING) and pend.minutes)
+        or (isInt(pend.hours, 1, 8760) and pend.hours * 60) or 24 * 60
     local a = {
         id = id, seller = seller, item = pend.snapshot and pend.snapshot.type or nil, snapshot = pend.snapshot, qty = pend.qty or 1,
         startPrice = pend.price, currency = currency, tradeSchema = L.TRADE_SCHEMA,
         fee = 0, highest = nil, bids = 0, bidders = {}, at = pend.at or EC.now(),
-        expiresAt = (pend.at or EC.now()) + hours * 3600000, hours = hours, category = "other",
+        expiresAt = (pend.at or EC.now()) + minutes * 60000, minutes = minutes, category = "other",
     }
     if type(a.item) ~= "string" or not isInt(a.startPrice, 1, 1000000000) or not isInt(a.qty, 1, Mk.QTY_MAX) then
         return false, { reason = "restore_failed", cause = "bad_record", kind = "auction", item = a.item,
@@ -807,10 +813,12 @@ end
 -- ---------- history (the public record) ----------
 --
 -- No second ledger and no new file: the record is the auction.* lines ECExport already writes to
--- events-YYYYMMDD.json. They are read through W.tail (a batch of lines per tick, the newest 200
--- matches per reply) and projected to the public whitelist below - nothing else of a line leaves
--- the server (no postings, no balances, no admin reason). `price` is a start price, one bid or the
--- hammer price: it is not a wallet delta, so a raise must never be read as a second charge.
+-- events-YYYYMMDD.json. They are read through W.tail (the newest 200 matches per reply) and
+-- projected to the public whitelist below - nothing else of a line leaves the server (no
+-- postings, no balances, no admin reason). `price` is a start price, one bid or the hammer
+-- price: it is not a wallet delta, so a raise must never be read as a second charge.
+-- Auction lines are a small share of those files, so the tail's needle passes every other line
+-- over unparsed; one pinned auction also skips the days before its id was minted.
 
 Au.HISTORY_QUERY_CHARS = 128
 Au.HISTORY_ID_CHARS = 96
@@ -895,7 +903,15 @@ function Au.history(player, args, admin)
         auctionId = args.auctionId
         extra.auctionId = auctionId
     end
-    W.tail(player, command, W.eventPaths(EC.now()), extra, function(rec)
+    -- The needle is the exact text every line historyRecord keeps carries (sorted keys, no
+    -- spaces: EC.jsonEncode); the projector still decides on the parsed line.
+    local paths, needle
+    if auctionId then
+        paths, needle = W.eventPathsFor(EC.now(), auctionId), '"auctionId":' .. EC.jsonEncode(auctionId)
+    else
+        paths, needle = W.eventPaths(EC.now()), '"type":"auction.'
+    end
+    W.tail(player, command, paths, extra, function(rec)
         local out = historyRecord(rec)
         if not out then return nil end
         if auctionId then
@@ -905,7 +921,7 @@ function Au.history(player, args, admin)
         end
         if query and not matchesQuery(out, query, types) then return nil end
         return out
-    end)
+    end, nil, { needle = needle })
 end
 
 -- ---------- commands ----------

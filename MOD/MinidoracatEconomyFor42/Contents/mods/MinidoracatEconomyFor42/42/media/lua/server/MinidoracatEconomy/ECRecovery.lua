@@ -1473,7 +1473,7 @@ end
 -- file of an operation is derived from the operation id alone, so nothing a player carries can
 -- steer which file - or which successor line - this server reads.
 local REPLAY_FIELDS = { "protocol", "origins", "itemId", "itemIds", "snapshot", "kind", "qty", "lotQty",
-    "price", "currency", "tradeSchema", "sku", "hours", "unitPrice", "unitQty", "count", "txRequestId",
+    "price", "currency", "tradeSchema", "sku", "hours", "minutes", "unitPrice", "unitQty", "count", "txRequestId",
     "epoch", "seq", "at", "returnMailId", "originalKind" }
 function R.copyReplay(rec)
     local copy = {}

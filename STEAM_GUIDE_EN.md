@@ -140,7 +140,7 @@ A server option; it only appears once the server allows it.
 === 🧰 Auction house
 {{img:04-auction-en.jpg}}
 [list]
-[*] [b]Create[/b]: choose a starting price and duration (6-72 hours by default; the server can change the range).
+[*] [b]Create[/b]: choose a starting price and duration: pick 1 to 72 hours or type a custom number of minutes (1-72 hours by default; the server can change the range).
 [*] [b]Bids[/b]: reserve funds; being outbid releases them.
 [*] [b]End[/b]: the winner gets the items, the seller gets the price after tax, and unsold items return.
 [*] [b]Bid history[/b]: every auction has one.

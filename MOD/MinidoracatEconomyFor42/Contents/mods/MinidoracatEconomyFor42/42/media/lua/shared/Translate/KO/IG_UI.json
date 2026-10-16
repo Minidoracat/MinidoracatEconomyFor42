@@ -992,6 +992,7 @@
   "IGUI_MinidoracatEconomy_Auction_Duration": "기간",
   "IGUI_MinidoracatEconomy_Auction_Hours": "%1시간",
   "IGUI_MinidoracatEconomy_Auction_HoursHint": "%1 ~ %2시간",
+  "IGUI_MinidoracatEconomy_Auction_CustomMinutes": "직접 입력 (분)",
   "IGUI_MinidoracatEconomy_Auction_Col_Bid": "현재 입찰가",
   "IGUI_MinidoracatEconomy_Auction_Col_Bids": "입찰 수",
   "IGUI_MinidoracatEconomy_Auction_Col_Ends": "마감",

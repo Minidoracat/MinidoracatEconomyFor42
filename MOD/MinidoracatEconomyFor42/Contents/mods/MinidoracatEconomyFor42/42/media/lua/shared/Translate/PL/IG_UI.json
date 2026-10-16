@@ -992,6 +992,7 @@
   "IGUI_MinidoracatEconomy_Auction_Duration": "Czas trwania",
   "IGUI_MinidoracatEconomy_Auction_Hours": "%1 godz.",
   "IGUI_MinidoracatEconomy_Auction_HoursHint": "od %1 do %2 godz.",
+  "IGUI_MinidoracatEconomy_Auction_CustomMinutes": "Własny czas (minuty)",
   "IGUI_MinidoracatEconomy_Auction_Col_Bid": "Bieżąca stawka",
   "IGUI_MinidoracatEconomy_Auction_Col_Bids": "Stawki",
   "IGUI_MinidoracatEconomy_Auction_Col_Ends": "Koniec",

@@ -640,8 +640,15 @@ local MarketDialog = ISPanel:derive("MinidoracatEconomyMarketDialog")
 
 -- The durations offered when the sandbox range allows them; a range that holds none of them
 -- (a server that only permits 10..30 h, say, still keeps 12 and 24) falls back to its bounds.
-local HOUR_PRESETS = { 6, 12, 24, 48, 72 }
+-- Any other length is typed in minutes in the field under the chips.
+local HOUR_PRESETS = { 1, 2, 3, 6, 12, 24, 48, 72 }
 local HOUR_DEFAULT = 24
+
+-- A duration as the summary names it: whole hours as hours, anything else as hours and minutes.
+local function durationLabel(minutes)
+    if minutes % 60 == 0 then return getText(T .. "Auction_Hours", tostring(math.floor(minutes / 60))) end
+    return U.durationText(minutes * 60000)
+end
 
 local function hourChoices(minH, maxH)
     local out = {}
@@ -729,6 +736,11 @@ function MarketDialog:createChildren()
         self:addChild(b)
         self.hourButtons[i] = b
     end
+    -- the duration in minutes, for a length no chip offers; typing here deselects the chips
+    self.minutesEntry = newEntry(140, math.max(26, fontH.small + 12), nil, true)
+    self.minutesEntry._entry.target = self
+    self.minutesEntry._entry.onTextChangeFunction = MarketDialog.onMinutesChanged
+    self:addChild(self.minutesEntry)
     local tw, th = tileSize()
     self.pickList = U.newTable(CandidateCell, th)
     self.pickList.cols.tileW, self.pickList.cols.tileH = tw, th
@@ -833,15 +845,32 @@ function MarketDialog:keyboardTargets()
     if #self.hourButtons > 0 then
         out[#out + 1] = { kind = "group", controls = self.hourButtons, label = getText(T .. "Auction_Duration") }
     end
+    if self.minutesEntry:getIsVisible() then
+        out[#out + 1] = { kind = "entry", control = self.minutesEntry._entry, frame = self.minutesEntry,
+            label = getText(T .. "Auction_CustomMinutes") }
+    end
     out[#out + 1] = { kind = "group", controls = { self.confirmButton, self.cancelButton },
         label = getText(T .. "Kb_Dialog_Actions") }
     return out
 end
 
+-- A chip is the duration until something is typed into the minutes field: picking one empties
+-- the field, and the chip lights only while the field is empty.
+function MarketDialog:syncHourChips()
+    local custom = entryText(self.minutesEntry) ~= ""
+    for _, b in ipairs(self.hourButtons) do b.active = not custom and b.internal == self.hours end
+end
+
 function MarketDialog:onHours(button)
     if self.panel.marketPending ~= nil then return end
     self.hours = button.internal
-    for _, b in ipairs(self.hourButtons) do b.active = b.internal == self.hours end
+    U.setEntryText(self.minutesEntry, "")
+    self:syncHourChips()
+    self.message = nil
+end
+
+function MarketDialog:onMinutesChanged()
+    self:syncHourChips()
     self.message = nil
 end
 
@@ -854,15 +883,27 @@ function MarketDialog:setHourRange(minH, maxH)
         if math.abs(hrs - HOUR_DEFAULT) < math.abs(best - HOUR_DEFAULT) then best = hrs end
     end
     self.hours = best
+    U.setEntryText(self.minutesEntry, "")
     for i, b in ipairs(self.hourButtons) do
         b.internal = choices[i]
         if b.internal then
             local title = getText(T .. "Auction_Hours", tostring(b.internal))
             b:setTitle(title)
             b:setWidth(textWidth(title) + 22)
-            b.active = b.internal == best
         end
     end
+    self:syncHourChips()
+end
+
+-- The duration to send, in minutes: what the field holds once anything is typed (nil while that
+-- is not a whole number), otherwise the chip.
+function MarketDialog:minutesValue()
+    local raw = string.match(entryText(self.minutesEntry), "^%s*(.-)%s*$")
+    if raw == "" then return self.hours and self.hours * 60 or nil end
+    if not string.match(raw, "^%d+$") then return nil end
+    local n = tonumber(raw)
+    if not n or n <= 0 then return nil end
+    return math.floor(n)
 end
 function MarketDialog:onPriceChanged() self.message = nil end
 
@@ -1103,8 +1144,9 @@ function MarketDialog:summaryLines()
             amountText(self:available() - listingFee(price, info.feePercent)) .. " " .. cur)
         if mode == "auction" then
             local hours = panel.auctionInfo or {}
+            local minutes = self:minutesValue()
             out[#out + 1] = detailLine("Auction_Duration",
-                getText(T .. "Paren", self.hours and getText(T .. "Auction_Hours", tostring(self.hours)) or "-",
+                getText(T .. "Paren", minutes and durationLabel(minutes) or "-",
                     getText(T .. "Auction_HoursHint", tostring(hours.minHours or 0), tostring(hours.maxHours or 0))))
             out[#out + 1] = detailLine("Market_Fee", amountText(listingFee(price, info.feePercent)) .. " " .. cur)
         else
@@ -1122,7 +1164,7 @@ end
 function MarketDialog:syncSummary()
     if self.mode == "pick" then return end
     if not summaryMoved(self, self:priceValue(), self:qtyValue(), self:available(),
-        self.message, self.hours) and self.sumCur == self:activeCurrency() then return end
+        self.message, self:minutesValue()) and self.sumCur == self:activeCurrency() then return end
     self.sumCur = self:activeCurrency()
     setSummary(self, self:summaryLines())
 end
@@ -1144,6 +1186,7 @@ function MarketDialog:layoutInside(maxW, maxH)
     self.priceEntry:setVisible(priceField)
     self.qtyEntry:setVisible(multi)
     for _, b in ipairs(self.hourButtons) do b:setVisible(chips and b.internal ~= nil) end
+    self.minutesEntry:setVisible(chips)
     for _, b in ipairs(self.currencyButtons) do b:setVisible(curChips) end
     self.pickList:setVisible(pick)
     self.onlyButton:setVisible(pick)
@@ -1245,7 +1288,7 @@ function MarketDialog:layoutInside(maxW, maxH)
                     cx = cx + b.width + 6
                 end
             end
-            chipsH = chipRows * chipH + (chipRows - 1) * 4 + 8
+            chipsH = chipRows * chipH + (chipRows - 1) * 4 + 8 + entryH + 8
         end
         -- the price reference: the seller's own steps only, up to two lines, one always reserved
         -- so the answer landing moves nothing but a second line
@@ -1265,7 +1308,7 @@ function MarketDialog:layoutInside(maxW, maxH)
         box:setHeight(math.max(fontH.small + 12, math.min(readerHeight(lines, boxW), room)))
         setSummary(self, lines)
         y = y + box.height + PAD
-        self.qtyY, self.priceY, self.hoursY, self.curY = nil, nil, nil, nil
+        self.qtyY, self.priceY, self.hoursY, self.minutesY, self.curY = nil, nil, nil, nil, nil
         if multi then
             self.qtyY = y
             self.qtyLabelW = placeField(self.qtyEntry, w, y, fieldW)
@@ -1295,6 +1338,9 @@ function MarketDialog:layoutInside(maxW, maxH)
                 end
             end
             y = cy + chipH + 8
+            self.minutesY = y
+            self.minutesLabelW = placeField(self.minutesEntry, w, y, fieldW)
+            y = y + entryH + 8
         end
     end
     self.buttonY = y
@@ -1423,6 +1469,10 @@ function MarketDialog:prerender()
         text(self, fitText(getText(T .. "Auction_Duration"), self.hoursLabelW), PAD,
             self.hoursY + math.floor((self.hourButtons[1].height - fontH.small) / 2), "textMuted")
     end
+    if self.minutesY then
+        text(self, fitText(getText(T .. "Auction_CustomMinutes"), self.minutesLabelW), PAD,
+            self.minutesY + math.floor((self.minutesEntry.height - fontH.small) / 2), "textMuted")
+    end
     self:syncSummary()
     local price = self:priceValue() or 0
     -- A step that spends or receives has to know its currency: a record without one is refused
@@ -1434,7 +1484,7 @@ function MarketDialog:prerender()
     if mode == "buy" then ok = ok and self:available() - row.price >= 0
     elseif mode == "bid" then
         ok = ok and price >= row.minNext and not row.ended and self:available() - self:bidReserve(price) >= 0
-    elseif mode == "auction" then ok = ok and price > 0 and self:qtyValue() ~= nil and self.hours ~= nil
+    elseif mode == "auction" then ok = ok and price > 0 and self:qtyValue() ~= nil and self:minutesValue() ~= nil
     elseif mode == "price" then ok = ok and price > 0 and self:qtyValue() ~= nil end
     for _, b in ipairs(self.currencyButtons) do b:setEnable(not busy) end
     self.confirmButton:setEnable(ok and not busy and panel:tradeAllowed())

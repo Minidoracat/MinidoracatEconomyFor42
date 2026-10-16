@@ -992,6 +992,7 @@
   "IGUI_MinidoracatEconomy_Auction_Duration": "期間",
   "IGUI_MinidoracatEconomy_Auction_Hours": "%1 時間",
   "IGUI_MinidoracatEconomy_Auction_HoursHint": "%1～%2 時間",
+  "IGUI_MinidoracatEconomy_Auction_CustomMinutes": "任意の時間（分）",
   "IGUI_MinidoracatEconomy_Auction_Col_Bid": "現在の入札",
   "IGUI_MinidoracatEconomy_Auction_Col_Bids": "入札数",
   "IGUI_MinidoracatEconomy_Auction_Col_Ends": "終了",

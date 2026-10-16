@@ -392,7 +392,7 @@ local coinOnly = cmd(buyer, "wanted.create", { item = "Base.Axe", qty = 1, cond 
 check(coinOnly.ok and coinOnly.fees.survivor == 10 and bal(bu).available == 5000 - 110 - 105 and bal(bu).reserved == 195
     and reservedInvariant(), "W-1e: a coin-only order: fee rounds up (95 x 10% = 10), the reservation is exact")
 local rope = native(seller, "Base.Rope", 1)
-local auc = cmd(seller, "auction.create", { itemIds = ids(rope), startPrice = 20, hours = 12 })
+local auc = cmd(seller, "auction.create", { itemIds = ids(rope), startPrice = 20, minutes = 720 })
 local bid = cmd(buyer, "auction.bid", { auctionId = auc.auctionId, amount = 20 })
 check(auc.ok and bid.ok and bal(bu).reserved == 195 + 20 and reservedInvariant(),
     "W-1f: per currency, the open orders' held plus the auction's high bid is exactly every wallet's reserved")
@@ -770,7 +770,7 @@ do
     local items = { "Base.Axe", "Base.Nails", "Base.Hammer" }
     for _, item in ipairs(items) do
         assert(cmd(seller12, "market.list", { itemIds = ids(native(seller12, item)), price = 10 }).ok)
-        assert(cmd(seller12, "auction.create", { itemIds = ids(native(seller12, item)), startPrice = 10, hours = 12 }).ok)
+        assert(cmd(seller12, "auction.create", { itemIds = ids(native(seller12, item)), startPrice = 10, minutes = 720 }).ok)
         assert(coinOrder(buyer12, item, 1, 10).ok)
     end
     local two = { "Base.Axe", "Base.Hammer" }

@@ -1084,9 +1084,10 @@ function C.requestPriceRef(item, requestId)
     send("market.priceRef", { item = item, requestId = requestId })
 end
 function C.requestMyAuctions() askSnapshot(auctionsSnapshot) end
--- `itemIds` is the whole lot the player picked; `startPrice` is the opening bid for it.
-function C.createAuction(itemIds, startPrice, hours, currency, requestId)
-    send("auction.create", { itemIds = itemIds, startPrice = startPrice, hours = hours, currency = currency, requestId = requestId })
+-- `itemIds` is the whole lot the player picked; `startPrice` is the opening bid for it; `minutes`
+-- is how long it runs (inside the host's AuctionMinHours..AuctionMaxHours, counted in minutes).
+function C.createAuction(itemIds, startPrice, minutes, currency, requestId)
+    send("auction.create", { itemIds = itemIds, startPrice = startPrice, minutes = minutes, currency = currency, requestId = requestId })
 end
 function C.bidAuction(auctionId, amount, currency, requestId)
     send("auction.bid", { auctionId = auctionId, amount = amount, currency = currency, requestId = requestId })

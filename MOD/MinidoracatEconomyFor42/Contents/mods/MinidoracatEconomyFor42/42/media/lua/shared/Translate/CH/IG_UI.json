@@ -992,6 +992,7 @@
   "IGUI_MinidoracatEconomy_Auction_Duration": "時長",
   "IGUI_MinidoracatEconomy_Auction_Hours": "%1 小時",
   "IGUI_MinidoracatEconomy_Auction_HoursHint": "%1 到 %2 小時",
+  "IGUI_MinidoracatEconomy_Auction_CustomMinutes": "自訂（分鐘）",
   "IGUI_MinidoracatEconomy_Auction_Col_Bid": "目前出價",
   "IGUI_MinidoracatEconomy_Auction_Col_Bids": "出價數",
   "IGUI_MinidoracatEconomy_Auction_Col_Ends": "結標",

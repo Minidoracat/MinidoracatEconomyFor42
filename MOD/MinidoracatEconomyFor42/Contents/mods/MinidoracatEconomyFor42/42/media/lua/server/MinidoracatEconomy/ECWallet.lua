@@ -3,7 +3,8 @@
 --   wallet.state            balances per currency + the short receipt ring (with rolledBack flags)
 --   wallet.changed (push)   balances after every transaction that touched the player
 --   wallet.history{month}   last entries of receipts/<safeName>/<YYYYMM>.json, read in batches of
---                           HISTORY_LINES_PER_TICK lines per tick (stage A15: 200 lines ≈ 0.27 ms)
+--                           HISTORY_LINES_PER_TICK lines per tick (the cost is EC.jsonDecode, about
+--                           0.3 ms for a 540-byte event line on the server; readLine is about 1 us)
 --
 -- Engine: getFileReader(filename, createIfNull) LuaManager.java:5933-5963 ; LuaFileReader.readLine
 -- returns nil at EOF; close() releases the handle.
@@ -23,6 +24,7 @@ EC.Wallet = EC.Wallet or {}
 local W = EC.Wallet
 
 W.HISTORY_LINES_PER_TICK = 200
+W.SKIP_LINES_PER_TICK = 2000         -- lines a needle passes over unparsed per tick (stepJob)
 W.HISTORY_MAX_ENTRIES = 200          -- newest entries kept per reply (packet budget ~60 KB)
 W.HISTORY_MAX_JOBS = 8               -- concurrent readers across all players
 
@@ -159,34 +161,43 @@ local function startJob(key, job)
     return true
 end
 
--- One batch: bounded by W.HISTORY_LINES_PER_TICK and, for an internal reader that asked for one,
--- by a byte budget as well (whichever runs out first). A journal line carries a whole replay, so
--- a line count alone is not a bound on the work a tick does - the decode is the cost.
+-- One batch: bounded by W.HISTORY_LINES_PER_TICK parsed lines and, for an internal reader that
+-- asked for one, by a byte budget as well (whichever runs out first). A journal line carries a
+-- whole replay, so a line count alone is not a bound on the work a tick does - the decode is the
+-- cost. A line without the job's needle is passed over unparsed and counts against the separate
+-- W.SKIP_LINES_PER_TICK instead.
 local function stepJob(key, job)
     if not job.opened and not startJob(key, job) then return end
-    local bytes = 0
-    for _ = 1, W.HISTORY_LINES_PER_TICK do
+    local bytes, parsed, skipped = 0, 0, 0
+    local needle = job.needle
+    while parsed < W.HISTORY_LINES_PER_TICK and skipped < W.SKIP_LINES_PER_TICK do
         local line = job.reader and job.reader:readLine() or nil
         if line == nil then
+            parsed = parsed + 1
             if job.reader then pcall(function() job.reader:close() end) end
             if not openNext(job) then
                 finishJob(key, job)
                 return
             end
-        elseif string.find(line, "%S") then
-            bytes = bytes + #line
-            local entry = EC.jsonDecode(line)
-            if type(entry) == "table" then
-                local epoch = entry.txId and EC.parseId(entry.txId) or entry.epoch
-                entry.rolledBack = S.isRolledBack(epoch, entry.seq)
-                local record, done = entry, false
-                if job.projector then record, done = job.projector(entry) end
-                if record then pushEntry(job, record) end
-                if done then finishJob(key, job); return end
-            elseif job.strictJson then
-                error("invalid history JSON: " .. job.paths[job.index])
+        elseif needle and not string.find(line, needle, 1, true) then
+            skipped = skipped + 1
+        else
+            parsed = parsed + 1
+            if string.find(line, "%S") then
+                bytes = bytes + #line
+                local entry = EC.jsonDecode(line)
+                if type(entry) == "table" then
+                    local epoch = entry.txId and EC.parseId(entry.txId) or entry.epoch
+                    entry.rolledBack = S.isRolledBack(epoch, entry.seq)
+                    local record, done = entry, false
+                    if job.projector then record, done = job.projector(entry) end
+                    if record then pushEntry(job, record) end
+                    if done then finishJob(key, job); return end
+                elseif job.strictJson then
+                    error("invalid history JSON: " .. job.paths[job.index])
+                end
+                if job.bytesPerTick and bytes >= job.bytesPerTick then return end
             end
-            if job.bytesPerTick and bytes >= job.bytesPerTick then return end
         end
     end
 end
@@ -211,14 +222,17 @@ end
 -- and may report its own outcome by writing `extra.error` (a broken read still wins).
 -- strictJson fails on malformed non-empty rows; financial queries cannot silently skip them.
 --
--- `options` is internal only (the recovery proof journal, the market report scan; no client
--- command passes one) and every existing six-argument caller keeps its exact behaviour:
+-- `options` is built by the server, never taken from a client's args, and every six-argument
+-- caller keeps its exact behaviour:
 --   onComplete(reply)  the whole outcome - finish, refuse and read failure - goes to this
 --                      callback and nothing is sent to the player. Server-only evidence is read
 --                      through this door and never leaves as a reply.
---   bytesPerTick       an extra per-tick budget on top of the line count. There is deliberately
---                      no row pre-filter: a caller that skips a row it did not parse cannot say
---                      the row was intact, and for a financial read that is the whole question.
+--   bytesPerTick       an extra per-tick budget on top of the line count.
+--   needle             a plain substring every line the projector can keep contains; any other
+--                      line is skipped without being parsed (stepJob). Tolerant reads only: a
+--                      strict read must parse every row, because a caller that skips a row it
+--                      did not parse cannot say the row was intact - for a financial read that
+--                      is the whole question.
 --   owner              a server-side job with no player at all (player = nil): this string is
 --                      the throttle key in place of the account. Only meaningful together with
 --                      onComplete - there is nobody to reply to.
@@ -231,9 +245,12 @@ local function jobOwner(player)
 end
 
 function W.tail(player, command, paths, extra, projector, strictJson, options)
-    local owner = type(options) == "table" and type(options.owner) == "string" and options.owner or nil
+    options = type(options) == "table" and options or {}
+    local owner = type(options.owner) == "string" and options.owner or nil
     local key = (owner or jobOwner(player)) .. ":" .. command
-    local onComplete = type(options) == "table" and options.onComplete or nil
+    local onComplete = options.onComplete
+    local needle = type(options.needle) == "string" and options.needle ~= "" and options.needle or nil
+    assert(not (strictJson and needle), "W.tail: a strict read parses every row")
     local function refuse(code)
         local reply = { entries = {}, total = 0, truncated = false, error = code }
         for k, v in pairs(extra) do
@@ -254,8 +271,8 @@ function W.tail(player, command, paths, extra, projector, strictJson, options)
         paths = paths, index = 0, reader = nil, ring = {}, head = 1, count = 0, truncated = false,
         player = player, command = command, extra = extra, projector = projector,
         strictJson = strictJson == true, fence = X.readFence(paths), opened = false,
-        onComplete = onComplete,
-        bytesPerTick = type(options) == "table" and tonumber(options.bytesPerTick) or nil,
+        onComplete = onComplete, needle = needle,
+        bytesPerTick = tonumber(options.bytesPerTick),
     }
 end
 
@@ -313,6 +330,28 @@ function W.eventPaths(ms, fromMs, toMs)
     local paths = {}
     for i = 1, #keys do paths[i] = X.ROOT .. "/events-" .. keys[i] .. ".json" end
     return paths
+end
+
+-- The earliest moment a record under `id` can carry, or nil when `id` is not `<epoch>:<seq>`
+-- (EC.makeId). The epoch is the wall clock of the server start that minted the id, and nothing
+-- is written under an id before it exists; the day of margin covers a host clock corrected after
+-- that start. Never later than `ms`: an epoch from the future names nothing in any file.
+function W.idFloorMs(id, ms)
+    local epoch = EC.parseId(id)
+    if type(epoch) ~= "string" or not string.match(epoch, "^%d+$") then return nil end
+    return math.min(tonumber(epoch), ms) - 86400000
+end
+
+-- The default window (W.eventPaths) without the days before `id` existed.
+function W.eventPathsFor(ms, id)
+    local paths, floor = W.eventPaths(ms), W.idFloorMs(id, ms)
+    if floor == nil then return paths end
+    local first = X.ROOT .. "/events-" .. EC.dayKey(floor) .. ".json"
+    local out = {}
+    for _, path in ipairs(paths) do
+        if path >= first then out[#out + 1] = path end
+    end
+    return out
 end
 
 -- Lower-cased display name of a fullType, for the query haystack of a tailed file (ScriptManager
