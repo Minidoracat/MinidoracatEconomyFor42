@@ -62,7 +62,7 @@ A server option; it only appears once the server allows it.
 {{img:07-nearest-terminal-en.jpg}}
 [list]
 [*] [b]Direction and distance[/b]: away from terminals the top bar shows the nearest terminal or ATM's direction and distance (and whether it is upstairs or downstairs).
-[*] [b]Guide me[/b]: shows a golden arrow that stops on arrival (or press Stop).
+[*] [b]Guide me[/b]: a golden arrow beside your character points the way; once the terminal is on screen, the arrow moves over to it. It stops on arrival (or press Stop).
 [*] [b]Without remote opening[/b]: the hotkey or toolbar icon outside a terminal points the arrow at the nearest one instead.
 [*] [b]Trade blocked[/b]: a "not at a terminal" message also gives the nearest terminal's direction.
 [/list]
