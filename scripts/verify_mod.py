@@ -35,6 +35,10 @@
  12c. recovery 以登入名為範圍 — ECRecovery.lua、ECRecoveryJournal.lua 不准出現 S.principal( 與
                            S.onlinePlayer(（帳號可能有多個登入名＝多個存檔；用 S.login／S.onlineLogin）。
                            `--self-test-identity` 對 12b／12c 植入違規自證
+ 15. client 物品名稱用 getItemName — getItemNameFromFullType 沒有原版接在車輛零件後面的車型，
+                          BigGasTank1／2／3 同名（2026-10-18）；確定不需要車型的用法寫進 verify_ignore.txt 並註明依據
+ 16. 車型英文照抄原版      — ECItemNames 的 VEHICLE_CLASSES 與 "%s (%s Vehicle)" 要等於遊戲 EN IG_UI.json 的
+                          IGUI_VehicleType_1..3、IGUI_ItemNameMechanicalType（找不到遊戲檔 SKIP，設定 PZ_PATH）
 
 新增檢查時：同步把對應的坑記進 AGENTS.md 踩坑錄，並依「踩坑進化協議」回流到
 pz-mod-template（見 AGENTS.md）。
@@ -692,6 +696,52 @@ else:
                         _glyph_problems.append(f"{lang}/{name} {key}：" + "；".join(bad))
     _label = GLYPH_LABEL + (f"（CN 另有 {len(_cn_missing)} 個漢字原版字型就缺，不計）" if _cn_missing else "")
     fail(_label, _glyph_problems) if _glyph_problems else ok(_label)
+
+# ---- 15. client 顯示物品名稱用 getItemName ----
+# getItemNameFromFullType 只回翻譯表的物品名；原版背包顯示車輛零件時再接上車型，getItemName 照同一規則
+# （LuaManager.java:8745-8763；getItemNameFromFullType 在 :8579-8583）。BigGasTank1／2／3 因此都顯示「油箱 (大型)」
+# （2026-10-18 玩家回報，家族 pitfalls.md「UI」）。不拿來顯示、或那裡不會出現車輛零件的用法：
+# 把 finding 寫進 scripts/verify_ignore.txt（寫到檔名加冒號，不寫行號），上一行用 # 註明查證依據。
+_PLAIN_NAME = re.compile(r"(?<!\w)getItemNameFromFullType\b")
+plain_names = []
+for f in LUA_FILES:
+    lua_rel = os.path.relpath(f, REPO).replace(os.sep, "/").split("/lua/", 1)[-1]
+    if not lua_rel.startswith("client/"):
+        continue
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        src = _LONG_COMMENT.sub(lambda mm: "\n" * mm.group().count("\n"), fh.read())
+    for lineno, line in enumerate(src.split("\n"), 1):
+        if _PLAIN_NAME.search(line.split("--", 1)[0]):
+            plain_names.append(f"getItemNameFromFullType in {lua_rel}:{lineno}")
+_t = "client 顯示物品名稱用 getItemName（getItemNameFromFullType 沒有車型）"
+fail(_t, plain_names) if plain_names else ok(_t)
+
+# ---- 16. 車型英文照抄原版 ----
+# 英文欄「Gas Tank - Big (Sports Vehicle)」由 ECItemNames 自己組：Lua 讀不到原版 EN 的譯文（非 EN 客戶端只載入
+# 自己語言的翻譯），所以 VEHICLE_CLASSES 與格式字串是原版 EN 的抄本。原版改了英文，這裡就紅，照遊戲檔改 Lua。
+VEHICLE_LABEL = "車型英文與原版 EN IG_UI.json 相同（ECItemNames）"
+_ig_ui = os.path.join(PZ_PATH, "media", "lua", "shared", "Translate", "EN", "IG_UI.json")
+_names_lua = [f for f in LUA_FILES if os.path.basename(f) == "ECItemNames.lua"]
+if not os.path.isfile(_ig_ui):
+    skip(VEHICLE_LABEL, f"找不到 {_ig_ui}（設定 PZ_PATH）")
+elif len(_names_lua) != 1:
+    fail(VEHICLE_LABEL, [f"找到 {len(_names_lua)} 個 ECItemNames.lua，應該剛好一個"])
+else:
+    with open(_ig_ui, encoding="utf-8") as fh:  # 原版檔是寬鬆 JSON，只取要的鍵
+        _vanilla = dict(re.findall(r'"(IGUI_VehicleType_[123]|IGUI_ItemNameMechanicalType)"\s*:\s*"([^"]*)"', fh.read()))
+    with open(_names_lua[0], encoding="utf-8") as fh:
+        _src = fh.read()
+    _classes = re.search(r"local VEHICLE_CLASSES\s*=\s*\{([^}]*)\}", _src)
+    _have = re.findall(r'"([^"]*)"', _classes.group(1)) if _classes else None
+    _want = [_vanilla.get(f"IGUI_VehicleType_{n}") for n in (1, 2, 3)]
+    _fmt = (_vanilla.get("IGUI_ItemNameMechanicalType") or "").replace("%1", "%s").replace("%2", "%s")
+    _formats = re.findall(r'string\.format\("([^"]*Vehicle[^"]*)"', _src)
+    _bad = []
+    if _have != _want:
+        _bad.append(f"VEHICLE_CLASSES 是 {_have}，原版 IGUI_VehicleType_1..3 是 {_want}")
+    if _formats != [_fmt]:
+        _bad.append(f"車型格式字串是 {_formats}，原版 IGUI_ItemNameMechanicalType 換成 %s 後是 {_fmt!r}")
+    fail(VEHICLE_LABEL, _bad) if _bad else ok(VEHICLE_LABEL)
 
 # ---- 總結 ----
 print()

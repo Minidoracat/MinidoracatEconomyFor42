@@ -1,0 +1,5 @@
+# verify_mod.py 的豁免樣式：每行一個子字串，命中的 finding 印 WAIVE、不計 FAIL。每個樣式的上一行寫查證依據。
+
+# 「client 顯示物品名稱用 getItemName」：ECItemNames.lua 的 vehicleClass 拿不含車型的名稱去和 getItemName 的結果比對、
+# 反推車型（英文欄要照原版英文格式接車型），不拿來顯示（2026-10-19 查證）。
+getItemNameFromFullType in client/MinidoracatEconomy/ECItemNames.lua:
