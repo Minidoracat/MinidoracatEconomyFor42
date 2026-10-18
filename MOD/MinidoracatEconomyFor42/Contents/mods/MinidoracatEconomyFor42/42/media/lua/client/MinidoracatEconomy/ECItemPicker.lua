@@ -94,8 +94,8 @@ function P.universe()
     -- own on top (the English fields and the listing policy are Economy's, not the scan's). The
     -- category is the server whitelist's own (EC.itemCategory): the framework writes "Item" for a
     -- MOD script that sets no DisplayCategory, where vanilla and the server go by the item class.
-    -- The name is the one every Economy row shows (C.itemLabel): the framework's leaves a car
-    -- part's vehicle class out, so its three classes would read alike.
+    -- The name is the one every Economy row shows (C.itemLabel): the framework's names a car
+    -- part's vehicle class only from rev 20 (itemPickerVehicleClass), and this mod runs on rev 11.
     for _, src in ipairs(ui.ItemPicker.universe().items) do
         local category = EC.itemCategory(src.script) or src.category
         local record = {
