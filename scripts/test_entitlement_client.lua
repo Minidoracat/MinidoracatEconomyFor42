@@ -553,12 +553,17 @@ end)()
     local savedFixed, savedCat = EC.isFixedType, EC.itemCategory
     EC.isFixedType = function(script) return script == "fixed" end
     EC.itemCategory = function() return "Item" end
-    local srcs = { { fullType = "Base.Bandage", name = "ZZ-Bandage", script = "s" },
-        { fullType = "Base.Bandaid", name = "ZZ-Bandaid", script = "s" },
-        { fullType = "Base.Fixed", name = "ZZ-Fixed", script = "fixed" }, { fullType = "Base.Nails", name = "Nails", script = "s" } }
+    -- the picker names a type the way every row does (C.itemLabel), not by the framework's name
+    local labels = { ["Base.Bandage"] = "ZZ-Bandage", ["Base.Bandaid"] = "ZZ-Bandaid", ["Base.Fixed"] = "ZZ-Fixed",
+        ["Base.Nails"] = "Nails" }
+    local srcs = { { fullType = "Base.Bandage", name = "plain", script = "s" },
+        { fullType = "Base.Bandaid", name = "plain", script = "s" },
+        { fullType = "Base.Fixed", name = "plain", script = "fixed" }, { fullType = "Base.Nails", name = "plain", script = "s" } }
+    C.itemLabel = function(t) return labels[t] end
     C.UI = { T = "IGUI_MinidoracatEconomy_", init = function()
         return { ItemPicker = { universe = function() return { items = srcs } end } } end }
-    C.ItemNames = { revision = 0, ensure = function() end, english = function() return nil end, status = function() return "ready" end }
+    C.ItemNames = { revision = 0, ensure = function() end, english = function() return nil end,
+        label = function() return nil end, status = function() return "ready" end }
     dofile(MEDIA .. "/client/MinidoracatEconomy/ECItemPicker.lua")
     local P = C.ItemPicker
     local list, set = P.queryTypes("  zz-  ")
@@ -572,7 +577,7 @@ end)()
     check(#P.queryTypes("zz-") == 1, "the list is bounded at TYPES_MAX")
     P.TYPES_MAX = savedMax
     EC.isFixedType, EC.itemCategory = savedFixed, savedCat
-    C.UI, C.ItemNames, C.ItemPicker = nil, nil, nil
+    C.UI, C.ItemNames, C.ItemPicker, C.itemLabel = nil, nil, nil, nil
     for _, m in ipairs({ "MinidoracatEconomy/ECWidgets", "MinidoracatEconomy/ECItemNames" }) do package.loaded[m] = nil end
 end)()
 

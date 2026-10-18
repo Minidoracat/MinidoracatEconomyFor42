@@ -1154,6 +1154,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the epoch archive and v
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a claim proven after a world rollback keeps its objects once the claimed letter is pruned (scenario LG-proof-1..4: proved from the ledger, proved only by the objects, a save that lost the moved stamps is moved again, a later delivery stops the proof from moving old copies)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: auction durations in minutes and faster record reads (scenario 32: a 90-minute auction is open at 89 minutes and ends at 90, a rebuilt auction keeps its end; scenario 35: lines without an auction record are skipped unparsed, a pinned auction's timeline skips the days before its id, the JSON decoder's strictness on raw control characters; scenario 36: an exact transaction lookup skips the days before its id)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: compact JSON lines take a faster path (scenario 35: a compact line and the same value written with whitespace decode alike; malformed compact lines are refused)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: a car part's vehicle class in its names (scenario IN-3..5: the English column adds the class the way an English game does and an axe keeps its English; the picker shows the class in both columns and either language's class word finds that part alone; a language that words two classes alike gets no guessed class)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -21892,7 +21893,7 @@ local saved = { require = require, getText = getText, getTextOrNull = getTextOrN
     ISButton = ISButton, ISPanel = ISPanel, events = Events, ui = MinidoracatUI, isClient = isClient,
     getSpecificPlayer = getSpecificPlayer, ISContextMenu = ISContextMenu, invMenu = ISInventoryPaneContextMenu,
     getModFileReader = getModFileReader, listFiles = listFilesInModDirectory, activated = getActivatedMods,
-    getTextManager = getTextManager, UIFont = UIFont }
+    getTextManager = getTextManager, UIFont = UIFont, itemName = getItemName, plainName = getItemNameFromFullType }
 local handlers = {}
 Events = setmetatable({}, { __index = function(_, name)
     return { Add = function(fn) handlers[name] = handlers[name] or {}; table.insert(handlers[name], fn) end,
@@ -21914,7 +21915,8 @@ UIFont = { Small = 1, Medium = 2 }
 -- the files: the shipped index, a MOD whose last entry keeps its comma (the engine reads it), a MOD
 -- with a doubled comma (the engine refuses that too)
 local files = {
-    [EC.MOD_ID .. "|media/MinidoracatEconomy_item_names_en.json"] = { "{", '"Base.Axe": "Axe"', "}" },
+    [EC.MOD_ID .. "|media/MinidoracatEconomy_item_names_en.json"] = { "{", '"Base.Axe": "Axe",',
+        '"Base.BigGasTank1": "Gas Tank - Big",', '"Base.BigGasTank3": "Gas Tank - Big",', '"Base.OddPart2": "Odd Part"', "}" },
     ["TrailingComma|media/lua/shared/Translate/EN/ItemName.json"] =
         { "{", '\t"Base.TableSawMagazine": "TableSaw Magazine",', '\t"Base.AgedMotor": "Aged Motor",', "}" },
     ["DoubledComma|media/lua/shared/Translate/EN/ItemName.json"] = { "{", '"Base.Hammer": "Hammer",,', "}" },
@@ -21940,9 +21942,20 @@ local function newMenu()
 end
 ISContextMenu = { getNew = function() return newMenu() end }
 ISInventoryPaneContextMenu = { addToolTip = function() return { setVisible = function() end } end }
+-- the engine's names (IN-3..5): getItemName adds a car part's vehicle class to the plain translated
+-- name the way IGUI_ItemNameMechanicalType does; getItemNameFromFullType is the plain name alone
+local classWords = { "STD", "HD", "SPORT" }
+local plainNames = { ["Base.Axe"] = "AXE", ["Base.BigGasTank1"] = "TANK", ["Base.BigGasTank3"] = "TANK", ["Base.OddPart2"] = "ODD" }
+local classOf = { ["Base.BigGasTank1"] = 1, ["Base.BigGasTank3"] = 3, ["Base.OddPart2"] = 2 }
+getItemNameFromFullType = function(ft) return plainNames[ft] or ft end
+getItemName = function(ft)
+    local class = classOf[ft]
+    if class then return getItemNameFromFullType(ft) .. " TYPE " .. classWords[class] end
+    return getItemNameFromFullType(ft)
+end
 local admin = true
 EC.Client = {
-    session = {}, nearTerminal = function() return true end,
+    session = {}, nearTerminal = function() return true end, itemLabel = function(ft) return getItemName(ft) end,
     ItemRoute = { items = function(items) return items end, blocked = function() return nil end, move = function() return nil end },
     PanelWidgets = { shopError = function(c) return c end, marketError = function(r) return r.error end,
         buybackRow = function() return nil end },
@@ -21982,7 +21995,9 @@ local axe = { getDisplayCategory = function() return "Tool" end, isItemType = fu
 MinidoracatUI = { v1 = { API_MAJOR = 1, API_REVISION = 11, CAPABILITIES = caps, Skin = {},
     Theme = { create = function() return {} end },
     ItemPicker = { universe = function()
-        return { items = { { fullType = "Base.Axe", name = "Axe", category = "Item", script = axe } } }
+        return { items = { { fullType = "Base.Axe", name = "AXE", category = "Item", script = axe },
+            { fullType = "Base.BigGasTank1", name = "TANK", category = "Item", script = axe },
+            { fullType = "Base.BigGasTank3", name = "TANK", category = "Item", script = axe } } }
     end } } }
 local okA, entries = rightClick()
 check(okA and entries.Menu_AddSku ~= nil and not entries.Menu_AddSku.notAvailable and entries.Menu_AddRule ~= nil
@@ -22003,11 +22018,32 @@ check(gaps ~= nil and gapOf.TrailingComma == nil and Names.english("Base.TableSa
 check(state == "partial" and gapOf.DoubledComma == "names_read_failed" and #gaps == 1
     and Names.english("Base.Hammer") == "Hammer",
     "IN-2: a doubled comma is still a gap for that MOD alone, and the names read before it stay")
+-- IN-3..5: the three vehicle classes of a car part share one name; the game adds the class
+getText = function(key, a, b)
+    if key == "IGUI_ItemNameMechanicalType" then return tostring(a) .. " TYPE " .. tostring(b) end
+    local class = tonumber(string.match(key, "^IGUI_VehicleType_(%d)$"))
+    return class and classWords[class] or key
+end
+check(Names.label ~= nil and Names.label("Base.BigGasTank3") == "Gas Tank - Big (Sports Vehicle)"
+    and Names.label("Base.BigGasTank1") == "Gas Tank - Big (Standard Vehicle)" and Names.label("Base.Axe") == "Axe",
+    "IN-3: the English names a car part's vehicle class the way an English game does; an axe keeps its English")
+local Picker = EC.Client.ItemPicker
+local uni = Picker and Picker.universe()
+local tank = uni and uni.byType["Base.BigGasTank3"]
+local _, sports = Picker.queryTypes("sports vehicle")
+local _, std = Picker.queryTypes("type std")
+check(tank ~= nil and tank.name == "TANK TYPE SPORT" and tank.original == "Gas Tank - Big (Sports Vehicle)"
+    and sports["Base.BigGasTank3"] and not sports["Base.BigGasTank1"] and std["Base.BigGasTank1"] and not std["Base.BigGasTank3"],
+    "IN-4: the picker names a car part with its class in both columns, and either language's class word finds that part alone")
+classWords[2] = classWords[1]
+check(Names.label("Base.OddPart2") == "Odd Part",
+    "IN-5: a language that words two classes alike gets the English without a guessed class")
 require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
 ISButton, ISPanel, Events, MinidoracatUI, isClient = saved.ISButton, saved.ISPanel, saved.events, saved.ui, saved.isClient
 getSpecificPlayer, ISContextMenu, ISInventoryPaneContextMenu = saved.getSpecificPlayer, saved.ISContextMenu, saved.invMenu
 getModFileReader, listFilesInModDirectory, getActivatedMods = saved.getModFileReader, saved.listFiles, saved.activated
 getTextManager, UIFont = saved.getTextManager, saved.UIFont
+getItemName, getItemNameFromFullType = saved.itemName, saved.plainName
 end)()
 
 io.write("scenario RP: money flows, daily breakdown and the admin report\n")

@@ -84,19 +84,20 @@ local function placeField(control, w, y, want)
     return math.max(0, control.x - PAD * 2)
 end
 
--- Item display: the localised engine name (getItemNameFromFullType, LuaManager.java:8579-8583)
--- and the item script's inventory texture (ScriptManager.instance:FindItem -> getNormalTexture;
--- a script may ship none). Both are cached per fullType: a catalog reply must not walk the
--- script list again, and neither call belongs in a per-frame paint.
+-- Item display: the localised engine name (C.itemLabel: getItemName, a car part's vehicle class
+-- included) and the item script's inventory texture (ScriptManager.instance:FindItem ->
+-- getNormalTexture; a script may ship none). Both are cached per fullType: a catalog reply must
+-- not walk the script list again, and neither call belongs in a per-frame paint.
 
 local itemName = C.itemLabel
 
 -- The item's real English name, from the mod's own EN dictionary plus every activated MOD's own
--- EN ItemName.json (C.ItemNames). Shown next to the localised name (and searched) so a player on
--- any language can find "Nails"; nil while the index has no English for this type, and nil when
--- English is the very string the localised name already is. The index loads in frames, so the
--- cache is dropped once its revision moves - the rows a page has already built pick the English
--- up on their next rebuild, and nothing is invented while the load is still running.
+-- EN ItemName.json, with a car part's vehicle class (C.ItemNames.label). Shown next to the
+-- localised name (and searched) so a player on any language can find "Nails"; nil while the
+-- index has no English for this type, and nil when English is the very string the localised
+-- name already is. The index loads in frames, so the cache is dropped once its revision moves -
+-- the rows a page has already built pick the English up on their next rebuild, and nothing is
+-- invented while the load is still running.
 local itemBaseNames = {}
 local baseRevision = -1
 local function itemBaseName(fullType)
@@ -109,7 +110,7 @@ local function itemBaseName(fullType)
     end
     local base = itemBaseNames[fullType]
     if base == nil then
-        base = Names.english(fullType) or false
+        base = Names.label(fullType) or false
         itemBaseNames[fullType] = base
     end
     if not base or base == itemName(fullType) then return nil end
@@ -531,11 +532,21 @@ local function lotText(qty)
     return getText(T .. "Market_Lot", tostring(qty))
 end
 
+-- The English beside a market or auction row: the index's (itemBaseName, which names a car part's
+-- vehicle class). The name the server filed the record under stands in only for a type the index
+-- has no English for (furniture is named after its sprite), and never repeats the row's own name.
+local function recordAltName(it, name)
+    Names.ensure()
+    if Names.english(it.item) then return itemBaseName(it.item) end
+    local alt = it.name
+    if type(alt) ~= "string" or alt == "" or alt == name then return nil end
+    return alt
+end
+
 local function listingRow(it, username, mine)
     local price = tonumber(it.price) or 0
     local name = itemName(it.item)
-    local alt = it.name
-    if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
+    local alt = recordAltName(it, name)
     name = titledName(name, it.state)
     local lines = viewLines(it.item, it.view, it)
     local seller = tostring(it.seller or "")
@@ -586,8 +597,7 @@ local function auctionRow(it, context)
     local bid = tonumber(it.bid)
     local bids = math.max(0, math.floor(tonumber(it.bids) or 0))
     local name = itemName(it.item)
-    local alt = it.name
-    if type(alt) ~= "string" or alt == "" or alt == name then alt = itemBaseName(it.item) end
+    local alt = recordAltName(it, name)
     name = titledName(name, it.state)
     local seller = tostring(it.seller or "")
     local left = (tonumber(it.expiresAt) or 0) - EC.now()

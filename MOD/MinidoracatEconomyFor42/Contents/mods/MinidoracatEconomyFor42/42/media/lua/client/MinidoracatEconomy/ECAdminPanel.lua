@@ -870,15 +870,16 @@ function OptionCell:render()
     end
 end
 
--- Item display name through the engine's own lookup (LuaManager.java:8579-8583), so the admin
--- reads the same translated name a player sees; an unknown fullType falls back to itself.
+-- Item display name through the engine's own lookup (C.itemLabel: getItemName, a car part's
+-- vehicle class included), so the admin reads the same translated name a player sees; an
+-- unknown fullType falls back to itself.
 local itemName = U.itemName
 
--- The item's real English name (C.ItemNames: the shipped EN dictionary plus every activated
--- MOD's own EN/ItemName.json), shown faint after the localised name so the host can match a row
--- against the item id on any language; nil when the two read the same or the index has no
--- English for it. script:getDisplayName() is *not* consulted: after OnScriptsLoaded it is the
--- Translator's name (Item.java:493-495), so it was never an English source.
+-- The item's real English name (C.ItemNames.label: the shipped EN dictionary plus every activated
+-- MOD's own EN/ItemName.json, and a car part's vehicle class), shown faint after the localised
+-- name so the host can match a row against the item id on any language; nil when the two read
+-- the same or the index has no English for it. script:getDisplayName() is *not* consulted: after
+-- OnScriptsLoaded it is the Translator's name (Item.java:493-495), so it was never an English source.
 -- The cache is keyed on the index's revision, which moves once when a load finishes.
 local itemBaseNames = {}
 local itemBaseRev = nil
@@ -890,7 +891,7 @@ local function itemBaseName(fullType)
     end
     local base = itemBaseNames[fullType]
     if base == nil then
-        base = names.english(fullType) or false
+        base = names.label(fullType) or false
         itemBaseNames[fullType] = base
     end
     if not base or base == itemName(fullType) then return nil end

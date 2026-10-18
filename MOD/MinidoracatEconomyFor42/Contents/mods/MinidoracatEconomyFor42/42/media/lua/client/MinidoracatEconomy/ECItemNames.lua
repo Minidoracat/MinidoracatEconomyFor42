@@ -1,4 +1,5 @@
--- Real English item names: the shipped EN dictionary, then activated MOD overrides.
+-- Real English item names: the shipped EN dictionary, then activated MOD overrides; N.label adds
+-- a car part's vehicle class the way an English game shows it.
 -- ScriptItem.getDisplayName is already translated (Item.java:3053), not an English source.
 -- UTF-8 readers: LuaManager.java:5971-6016; active MOD ids: LuaManager.java:7434-7440.
 -- Flat JSON is consumed a bounded number of tokens per tick, regardless of line formatting.
@@ -241,6 +242,43 @@ function N.english(fullType)
     local original = base[fullType]
     if original == name then original = nil end
     return name, original, aliases[fullType]
+end
+
+-- A car part's three vehicle classes share one name; the game tells them apart by adding the
+-- class (getItemName: IGUI_ItemNameMechanicalType with IGUI_VehicleType_<n>,
+-- LuaManager.java:8749-8763). Lua cannot read the script's VehicleType, so the class is the one
+-- whose suffix, in this game's language, turns the plain name (getItemNameFromFullType) into the
+-- engine's own (C.itemLabel). false for no class, and for two classes this language words alike.
+local VEHICLE_CLASSES = { "Standard", "Heavy-Duty", "Sports" }   -- vanilla EN IGUI_VehicleType_1..3
+local vehicleClasses = {}
+local function vehicleClass(fullType)
+    local class = vehicleClasses[fullType]
+    if class ~= nil then return class end
+    class = false
+    local ok, plain = pcall(getItemNameFromFullType, fullType)
+    local shown = C.itemLabel(fullType)
+    if ok and type(plain) == "string" and plain ~= shown then
+        local hits = 0
+        for n = 1, #VEHICLE_CLASSES do
+            if getText("IGUI_ItemNameMechanicalType", plain, getText("IGUI_VehicleType_" .. n)) == shown then
+                hits, class = hits + 1, n
+            end
+        end
+        if hits ~= 1 then class = false end
+    end
+    vehicleClasses[fullType] = class
+    return class
+end
+
+-- The English shown beside a localised name: the name in force, and for a car part its vehicle
+-- class the way an English game writes it (vanilla EN IGUI_ItemNameMechanicalType "%1 (%2 Vehicle)"):
+-- "Gas Tank - Big (Sports Vehicle)". nil when the index has no English for the type.
+function N.label(fullType)
+    local name = over[fullType] or base[fullType]
+    if name == nil then return nil end
+    local class = vehicleClass(fullType)
+    if class then return string.format("%s (%s Vehicle)", name, VEHICLE_CLASSES[class]) end
+    return name
 end
 
 local function hit(query, exact, value)

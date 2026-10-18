@@ -1127,8 +1127,8 @@ end
 
 -- Picked-up furniture has no item script of its own: it is made from "Moveables.<sprite>" and
 -- then calls itself "<module>.<sprite>" after the shared Base.Moveable script
--- (InventoryItemFactory.java:87-92, 144-150), so getItemNameFromFullType answers the raw type
--- (Translator.java:600-614). The inventory names it from the sprite instead (Moveable.java:151-174):
+-- (InventoryItemFactory.java:87-92, 144-150), so getItemName answers the raw type
+-- (LuaManager.java:8749-8763). The inventory names it from the sprite instead (Moveable.java:151-174):
 -- GroupName + CustomName through the moveables dictionary, "(n/m)" on a piece of a multi-tile
 -- object. The sprite, or nil for a type with a script or a name no tile answers with a
 -- CustomName. getSprite makes and keeps a placeholder for a name it does not know
@@ -1167,6 +1167,10 @@ local function moveableLabel(sprite)
 end
 
 -- Localised item name (engine call, cached): the notice toast needs it before any UI exists.
+-- getItemName is the name the inventory shows: a car part's three vehicle classes share one
+-- translated name, and it adds the class ("Gas Tank - Big (Sports Vehicle)";
+-- IGUI_ItemNameMechanicalType, LuaManager.java:8749-8763, InventoryItem.getName), which
+-- getItemNameFromFullType leaves out.
 local itemLabels = {}
 function C.itemLabel(fullType)
     local name = itemLabels[fullType]
@@ -1174,7 +1178,7 @@ function C.itemLabel(fullType)
         local sprite = C.moveableSprite(fullType)
         name = sprite and moveableLabel(sprite)
         if name == nil then
-            local ok, value = pcall(getItemNameFromFullType, fullType)
+            local ok, value = pcall(getItemName, fullType)
             name = (ok and type(value) == "string" and value ~= "") and value or tostring(fullType)
         end
         itemLabels[fullType] = name
