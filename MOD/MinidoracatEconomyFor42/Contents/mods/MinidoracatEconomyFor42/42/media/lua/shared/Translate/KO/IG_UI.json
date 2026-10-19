@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "시즌 남은 시간 (실제 시간)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "이번 시즌 현재 생존 (게임 내 시간)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "이번 시즌 최고 단일 생존 (게임 내 시간)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "잘못된 날짜 범위: 시작일은 종료일보다 앞서야 하고, 최대 60일이며, 오늘보다 늦을 수 없습니다"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "잘못된 날짜 범위: 시작일은 종료일보다 앞서야 하고, 최대 60일이며, 오늘보다 늦을 수 없습니다",
+  "IGUI_MinidoracatEconomy_View_List": "목록",
+  "IGUI_MinidoracatEconomy_View_Grid": "그리드",
+  "IGUI_MinidoracatEconomy_Kb_View": "목록 또는 그리드 (좌/우로 전환)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "%1 남음"
 }

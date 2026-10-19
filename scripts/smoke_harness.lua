@@ -1155,6 +1155,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: a claim proven after a w
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: auction durations in minutes and faster record reads (scenario 32: a 90-minute auction is open at 89 minutes and ends at 90, a rebuilt auction keeps its end; scenario 35: lines without an auction record are skipped unparsed, a pinned auction's timeline skips the days before its id, the JSON decoder's strictness on raw control characters; scenario 36: an exact transaction lookup skips the days before its id)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: compact JSON lines take a faster path (scenario 35: a compact line and the same value written with whitespace decode alike; malformed compact lines are refused)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: a car part's vehicle class in its names (scenario IN-3..5: the English column adds the class the way an English game does and an axe keeps its English; the picker shows the class in both columns and either language's class word finds that part alone; a language that words two classes alike gets no guessed class)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: item pages as grids of tiles (scenario GV: strips and the filter the picker shares, the hit test, the keys and their edges, the per-page list / grid preference, tiles per strip, what a shop / market / auction tile says, a pick that lands on the table and a cursor that follows it, the focus ring's tile and its caption)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -21316,6 +21317,194 @@ check(call(W.titledName, "\233\155\156\232\170\140", { title = "Fishing Weekly #
     "VN-11: the item type's name with the original title in brackets (CH full-width, EN plain), unchanged without one")
 require, getText, getTextOrNull, EC.Client, EC.log = saved.require, saved.getText, saved.getTextOrNull, saved.client, saved.log
 ISButton, ISPanel = saved.ISButton, saved.ISPanel
+end)()
+
+-- ===== 情境 GV：商店、市場與拍賣的圖片網格 =====
+-- The grid helpers the listing picker and the item pages share (ECPanelWidgets), the per-page list /
+-- grid preference (ECOptions) and the item pages' grid view (ECPanelGrid), loaded against the real
+-- CH translation file: the strips, the hit test and the keys a grid walks, a stored "list" that
+-- stays a list, a tile saying one fact on its last line, and a tile's pick landing on the table.
+io.write("scenario GV: item pages as grids of tiles\n")
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client,
+    options = EC.Options, PZAPI = PZAPI, ISPanel = ISPanel, ISButton = ISButton, Keyboard = Keyboard,
+    getTextManager = getTextManager, UIFont = UIFont }
+local function derive(self) return setmetatable({}, { __index = self }) end
+require = function() return true end
+ISButton, ISPanel = { derive = derive }, { derive = derive }
+UIFont = UIFont or { Small = 1 }
+getTextManager = function() return { MeasureStringX = function(_, _, s) return #s * 6 end } end
+Keyboard = { KEY_LEFT = 203, KEY_RIGHT = 205, KEY_UP = 200, KEY_DOWN = 208, KEY_PRIOR = 201, KEY_NEXT = 209,
+    KEY_HOME = 199, KEY_END = 207, KEY_RETURN = 28, KEY_NUMPADENTER = 156, KEY_SPACE = 57, KEY_TAB = 15 }
+local K = Keyboard
+EC.Client = { currencyName = function(id) return "cur:" .. tostring(id) end }
+local f = io.open(MEDIA .. "/shared/Translate/CH/IG_UI.json", "rb")
+local dict = EC.jsonDecode(f:read("*a"))
+f:close()
+getTextOrNull = function(key, ...)
+    local s, args = dict[key], { ... }
+    return s and (string.gsub(s, "%%([1-9])", function(i) return tostring(args[tonumber(i)]) end)) or nil
+end
+getText = function(key, ...) return getTextOrNull(key, ...) or key end
+local T = "IGUI_MinidoracatEconomy_"
+local function say(key, ...) return getText(T .. key, ...) end
+local saves = 0
+local function tick(v) return { value = v, getValue = function(o) return o.value end, setValue = function(o, x) o.value = x end } end
+PZAPI = { ModOptions = { save = function() saves = saves + 1 end, create = function()
+    local page = { dict = {} }
+    function page:addSlider(id, _, _, _, _, v) self.dict[id] = tick(v) end
+    function page:addTickBox(id, _, v) self.dict[id] = tick(v) end
+    function page:getOption(id) return self.dict[id] end
+    return page
+end } }
+EC.Options = nil
+local okU = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECWidgets.lua")
+local okW = okU and pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECPanelWidgets.lua")
+local okO = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECOptions.lua")
+local okG = okW and okO and pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECPanelGrid.lua")
+local U, W, O, G = EC.Client.UI or {}, EC.Client.PanelWidgets or {}, EC.Options or {}, EC.Client.PanelGrid or {}
+if U.fontH then U.fontH.small = 16 end
+local function call(fn, ...) local ok, a, b, c = pcall(fn, ...); if ok then return a, b, c end return nil end
+-- a VirtualList as the helpers read it: strips, a fixed row height, a picked index
+local function fakeList(items, tileW, rowH)
+    local list = { items = items, cols = { tileW = tileW }, height = 300, rowHeight = rowH or 100, padding = 0,
+        scrollOffset = 0, width = 300 }
+    function list:getItems() return self.items end
+    function list:cellWidth() return 300 end
+    function list:indexAt(_, y)
+        local i = math.floor((y + self.scrollOffset) / self.rowHeight) + 1
+        return (i >= 1 and i <= #self.items) and i or nil
+    end
+    function list:getSelectedIndex() return self.selectedIndex end
+    function list:getSelectedItem() return self.selectedIndex and self.items[self.selectedIndex] or nil end
+    function list:setSelectedIndex(i) self.selectedIndex = i end
+    function list:scrollToIndex() end
+    function list:setItems(items) self.items = items end
+    return list
+end
+-- GV-1: rows cut into strips, the last one short; the picker's "listable only" filter drops rows first
+local rows = { { ok = true }, {}, { ok = true }, {}, { ok = true } }
+local strips, shown = call(W.gridStrips, rows, 2)
+local only, onlyShown = call(W.gridStrips, rows, 2, function(e) return e.ok end)
+check(okW and strips and #strips == 3 and #strips[1] == 2 and #strips[3] == 1 and strips[3][1] == rows[5] and shown == 5
+    and only and #only == 2 and only[2][1] == rows[5] and onlyShown == 3 and #(call(W.gridStrips, {}, 4) or { 1 }) == 0,
+    "GV-1: rows are cut into strips of perRow with the last one short, a filter drops rows before the cut, no rows no strips")
+-- GV-2: a press finds the tile under it; past a short strip's last tile or in the scrollbar column it finds none
+local a, b, c, d, e = { name = "a" }, { name = "b" }, { name = "c" }, { name = "d" }, { name = "e" }
+local grid = fakeList({ { a, b, c }, { d, e } }, 100)
+local hit, hitRow, hitCol = call(W.tileAt, grid, 150, 120)
+check(hit == e and hitRow == 2 and hitCol == 2 and call(W.tileAt, grid, 250, 120) == nil
+    and call(W.tileAt, grid, 310, 20) == nil and call(W.tileAt, grid, 250, 20) == c and call(W.tileAt, grid, -1, 20) == nil,
+    "GV-2: a press picks the tile under it, nothing past a short strip's last tile, left of the grid or in the scrollbar column")
+-- GV-3: the arrows walk the tiles and wrap at a strip's ends; an arrow at the edge is left to the engine
+grid.selectedIndex, grid.ecColumn = 1, 3
+local moved1 = call(W.gridFocusKey, grid, K.KEY_RIGHT)
+local r1, c1 = grid.selectedIndex, grid.ecColumn
+local moved2 = call(W.gridFocusKey, grid, K.KEY_LEFT)
+local r2, c2 = grid.selectedIndex, grid.ecColumn
+call(W.gridFocusKey, grid, K.KEY_DOWN)
+local r3, c3 = grid.selectedIndex, grid.ecColumn
+call(W.gridFocusKey, grid, K.KEY_HOME)
+local r4, c4 = grid.selectedIndex, grid.ecColumn
+local stuck = call(W.gridFocusKey, grid, K.KEY_LEFT)
+local entered, opened = call(W.gridFocusKey, grid, K.KEY_RETURN)
+local tabbed = call(W.gridFocusKey, grid, K.KEY_TAB)
+call(W.gridFocusKey, grid, K.KEY_END)
+local r5, c5 = grid.selectedIndex, grid.ecColumn
+check(moved1 == true and r1 == 2 and c1 == 1 and moved2 == true and r2 == 1 and c2 == 3 and r3 == 2 and c3 == 2
+    and r4 == 1 and c4 == 1 and stuck == false and entered == true and opened == a and tabbed == false
+    and r5 == 2 and c5 == 2 and call(W.gridFocusKey, fakeList({}, 100), K.KEY_RETURN) == false,
+    "GV-3: Right / Left wrap between strips, Down clamps to a short strip, Home / End reach the ends, an edge arrow and Tab are not taken, Enter answers the tile, an empty grid takes nothing")
+-- GV-4: each page starts as the table; the switch stores the grid, and a stored "list" stays a list
+local fresh = call(O.gridView, "shop")
+local wrote = call(O.setGridView, "market", true)
+local on = call(O.gridView, "market")
+local saves0 = saves
+call(O.setGridView, "market", false)
+local off = call(O.gridView, "market")
+check(okO and fresh == false and wrote == true and on == true and off == false and saves == saves0 + 1
+    and call(O.gridView, "auction") == false and call(O.setGridView, "zz", true) == nil and call(O.gridView, "zz") == false,
+    "GV-4: every page starts as the table, the switch stores the grid, a stored list reads as a list (one ini write each), an unknown page stores nothing")
+-- GV-5: tiles per strip keep the scrollbar's room, share the spare width out, and never drop below one
+local n1, w1 = call(G.columns, 1270, 112)
+local n2, w2 = call(G.columns, 100, 112)
+local n3, w3 = call(G.columns, 348, 112)
+check(okG and n1 == 11 and w1 == 114 and n2 == 1 and w2 == 112 and n3 == 3 and w3 == 112,
+    "GV-5: a 1270 px grid holds 11 tiles of 114 px, a narrow one still one tile, the scrollbar's 12 px always set aside")
+-- GV-6: a shop tile's last line holds one fact: sold out, then the share left, then the buyback
+-- price; a buyback-only row prices the buyback; a sku with no price here names its other currency
+local soldOut = { name = "Antibiotics", qty = 1, hasQuote = true, priceText = "60", currency = "survivor", soldOut = true,
+    dailyCap = 5, remaining = 0, buyback = true, bidPrice = 9 }
+local capped = { name = "Corn", qty = 2, hasQuote = true, priceText = "20", currency = "survivor", dailyCap = 5,
+    remaining = 3, buyback = true, bidPrice = 5 }
+local bidRow = { name = "Bandage", qty = 1, hasQuote = true, priceText = "12", currency = "survivor", dailyCap = 0,
+    buyback = true, bidPrice = 5 }
+local onlyBuyback = { name = "Rag", qty = 1, delisted = true, tagText = say("Shop_Tag_BuybackOnly"), currency = "survivor",
+    dailyCap = 0, buyback = true, bidPrice = 2 }
+local elsewhere = { name = "Axe", qty = 1, hasQuote = false, currency = "survivor", dailyCap = 0,
+    quotes = { { currency = "survivor", price = 9, enabled = false }, { currency = "cat", price = 3, enabled = true } } }
+for _, row in ipairs({ soldOut, capped, bidRow, onlyBuyback, elsewhere }) do call(G.words, "shop", row, 120) end
+check(okG and soldOut.gtSub1 == say("Shop_SoldOutButton") and soldOut.gtSub1Token == "negative" and soldOut.gtDim == true
+    and capped.gtSub1 == say("Shop_TileLeft", "3") and capped.gtLot == say("Market_Lot", "2") and capped.gtPrice == "20"
+    and bidRow.gtSub1 == say("Shop_BidLine", "5") and bidRow.gtLot == nil
+    and onlyBuyback.gtTag == say("Shop_Tag_BuybackOnly") and onlyBuyback.gtLabel == say("Shop_Col_Bid")
+    and onlyBuyback.gtPrice == "2" and onlyBuyback.gtSub1 == nil
+    and elsewhere.gtPrice == say("Shop_NoQuote") and elsewhere.gtCoin == nil and elsewhere.gtSub1 == call(W.moneyText, 3, "cat"),
+    "GV-6: a shop tile says sold out before the share left before the buyback price, prices a buyback-only row as such, and names another currency's price")
+-- GV-7: a market tile names the currency beside the price and the seller (an own or held listing
+-- says so instead); an auction tile shows the player's standing, the time left and the bids
+local listing = { name = "Plank", qty = 10, priceText = "120", currency = "survivor", currencyText = "cur:survivor", seller = "Marcus" }
+local own = { name = "Hacksaw", qty = 1, priceText = "65", currency = "survivor", currencyText = "cur:survivor", seller = "me", own = true }
+local held = { name = "Saw", qty = 1, priceText = "9", currencyText = "?", seller = "x", blocked = "currency_conflict",
+    actionLabel = "held" }
+local leadingAuction = { name = "Axe", qty = 1, price = 40, bid = 40, bids = 3, currency = "survivor",
+    currencyText = "cur:survivor", leading = true, expiresText = "2d", expiresToken = "textFaint" }
+local ownAuction = { name = "Axe", qty = 2, price = 20, bids = 0, currency = "survivor", currencyText = "cur:survivor",
+    mine = true, expiresText = "1d" }
+for _, row in ipairs({ listing, own, held }) do call(G.words, "market", row, 144) end
+for _, row in ipairs({ leadingAuction, ownAuction }) do call(G.words, "auction", row, 144) end
+check(okG and listing.gtLot == say("Market_Lot", "10") and listing.gtCur == "cur:survivor" and listing.gtSub1 == "Marcus"
+    and own.gtSub1 == say("Market_Own") and held.gtSub1 == "held" and held.gtSub1Token == "warn"
+    and leadingAuction.gtTag == say("Auction_Leading") and leadingAuction.gtTagToken == "positive"
+    and leadingAuction.gtSub1 == "2d" and leadingAuction.gtSub2 == say("Detail_Line", say("Auction_Col_Bids"), "3")
+    and ownAuction.gtTag == say("Auction_Own") and ownAuction.gtSub2 == say("Auction_NoBids") and ownAuction.gtPrice == "20"
+    and ownAuction.gtLot == say("Market_Lot", "2"),
+    "GV-7: a market tile names its currency and seller (own and held listings say so), an auction tile its standing, time left and bids")
+-- GV-8: a tile picks its row on the table and opens it; the cursor follows a pick made elsewhere
+-- (a card's button); new rows are cut again and an empty pick clears the cursor
+local srcRows = { { name = "r1" }, { name = "r2" }, { name = "r3" }, { name = "r4" }, { name = "r5" } }
+local openedRows = {}
+local src = fakeList(srcRows)
+src.onSelect = function(_, _, i) openedRows[#openedRows + 1] = i end
+local view = fakeList({}, 120, 142)
+view.ecSource, view.ecKind, view.ecPerRow, view.ecWantPerRow, view.ecSel = src, "shop", 1, 2, false
+call(G.sync, view)
+local cut = #view.items
+call(G.pick, view, 2, 1, true)
+local picked = src:getSelectedIndex()
+src.selectedIndex = 5
+call(G.sync, view)
+local followRow, followCol = view.selectedIndex, view.ecColumn
+local newRows = { { name = "n1" }, { name = "n2" }, { name = "n3" } }
+src.items, src.selectedIndex = newRows, nil
+call(G.sync, view)
+check(okG and cut == 3 and picked == 3 and #openedRows == 1 and openedRows[1] == 3 and followRow == 3 and followCol == 1
+    and #view.items == 2 and view.items[2][1] == newRows[3] and view.selectedIndex == nil,
+    "GV-8: a tile picks and opens its own row on the table, the cursor follows a pick made elsewhere, new rows are cut again")
+-- GV-9: the focus ring frames the cursor's tile (none while it is scrolled away), and its caption
+-- names the tile and its price
+view.selectedIndex, view.ecColumn = 2, 2
+local okRect, rx, ry, rw, rh = pcall(G.focusRect, view)
+view.scrollOffset = 200
+local away = call(G.focusRect, view)
+src.items, src.selectedIndex = { { name = "Bandage", hasQuote = true, price = 12, currency = "survivor", priceText = "12" } }, 1
+local caption = call(G.focusLabel, view)
+check(okG and okRect and rx == 126 and ry == 148 and rw == 108 and rh == 130 and away == nil
+    and caption == say("Detail_Line", "Bandage", call(W.moneyText, 12, "survivor")),
+    "GV-9: the focus ring frames the cursor's tile and none while it is scrolled away; the caption names the tile and its price")
+require, getText, getTextOrNull, EC.Client, EC.Options, PZAPI = saved.require, saved.getText, saved.getTextOrNull,
+    saved.client, saved.options, saved.PZAPI
+ISButton, ISPanel, Keyboard, getTextManager, UIFont = saved.ISButton, saved.ISPanel, saved.Keyboard, saved.getTextManager, saved.UIFont
 end)()
 
 -- ===== 情境 RW：對帳頁把伺服器的代碼與參數組成各語言的句子 =====

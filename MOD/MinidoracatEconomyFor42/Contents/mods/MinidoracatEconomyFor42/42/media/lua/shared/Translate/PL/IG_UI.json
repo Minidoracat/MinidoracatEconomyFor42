@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "Do końca sezonu (czas rzeczywisty)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "Obecne życie w tym sezonie (czas gry)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "Najlepsze pojedyncze życie w tym sezonie (czas gry)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Nieprawidłowy zakres dat: początek musi być przed końcem, najwyżej 60 dni i nie później niż dziś"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Nieprawidłowy zakres dat: początek musi być przed końcem, najwyżej 60 dni i nie później niż dziś",
+  "IGUI_MinidoracatEconomy_View_List": "Lista",
+  "IGUI_MinidoracatEconomy_View_Grid": "Siatka",
+  "IGUI_MinidoracatEconomy_Kb_View": "Lista lub siatka (Left/Right - przełącz)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "Zostało %1"
 }

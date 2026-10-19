@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "Tiempo restante de la temporada (tiempo real)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "Vida actual en esta temporada (tiempo de juego)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "Mejor vida en esta temporada (tiempo de juego)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Rango de fechas no válido: el inicio debe ser anterior al final, como máximo 60 días y no posterior a hoy"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Rango de fechas no válido: el inicio debe ser anterior al final, como máximo 60 días y no posterior a hoy",
+  "IGUI_MinidoracatEconomy_View_List": "Lista",
+  "IGUI_MinidoracatEconomy_View_Grid": "Cuadrícula",
+  "IGUI_MinidoracatEconomy_Kb_View": "Lista o cuadrícula (Izquierda/Derecha para cambiar)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "Quedan %1"
 }

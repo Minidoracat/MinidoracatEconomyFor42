@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "Season remaining (real time)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "Current life this season (game time)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "Best single life this season (game time)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Invalid date range: the start must come before the end, at most 60 days, and not later than today"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Invalid date range: the start must come before the end, at most 60 days, and not later than today",
+  "IGUI_MinidoracatEconomy_View_List": "List",
+  "IGUI_MinidoracatEconomy_View_Grid": "Grid",
+  "IGUI_MinidoracatEconomy_Kb_View": "List or grid (Left/Right to switch)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "%1 left"
 }

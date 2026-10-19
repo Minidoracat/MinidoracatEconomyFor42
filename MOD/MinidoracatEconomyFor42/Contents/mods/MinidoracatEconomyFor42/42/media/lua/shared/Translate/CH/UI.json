@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "勾選＝管理視窗左側導覽收合成窄圖示列，把寬度讓給表格；取消＝圖示加文字。標題列的收合鈕改的是同一個設定。",
   "UI_MinidoracatEconomy_ShowButton": "顯示經濟中心按鈕",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "畫面上的經濟中心按鈕，點擊即可開關經濟中心。有家族工具列時放在工具列裡；沒有時是浮動按鈕，按住拖曳可移動位置。隱藏後仍可用快捷鍵開啟（選項 ￫ 按鍵綁定 ￫ Minidoracat 經濟中心）。",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "設定已在本次遊戲套用，但無法寫入 ModOptions.ini；請檢查設定檔的寫入權限。"
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "設定已在本次遊戲套用，但無法寫入 ModOptions.ini；請檢查設定檔的寫入權限。",
+  "UI_MinidoracatEconomy_ShopGrid": "商店以網格顯示",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "勾選＝系統商店的商品排成圖示網格，取消＝清單。商店工具列的「清單／網格」改的是同一個設定。",
+  "UI_MinidoracatEconomy_MarketGrid": "市場瀏覽以網格顯示",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "勾選＝市場瀏覽的刊登排成圖示網格，取消＝清單。我的刊登與紀錄一律是清單。市場工具列的「清單／網格」改的是同一個設定。",
+  "UI_MinidoracatEconomy_AuctionGrid": "拍賣瀏覽以網格顯示",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "勾選＝瀏覽中的拍賣排成圖示網格，取消＝清單。我的拍賣與紀錄一律是清單。拍賣工具列的「清單／網格」改的是同一個設定。"
 }

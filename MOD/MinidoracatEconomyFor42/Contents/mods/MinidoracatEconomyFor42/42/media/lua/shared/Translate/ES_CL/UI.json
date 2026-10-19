@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Marcado: la navegación izquierda de la ventana de administración se pliega en una barra estrecha de iconos y deja más espacio para las tablas. Sin marcar: iconos con texto. El interruptor de la barra de título modifica esta misma configuración.",
   "UI_MinidoracatEconomy_ShowButton": "Mostrar el botón del Centro Económico",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "El botón del Centro Económico en pantalla: haz clic en él para abrir o cerrar el Centro Económico. Se coloca en la barra de herramientas de la familia si está disponible; si no, es un botón flotante que puedes mantener pulsado y arrastrar para moverlo. Si está oculto, abre el Centro Económico con su tecla rápida (Opciones › Configuración de teclas › Minidoracat Economy Center).",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Configuración aplicada para esta sesión, pero falló el guardado de ModOptions.ini. Revisa sus permisos de escritura."
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Configuración aplicada para esta sesión, pero falló el guardado de ModOptions.ini. Revisa sus permisos de escritura.",
+  "UI_MinidoracatEconomy_ShopGrid": "Tienda: ver en cuadrícula",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "Marcado: la tienda muestra sus artículos como una cuadrícula de iconos. Sin marcar: una lista. El selector Lista / Cuadrícula de la barra de la tienda modifica esta misma configuración.",
+  "UI_MinidoracatEconomy_MarketGrid": "Explorar el mercado: ver en cuadrícula",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "Marcado: las publicaciones que exploras en el mercado se muestran como una cuadrícula de iconos. Sin marcar: una lista. Tus propias publicaciones y el historial siempre usan la lista. El selector Lista / Cuadrícula de la barra del mercado modifica esta misma configuración.",
+  "UI_MinidoracatEconomy_AuctionGrid": "Explorar subastas: ver en cuadrícula",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "Marcado: las subastas que exploras se muestran como una cuadrícula de iconos. Sin marcar: una lista. Tus propias subastas y el historial siempre usan la lista. El selector Lista / Cuadrícula de la barra de subastas modifica esta misma configuración."
 }

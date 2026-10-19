@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "本季剩餘（現實時間）",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "本季目前單命生存（遊戲時間）",
   "IGUI_MinidoracatEconomy_Card_R_Best": "本季最長單命（遊戲時間）",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "日期範圍無效：起日要早於迄日、最多 60 天，而且不能晚於今天"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "日期範圍無效：起日要早於迄日、最多 60 天，而且不能晚於今天",
+  "IGUI_MinidoracatEconomy_View_List": "清單",
+  "IGUI_MinidoracatEconomy_View_Grid": "網格",
+  "IGUI_MinidoracatEconomy_Kb_View": "清單或網格（左右鍵切換）",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "剩 %1"
 }

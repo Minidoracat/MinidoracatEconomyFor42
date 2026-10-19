@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "Sezonun kalanı (gerçek zaman)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "Bu sezonki mevcut yaşam (oyun zamanı)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "Bu sezonun en iyi tek yaşamı (oyun zamanı)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Geçersiz tarih aralığı: başlangıç bitişten önce olmalı, en fazla 60 gün ve bugünden sonra olmamalı"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Geçersiz tarih aralığı: başlangıç bitişten önce olmalı, en fazla 60 gün ve bugünden sonra olmamalı",
+  "IGUI_MinidoracatEconomy_View_List": "Liste",
+  "IGUI_MinidoracatEconomy_View_Grid": "Izgara",
+  "IGUI_MinidoracatEconomy_Kb_View": "Liste veya ızgara (değiştirmek için Sol/Sağ)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "%1 kaldı"
 }

@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "체크: 관리자 창의 왼쪽 내비게이션이 좁은 아이콘 막대로 접혀 표에 너비를 돌려줍니다. 체크 해제: 아이콘과 글자를 함께 표시합니다. 제목 표시줄의 전환 버튼도 같은 설정을 기록합니다.",
   "UI_MinidoracatEconomy_ShowButton": "경제 센터 버튼 표시",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "화면의 경제 센터 버튼: 클릭하면 경제 센터를 열거나 닫습니다. 가능하면 패밀리 툴바에 놓이고, 아니면 누른 채 끌어서 옮길 수 있는 플로팅 버튼이 됩니다. 숨기면 단축키로 경제 센터를 여세요 (설정 › 키 설정 › Minidoracat Economy 센터).",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "이번 세션에는 설정이 적용되었지만 ModOptions.ini 저장에 실패했습니다. 쓰기 권한을 확인하세요."
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "이번 세션에는 설정이 적용되었지만 ModOptions.ini 저장에 실패했습니다. 쓰기 권한을 확인하세요.",
+  "UI_MinidoracatEconomy_ShopGrid": "상점: 그리드로 보기",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "체크: 상점이 상품을 아이콘 그리드로 보여 줍니다. 체크 해제: 목록. 상점 도구 모음의 목록 / 그리드 전환도 같은 설정을 기록합니다.",
+  "UI_MinidoracatEconomy_MarketGrid": "마켓 둘러보기: 그리드로 보기",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "체크: 마켓에서 둘러보는 판매 목록을 아이콘 그리드로 보여 줍니다. 체크 해제: 목록. 내 판매와 기록은 항상 목록입니다. 마켓 도구 모음의 목록 / 그리드 전환도 같은 설정을 기록합니다.",
+  "UI_MinidoracatEconomy_AuctionGrid": "경매 둘러보기: 그리드로 보기",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "체크: 둘러보는 경매를 아이콘 그리드로 보여 줍니다. 체크 해제: 목록. 내 경매와 기록은 항상 목록입니다. 경매 도구 모음의 목록 / 그리드 전환도 같은 설정을 기록합니다."
 }

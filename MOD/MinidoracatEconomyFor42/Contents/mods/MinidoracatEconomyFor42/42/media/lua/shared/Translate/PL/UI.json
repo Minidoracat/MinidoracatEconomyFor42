@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Zaznaczone: lewa nawigacja okna administratora zwija się do wąskiego paska ikon i oddaje szerokość tabelom. Odznaczone: ikony z napisami. Przełącznik na pasku tytułu zapisuje to samo ustawienie.",
   "UI_MinidoracatEconomy_ShowButton": "Pokaż przycisk Centrum Ekonomii",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "Przycisk Centrum Ekonomii na ekranie: kliknij, aby otworzyć lub zamknąć Centrum Ekonomii. Gdy to możliwe, znajduje się na pasku narzędzi modów Minidoracat; w przeciwnym razie jest pływającym przyciskiem, który można przytrzymać i przeciągnąć. Gdy jest ukryty, otwórz Centrum Ekonomii skrótem klawiszowym (Opcje > Przypisanie klawiszy > Minidoracat Economy Center).",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Ustawienia zastosowano w tej sesji, ale zapis ModOptions.ini nie powiódł się. Sprawdź jego uprawnienia zapisu."
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Ustawienia zastosowano w tej sesji, ale zapis ModOptions.ini nie powiódł się. Sprawdź jego uprawnienia zapisu.",
+  "UI_MinidoracatEconomy_ShopGrid": "Sklep: widok siatki",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "Zaznaczone: sklep pokazuje towary jako siatkę ikon. Odznaczone: jako listę. Przełącznik Lista / Siatka na pasku narzędzi sklepu zapisuje to samo ustawienie.",
+  "UI_MinidoracatEconomy_MarketGrid": "Przeglądanie rynku: widok siatki",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "Zaznaczone: oferty przeglądane na rynku są pokazywane jako siatka ikon. Odznaczone: jako lista. Twoje oferty i historia zawsze są listą. Przełącznik Lista / Siatka na pasku narzędzi rynku zapisuje to samo ustawienie.",
+  "UI_MinidoracatEconomy_AuctionGrid": "Przeglądanie aukcji: widok siatki",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "Zaznaczone: przeglądane aukcje są pokazywane jako siatka ikon. Odznaczone: jako lista. Twoje aukcje i historia zawsze są listą. Przełącznik Lista / Siatka na pasku narzędzi aukcji zapisuje to samo ustawienie."
 }

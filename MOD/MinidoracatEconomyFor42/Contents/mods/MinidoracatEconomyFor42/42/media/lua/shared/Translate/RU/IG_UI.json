@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "До конца сезона (реальное время)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "Текущая жизнь в этом сезоне (игровое время)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "Лучшая жизнь в этом сезоне (игровое время)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Неверный диапазон дат: начало должно быть раньше конца, не более 60 дней и не позже сегодняшнего дня"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Неверный диапазон дат: начало должно быть раньше конца, не более 60 дней и не позже сегодняшнего дня",
+  "IGUI_MinidoracatEconomy_View_List": "Список",
+  "IGUI_MinidoracatEconomy_View_Grid": "Сетка",
+  "IGUI_MinidoracatEconomy_Kb_View": "Список или сетка (Влево/Вправо - переключить)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "Осталось %1"
 }

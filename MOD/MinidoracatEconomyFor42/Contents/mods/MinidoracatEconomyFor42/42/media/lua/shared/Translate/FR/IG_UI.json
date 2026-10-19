@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "Reste de la saison (temps réel)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "Vie actuelle cette saison (temps de jeu)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "Meilleure vie cette saison (temps de jeu)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Plage de dates invalide : le début doit précéder la fin, 60 jours au maximum, et pas après aujourd'hui"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Plage de dates invalide : le début doit précéder la fin, 60 jours au maximum, et pas après aujourd'hui",
+  "IGUI_MinidoracatEconomy_View_List": "Liste",
+  "IGUI_MinidoracatEconomy_View_Grid": "Grille",
+  "IGUI_MinidoracatEconomy_Kb_View": "Liste ou grille (Gauche/Droite pour changer)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "Reste %1"
 }

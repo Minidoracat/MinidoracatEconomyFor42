@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Checked: the admin window's left navigation folds into a narrow icon rail and gives the width back to the tables. Unchecked: icons with words. The title-bar toggle writes this same setting.",
   "UI_MinidoracatEconomy_ShowButton": "Show Economy Center button",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "The on-screen Economy Center button: click it to open or close the Economy Center. It sits in the family toolbar when available; otherwise it is a floating button you can hold and drag to reposition. When hidden, open the Economy Center with its hotkey (Options › Key Bindings › Minidoracat Economy Center).",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Settings applied for this session, but saving ModOptions.ini failed. Check its write permissions."
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Settings applied for this session, but saving ModOptions.ini failed. Check its write permissions.",
+  "UI_MinidoracatEconomy_ShopGrid": "Shop: show as a grid",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "Checked: the shop shows its items as a grid of icons. Unchecked: a list. The List / Grid switch on the shop's toolbar writes this same setting.",
+  "UI_MinidoracatEconomy_MarketGrid": "Market browsing: show as a grid",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "Checked: the listings you browse on the market show as a grid of icons. Unchecked: a list. Your own listings and the record always use the list. The List / Grid switch on the market's toolbar writes this same setting.",
+  "UI_MinidoracatEconomy_AuctionGrid": "Auction browsing: show as a grid",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "Checked: the auctions you browse show as a grid of icons. Unchecked: a list. Your own auctions and the record always use the list. The List / Grid switch on the auction's toolbar writes this same setting."
 }

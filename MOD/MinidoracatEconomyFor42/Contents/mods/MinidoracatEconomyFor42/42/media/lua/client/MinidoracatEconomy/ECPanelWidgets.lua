@@ -123,6 +123,13 @@ local function drawIcon(el, tex, x, y, size)
     if tex then el:drawTextureScaled(tex, x, y, size, size, 1, 1, 1, 1) end
 end
 
+-- A picked or hovered row (or tile) is lit by the table's own band, and on that band the muted and
+-- faint text tokens fall under 4.5:1: they read as the plain text token there instead.
+local function litToken(lit, token)
+    if lit and (token == "textFaint" or token == "textMuted") then return "text" end
+    return token
+end
+
 local function recoveryError(detail, recovery)
     if type(detail) ~= "table" or type(detail.reason) ~= "string" then return nil end
     local reason = getTextOrNull(T .. "Recovery_Reason_" .. detail.reason)
@@ -861,7 +868,7 @@ function ShopCell:render()
     if not e then return end
     local cols = self.list.cols
     local h = self.height
-    rowBackground(self)
+    local lit = rowBackground(self)
     drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
     local half = math.floor(h / 2)
     local nameW = e.tagText and math.max(0, cols.nameW - e.tagW - 8) or cols.nameW
@@ -875,16 +882,16 @@ function ShopCell:render()
     end
     if e.altName then
         local altW = cols.name + cols.nameW - altX
-        if altW > 20 then text(self, fitText(e.altName, altW), altX, nameY, "textFaint") end
+        if altW > 20 then text(self, fitText(e.altName, altW), altX, nameY, litToken(lit, "textFaint")) end
     end
-    text(self, e.qtyText, cols.name, half + 2, "textFaint")
+    text(self, e.qtyText, cols.name, half + 2, litToken(lit, "textFaint"))
     local ty = math.floor((h - fontH.small) / 2)
-    textRight(self, e.priceText, cols.priceR, ty, e.hasQuote and "accent" or "textFaint")
+    textRight(self, e.priceText, cols.priceR, ty, e.hasQuote and "accent" or litToken(lit, "textFaint"))
     local coinX = cols.priceR - textWidth(e.priceText) - COIN_SMALL - 4
     if e.hasQuote and coinX > cols.name + cols.nameW then
         drawCoin(self, e.currency, coinX, math.floor((h - COIN_SMALL) / 2), COIN_SMALL)
     end
-    textRight(self, e.remainText, cols.remainR, ty, e.remainToken)
+    textRight(self, e.remainText, cols.remainR, ty, litToken(lit, e.remainToken))
     local chipY, chipH = math.floor((h - CHIP_H) / 2), CHIP_H
     R.begin(self)
     if e.buyback then
@@ -1017,7 +1024,7 @@ function ListingCell:render()
     if not e then return end
     local cols = self.list.cols
     local h = self.height
-    rowBackground(self)
+    local lit = rowBackground(self)
     drawIcon(self, e.texture, cols.icon, math.floor((h - ITEM_ICON) / 2), ITEM_ICON)
     local half = math.floor(h / 2)
     local nameText = fitText(e.nameText, cols.nameW)
@@ -1025,9 +1032,9 @@ function ListingCell:render()
     if e.altName then
         local altX = cols.name + textWidth(nameText) + 8
         local altW = cols.name + cols.nameW - altX
-        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, "textFaint") end
+        if altW > 20 then text(self, fitText(e.altName, altW), altX, half - fontH.small - 2, litToken(lit, "textFaint")) end
     end
-    if e.statusText then text(self, fitText(e.statusText, cols.nameW), cols.name, half + 2, "textFaint") end
+    if e.statusText then text(self, fitText(e.statusText, cols.nameW), cols.name, half + 2, litToken(lit, "textFaint")) end
     local ty = math.floor((h - fontH.small) / 2)
     local rightOfName = cols.name + cols.nameW
     -- Every value paints inside the column it belongs to (cols.<key>W is that slot): a strip
@@ -1035,10 +1042,10 @@ function ListingCell:render()
     -- letting two columns overlap, and the row's record window still spells it out in full.
     if cols.qtyR then
         textRight(self, fitText(tostring(e.qty), cols.qtyW), cols.qtyR, ty,
-            e.qty > 1 and "accent" or "textFaint")
+            e.qty > 1 and "accent" or litToken(lit, "textFaint"))
     end
     if cols.sellerX then
-        text(self, fitText(e.seller, cols.sellerW), cols.sellerX, ty, "textMuted")
+        text(self, fitText(e.seller, cols.sellerW), cols.sellerX, ty, litToken(lit, "textMuted"))
         rightOfName = cols.sellerX + cols.sellerW
     end
     local priceText = fitText(e.priceText, cols.priceW)
@@ -1052,12 +1059,12 @@ function ListingCell:render()
     -- instead of being read as the default one.
     if cols.curR then
         textRight(self, fitText(e.currencyText, cols.curW), cols.curR, ty,
-            e.currency and "textMuted" or "warn")
+            e.currency and litToken(lit, "textMuted") or "warn")
     end
     if cols.bidsR then
-        textRight(self, fitText(e.bidsText, cols.bidsW), cols.bidsR, ty, e.bidsToken or "textFaint")
+        textRight(self, fitText(e.bidsText, cols.bidsW), cols.bidsR, ty, litToken(lit, e.bidsToken or "textFaint"))
     end
-    textRight(self, fitText(e.expiresText, cols.expiresW), cols.expiresR, ty, e.expiresToken or "textFaint")
+    textRight(self, fitText(e.expiresText, cols.expiresW), cols.expiresR, ty, litToken(lit, e.expiresToken or "textFaint"))
     -- The record button of the auction tables, left of the action one: it opens this auction's
     -- own timeline. A record is a read, so the write gate (list.actionDisabled) never closes it.
     local chipY = math.floor((h - CHIP_H) / 2)
@@ -1071,7 +1078,7 @@ function ListingCell:render()
         R.put(self, e.actionId, e.actionLabel, cols.actionX, chipY, cols.actionW, CHIP_H,
             self.list.actionDisabled ~= true and e.actionOff ~= true, danger and "danger" or nil)
     else
-        textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, e.actionToken or "textFaint")
+        textCentre(self, e.actionLabel, cols.actionX + cols.actionW / 2, ty, litToken(lit, e.actionToken or "textFaint"))
     end
     R.finish(self)
 end
@@ -1085,6 +1092,76 @@ local function gridCandidate(list)
     local row = list:getSelectedIndex()
     local strip = row and list.items[row]
     return strip and strip[math.min(list.ecColumn or 1, #strip)] or nil
+end
+
+-- The strips of a tile grid (VirtualList keeps one strip of up to `perRow` entries per list row):
+-- the listing dialog's backpack picker and the item pages' grids (ECPanelGrid) cut them alike.
+-- `keep(e)` drops entries when given. Answers the strips and how many entries they hold.
+function W.gridStrips(rows, perRow, keep)
+    local grid, strip, shown = {}, nil, 0
+    perRow = math.max(1, perRow or 1)
+    for i = 1, #rows do
+        local e = rows[i]
+        if keep == nil or keep(e) then
+            if strip == nil or #strip >= perRow then
+                strip = {}
+                grid[#grid + 1] = strip
+            end
+            strip[#strip + 1] = e
+            shown = shown + 1
+        end
+    end
+    return grid, shown
+end
+
+-- The entry under (x, y) of a strip grid, with its strip index and its column; nil outside the
+-- tiles (a row gap, the empty tail of a strip, the scrollbar column). The paint reads the same
+-- cols.tileW, so a click and the tile drawn under it can never disagree.
+function W.tileAt(list, x, y)
+    local tw = list.cols.tileW
+    if not tw or x < 0 or x >= list:cellWidth() then return nil end
+    local index = list:indexAt(x, y)
+    if not index then return nil end
+    local tiles = list:getItems()[index]
+    local col = math.floor(x / tw) + 1
+    local e = tiles and tiles[col]
+    if not e then return nil end
+    return e, index, col
+end
+
+-- A strip grid's keys (its cursor is the picked strip plus list.ecColumn): the arrows walk the
+-- tiles and wrap at a strip's ends, PgUp / PgDn move a page, Home / End go to the first and the
+-- last tile, Enter / Space (controller A) answer the tile to open. Answers whether the key was
+-- taken and, for Enter / Space, that entry. An arrow that cannot move is left to the engine: the
+-- keyboard still eats it, while the D-pad steps out of the grid at its edge instead of being
+-- trapped in it.
+function W.gridFocusKey(list, key)
+    local rows, k = list.items, Keyboard
+    if #rows == 0 then return false end
+    if key == k.KEY_RETURN or key == k.KEY_NUMPADENTER or key == k.KEY_SPACE then
+        return true, gridCandidate(list)
+    end
+    local was, wasCol = list:getSelectedIndex(), list.ecColumn
+    local row = math.max(1, math.min(#rows, was or 1))
+    local col = math.max(1, math.min(list.ecColumn or 1, #rows[row]))
+    local page = math.max(1, math.floor(list.height / (list.rowHeight + (list.padding or 0))))
+    if key == k.KEY_LEFT then
+        if col > 1 then col = col - 1
+        elseif row > 1 then row = row - 1; col = #rows[row] end
+    elseif key == k.KEY_RIGHT then
+        if col < #rows[row] then col = col + 1
+        elseif row < #rows then row = row + 1; col = 1 end
+    elseif key == k.KEY_UP then row = math.max(1, row - 1)
+    elseif key == k.KEY_DOWN then row = math.min(#rows, row + 1)
+    elseif key == k.KEY_PRIOR then row = math.max(1, row - page)
+    elseif key == k.KEY_NEXT then row = math.min(#rows, row + page)
+    elseif key == k.KEY_HOME then row, col = 1, 1
+    elseif key == k.KEY_END then row = #rows; col = #rows[row]
+    else return false end
+    list.ecColumn = math.min(col, #rows[row])
+    list:setSelectedIndex(row)
+    list:scrollToIndex(row)
+    return row ~= was or list.ecColumn ~= wasCol
 end
 
 local CandidateCell = ISPanel:derive("MinidoracatEconomyCandidateCell")
@@ -1522,6 +1599,7 @@ W.MailCell = MailCell
 W.StatementCell = StatementCell
 W.ListingCell = ListingCell
 W.gridCandidate = gridCandidate
+W.litToken = litToken
 W.CandidateCell = CandidateCell
 W.historyRowHeight = historyRowHeight
 W.HISTORY_KINDS = HISTORY_KINDS

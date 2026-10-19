@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Aktiviert: Die linke Navigation des Adminfensters klappt zu einer schmalen Symbolleiste ein und gibt die Breite an die Tabellen zurück. Deaktiviert: Symbole mit Text. Der Schalter in der Titelleiste schreibt dieselbe Einstellung.",
   "UI_MinidoracatEconomy_ShowButton": "Schaltfläche Wirtschaftszentrum anzeigen",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "Die Bildschirm-Schaltfläche des Wirtschaftszentrums: Klicke sie, um das Wirtschaftszentrum zu öffnen oder zu schließen. Sie sitzt in der Familien-Werkzeugleiste, wenn vorhanden; sonst ist sie eine schwebende Schaltfläche, die du gedrückt halten und verschieben kannst. Wenn ausgeblendet, öffne das Wirtschaftszentrum mit seinem Tastenkürzel (Einstellungen › Tastaturbelegung › Minidoracat Economy Center).",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Einstellungen für diese Sitzung angewendet, aber das Speichern von ModOptions.ini ist fehlgeschlagen. Prüfe die Schreibrechte."
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Einstellungen für diese Sitzung angewendet, aber das Speichern von ModOptions.ini ist fehlgeschlagen. Prüfe die Schreibrechte.",
+  "UI_MinidoracatEconomy_ShopGrid": "Laden: als Raster anzeigen",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "Aktiviert: Der Laden zeigt seine Waren als Raster aus Symbolen. Deaktiviert: als Liste. Der Schalter Liste / Raster in der Werkzeugleiste des Ladens schreibt dieselbe Einstellung.",
+  "UI_MinidoracatEconomy_MarketGrid": "Markt durchsuchen: als Raster anzeigen",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "Aktiviert: Die Angebote, die du auf dem Markt durchsuchst, erscheinen als Raster aus Symbolen. Deaktiviert: als Liste. Deine eigenen Angebote und der Verlauf bleiben immer eine Liste. Der Schalter Liste / Raster in der Werkzeugleiste des Markts schreibt dieselbe Einstellung.",
+  "UI_MinidoracatEconomy_AuctionGrid": "Auktionen durchsuchen: als Raster anzeigen",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "Aktiviert: Die Auktionen, die du durchsuchst, erscheinen als Raster aus Symbolen. Deaktiviert: als Liste. Deine eigenen Auktionen und der Verlauf bleiben immer eine Liste. Der Schalter Liste / Raster in der Werkzeugleiste der Auktionen schreibt dieselbe Einstellung."
 }

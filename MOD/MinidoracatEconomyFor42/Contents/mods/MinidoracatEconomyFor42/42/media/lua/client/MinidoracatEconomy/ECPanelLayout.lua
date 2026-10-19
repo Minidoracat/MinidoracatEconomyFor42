@@ -25,11 +25,13 @@ require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECPanelShopMail"
 require "MinidoracatEconomy/ECPanelEntitlements"
 require "MinidoracatEconomy/ECPanelCards"
+require "MinidoracatEconomy/ECPanelGrid"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
 local W = C.PanelWidgets
+local G = C.PanelGrid
 
 local L = {}
 
@@ -299,13 +301,16 @@ function L.layoutMarket(self, workBottom, chipBand, toolBand, capH, watch)
     self.marketSortCombo:setWidth(comboWidth(self.marketSortCombo, 140, math.floor(bw * 0.3)))
     self.marketCurCombo:setVisible(browseMode)
     self.marketCurCombo:setWidth(comboWidth(self.marketCurCombo, 110, math.floor(bw * 0.25)))
+    self.marketViewTabs:setVisible(browseMode)
     if browseMode then
         local tools = { search.entry }
         if chip:getIsVisible() then tools[2] = chip end
         tools[#tools + 1] = self.marketCatCombo
         tools[#tools + 1] = self.marketCurCombo
         tools[#tools + 1] = self.marketSortCombo
+        tools[#tools + 1] = self.marketViewTabs
         y = placeRow(tools, g.marketCardX + PAD, y + capH, mktRight, toolBand, capH + 6) + 6
+        G.pinRight(search.entry, mktRight, self.marketViewTabs)
         -- the candidate list hangs under wherever the row placer left the box, and is capped to
         -- the card so it can never paint past it
         search:anchorDrop(mktBottom - (search.entry.y + search.entry.height) - PAD)
@@ -315,8 +320,10 @@ function L.layoutMarket(self, workBottom, chipBand, toolBand, capH, watch)
         g.marketMineNoteY = y                     -- a refused read: its note and the retry chip
         y = y + ROW
     end
+    -- the grid of tiles (browse only) has no header row: its tiles start where the titles would be
+    g.marketGridOn = browseMode and G.on("market")
     g.marketHeaderY = y
-    local mktListY = y + ROW
+    local mktListY = g.marketGridOn and y or (y + ROW)
     local mktFooterH = mineMode and 0 or ROW
     local mktListW = g.marketCardW - 2
     local mktListH = math.max(ROW, mktBottom - mktListY - PAD - mktFooterH)
@@ -382,9 +389,10 @@ function L.layoutMarket(self, workBottom, chipBand, toolBand, capH, watch)
         self.marketList:resize(mktListW, mktListH)
     end
     local header = self.marketHeader
-    header:setVisible(isMarket and not historyMode)
+    header:setVisible(isMarket and not historyMode and not g.marketGridOn)
     header:setX(self.marketList.x); header:setY(g.marketHeaderY)
     header:setWidth(mktListW); header:setHeight(ROW)
+    G.fit(self, "market", browseMode)
 
     -- history: the same card with the filter bar under the note line, two lines per row, no icon
     -- column (kind, item, amount, status) and the bar's own pager under the table
@@ -697,6 +705,7 @@ function L.layout(self)
     self.auctionSortCombo:setWidth(comboWidth(self.auctionSortCombo, 140, math.floor(bw * 0.3)))
     self.auctionCurCombo:setVisible(aucTable)
     self.auctionCurCombo:setWidth(comboWidth(self.auctionCurCombo, 110, math.floor(bw * 0.25)))
+    self.auctionViewTabs:setVisible(aucTable)
     y = y + CARD_TITLE_H + g.auctionPillH
     if aucHistory then y = y + noteRowH() + noteLineH() end   -- the record's state band
     if aucTable then
@@ -704,13 +713,17 @@ function L.layout(self)
         if aucChip:getIsVisible() then toolItems[2] = aucChip end
         toolItems[#toolItems + 1] = self.auctionCurCombo
         toolItems[#toolItems + 1] = self.auctionSortCombo
+        toolItems[#toolItems + 1] = self.auctionViewTabs
         y = placeRow(toolItems, g.auctionCardX + PAD, y + capH, aucRight, aucBand, capH + 6) + 6
+        G.pinRight(aucSearch.entry, aucRight, self.auctionViewTabs)
         aucSearch:anchorDrop(aucBottom - (aucSearch.entry.y + aucSearch.entry.height) - PAD)
     elseif aucHistory then
         y = placeRow({ self.auctionEntry }, g.auctionCardX + PAD, y, aucRight, aucBand, 6) + 6
     end
+    -- as on the market: the browse grid has no header row
+    g.aucGridOn = aucTable and G.on("auction")
     g.auctionHeaderY = y
-    g.auctionListY = y + ROW
+    g.auctionListY = g.aucGridOn and y or (y + ROW)
     -- The pager is placed *under the table*, the way the market page does it, instead of being
     -- pinned to the card bottom and then overrun: a toolbar that wrapped (a large font, a long
     -- locale, one control more) shortens the table, and the table never grows into the row the
@@ -769,7 +782,7 @@ function L.layout(self)
         elseif c.key == "ending" then aCols.expiresR, aCols.expiresW = c.textR, c.textW end
     end
 
-    self.auctionHeader:setVisible(aucTable)
+    self.auctionHeader:setVisible(aucTable and not g.aucGridOn)
     self.auctionHeader:setX(g.auctionCardX + 1); self.auctionHeader:setY(g.auctionHeaderY)
     self.auctionHeader:setWidth(aucListW); self.auctionHeader:setHeight(ROW)
     -- (the table height was measured with the pager above, so the two can never overlap)
@@ -779,6 +792,7 @@ function L.layout(self)
     if self.auctionList.width ~= aucListW or self.auctionList.height ~= aucListH then
         self.auctionList:resize(aucListW, aucListH)
     end
+    G.fit(self, "auction", aucTable)
     -- "my auctions": the selling half over the bidding half, one section title each, and under the
     -- bids one muted line for the server's cap (it lists only the bids ending soonest)
     g.aucSellLabelY = g.auctionCardY + CARD_TITLE_H + g.auctionPillH

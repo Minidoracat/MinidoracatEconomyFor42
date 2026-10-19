@@ -14,11 +14,13 @@ if not MinidoracatEconomy or not MinidoracatEconomy.Client or not MinidoracatEco
 end
 require "MinidoracatEconomy/ECPanelWidgets"
 require "MinidoracatEconomy/ECPanelCards"
+require "MinidoracatEconomy/ECPanelGrid"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
 local U = C.UI
 local W = C.PanelWidgets
+local G = C.PanelGrid
 
 local M = {}
 C.PanelShopMail = M
@@ -167,7 +169,8 @@ function M.mailRules(self)
 end
 
 -- ---------- layout ----------
--- Shop: the title row (pills, rules), search / category / currency, one full-workspace table.
+-- Shop: the title row (pills, rules), search / category / currency / the List / Grid switch, and
+-- one full-workspace table -- or the grid of tiles standing in for it (ECPanelGrid).
 -- The rules chip's place goes to g.rulesX / g.rulesY; L.layout's rules block shows it.
 function M.layoutShop(self, workBottom, toolBand, capH, watch)
     local g = self.g
@@ -189,17 +192,18 @@ function M.layoutShop(self, workBottom, toolBand, capH, watch)
     self.shopEntry:setWidth(math.max(140, math.min(300, math.floor(bw * 0.28))))
     self.shopCatCombo:setVisible(isShop)
     self.shopCatCombo:setWidth(comboWidth(self.shopCatCombo, 120, math.floor(bw * 0.3)))
-    -- the currency switch only exists where there is a second currency to switch to; it sits at
-    -- the right end of the search row whenever that row has room for it
+    -- the currency switch only exists where there is a second currency to switch to; it and the
+    -- List / Grid switch sit at the right end of the search row whenever that row has room
     local tabs = self.shopCurTabs
     local showTabs = isShop and tabs ~= nil and #W.currencyIds() > 1
     if tabs ~= nil then tabs:setVisible(showTabs) end
+    local view = self.shopViewTabs
+    view:setVisible(isShop)
     local tools = { self.shopEntry, self.shopCatCombo }
     if showTabs then tools[3] = tabs end
+    tools[#tools + 1] = view
     local y = placeRow(tools, bx + PAD, g.contentY + g.shopHeadH + 4 + capH, right, toolBand, capH + 6) + 6
-    if showTabs and tabs.y == self.shopEntry.y + math.floor((self.shopEntry.height - tabs.height) / 2) then
-        tabs:setX(right - tabs.width)
-    end
+    G.pinRight(self.shopEntry, right, view, showTabs and tabs or nil)
     -- a refused catalog read gets a band of its own above the table: the note, and the retry chip
     -- at its right end (L.layout places historyRetryButton there)
     g.shopNoteY = nil
@@ -207,8 +211,10 @@ function M.layoutShop(self, workBottom, toolBand, capH, watch)
         g.shopNoteY = y
         y = y + ROW
     end
+    -- the grid has no header row: its tiles start where the column titles would be
+    g.shopGridOn = isShop and G.on("shop")
     g.shopHeaderY = y
-    local listY = y + ROW
+    local listY = g.shopGridOn and y or (y + ROW)
     local listH = math.max(ROW * 2, workBottom - listY - PAD)
     self.shopList:setVisible(isShop)
     self.shopList:setX(listX); self.shopList:setY(listY)
@@ -236,6 +242,7 @@ function M.layoutShop(self, workBottom, toolBand, capH, watch)
     -- an empty catalog says what the page is for (no next step: only an admin can stock it)
     U.emptyState(self, "shop", listX, listY, listW, listH, getText(T .. "Shop_Empty"),
         getText(T .. "Shop_EmptyBody"))
+    G.fit(self, "shop", isShop)
     if isShop then watch[#watch + 1] = { kind = "shop", list = self.shopList } end
 end
 
@@ -333,12 +340,14 @@ function M.drawShop(self)
             g.shopNoteY + math.floor((ROW - fontH.small) / 2), "errorText")
     end
     local cols = list.cols
-    local hx, hy = list.x, g.shopHeaderY
-    fill(self, hx, hy, list.width, ROW, "well", "rect")
-    local hty = hy + math.floor((ROW - fontH.small) / 2)
-    text(self, getText(T .. "Shop_Col_Item"), hx + cols.name, hty, "textMuted")
-    textRight(self, getText(T .. "Shop_Col_Price"), hx + cols.priceR, hty, "textMuted")
-    textRight(self, getText(T .. "Shop_Col_Remaining"), hx + cols.remainR, hty, "textMuted")
+    if not g.shopGridOn then
+        local hx, hy = list.x, g.shopHeaderY
+        fill(self, hx, hy, list.width, ROW, "well", "rect")
+        local hty = hy + math.floor((ROW - fontH.small) / 2)
+        text(self, getText(T .. "Shop_Col_Item"), hx + cols.name, hty, "textMuted")
+        textRight(self, getText(T .. "Shop_Col_Price"), hx + cols.priceR, hty, "textMuted")
+        textRight(self, getText(T .. "Shop_Col_Remaining"), hx + cols.remainR, hty, "textMuted")
+    end
     if #list:getItems() == 0 and C.shopError == nil then
         if self.shopQuery or self.shopCat then
             -- the filters emptied it: say what was searched and offer the way back

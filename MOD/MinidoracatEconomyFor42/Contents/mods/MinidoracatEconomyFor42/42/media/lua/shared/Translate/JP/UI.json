@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "オン＝管理ウィンドウの左ナビゲーションを細いアイコン列に折りたたみ、幅を表に返します。オフ＝アイコンと文字。タイトルバーのボタンも同じ設定を書き換えます。",
   "UI_MinidoracatEconomy_ShowButton": "経済センターボタンを表示",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "画面上の経済センターボタン。クリックで経済センターを開閉します。ファミリーツールバーがある場合はその中に表示され、ない場合はフローティングボタンとなり、長押しドラッグで移動できます。非表示にしてもホットキーで開けます（オプション ￫ キーバインド ￫ Minidoracat 経済センター）。",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "設定は今回のゲームに適用されましたが、ModOptions.ini に保存できません。書き込み権限を確認してください。"
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "設定は今回のゲームに適用されましたが、ModOptions.ini に保存できません。書き込み権限を確認してください。",
+  "UI_MinidoracatEconomy_ShopGrid": "ショップをグリッドで表示",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "オン＝ショップの商品をアイコンのグリッドで表示。オフ＝リスト。ショップのツールバーの「リスト／グリッド」も同じ設定を書き換えます。",
+  "UI_MinidoracatEconomy_MarketGrid": "マーケットの閲覧をグリッドで表示",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "オン＝マーケットで閲覧する出品をアイコンのグリッドで表示。オフ＝リスト。自分の出品と履歴は常にリストです。マーケットのツールバーの「リスト／グリッド」も同じ設定を書き換えます。",
+  "UI_MinidoracatEconomy_AuctionGrid": "オークションの閲覧をグリッドで表示",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "オン＝閲覧するオークションをアイコンのグリッドで表示。オフ＝リスト。自分のオークションと履歴は常にリストです。オークションのツールバーの「リスト／グリッド」も同じ設定を書き換えます。"
 }

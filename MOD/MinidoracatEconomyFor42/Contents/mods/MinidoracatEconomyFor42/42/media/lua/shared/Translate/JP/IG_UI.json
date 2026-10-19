@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "今シーズンの残り（現実の時間）",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "今シーズンの現在の生存時間（ゲーム内時間）",
   "IGUI_MinidoracatEconomy_Card_R_Best": "今シーズン最長の生存（ゲーム内時間）",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "期間が無効です：開始日は終了日より前、最大 60 日、今日より後にはできません"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "期間が無効です：開始日は終了日より前、最大 60 日、今日より後にはできません",
+  "IGUI_MinidoracatEconomy_View_List": "リスト",
+  "IGUI_MinidoracatEconomy_View_Grid": "グリッド",
+  "IGUI_MinidoracatEconomy_Kb_View": "リストかグリッド（左右キーで切替）",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "残り %1"
 }

@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "勾选＝管理窗口左侧导览收合成窄图标列，把宽度让给表格；取消＝图标加文本。标题列的收合钮改的是同一个设置。",
   "UI_MinidoracatEconomy_ShowButton": "显示经济中心按钮",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "画面上的经济中心按钮，点击即可开关经济中心。有家族工具列时放在工具列里；没有时是浮动按钮，按住拖曳可移动位置。隐藏后仍可用快捷键打开（游戏选项 ￫ 按键设置 ￫ Minidoracat 经济中心）。",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "设置已在本次游戏套用，但无法写入 ModOptions.ini；请检查设置档的写入权限。"
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "设置已在本次游戏套用，但无法写入 ModOptions.ini；请检查设置档的写入权限。",
+  "UI_MinidoracatEconomy_ShopGrid": "商店以网格显示",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "勾选＝系统商店的商品排成图标网格，取消＝清单。商店工具列的「清单／网格」改的是同一个设置。",
+  "UI_MinidoracatEconomy_MarketGrid": "市场浏览以网格显示",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "勾选＝市场浏览的刊登排成图标网格，取消＝清单。我的刊登与纪录一律是清单。市场工具列的「清单／网格」改的是同一个设置。",
+  "UI_MinidoracatEconomy_AuctionGrid": "拍卖浏览以网格显示",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "勾选＝浏览中的拍卖排成图标网格，取消＝清单。我的拍卖与纪录一律是清单。拍卖工具列的「清单／网格」改的是同一个设置。"
 }

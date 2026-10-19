@@ -748,7 +748,7 @@ function MarketDialog:createChildren()
     -- resolved here from the click's own x; the scrollbar keeps the framework's handler.
     local scrollDown = self.pickList.onMouseDown
     self.pickList.onMouseDown = function(list, x, y)
-        local e = self:tileAt(x, y)
+        local e = W.tileAt(list, x, y)
         if e then
             self.panel:onCandidate(e)
             return true
@@ -756,40 +756,12 @@ function MarketDialog:createChildren()
         return scrollDown(list, x, y)
     end
     -- This grid uses the same list focus and held-key ledger as every other table: the engine asks
-    -- the focused control's onFocusKey first, so the grid owns the arrows and Enter here.
+    -- the focused control's onFocusKey first, so the grid owns the arrows and Enter here
+    -- (W.gridFocusKey, shared with the item pages' grids).
     self.pickList.onFocusKey = function(list, key)
-        local rows, k = list.items, Keyboard
-        if #rows == 0 then return false end
-        if key == k.KEY_RETURN or key == k.KEY_NUMPADENTER or key == k.KEY_SPACE then
-            local candidate = gridCandidate(list)
-            if candidate then self.panel:onCandidate(candidate) end
-            return true
-        end
-        local was, wasCol = list:getSelectedIndex(), list.ecColumn
-        local row = was or 1
-        row = math.max(1, math.min(#rows, row))
-        local col = math.max(1, math.min(list.ecColumn or 1, #rows[row]))
-        local page = math.max(1, math.floor(list.height / (list.rowHeight + (list.padding or 0))))
-        if key == k.KEY_LEFT then
-            if col > 1 then col = col - 1
-            elseif row > 1 then row = row - 1; col = #rows[row] end
-        elseif key == k.KEY_RIGHT then
-            if col < #rows[row] then col = col + 1
-            elseif row < #rows then row = row + 1; col = 1 end
-        elseif key == k.KEY_UP then row = math.max(1, row - 1)
-        elseif key == k.KEY_DOWN then row = math.min(#rows, row + 1)
-        elseif key == k.KEY_PRIOR then row = math.max(1, row - page)
-        elseif key == k.KEY_NEXT then row = math.min(#rows, row + page)
-        elseif key == k.KEY_HOME then row, col = 1, 1
-        elseif key == k.KEY_END then row = #rows; col = #rows[row]
-        else return false end
-        list.ecColumn = math.min(col, #rows[row])
-        list:setSelectedIndex(row)
-        list:scrollToIndex(row)
-        -- an arrow that could not move is left to the engine: the keyboard still eats it (the list
-        -- target claims every navigation key), while the D-pad steps out of the grid at its edge
-        -- instead of being trapped in it
-        return row ~= was or list.ecColumn ~= wasCol
+        local taken, candidate = W.gridFocusKey(list, key)
+        if candidate then self.panel:onCandidate(candidate) end
+        return taken
     end
     self:addChild(self.pickList)
 end
@@ -914,40 +886,18 @@ function MarketDialog:onOnlyListable()
     self:rebuildGrid()
 end
 
--- The candidate under (x, y), or nil outside the tiles (row gap, empty tail of a strip, the
--- scrollbar column). Returns the strip index and the column too: the paint reads them for hover.
-function MarketDialog:tileAt(x, y)
-    local list = self.pickList
-    local tw = list.cols.tileW
-    if not tw or x < 0 or x >= list:cellWidth() then return nil end
-    local index = list:indexAt(x, y)
-    if not index then return nil end
-    local tiles = list:getItems()[index]
-    local col = math.floor(x / tw) + 1
-    local e = tiles and tiles[col]
-    if not e then return nil end
-    return e, index, col
-end
-
 -- Candidates -> strips of gridCols tiles, dropping the unlistable ones while the filter is on.
 -- Called on a fresh snapshot, on the filter chip, and when a resize changes the column count.
+local function listable(e) return e.ok end
+
 function MarketDialog:rebuildGrid()
     local rows = self.panel.candidateRows or {}
-    local perRow = math.max(1, self.gridCols or 1)
-    local grid, strip, shown, listable = {}, nil, 0, 0
+    local count = 0
     for i = 1, #rows do
-        local e = rows[i]
-        if e.ok then listable = listable + 1 end
-        if e.ok or not self.onlyListable then
-            if not strip or #strip >= perRow then
-                strip = {}
-                grid[#grid + 1] = strip
-            end
-            strip[#strip + 1] = e
-            shown = shown + 1
-        end
+        if rows[i].ok then count = count + 1 end
     end
-    self.candTotal, self.candListable, self.candShown = #rows, listable, shown
+    local grid, shown = W.gridStrips(rows, self.gridCols, self.onlyListable and listable or nil)
+    self.candTotal, self.candListable, self.candShown = #rows, count, shown
     self.pickList:setItems(grid)
 end
 
@@ -1384,7 +1334,7 @@ function MarketDialog:prerender()
         local hover = nil
         list.hoverIndex, list.hoverCol = nil, nil
         if list:isMouseOver() then
-            local e, index, col = self:tileAt(list:getMouseX(), list:getMouseY())
+            local e, index, col = W.tileAt(list, list:getMouseX(), list:getMouseY())
             if e then
                 hover, list.hoverIndex, list.hoverCol = e, index, col
             end

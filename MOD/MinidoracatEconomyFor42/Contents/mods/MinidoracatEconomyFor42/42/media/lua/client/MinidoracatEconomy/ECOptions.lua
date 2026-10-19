@@ -9,6 +9,9 @@
 --                  toggle writes the same option, so the two ways of saying it never disagree.
 --   ShowButton     does the Economy Center entry show (the family toolbar slot, or the fallback
 --                  floating button without one); default on. Off leaves the hotkey as the way in.
+--   *Grid          one per item page (shop / market browse / auction browse): does the page show
+--                  its items as a grid of tiles instead of the table (default off, i.e. the
+--                  table). The page's own List / Grid switch writes the same option.
 --
 -- Engine: PZAPI/ModOptions.lua (client) - create/addSlider/addTickBox/getOption/getValue/
 -- setValue/save; the MiniMap does the same for its own knobs. A tick box answers a boolean, so
@@ -134,6 +137,34 @@ function O.setNavigationCollapsed(preference, collapsed)
     return O.flush()
 end
 
+-- ---------- list or grid on the item pages ----------
+--
+O.VIEW_OPTION = { shop = "ShopGrid", market = "MarketGrid", auction = "AuctionGrid" }
+local viewFallback = {}
+
+-- true = the page's grid of tiles. Never `and`/`or` over the value itself: false is an answer here.
+function O.gridView(page)
+    local id = O.VIEW_OPTION[page]
+    local opt = id and option(id) or nil
+    if opt == nil then return viewFallback[page] == true end
+    return opt:getValue() == true
+end
+
+-- Written by the page's own List / Grid switch: one click, one ini write, no server round trip.
+function O.setGridView(page, grid)
+    local id = O.VIEW_OPTION[page]
+    if id == nil then return end
+    local v = grid == true
+    local opt = option(id)
+    if opt == nil then
+        viewFallback[page] = v
+        return true
+    end
+    opt:setValue(v)
+    dirty = true
+    return O.flush()
+end
+
 -- ---------- entry button ----------
 --
 -- Cached because the toolbar asks every frame. Read at game start (the engine has loaded
@@ -150,6 +181,9 @@ local function accept()
     readShowButton()
     local F = EC.Client and EC.Client.FloatButton
     if F then F.sync() end
+    -- a list / grid choice made on the options screen shows on the open window at once
+    local win = EC.Client and EC.Client.Panel and EC.Client.Panel.window
+    if win ~= nil and win.layout ~= nil then win:layout() end
 end
 
 if PZAPI and PZAPI.ModOptions then
@@ -164,6 +198,13 @@ if PZAPI and PZAPI.ModOptions then
         "UI_MinidoracatEconomy_NavCollapsedPlayer_tooltip")
     options:addTickBox("NavCollapsedAdmin", "UI_MinidoracatEconomy_NavCollapsedAdmin", false,
         "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip")
+    -- Off = the page's table, on = its grid of tiles; one per page, like the navigation pair.
+    options:addTickBox("ShopGrid", "UI_MinidoracatEconomy_ShopGrid", false,
+        "UI_MinidoracatEconomy_ShopGrid_tooltip")
+    options:addTickBox("MarketGrid", "UI_MinidoracatEconomy_MarketGrid", false,
+        "UI_MinidoracatEconomy_MarketGrid_tooltip")
+    options:addTickBox("AuctionGrid", "UI_MinidoracatEconomy_AuctionGrid", false,
+        "UI_MinidoracatEconomy_AuctionGrid_tooltip")
     options:addTickBox("ShowButton", "UI_MinidoracatEconomy_ShowButton", true,
         "UI_MinidoracatEconomy_ShowButton_tooltip")
     options.apply = accept   -- the options screen calls this after "Accept"

@@ -3285,5 +3285,9 @@
   "IGUI_MinidoracatEconomy_Card_R_SeasonLeft": "Saison verbleibend (Echtzeit)",
   "IGUI_MinidoracatEconomy_Card_R_Survived": "Aktuelles Leben in dieser Saison (Spielzeit)",
   "IGUI_MinidoracatEconomy_Card_R_Best": "Bestes einzelnes Leben in dieser Saison (Spielzeit)",
-  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Ungültiger Datumsbereich: Der Start muss vor dem Ende liegen, höchstens 60 Tage und nicht später als heute"
+  "IGUI_MinidoracatEconomy_Admin_Error_invalid_range": "Ungültiger Datumsbereich: Der Start muss vor dem Ende liegen, höchstens 60 Tage und nicht später als heute",
+  "IGUI_MinidoracatEconomy_View_List": "Liste",
+  "IGUI_MinidoracatEconomy_View_Grid": "Raster",
+  "IGUI_MinidoracatEconomy_Kb_View": "Liste oder Raster (Links/Rechts zum Wechseln)",
+  "IGUI_MinidoracatEconomy_Shop_TileLeft": "%1 übrig"
 }

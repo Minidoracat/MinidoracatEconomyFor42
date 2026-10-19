@@ -22,6 +22,7 @@ require "MinidoracatEconomy/ECLeaderboard"
 require "MinidoracatEconomy/ECItemDrop"
 require "MinidoracatEconomy/ECNavigate"
 require "MinidoracatEconomy/ECPanelWanted"
+require "MinidoracatEconomy/ECPanelGrid"
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -436,6 +437,9 @@ function Panel:createChildren()
     self.auctionEmptyButton = Button.create(0, 0, 60, CHIP_H, "", self, Panel.onAuctionEmpty, "chip")
     self.auctionEmptyButton:setVisible(false)
     self:addChild(self.auctionEmptyButton)
+    -- the shop's and the two browse pages' grids of tiles, over the very tables built above
+    -- (ECPanelGrid: a second view of the same rows, with a List / Grid switch on each toolbar)
+    C.PanelGrid.create(self)
 
     -- ----- rewards / window chrome -----
     -- the daily card's one gold button; its title, coin and tooltip follow the server's state
@@ -748,8 +752,10 @@ function Panel:shopTargets(out)
     if self.shopCurTabs and self.shopCurTabs:getIsVisible() then
         out[#out + 1] = { kind = "button", control = self.shopCurTabs, label = getText(T .. "Trade_Currency") }
     end
+    C.PanelGrid.targets(self, "shop", out)
     out[#out + 1] = { kind = "list", control = self.shopList, label = getText(T .. "Shop_Title") }
     self:rowActionTargets(out, self.shopList)
+    C.PanelGrid.gridTarget(self, "shop", out)
     out[#out + 1] = { kind = "button", control = self.shopEmptyButton, label = getText(T .. "Market_ClearFilters") }
 end
 
@@ -765,8 +771,10 @@ function Panel:marketTargets(out)
     out[#out + 1] = { kind = "combo", control = self.marketCatCombo, label = getText(T .. "Kb_Market_Cats") }
     out[#out + 1] = { kind = "combo", control = self.marketCurCombo, label = getText(T .. "Trade_Currency") }
     out[#out + 1] = { kind = "combo", control = self.marketSortCombo, label = getText(T .. "Kb_Market_Sort") }
+    C.PanelGrid.targets(self, "market", out)
     out[#out + 1] = { kind = "list", control = self.marketList, label = getText(T .. "Kb_Market_List") }
     self:rowActionTargets(out, self.marketList)
+    C.PanelGrid.gridTarget(self, "market", out)
     out[#out + 1] = { kind = "button", control = self.marketEmptyButton, label = self.marketEmptyButton.fullTitle }
     self:filterTargets(out, self.historyBar)
     out[#out + 1] = { kind = "list", control = self.marketHistoryList, label = getText(T .. "Kb_Market_History") }
@@ -785,11 +793,13 @@ function Panel:auctionTargets(out)
         label = getText(T .. "Kb_Auction_Search") }
     out[#out + 1] = { kind = "combo", control = self.auctionCurCombo, label = getText(T .. "Trade_Currency") }
     out[#out + 1] = { kind = "combo", control = self.auctionSortCombo, label = getText(T .. "Kb_Auction_Sort") }
+    C.PanelGrid.targets(self, "auction", out)
     for _, spec in ipairs({ { self.auctionList, "Kb_Auction_List" },
         { self.auctionSellList, "Kb_Auction_Selling" }, { self.auctionBidList, "Kb_Auction_Bidding" } }) do
         out[#out + 1] = { kind = "list", control = spec[1], label = getText(T .. spec[2]) }
         self:rowActionTargets(out, spec[1])
     end
+    C.PanelGrid.gridTarget(self, "auction", out)
     out[#out + 1] = { kind = "button", control = self.auctionEmptyButton, label = self.auctionEmptyButton.fullTitle }
     self:filterTargets(out, self.auctionHistoryBar)
     out[#out + 1] = { kind = "list", control = self.auctionHistoryList, label = getText(T .. "Kb_Auction_History") }
@@ -3074,7 +3084,8 @@ function Panel:syncDetail()
     local moved = false
     for _, spec in ipairs(self.detailWatch or {}) do
         local list = spec.list
-        if list:getIsVisible() then
+        -- a table its grid stands in for is still the source of the open record
+        if list:getIsVisible() or (list.ecGrid ~= nil and list.ecGrid:getIsVisible()) then
             local item, revision = list:getSelectedItem(), list.revision
             if item ~= spec.last or revision ~= spec.revision then
                 if revision ~= spec.revision and self.detailList == list and Detail.isOpen(self) then

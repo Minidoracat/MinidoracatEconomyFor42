@@ -12,5 +12,11 @@
   "UI_MinidoracatEconomy_NavCollapsedAdmin_tooltip": "Coché : la navigation de gauche de la fenêtre admin se replie en une étroite colonne d'icônes et rend la largeur aux tableaux. Décoché : icônes avec texte. Le bouton de la barre de titre écrit ce même réglage.",
   "UI_MinidoracatEconomy_ShowButton": "Afficher le bouton du Centre économique",
   "UI_MinidoracatEconomy_ShowButton_tooltip": "Le bouton du Centre économique à l'écran : cliquez dessus pour ouvrir ou fermer le Centre économique. Il se place dans la barre d'outils de la famille si elle est disponible ; sinon c'est un bouton flottant que vous pouvez maintenir et glisser pour le déplacer. S'il est masqué, ouvrez le Centre économique avec son raccourci (Options › Configuration des touches › Minidoracat Economy Center).",
-  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Réglages appliqués pour cette session, mais l'enregistrement de ModOptions.ini a échoué. Vérifiez ses permissions d'écriture."
+  "UI_MinidoracatEconomy_PreferencesSaveFailed": "Réglages appliqués pour cette session, mais l'enregistrement de ModOptions.ini a échoué. Vérifiez ses permissions d'écriture.",
+  "UI_MinidoracatEconomy_ShopGrid": "Boutique : affichage en grille",
+  "UI_MinidoracatEconomy_ShopGrid_tooltip": "Coché : la boutique affiche ses articles en grille d'icônes. Décoché : en liste. Le sélecteur Liste / Grille de la barre d'outils de la boutique écrit ce même réglage.",
+  "UI_MinidoracatEconomy_MarketGrid": "Parcourir le marché : affichage en grille",
+  "UI_MinidoracatEconomy_MarketGrid_tooltip": "Coché : les annonces que vous parcourez sur le marché s'affichent en grille d'icônes. Décoché : en liste. Vos propres annonces et l'historique restent toujours en liste. Le sélecteur Liste / Grille de la barre d'outils du marché écrit ce même réglage.",
+  "UI_MinidoracatEconomy_AuctionGrid": "Parcourir les enchères : affichage en grille",
+  "UI_MinidoracatEconomy_AuctionGrid_tooltip": "Coché : les enchères que vous parcourez s'affichent en grille d'icônes. Décoché : en liste. Vos propres enchères et l'historique restent toujours en liste. Le sélecteur Liste / Grille de la barre d'outils des enchères écrit ce même réglage."
 }
