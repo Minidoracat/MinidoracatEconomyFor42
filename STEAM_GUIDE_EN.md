@@ -221,6 +221,14 @@ A server option.
 [*] [b]Keyboard and controller[/b]: every page works with the keyboard (Tab switches areas, arrows pick rows, Enter opens details, Esc closes) and a controller (A confirms, B goes back, LB/RB switch tabs).
 [*] [b]Remembered[/b]: window position, size and preferences are remembered.
 [/list]
+[h3]List or grid[/h3]
+[list]
+[*] [b]Switch[/b]: the Shop, the Market's Browse page and the Auction's Browse page have List | Grid at the right end of the toolbar; List is the default, and each page remembers your choice.
+[*] [b]Grid[/b]: one large icon per item with its name and price, plus one line for the units left, the seller or the time left; click a tile to open its card, and buy, bid or sell back from the card.
+[*] [b]Everything else stays[/b]: search, category, currency and sort work the same in both views; My listings, My auctions and the History pages stay lists.
+[*] [b]Keyboard and controller[/b]: the arrow keys move between tiles, and Enter or A opens the card.
+[*] [b]In the options[/b]: [b]Shop: show as a grid[/b], [b]Market browsing: show as a grid[/b] and [b]Auction browsing: show as a grid[/b] under Options > MODS > Minidoracat Economy are the same settings.
+[/list]
 [h3]Hide the Economy Center button[/h3]
 [list]
 [*] [b]Shown by default[/b]: the button is the coin icon in the family toolbar, or a floating button without one.
