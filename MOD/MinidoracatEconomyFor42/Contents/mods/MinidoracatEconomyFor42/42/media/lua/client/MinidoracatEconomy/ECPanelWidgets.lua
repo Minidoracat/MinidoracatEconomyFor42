@@ -96,7 +96,7 @@ local itemName = C.itemLabel
 -- localised name (and searched) so a player on any language can find "Nails"; nil while the
 -- index has no English for this type, and nil when English is the very string the localised
 -- name already is. The index loads in frames, so the cache is dropped once its revision moves -
--- the rows a page has already built pick the English up on their next rebuild, and nothing is
+-- the window builds the rows of its pages again when it does (Panel:prerender), and nothing is
 -- invented while the load is still running.
 local itemBaseNames = {}
 local baseRevision = -1

@@ -327,6 +327,9 @@ function M.drawShop(self)
     if self.shopPillV3 then
         U.drawPill(self, g.shopPillX[3], g.shopPillY[3], self.shopPillL3, self.shopPillV3, "text")
     end
+    -- every toolbar control is named above it (the placer leaves that caption band over each row);
+    -- the search box too, as on the buy orders page: its placeholder is gone once a word is typed
+    text(self, getText(T .. "Wanted_Search"), self.shopEntry.x, self.shopEntry.y - fontH.small - 2, "textMuted")
     text(self, getText(T .. "Shop_Category"), self.shopCatCombo.x,
         self.shopCatCombo.y - fontH.small - 2, "textMuted")
     local list = self.shopList

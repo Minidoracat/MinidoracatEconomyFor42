@@ -2783,7 +2783,7 @@
   "IGUI_MinidoracatEconomy_Shop_Tag_BuybackOnly": "Nur Ankauf",
   "IGUI_MinidoracatEconomy_Shop_BidLine": "Ankaufspreis %1",
   "IGUI_MinidoracatEconomy_Shop_Spec": "Details und Limits",
-  "IGUI_MinidoracatEconomy_Shop_UnitLine": "%1 pro Einheit, je %2",
+  "IGUI_MinidoracatEconomy_Shop_UnitLine": "%1 pro Einheit, %2 / Einheit",
   "IGUI_MinidoracatEconomy_Shop_SellUnitLine": "%1 pro Einheit, Ankauf zu %2",
   "IGUI_MinidoracatEconomy_Shop_Left_player": "Heute noch: %1",
   "IGUI_MinidoracatEconomy_Shop_Left_global": "Heute serverweit noch: %1",

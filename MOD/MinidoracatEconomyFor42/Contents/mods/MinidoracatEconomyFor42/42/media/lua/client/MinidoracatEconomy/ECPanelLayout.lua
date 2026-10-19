@@ -1592,6 +1592,8 @@ function L.drawMarket(self)
         return
     end
     if not mine then
+        local box = self.marketSearch.entry
+        text(self, getText(T .. "Wanted_Search"), box.x, box.y - fontH.small - 2, "textMuted")
         text(self, getText(T .. "Shop_Category"), self.marketCatCombo.x,
             self.marketCatCombo.y - fontH.small - 2, "textMuted")
         text(self, getText(T .. "Trade_Currency"), self.marketCurCombo.x,
@@ -1719,6 +1721,8 @@ function L.drawAuction(self)
         end
         return
     end
+    local aucBox = self.auctionSearch.entry
+    text(self, getText(T .. "Wanted_Search"), aucBox.x, aucBox.y - fontH.small - 2, "textMuted")
     text(self, getText(T .. "Filter_Sort"), self.auctionSortCombo.x,
         self.auctionSortCombo.y - fontH.small - 2, "textMuted")
     text(self, getText(T .. "Trade_Currency"), self.auctionCurCombo.x,

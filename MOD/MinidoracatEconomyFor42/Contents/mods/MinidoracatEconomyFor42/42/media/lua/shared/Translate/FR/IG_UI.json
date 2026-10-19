@@ -2783,7 +2783,7 @@
   "IGUI_MinidoracatEconomy_Shop_Tag_BuybackOnly": "Rachat uniquement",
   "IGUI_MinidoracatEconomy_Shop_BidLine": "Prix de rachat %1",
   "IGUI_MinidoracatEconomy_Shop_Spec": "Détails et limites",
-  "IGUI_MinidoracatEconomy_Shop_UnitLine": "%1 par unité, %2 chacune",
+  "IGUI_MinidoracatEconomy_Shop_UnitLine": "%1 par unité, %2 / unité",
   "IGUI_MinidoracatEconomy_Shop_SellUnitLine": "%1 par unité, rachetée %2",
   "IGUI_MinidoracatEconomy_Shop_Left_player": "Encore %1 aujourd'hui",
   "IGUI_MinidoracatEconomy_Shop_Left_global": "Restant sur le serveur aujourd'hui : %1",

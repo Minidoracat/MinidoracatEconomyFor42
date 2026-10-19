@@ -2783,7 +2783,7 @@
   "IGUI_MinidoracatEconomy_Shop_Tag_BuybackOnly": "Yalnızca geri alım",
   "IGUI_MinidoracatEconomy_Shop_BidLine": "Geri alım fiyatı %1",
   "IGUI_MinidoracatEconomy_Shop_Spec": "Ayrıntılar ve limitler",
-  "IGUI_MinidoracatEconomy_Shop_UnitLine": "Birim başına %1, tanesi %2",
+  "IGUI_MinidoracatEconomy_Shop_UnitLine": "Birim başına %1, %2 / birim",
   "IGUI_MinidoracatEconomy_Shop_SellUnitLine": "Birim başına %1, %2 karşılığında geri alınır",
   "IGUI_MinidoracatEconomy_Shop_Left_player": "Bugün %1 birim daha",
   "IGUI_MinidoracatEconomy_Shop_Left_global": "Bugün sunucu genelinde %1 birim kaldı",

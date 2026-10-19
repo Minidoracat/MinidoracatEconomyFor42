@@ -511,6 +511,8 @@ function Panel:createChildren()
     -- the buy orders: a page of its own module too (ECPanelWanted); its dialog, while one is up, is
     -- self.wantedDialog, which the modal checks below read like the window's own dialogs
     self.wanted = C.PanelWanted.create(self)
+    -- the English item index as the rows built from here on read it (prerender follows it)
+    self.namesRev = C.ItemNames.revision
 
     -- the drop target (ECItemDrop): items dragged out of an inventory window land on the page that
     -- takes them - the backpack picker, the market and auction pages, the shop's buyback dialog
@@ -4245,6 +4247,18 @@ function Panel:prerender()
         -- as well: a rename must never leave the old name in a selector the player is looking at
         self.leaderboard:fillCurrencies()
         self:rebuildList()
+    end
+    -- the English item index loads in slices, started by the first row that asked for an English
+    -- name (W.itemBaseName), so the rows built before it landed have none: once it moves, every
+    -- page whose rows carry an English name is built once more, as the admin pages do. A rebuild
+    -- keeps the pick, the filters and an open card (the rows come back in the same order)
+    if self.namesRev ~= C.ItemNames.revision then
+        self.namesRev = C.ItemNames.revision
+        self:rebuildShop()
+        self:rebuildMarket()
+        self:rebuildAuctions()
+        self:rebuildMail()
+        self.wanted:rebuild()
     end
     local band, bandToken = self:statusBand()
     if self.width ~= self.layoutW or self.height ~= self.layoutH
