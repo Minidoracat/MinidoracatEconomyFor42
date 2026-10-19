@@ -9,7 +9,7 @@
 --       an initialised ISPanel child, NOT added (the admin controller addChild's it). The three
 --       transport functions are the controller's own, called as self.send(...) -- never with ":".
 --       Methods: refresh(), resize(w, h), tick(now), layout(), updateEnabled(), keyboardTargets(),
---       matchesReply(args), onReply(args), onTimeout(), sendRebind(reason, dlg), clear(), dispose().
+--       matchesReply(args), onReply(args), onTimeout(), sendDialog(reason, dlg), clear(), dispose().
 --
 -- Two views. The overview puts its numbers in pills (Steam mode, conflicts, alerts, bindings and
 -- imports, the one-account policy, the merge plan) and under them reads like a report, what needs
@@ -20,7 +20,8 @@
 -- the row's second column): what the one-account policy makes of it and what the merge plan
 -- says, searched, filtered and paged BY THE SERVER (admin.identity logins = { query, filter,
 -- page }), so a server with thousands of logins is read a page at a time and nothing is cut.
--- Picking a row spells the login out in the shared detail window.
+-- Picking a row spells the login out in the shared detail window, whose one action makes that
+-- login its Steam account's main account (admin.identity primary, confirmed with a reason).
 --
 -- The page sends admin.identity and nothing else, and reads nothing from the session (hello.ack):
 -- the server answers it even while this administrator's own name is unverified, so the desk that
@@ -182,7 +183,7 @@ function Page:invalidateKeyboard()
 end
 
 function Page:errorText(code, name)
-    if code == "invalid_steamid" or code == "merged_name" then
+    if code == "invalid_steamid" or code == "merged_name" or code == "merged_group" then
         return getText(T .. "Admin_Error_" .. code, tostring(name or "-"))
     end
     return U.adminErrorText(code)
@@ -371,9 +372,24 @@ function Page:onRebind()
     if dlg ~= nil then dlg.identityNames = names end
 end
 
--- The controller's dialog confirmed with a valid reason. The names are the ones the box listed.
-function Page:sendRebind(reason, dlg)
-    if not self:sendAction({ action = "rebind", names = dlg.identityNames, reason = reason }) then
+-- The main account of a login's Steam account, chosen by hand (the detail window's action). The
+-- box says what happens to the other logins: nothing moves, they only stop being let in.
+function Page:onSetPrimary(rec)
+    if type(rec) ~= "table" or type(rec.name) ~= "string" or self.owner.dialog ~= nil or self.isPending(COMMAND) then return end
+    local dlg = self.owner:openDialog("identity", {
+        title = getText(T .. "Admin_Id_PrimaryTitle", rec.name),
+        confirm = tr("Admin_Id_SetPrimary"),
+        warn = getText(T .. "Admin_Id_PrimaryWarn", rec.name, rec.account or tr("Admin_Id_BoundNone")),
+    })
+    if dlg ~= nil then dlg.identityPrimary = rec.name end
+end
+
+-- The controller's dialog confirmed with a valid reason: the conflicts the box listed, or the
+-- login it named as the main account.
+function Page:sendDialog(reason, dlg)
+    local args = dlg.identityPrimary ~= nil and { action = "primary", name = dlg.identityPrimary, reason = reason }
+        or { action = "rebind", names = dlg.identityNames, reason = reason }
+    if not self:sendAction(args) then
         return self.owner:dialogError(dlg, tr("Admin_Throttled"))
     end
     self.sent.dialog = dlg
@@ -441,6 +457,10 @@ function Page:onReply(args)
         end
         self.result = { text = body, error = #stale > 0 }
         self.owner.message = self.result
+    elseif req.action == "primary" then
+        if open then self.owner:closeDialog() end
+        self.result = { text = getText(T .. "Admin_Id_PrimaryDone", tostring(args.primary)), error = false }
+        self.owner.message = self.result
     end
     -- the counts on the filter chips and the rows may have moved: the whole page is placed again
     self:layout()
@@ -475,7 +495,7 @@ local function gap(lines) if #lines > 0 then lines[#lines + 1] = "" end end
 
 -- status.merge.blocked reasons in reading order; a code this list lacks is still listed after them
 local MERGE_BLOCKERS = { "alias_online", "merge_failed", "frozen", "conflict", "reserved", "unknown_currency",
-    "reserved_funds", "live_listing", "live_order", "auction", "mail_pending", "canonical_moved" }
+    "reserved_funds", "live_listing", "live_order", "auction", "mail_pending", "canonical_moved", "unused" }
 
 function Page:stamp(ms)
     return type(ms) == "number" and U.stampText(ms, self.owner.offsetMin) or "-"
@@ -684,8 +704,9 @@ function Page:overviewText()
     return table.concat(lines, "\n")
 end
 
--- The help window: the policy and merge mode in full sentences with their sandbox options, what
--- to change for several accounts per person, how names are bound before an import, the terms.
+-- The help window: the policy and merge mode in full sentences with their sandbox options, how a
+-- Steam account's main account is chosen, what to change for several accounts per person, how
+-- names are bound before an import, the terms.
 function Page:helpParts()
     local multi, merge = optionLabel("IdentityMultiAccount"), optionLabel("IdentityAutoMerge")
     local s = self.status
@@ -704,6 +725,7 @@ function Page:helpText()
     local parts = {}
     if policy ~= nil then parts[#parts + 1] = policy end
     if mergeMode ~= nil then parts[#parts + 1] = mergeMode end
+    parts[#parts + 1] = tr("Admin_Id_HelpPrimary")
     parts[#parts + 1] = hint
     parts[#parts + 1] = tr("Admin_Id_HelpBinding")
     parts[#parts + 1] = tr("Admin_Id_HelpTerms")
@@ -715,6 +737,7 @@ function Page:helpCard()
     local sections = {}
     if policy ~= nil then sections[#sections + 1] = { title = tr("Admin_Id_Col_Policy"), lines = { { text = policy } } } end
     if mergeMode ~= nil then sections[#sections + 1] = { title = tr("Admin_Id_Col_Merge"), lines = { { text = mergeMode } } } end
+    sections[#sections + 1] = { title = tr("Admin_Id_Col_Account"), lines = { { text = tr("Admin_Id_HelpPrimary") } } }
     sections[#sections + 1] = { title = tr("PCard_Id_Multi"), lines = { { text = hint } } }
     sections[#sections + 1] = { title = tr("PCard_Id_Binding"), lines = { { text = tr("Admin_Id_HelpBinding") } } }
     sections[#sections + 1] = { title = tr("PCard_Id_Terms"), lines = { { text = tr("Admin_Id_HelpTerms") } } }
@@ -764,6 +787,8 @@ function Page:policySentence(rec, account)
         return getText(T .. "Admin_Id_Detail_Policy_merged", account)
     elseif rec.policy == "primary" then
         return tr("Admin_Id_Detail_Policy_primary")
+    elseif rec.policy == "open" then
+        return tr("Admin_Id_Detail_Policy_open")
     end
     return tr("Admin_Id_Detail_Policy_none")
 end
@@ -827,7 +852,8 @@ function Page:detailText(rec)
 end
 
 -- The same login as a detail card: the main account and the Steam account's logins as rows, the
--- two states as chips, and the policy and merge sentences as sections.
+-- two states as chips, the policy and merge sentences as sections, and the one action: make this
+-- login the main account (a merged login already is the account's, so it has none to take).
 function Page:detailCard(rec)
     local account = rec.account or tr("Admin_Id_BoundNone")
     local group = type(rec.group) == "table" and rec.group or {}
@@ -856,6 +882,13 @@ function Page:detailCard(rec)
         },
         note = self:planAtText(),
         techOpen = true,
+        actions = { { id = "primary", label = tr("Admin_Id_SetPrimary"), style = "primary",
+            enabled = function()
+                return rec.policy ~= "merged" and rec.merge ~= "merged" and self.owner.dialog == nil
+                    and not self.isPending(COMMAND) and self.owner:writeAllowed() == true
+                    and self.status ~= nil and self.status.steam == true
+            end,
+            run = function() self:onSetPrimary(rec) end } },
     }
 end
 

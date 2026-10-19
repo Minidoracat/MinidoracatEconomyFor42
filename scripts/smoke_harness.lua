@@ -1156,6 +1156,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 6    -- +6: auction durations in min
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: compact JSON lines take a faster path (scenario 35: a compact line and the same value written with whitespace decode alike; malformed compact lines are refused)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: a car part's vehicle class in its names (scenario IN-3..5: the English column adds the class the way an English game does and an axe keeps its English; the picker shows the class in both columns and either language's class word finds that part alone; a language that words two classes alike gets no guessed class)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: item pages as grids of tiles (scenario GV: strips and the filter the picker shares, the hit test, the keys and their edges, the per-page list / grid preference, tiles per strip, what a shop / market / auction tile says, a pick that lands on the table and a cursor that follows it, the focus ring's tile and its caption)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: the primary of a Steam account (scenario PR-1..9: no primary while no login used the economy though an earlier tie-break recorded one, the page's open rows and the waiting plan, the first use replaces the canonical, a used primary stands, the administrator's choice with its gates, the push it sends, audit privacy and the plan following it, choosing back and the restart, merged and lone logins refused; FS2: an import that takes over from an unlisted primary opens the Steam account until the first use)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -16804,7 +16805,8 @@ mgExport(rows2)
 mgPoll()
 check(mgMember("mg-g0").state == "ready" and mgMember("mg-g3").state == "canonical" and #mgRecs("canon") == 1,
     "a member joining later is an alias even with an older firstSeen: the decision is never recomputed")
--- a manual import (no whitelist ids) decides by name
+-- a manual import (no whitelist ids) decides by name between two logins that both used the economy
+md.firstSeen["mg-h1"], md.firstSeen["mg-h2"] = 0, 0
 local boss = mgPlayer("mg-boss", mgT(9)); boss.role = "admin"
 onlinePlayers = { boss }
 nowMs = nowMs + 700
@@ -16861,7 +16863,8 @@ local leaked = false
 for _, e in ipairs(X.auditEntries()) do if e.steamId ~= nil then leaked = true end end
 check(#events == 4 and (private.steamId == G or private.steamId == H) and events[1].steamId == nil and not leaked,
     "each merge emits identity.merged with the SteamID only in its private block, never in the audit ring")
--- a running pass merges at most TICK_MAX aliases
+-- a running pass merges at most TICK_MAX aliases (mg-m01 used the economy: it is the account)
+S.modData().firstSeen["mg-m01"] = 5
 local many = { { 1, "mg-boss", mgT(9) } }
 for i = 1, 13 do many[#many + 1] = { 100 + i, "mg-m" .. string.format("%02d", i), mgT(30) } end
 mgExport(many)
@@ -16874,6 +16877,7 @@ fire("OnTickEvenPaused")
 check(first == Mg.TICK_MAX and EC.countKeys(md.identity.merged) - 4 == 12 and md.identity.merged["mg-m13"].into == "mg-m01",
     "a running pass merges at most ten aliases; the next pass takes the rest")
 local more = { { 1, "mg-boss", mgT(9) } }
+S.modData().firstSeen["mg-s01"] = 5
 for i = 1, 12 do more[#more + 1] = { 200 + i, "mg-s" .. string.format("%02d", i), mgT(31) } end
 mgExport(more)
 nowMs = nowMs + 1000
@@ -17083,6 +17087,7 @@ for i = 1, 11 do
 end
 ROWS[#ROWS + 1] = { 200, "mg-b10", mgT(60) }                 -- a second alias of group 10
 md.firstSeen["mg-a9"] = 1                                    -- known, not whitelisted: reserved
+for i = 1, 11 do md.firstSeen["mg-c" .. i] = 2 end           -- each group's account used the economy first
 mgExport(ROWS)
 mgPoll()
 local function proven(kind)
@@ -17100,7 +17105,8 @@ md.wallets["mg-a4"] = { zzz = { available = 3, reserved = 0, rev = 1 } }
 Mk.restoreFromPending("mg-a5", "mg-l5", proven("listing"))
 Mk.restoreFromPending("mg-a6", "mg-u6", proven("auction"))
 md.mailbox.byOwner["mg-a7"] = { entries = { ["mg-m7"] = { id = "mg-m7", owner = "mg-a7", state = "claimed", claimedAt = nowMs } }, unclaimed = 0 }
--- a conflict on an alias, a reservation listed under a SteamID, a canonical that moved
+-- a conflict on an alias, a reservation listed under a SteamID, an account whose own whitelist row
+-- now names another Steam account (an unresolved conflict: the group waits for a human)
 local rows2 = {}
 for i, r in ipairs(ROWS) do rows2[i] = r end
 for i, r in ipairs(rows2) do
@@ -17112,23 +17118,19 @@ mgExport(rows2)
 mgPoll()
 local boss = mgPlayer("mg-boss", mgT(9)); boss.role = "admin"
 onlinePlayers = { boss, mgPlayer("mg-a1", mgT(51)), mgPlayer("mg-c11", mgT(61)) }   -- an online account holds nothing back
-nowMs = nowMs + 700
-sentCommands = {}
-fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", boss, { action = "rebind", requestId = "mg-r3", names = { "mg-c10" }, reason = "moved" })
-local rebound = lastSent("admin.identity").args
 Mg.plan(nowMs)
 local expect = { "alias_online", "frozen", "reserved_funds", "unknown_currency", "live_listing", "auction", "mail_pending", "conflict", "reserved", "canonical_moved" }
 for i, reason in ipairs(expect) do
     local m = mgMember(i == 9 and "mg-a9" or ("mg-a" .. i))
     check(m ~= nil and m.state == "blocked" and m.reason == reason, "an alias is held back by " .. reason)
 end
-check(rebound.ok == true and mgMember("mg-b10").reason == "canonical_moved" and mgMember("mg-a11").state == "ready"
-    and Mg.status().blocked.canonical_moved == 2,
-    "a group whose account was rebound elsewhere is frozen whole, and a clean alias is ready")
+check(Id.unresolved("mg-c10") == "SID_MISMATCH" and mgMember("mg-b10").reason == "canonical_moved"
+    and mgMember("mg-a11").state == "ready" and Mg.status().blocked.canonical_moved == 2,
+    "a group whose account has an unresolved conflict is frozen whole, and a clean alias is ready")
 local st = Mg.status()
 local blockedTotal = 0
 for _, n in pairs(st.blocked) do blockedTotal = blockedTotal + n end
-check(st.groups == 11 and st.ready == 1 and blockedTotal == 11 and st.ineligible == 0 and st.merged == 0 and st.aliases == 12,
+check(st.groups == 11 and st.ready == 1 and blockedTotal == 12 and st.ineligible == 0 and st.merged == 0 and st.aliases == 13,
     "the status counts every group, ready alias and blocked reason")
 SV.IdentityAutoMerge = true
 nowMs = nowMs + Mg.TICK_MS + 1
@@ -17184,6 +17186,7 @@ local Mg, M = S.Merge, S.Mailbox
 local SV = SandboxVars.MinidoracatEconomy
 local md = mgWorld()
 local P = mgT(50)
+md.firstSeen["mg-c50"] = 1                                   -- the account used the economy first
 mgExport({ { 1, "mg-c50", P }, { 2, "mg-a50", P } })
 mgPoll()
 local canon, alias = mgPlayer("mg-c50", P), mgPlayer("mg-a50", P)
@@ -17459,7 +17462,7 @@ check(mergedLogin == "fs-atk" and mergedAccount == "fs-vic",
 nowMs = nowMs + 1000
 fire("OnServerStarted")
 md = S.modData()
-md.firstSeen["fs-vic"], md.firstSeen["fs-atk"] = nil, 0
+md.firstSeen["fs-vic"], md.firstSeen["fs-atk"] = 5, 0
 check(S.principal(fsPlayer("fs-vic", X_, 11)) == "fs-vic" and S.principal(fsPlayer("fs-atk", X_, 12)) == nil
     and #mgRecs("primary") == 1,
     "the recorded primary survives a restart even when the ordering would now pick another login")
@@ -17476,12 +17479,13 @@ check(atkAgain == "fs-atk" and ax3Login == nil and #prim == 2 and prim[2].name =
 
 -- ----- after the import: strict, imported alts, two Steam accounts sharing one double -----
 local P_, C_ = mgT(170), mgT(180)
+md.firstSeen["fs-p2"] = 7          -- fs-p2 used the economy before the import
 mgExport({ { 1, "fs-boss", mgT(130) }, { 2, "fs-ann", mgT(101) }, { 4, "fs-atk", X_ }, { 8, "fs-ax3", X_ },
     { 9, "fs-vic", mgT(160) }, { 10, "fs-sam", Y_ }, { 11, "fs-zed", Z_ }, { 5, "fs-p1", P_ }, { 3, "fs-p2", P_ },
     { 6, "fs-c1", C_ }, { 7, "fs-c2", mgTwin(C_) } })
 mgPoll()
 local p1, p2 = fsPlayer("fs-p1", P_, 70), fsPlayer("fs-p2", P_, 71)
-md.firstSeen["fs-p1"] = 0          -- after the import's merge plan chose fs-p2 by whitelist id
+md.firstSeen["fs-p1"], md.firstSeen["fs-wa"] = 0, 0          -- after the import's merge plan chose fs-p2
 check(Id.status().imported == true and S.principal(p1) == nil and S.principal(p2) == "fs-p2"
     and S.login(p1) == "fs-p1",
     "two imported logins of one exact SteamID: only the group's canonical verifies, even when firstSeen would now pick the other")
@@ -18771,19 +18775,26 @@ check(beforeQ[1] == "fs2-q1" and beforeQ[2] == nil and canonQ ~= nil and canonQ.
     "a group's first canonical is the one-account primary already recorded for it: an import moves nobody's standing")
 md = fresh()
 local G_ = mgT(212)
-fire("OnNewGame", fsPlayer("fs2-g0", G_, 60), nil)          -- the primary, bound by a new character, not on the whitelist
+md.firstSeen["fs2-g0"] = 0                                  -- the primary: it used the economy; not on the whitelist
+fire("OnNewGame", fsPlayer("fs2-g0", G_, 60), nil)
 fire("OnNewGame", fsPlayer("fs2-g1", G_, 61), nil)
 fire("OnNewGame", fsPlayer("fs2-g2", G_, 62), nil)
 local g1, g2 = fsPlayer("fs2-g1", G_, 16), fsPlayer("fs2-g2", G_, 17)
 onlinePlayers = { g1, g2 }
 tick()
-local beforeG = { S.principal(g1), S.principal(g2) }       -- fs2-g0 is recorded (the name)
-mgExport({ { 5, "fs2-g1", G_ }, { 3, "fs2-g2", G_ } })      -- the exact group's canonical is fs2-g2 (whitelist id)
+local beforeG = { S.principal(g1), S.principal(g2) }       -- fs2-g0 is the primary
+mgExport({ { 5, "fs2-g1", G_ }, { 3, "fs2-g2", G_ } })      -- neither listed login used the economy yet
 sentCommands = {}
 mgPoll()
-check(beforeG[1] == nil and beforeG[2] == nil and S.principal(g2) == "fs2-g2" and S.principal(g1) == nil
-    and #pushes(g2, "identity.verified") == 1 and #pushes(g1, "identity.unverified") == 0,
-    "a companion import whose canonical replaces a primary the whitelist does not list tells the player it now lets in")
+local openG = { S.principal(g1), S.principal(g2) }
+check(beforeG[1] == nil and beforeG[2] == nil and openG[1] == "fs2-g1" and openG[2] == "fs2-g2"
+    and #pushes(g1, "identity.verified") == 1 and #pushes(g2, "identity.verified") == 1,
+    "an import whose whitelisted logins take over from a primary it does not list: none of them used the economy, so each is let in and told at once")
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", g2, {})
+local canonG = Id.view().canon[G_]
+check(S.principal(g1) == nil and S.principal(g2) == "fs2-g2" and canonG ~= nil and canonG.name == "fs2-g2",
+    "the first of them to use the economy becomes the primary, recorded as its canonical; the other one is kept out from then on")
 md = fresh()
 local M_ = mgT(215)
 md.firstSeen["fs2-m0"], md.firstSeen["fs2-m2"] = 0, 0
@@ -18799,11 +18810,12 @@ sentCommands = {}
 nowMs = nowMs + 700
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", mboss, { action = "import", requestId = "fs2-i1",
     rows = { { u = "fs2-boss", s = mgT(216) }, { u = "fs2-m1", s = M_ }, { u = "fs2-m2", s = M_ } } })
+
 check(beforeM[1] == nil and beforeM[2] == nil and lastSent("admin.identity").args.ok == true
     and S.principal(m2) == "fs2-m2" and #pushes(m2, "identity.verified") == 1 and #pushes(m1, "identity.unverified") == 0,
     "an administrator's import tells the players online what the Steam account's primary is after the canonical is recorded")
 
--- ----- a merge pass that records a canonical tells the players it changed -----
+-- ----- a rebind that brings an older economy login in: the primary and the merge follow it -----
 md = fresh()
 local T_ = mgT(262)
 md.firstSeen["fs2-t0"], md.firstSeen["fs2-t1"], md.firstSeen["fs2-t2"] = 0, 1, 2
@@ -18815,16 +18827,20 @@ onlinePlayers = { tboss, t1 }
 nowMs = nowMs + 700
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", tboss, { action = "import", requestId = "fs2-i2",
     rows = { { u = "fs2-tb", s = mgT(264) }, { u = "fs2-t1", s = T_ }, { u = "fs2-t2", s = T_ } } })
+local t2Alone = S.principal(fsPlayer("fs2-t2", T_, 21))      -- the only whitelisted login there
 nowMs = nowMs + 700
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", tboss, { action = "rebind", requestId = "fs2-r1",
     names = { "fs2-t1" }, reason = "moved to the whitelisted Steam account" })
-local t1AfterRebind = S.principal(t1)                        -- fs2-t0 is the recorded primary
-sentCommands = {}
+local t1AfterRebind = S.principal(t1)
 SV.IdentityAutoMerge = true                                  -- the running pass only runs with merging on
-tick(Mg.TICK_MS + 1)                                         -- the pass records the exact group's canonical
+onlinePlayers = { tboss }
+tick(Mg.TICK_MS + 1)
 SV.IdentityAutoMerge = nil
-check(t1AfterRebind == nil and S.principal(t1) == "fs2-t1" and #pushes(t1, "identity.verified") == 1,
-    "a merge pass whose new canonical lets an online login in tells that player at once")
+local canonT = Id.view().canon[T_]
+check(t2Alone == "fs2-t2" and t1AfterRebind == "fs2-t1" and canonT ~= nil and canonT.name == "fs2-t1"
+    and md.identity.merged["fs2-t2"] ~= nil and md.identity.merged["fs2-t2"].into == "fs2-t1"
+    and S.principal(fsPlayer("fs2-t0", T_, 20)) == nil,
+    "a rebind that brings the Steam account's oldest economy login in makes it the primary at once, and the merge pass merges into that same account")
 
 -- ----- an administrator refused by the policy keeps the settings and is audited as its login -----
 md = fresh()
@@ -18880,6 +18896,127 @@ getFileWriter = realWriter
 check(wFirst[1] == nil and wFirst[2] == nil and within == 1 and opens == 2 and wAfter == "fs2-w2",
     "after a failed write first sight leaves the identity file alone for a minute, then binds again")
 SV.IdentityMultiAccount = nil
+steamModeActive = false
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 PR：同一個 Steam 帳號的主帳號（誰都沒用過經濟時不定案；管理員手動指定）=====
+-- 正式服的形狀：兩個登入帳號都由 companion 匯入、都沒用過經濟，canon 已依白名單編號記成較舊的那個。
+io.write("scenario PR: the primary of a Steam account nobody used the economy with, and the administrator's choice\n")
+;(function()
+local Id, Mg = EC.Identity, S.Merge
+local SV = SandboxVars.MinidoracatEconomy
+local function seat(name, text, id)
+    local p = mgPlayer(name, text)
+    p.onlineId = id
+    return p
+end
+local function pushes(p, command)
+    local out = {}
+    for _, s in ipairs(sentCommands) do
+        if s.player == p and s.command == command then out[#out + 1] = s.args end
+    end
+    return out
+end
+local function restart()
+    nowMs = nowMs + 1000
+    fire("OnServerStarted")
+    return S.modData()
+end
+local function row(name)
+    for _, r in ipairs(Id.loginsPage({ filter = "all", page = 1 }, nowMs).rows or {}) do
+        if r.name == name then return r end
+    end
+end
+local md = mgWorld()
+SV.IdentityMultiAccount = nil
+local P = mgT(300)
+local function line(rec) rec.v = 1; rec.at = nowMs; return EC.jsonEncode(rec) end
+files[Id.FILE] = { lines = {
+    line({ k = "import", by = "COMPANION", src = "COMPANION", gen = 1, count = 3 }),
+    line({ k = "bind", name = "pr-old", sid = P, exact = true, src = "COMPANION" }),
+    line({ k = "bind", name = "pr-new", sid = P, exact = true, src = "COMPANION" }),
+    line({ k = "canon", sid = P, name = "pr-old", rule = "whitelistId", src = "COMPANION" }),
+    line({ k = "bind", name = "pr-boss", sid = mgT(301), exact = true, src = "COMPANION" }),
+}, opens = 0 }
+md = restart()
+local base = #mgRecs()
+local oldP, newP = seat("pr-old", P, 1), seat("pr-new", P, 2)
+onlinePlayers = { newP }
+check(S.principal(newP) == "pr-new" and S.principal(oldP) == "pr-old" and #mgRecs() == base,
+    "PR-1: a Steam account whose logins never used the economy has no primary: the login in use is let in, though an earlier tie-break recorded the other one")
+local rNew, rOld = row("pr-new"), row("pr-old")
+check(rNew ~= nil and rNew.policy == "open" and rNew.account == nil and rNew.merge == "blocked" and rNew.why[1] == "unused"
+    and rOld ~= nil and rOld.policy == "open",
+    "PR-2: the identity page lists both logins as open, and the merge plan waits for one of them to use the economy")
+nowMs = nowMs + 700
+fire("OnClientCommand", EC.COMMAND_MODULE, "hello", newP, {})
+local recs = mgRecs("canon")
+local last = recs[#recs]
+check(S.principal(oldP) == nil and S.principal(newP) == "pr-new" and last.name == "pr-new" and last.replace == true
+    and Id.view().canon[P].name == "pr-new",
+    "PR-3: the first login to use the economy becomes the primary and replaces the recorded canonical; the other login is kept out")
+md = restart()
+L.credit("pr-old", "survivor", 30, "SYSTEM_MINT", { requestId = "pr-old-credit", reasonCode = "t" })
+md.firstSeen["pr-old"] = 0
+check(S.principal(seat("pr-new", P, 2)) == "pr-new" and S.principal(seat("pr-old", P, 1)) == nil,
+    "PR-4: after a restart the decision stands, even when the other login gets money and an older first use: a primary that used the economy is never replaced on its own")
+-- the administrator's choice
+local boss = seat("pr-boss", mgT(301), 9); boss.role = "admin"
+newP = seat("pr-new", P, 2)
+onlinePlayers = { boss, newP }
+local function primary(who, name, reason)
+    nowMs = nowMs + 700
+    sentCommands = {}
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.identity", who, { action = "primary", requestId = "pr" .. nowMs,
+        name = name, reason = reason })
+    local s = lastSent("admin.identity")
+    return s and s.args or {}
+end
+local denied = primary(newP, "pr-old", "mine")
+local noReason = primary(boss, "pr-old", "")
+check(denied.ok == false and denied.error == "forbidden" and denied.status == nil and noReason.ok == false
+    and noReason.error ~= nil and Id.view().canon[P].name == "pr-new",
+    "PR-5: only the write role may choose a primary, and only with a reason; a refusal changes nothing")
+local oldWallet = L.getBalance("pr-old", "survivor").available
+local set = primary(boss, "pr-old", "the player asked for the older login")
+local told = pushes(newP, "identity.unverified")
+check(set.ok == true and set.primary == "pr-old" and S.principal(seat("pr-old", P, 1)) == "pr-old"
+    and S.principal(newP) == nil and #told == 1 and told[1].reason == "one_account"
+    and L.getBalance("pr-old", "survivor").available == oldWallet and md.firstSeen["pr-new"] ~= nil,
+    "PR-6: the administrator's choice takes over at once and the login it keeps out is told so; no wallet or record moves")
+local _, g = mgMember("pr-new")
+local ring, file = nil, nil
+for _, e in ipairs(X.auditEntries()) do
+    if e.action == "IDENTITY_PRIMARY" and e.target == "pr-old" then ring = e end
+end
+proofSettle()
+for _, l in ipairs(files[X.auditPath(nowMs)] and files[X.auditPath(nowMs)].lines or {}) do
+    local rec = EC.jsonDecode(l)
+    if type(rec) == "table" and rec.action == "IDENTITY_PRIMARY" and rec.target == "pr-old" then file = rec end
+end
+recs = mgRecs("canon")
+check(ring ~= nil and ring.field == "ADMIN" and ring.admin == "pr-boss" and ring.reason == "the player asked for the older login"
+    and ring.steamId == nil and ring.before == nil and file ~= nil and file.steamId == P and file.before == "pr-new"
+    and recs[#recs].rule == "admin" and recs[#recs].src == "ADMIN" and recs[#recs].replace == true
+    and g ~= nil and g.account == "pr-old" and mgMember("pr-new").reason == "alias_online",
+    "PR-7: the choice is audited (SteamID and the replaced login only in the file), written to the identity file, and the merge plan follows it")
+set = primary(boss, "pr-new", "back to the login in use")
+local back = pushes(newP, "identity.verified")
+md = restart()
+check(set.ok == true and #back == 1 and S.principal(seat("pr-new", P, 2)) == "pr-new"
+    and S.principal(seat("pr-old", P, 1)) == nil,
+    "PR-8: choosing the other login lets the online player back in without a new login, and the choice survives a restart over an older first use")
+md.identity.merged["pr-qb"] = { into = "pr-qa" }
+files[Id.FILE].lines[#files[Id.FILE].lines + 1] = line({ k = "bind", name = "pr-qa", sid = mgT(302), exact = true, src = "COMPANION" })
+files[Id.FILE].lines[#files[Id.FILE].lines + 1] = line({ k = "bind", name = "pr-qb", sid = mgT(302), exact = true, src = "COMPANION" })
+md = restart()
+onlinePlayers = { boss }
+local mergedRefused = primary(boss, "pr-qa", "test")
+local alone = primary(boss, "pr-boss", "test")
+check(mergedRefused.ok == false and mergedRefused.error == "merged_group"
+    and (mergedRefused.name == "pr-qa" or mergedRefused.name == "pr-qb") and alone.ok == false and alone.error == "not_grouped",
+    "PR-9: a Steam account whose logins took part in a merge keeps its account, and a login with no other login has nothing to choose")
 steamModeActive = false
 onlinePlayers = {}
 end)()

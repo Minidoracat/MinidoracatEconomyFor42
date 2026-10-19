@@ -2,8 +2,9 @@
 --
 -- One Steam account may own several login names. The names bound EXACTLY (a whitelist text,
 -- ECIdentity) to one SteamID, not reserved and without an unresolved conflict, form a group. One
--- of them is the group's account - the canonical, decided once by (md.firstSeen, whitelist id,
--- name) and kept in the identity file - and every other name becomes an alias of it: its money,
+-- of them is the group's account - the Steam account's one-account primary as ECIdentity decides
+-- and records it (Id.primaryOfText: an administrator's choice, else the login that used the
+-- economy first; none while no login of it did) - and every other name becomes an alias of it: its money,
 -- counters, claims and clean letters move into the account in ONE Lua call (Mg.mergeOne), and
 -- md.identity.merged[alias] = { into, mergeId, epoch, seq, at } is written last. S.accountOf
 -- reads only that marker, and it lives in Global ModData next to the data it moved, so a world
@@ -129,13 +130,12 @@ local function buildGroups()
 end
 
 -- The group's account and every member's state. A completed merge names the account (its
--- `into` wins over everything); otherwise the recorded decision; otherwise, with two eligible
--- names, a decision is made now and recorded for good: the one-account primary ECIdentity
--- already recorded for this Steam account when it is eligible (rule "primary": the canonical then
--- never takes the policy's primary away from a player who was told it is theirs), else
--- Id.pickCanonical. A later member is an alias of it.
-local function decide(g, md, online, ms)
-    local merged, v = md.identity.merged, Id.view()
+-- `into` wins over everything); otherwise the Steam account's one-account primary
+-- (Id.primaryOfText, recorded there); a group none of whose logins used the economy has no
+-- account yet and waits ("unused"), so nothing merges into a login nobody plays; a single
+-- eligible member is its own account. A later member is an alias of it.
+local function decide(g, md, online)
+    local merged = md.identity.merged
     local eligible, account, rule = {}, nil, nil
     for _, m in ipairs(g.members) do
         if m.state == "eligible" then eligible[#eligible + 1] = m.name end
@@ -144,19 +144,9 @@ local function decide(g, md, online, ms)
             account, rule = rec.into, "merged"
         end
     end
-    EC.sortSafe(eligible, byName)
-    local c = v.canon[g.sid]
-    if account == nil and c ~= nil then account, rule = c.name, c.rule end
-    if account == nil and #eligible >= 2 then
-        local primary = Id.recordedPrimary(g.sid)
-        for _, name in ipairs(eligible) do
-            if name == primary then account, rule = name, "primary" end
-        end
-        if account == nil then account, rule = Id.pickCanonical(md, eligible) end
-        local b = v.bindings[account]
-        Id.recordCanon(g.sid, account, rule, b and b.src or "?", ms)
-    end
+    if account == nil and #eligible > 0 then account, rule = Id.primaryOfText(g.sid) end
     if account == nil and #eligible == 1 then account, rule = eligible[1], "only" end
+    local waiting = account == nil and #eligible >= 2
     local canonical = account and g.byName[account] or nil
     -- the canonical left the group (rebound elsewhere, a conflict, merged itself): frozen for a human
     g.account, g.rule = account, rule
@@ -166,7 +156,9 @@ local function decide(g, md, online, ms)
         if m.name ~= account and type(rec) == "table" and rec.into == account then
             m.state, m.reason = "merged", nil
         elseif m.state == "eligible" then
-            if m.name == account then
+            if waiting then
+                m.state, m.reason, m.reasons = "blocked", "unused", { "unused" }
+            elseif m.name == account then
                 m.state = "canonical"
             else
                 local reasons = Mg.blockers(m.name, account, online)
@@ -182,12 +174,12 @@ local function decide(g, md, online, ms)
     end)
 end
 
--- Recomputes the plan (recording a canonical where a group is new). Returns it.
+-- Recomputes the plan (recording the decision of a Steam account where one is made). Returns it.
 function Mg.plan(ms)
     local md = S.modData()
     local online = S.onlineNames()
     local groups = buildGroups()
-    for _, g in ipairs(groups) do decide(g, md, online, ms) end
+    for _, g in ipairs(groups) do decide(g, md, online) end
     EC.sortSafe(groups, function(a, b) return (a.account or a.sid) < (b.account or b.sid) end)
     local p = { at = ms, groups = groups, aliases = 0, merged = 0, ready = 0, blocked = {}, ineligible = 0 }
     for _, g in ipairs(groups) do
@@ -234,7 +226,8 @@ function Mg.mergeOne(alias, into, ms)
         local rec = merged[name]
         if type(rec) == "table" and type(rec.into) == "string" and (account == nil or rec.into < account) then account = rec.into end
     end
-    if account == nil and v.canon[ba.text] then account = v.canon[ba.text].name end
+    if account == nil then account = Id.primaryOfText(ba.text, true) end
+    if account == nil then return nil, "unused" end
     if account ~= into then return nil, "canonical_moved" end
     local reasons = Mg.blockers(alias, into)
     if #reasons > 0 then return nil, reasons[1] end

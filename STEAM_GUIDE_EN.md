@@ -441,7 +441,8 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]One economy account per Steam account[/h3]
 [list]
 [*] [b]Default[/b]: a Steam account can use one economy account; other logins are told so, their wallets and assets untouched.
-[*] [b]Main account[/b]: the first login; after a whitelist import, the one that used the economy first.
+[*] [b]Main account[/b]: the login that used the economy first; while none of a Steam account's logins has used it, each is let in and the first one to use it becomes the main account.
+[*] [b]Choose by hand[/b]: in the Identity page's multi-account list, pick a login and press Set as main account with a reason; the other logins keep their wallets and items but cannot use them, and a player who is online does not need to log in again. A Steam account whose logins were merged keeps its main account.
 [*] [b]Allow several[/b]: enable "Allow several economy accounts per Steam account" in Settings (role-management permission).
 [*] [b]Multi-account list[/b]: the Identity page lists every login with its main account, whether it can use the economy and its merge state; searchable and filterable.
 [/list]
@@ -449,7 +450,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [list]
 [*] [b]What merges[/b]: logins of one Steam account can merge into one economy account: money, today's claims, daily limits and unclaimed mail go to the main account.
 [*] [b]Preview only by default[/b]: review the plan on the Identity page, then enable "Merge the login names of one Steam account" in Settings (role-management permission).
-[*] [b]Waits until clear[/b]: a login that is online, frozen, or still has listings, auctions or mail in delivery is merged once that is settled.
+[*] [b]Waits until clear[/b]: logins none of which has used the economy yet, or a login that is online, frozen, or still has listings, auctions or mail in delivery, merge once that is settled.
 [*] [b]Buy orders[/b]: a login with an open buy order cannot merge; cancel it or wait until it closes.
 [/list]
 === ⚙️ Seasons and integration plans
@@ -627,7 +628,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]Server owners: a player sees "Identity not verified"?[/h3]
 [list]
 [*] Check the conflict list and identity alerts on Admin - Identity; use Confirm rebinding only if the owner really changed Steam accounts.
-[*] A second login of one Steam account cannot use the economy by default.
+[*] A second login of one Steam account cannot use the economy by default; to let a player use another login instead, pick it in the multi-account list and press Set as main account.
 [*] Borrowed login names and split-screen players never can.
 [/list]
 [h3]Server owners: a new shop item still can't be listed?[/h3]

@@ -2296,9 +2296,10 @@ function Admin:createChildren()
     self.wantedPage = C.AdminWanted.create(self, send, isPending, newRequestId)
     self:addChild(self.wantedPage)
 
-    -- The identity desk (ECAdminIdentity): SteamID bindings, the whitelist import and the
-    -- confirmation of conflicts. It sends admin.identity through this controller's slot and
-    -- nothing else; the confirmation is this controller's dialog (mode "identity").
+    -- The identity desk (ECAdminIdentity): SteamID bindings, the whitelist import, the
+    -- confirmation of conflicts and the choice of a main account. It sends admin.identity through
+    -- this controller's slot and nothing else; both confirmations are this controller's dialog
+    -- (mode "identity").
     self.identityPage = C.AdminIdentity.create(self, send, isPending, newRequestId)
     self:addChild(self.identityPage)
 
@@ -5332,9 +5333,10 @@ function Admin:submitDialog(dlg)
         self:sendSeasons({ action = "start", expectedSeason = dlg.seasonExpected, reason = reason }, dlg)
         return
     end
-    -- The identity conflicts the box listed, moved to the whitelist's SteamID (ECAdminIdentity).
+    -- The identity conflicts the box listed, moved to the whitelist's SteamID, or the login it named
+    -- made its Steam account's main account (ECAdminIdentity).
     if dlg.mode == "identity" then
-        self.identityPage:sendRebind(reason, dlg)
+        self.identityPage:sendDialog(reason, dlg)
         return
     end
     -- The reconciliation page's decision. Nothing about it is derived here: the account, the key,

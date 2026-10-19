@@ -28,8 +28,9 @@
 --   reserve  {name, src, at}
 --   conflict {name, sid, reason, src, at} | {name, clear = true}   a whitelist row that disagrees
 --   import   {at, by, src?, gen?, count?}          the first one starts the strict mode
---   canon    {sid, name, rule, src, at}            the account of one exact SteamID group; the
---                                                  first record of a SteamID wins forever
+--   canon    {sid, name, rule, src, at, replace?}   the account of one exact SteamID group; the
+--                                                  first record of a SteamID wins unless a later
+--                                                  one carries replace = true
 --   primary  {sid, name, rule, src, at}            the one-account primary of a SteamID (sid: the
 --                                                  double's decimal, or the exact text when two
 --                                                  texts share the double); the last one wins
@@ -52,8 +53,10 @@
 --     import never unbinds or rebinds, and reserves only within the thresholds below.
 --   * the administrator's confirmation of those conflicts (admin.identity rebind). A name that
 --     took part in an account merge is never moved (merged_name).
---   * ECMerge, through Id.recordCanon: the first canonical decision of a SteamID group.
---   * the one-account policy: the primary of a SteamID with two or more logins, decided once.
+--   * the one-account decision of a Steam account (settle): the canonical of its exact text, or the
+--     policy primary when the decided login is bound only by a rounded double. Written when the
+--     policy (or ECMerge, through Id.primaryOfText) decides, and by the administrator's choice
+--     (admin.identity primary, rule "admin").
 --
 -- SteamIDs are numbers here and are only ever compared as numbers - except that two exact
 -- whitelist texts are compared as the strings they are. getSteamID() is a long that reaches Lua
@@ -319,7 +322,8 @@ local function apply(rec)
     end
     if rec.k == "canon" then
         if sidFromText(rec.sid, Id.SID_EXACT) == nil or not validName(rec.name) then return false end
-        if canon[rec.sid] == nil then
+        -- a decision that replaced another one (settle) says so; nothing else moves a canonical
+        if canon[rec.sid] == nil or rec.replace == true then
             canon[rec.sid] = { name = rec.name, rule = rec.rule, src = src, at = at }
         end
         return true
@@ -415,14 +419,27 @@ local function writeLines(recs, auto)
     return true
 end
 
--- The account of one exact SteamID group, decided once (ECMerge). A SteamID that already has a
--- decision keeps it: returns false and writes nothing.
-function Id.recordCanon(text, name, rule, src, ms)
-    if unreadable or canon[text] ~= nil or sidFromText(text, Id.SID_EXACT) == nil or not validName(name) then return false end
-    if not writeLines({ { v = Id.VERSION, k = "canon", sid = text, name = name, rule = rule, src = src, at = ms } }) then
+-- Records the one-account decision of a Steam account so the policy and ECMerge read the same
+-- one: the canonical of `name`'s exact SteamID text (replacing the one there, replace = true) when
+-- it is bound exactly, else the policy primary under `key`. Writes nothing when the record already
+-- says so; memory follows only a successful write. `auto` as for writeLines.
+local function settle(key, name, rule, src, ms, auto)
+    local b = bindings[name]
+    if unreadable or b == nil or b.reserved then return false end
+    if b.exact then
+        local c = canon[b.text]
+        if c ~= nil and c.name == name and c.rule == rule then return true end
+        if not writeLines({ { v = Id.VERSION, k = "canon", sid = b.text, name = name, rule = rule, src = src, at = ms,
+            replace = c ~= nil or nil } }, auto) then return false end
+        canon[b.text] = { name = name, rule = rule, src = src, at = ms }
+        return true
+    end
+    local p = primaries[key]
+    if p ~= nil and p.name == name and p.rule == rule then return true end
+    if not writeLines({ { v = Id.VERSION, k = "primary", sid = key, name = name, rule = rule, src = src, at = ms } }, auto) then
         return false
     end
-    canon[text] = { name = name, rule = rule, src = src, at = ms }
+    primaries[key] = { name = name, rule = rule, at = ms }
     return true
 end
 
@@ -488,12 +505,21 @@ Id.actorOf = actorOf
 -- closes it for good.
 --
 -- One account per Steam account (IdentityMultiAccount off, Steam mode). Among the bound, not
--- reserved names of one SteamID double (bySid) one is the primary: the group's exact canon
--- (ECMerge) when there is one, else the recorded primary while it is still bound there, else the
--- (firstSeen, whitelist id, name) smallest, recorded once (k = "primary"). A login is allowed when
--- its account is the primary's (an alias merged into it is). Two exact texts sharing one double
--- are two Steam accounts (Id.collides): each text is its own group, and a rounded binding on such
--- a double cannot be attributed, so the policy leaves it alone.
+-- reserved names of one SteamID double (bySid) one is the primary. The candidates are the logins
+-- bound exactly when there are any (a rounded one is not on the accepted whitelist yet, or no
+-- longer), else all of them. The primary is the group's exact canon when it stands, else the
+-- recorded primary when it stands, else the (firstSeen, used, whitelist id, name) smallest
+-- candidate that used the economy (Id.pickCanonical), recorded (settle) when two or more
+-- candidates were weighed. A record stands while it names a candidate and is an administrator's
+-- choice (rule "admin"), names a login that used the economy (`used`), or the group took part in a
+-- merge; an automatic decision among logins none of which had used the economy (the tie-break of
+-- older versions) is provisional. While no candidate used the economy there is no primary: every
+-- bound login of the group is let in, and the first one to use the economy (hello writes
+-- firstSeen) becomes the primary. First sight is stricter (`strict`): an unbound name is never
+-- bound next to an undecided group's provisional primary. A login is allowed when its account is
+-- the primary's (an alias merged into it is). Two exact texts sharing one double are two Steam
+-- accounts (Id.collides): each text is its own group, and a rounded binding on such a double
+-- cannot be attributed, so the policy leaves it alone.
 
 local function multiAllowed()
     if peekMulti ~= nil then return peekMulti end
@@ -606,48 +632,114 @@ function Id.seatName(player)
     return name
 end
 
--- The smallest (md.firstSeen or +inf, whitelist id or +inf, name bytes): the oldest economy
--- account first (0 = older than the tracking), then the oldest whitelist row (the companion's
--- export carries the AUTOINCREMENT id; a manual import has none), then the name. `rule` names
--- the part that decided. `names` holds two or more. ECMerge's canonical and the policy's primary.
+local function has(t, name) return type(t) == "table" and t[name] ~= nil end
+local function owns(store, name) return type(store) == "table" and has(store.byOwner, name) end
+
+-- Whether the economy keeps anything under `name` as an account of its own: firstSeen (a
+-- verified hello, Tr.noteSeen), a wallet, reward claims, letters, listings or auctions. What runs
+-- per save for a login the policy refuses too (recovery, seasons, entitlement rows) does not count.
+local function used(md, name)
+    return has(md.firstSeen, name) or has(md.wallets, name) or has(md.claims, name)
+        or owns(md.mailbox, name) or owns(md.market, name) or owns(md.auctions, name)
+end
+
+-- The smallest (md.firstSeen or +inf, used or not, whitelist id or +inf, name bytes): the oldest
+-- economy account first (0 = older than the tracking), then a login the economy keeps anything
+-- under, then the oldest whitelist row (the companion's export carries the AUTOINCREMENT id; a
+-- manual import has none), then the name. Returns the name, the part that decided (`rule`; "only"
+-- for a single name) and whether that login used the economy - false when none of `names` did.
+-- ECMerge's canonical and the policy's primary.
 function Id.pickCanonical(md, names)
     local list = {}
     for i, name in ipairs(names) do
-        local fs = md.firstSeen and md.firstSeen[name]
-        list[i] = { name = name, f = type(fs) == "number" and fs or math.huge, w = Id.whitelistId(name) or math.huge }
+        local fs = type(md.firstSeen) == "table" and md.firstSeen[name] or nil
+        list[i] = { name = name, f = type(fs) == "number" and fs or math.huge, u = used(md, name) and 0 or 1,
+            w = Id.whitelistId(name) or math.huge }
     end
     EC.sortSafe(list, function(a, b)
         if a.f ~= b.f then return a.f < b.f end
+        if a.u ~= b.u then return a.u < b.u end
         if a.w ~= b.w then return a.w < b.w end
         return a.name < b.name
     end)
     local a, b = list[1], list[2]
-    return a.name, (a.f ~= b.f and "firstSeen") or (a.w ~= b.w and "whitelistId") or "name"
+    local rule = b == nil and "only" or (a.f ~= b.f and "firstSeen") or (a.u ~= b.u and "used")
+        or (a.w ~= b.w and "whitelistId") or "name"
+    return a.name, rule, a.u == 0
 end
 
--- The primary of one policy group (names: a set of bound names). `peek` decides without writing.
-local function primaryOf(key, names, peek)
+-- The canonical recorded for the exact text of any of `names`, when it names one of them.
+local function canonIn(names)
     for n in pairs(names) do
         local b = bindings[n]
         local c = b and b.exact and canon[b.text] or nil
-        if c ~= nil and names[c.name] then return c.name end
+        if c ~= nil and names[c.name] then return c end
     end
-    local p = primaries[key]
-    if p ~= nil and names[p.name] then return p.name end
+    return nil
+end
+
+local function anyMerged(md, names)
+    local merged = md.identity and md.identity.merged
+    if type(merged) ~= "table" then return false end
+    for n in pairs(names) do
+        if merged[n] ~= nil then return true end
+    end
+    return false
+end
+
+-- A login that may be the primary of `names`: one of them, bound exactly whenever any of them is
+-- (a login bound only by a rounded double is not on the accepted whitelist yet, or no longer).
+local function candidate(names, exactOnly, n)
+    if names[n] ~= true then return false end
+    if not exactOnly then return true end
+    local b = bindings[n]
+    return b ~= nil and b.exact == true
+end
+
+-- Whether a recorded decision still holds for `names`: it names a candidate and is an
+-- administrator's, names a login that used the economy, or the group took part in a merge.
+local function stands(md, rec, names, exactOnly, merged)
+    return rec ~= nil and candidate(names, exactOnly, rec.name)
+        and (rec.rule == "admin" or merged or used(md, rec.name))
+end
+
+-- The primary of one policy group (names: a set of bound names) and its rule, or nil while no
+-- login of it used the economy (see above). `peek` decides without writing; `strict` (first sight)
+-- answers the provisional primary of an undecided group instead of nil. A decision among two or
+-- more candidates is recorded; a single candidate is weighed again when another one joins.
+local function primaryOf(key, names, peek, strict)
+    local md = S.modData()
+    local merged, exactOnly = anyMerged(md, names), false
+    for n in pairs(names) do
+        local b = bindings[n]
+        if b ~= nil and b.exact then exactOnly = true; break end
+    end
+    local c, p = canonIn(names), primaries[key]
+    if stands(md, c, names, exactOnly, merged) then return c.name, c.rule end
+    if stands(md, p, names, exactOnly, merged) then
+        -- the policy's own record: the canonical of an exact login follows it
+        local b = bindings[p.name]
+        if not peek and b ~= nil and b.exact then settle(key, p.name, "primary", "POLICY", EC.now(), true) end
+        return p.name, p.rule
+    end
     local list = {}
-    for n in pairs(names) do list[#list + 1] = n end
-    if #list == 1 then return list[1] end
-    local name, rule = Id.pickCanonical(S.modData(), list)
-    local at = EC.now()
-    if not peek and writeLines({ { v = Id.VERSION, k = "primary", sid = key, name = name, rule = rule, src = "POLICY", at = at } }, true) then
-        primaries[key] = { name = name, rule = rule, at = at }
+    for n in pairs(names) do
+        if candidate(names, exactOnly, n) then list[#list + 1] = n end
     end
-    return name
+    local name, rule, decided = Id.pickCanonical(md, list)
+    if not decided and not merged then
+        if not strict then return nil end
+        if c ~= nil then return c.name, c.rule end
+        if p ~= nil and names[p.name] then return p.name, p.rule end
+        return name, rule
+    end
+    if not peek and #list >= 2 then settle(key, name, rule, "POLICY", EC.now(), true) end
+    return name, rule
 end
 
 -- The primary that keeps `name` (bound as b, or { sid } for a first sight) out, or nil when the
 -- policy lets it in.
-local function oneAccountBlock(name, b, peek)
+local function oneAccountBlock(name, b, peek, strict)
     local key, set = nil, nil
     if (doubles[b.sid] or 0) > 1 then
         if not b.exact then return nil end
@@ -656,8 +748,8 @@ local function oneAccountBlock(name, b, peek)
         set = bySid[b.sid]
     end
     if set == nil or set.n == 0 or (set.n == 1 and set.names[name]) or multiAllowed() then return nil end
-    local primary = primaryOf(key or Id.sidText(b.sid), set.names, peek)
-    if S.accountOf(name) == S.accountOf(primary) then return nil end
+    local primary = primaryOf(key or Id.sidText(b.sid), set.names, peek, strict)
+    if primary == nil or S.accountOf(name) == S.accountOf(primary) then return nil end
     return primary
 end
 
@@ -677,10 +769,10 @@ local function firstSight(player, name, peek)
     if r.suspect then
         -- the rename alert is out already; when the one-account policy would refuse this name
         -- anyway, that is the more useful thing to tell an account switch after a death
-        if oneAccountBlock(name, { sid = sid }, true) ~= nil then return nil, "one_account" end
+        if oneAccountBlock(name, { sid = sid }, true, true) ~= nil then return nil, "one_account" end
         return nil
     end
-    local primary = oneAccountBlock(name, { sid = sid }, peek)
+    local primary = oneAccountBlock(name, { sid = sid }, peek, true)
     if primary ~= nil then
         if not peek then alert("one_account", name, sid, primary) end
         return nil, "one_account"
@@ -807,16 +899,20 @@ local function announce(before)
     end
 end
 
--- For ECMerge: a pass that records a canonical can change who the one-account policy lets in.
+-- For ECMerge: a pass that records a decision can change who the one-account policy lets in.
 Id.onlineVerdicts, Id.announce = onlineVerdicts, announce
 
--- The one-account primary recorded for an exact SteamID text's group, or nil (ECMerge prefers it
--- when it records a new canonical, so the canonical never moves a primary players were told of).
-function Id.recordedPrimary(text)
+-- The one-account primary (and its rule) of the Steam account an exact SteamID text belongs to,
+-- decided and recorded the way the policy does it (nothing written with `peek`), or nil while none
+-- of its logins used the economy. ECMerge's account of the text's group, so the policy and the
+-- merge never name two different accounts.
+function Id.primaryOfText(text, peek)
     local d = sidFromText(text, Id.SID_EXACT)
     if d == nil then return nil end
-    local p = primaries[(doubles[d] or 0) > 1 and text or Id.sidText(d)]
-    return p and p.name or nil
+    local key, set = Id.sidText(d), bySid[d]
+    if (doubles[d] or 0) > 1 then key, set = text, byText[text] end
+    if set == nil or set.n == 0 then return nil end
+    return primaryOf(key, set.names, peek)
 end
 
 -- ---------- import ----------
@@ -1271,11 +1367,49 @@ function Id.rebind(names, actor, reason, ms)
     return { rebound = #moved, moved = moved, stale = stale }
 end
 
+-- ---------- the administrator's primary ----------
+
+-- Makes `name` the one-account primary of its Steam account (admin.identity primary): settled with
+-- rule "admin", which no automatic decision replaces, as the canonical of its exact SteamID text,
+-- so a later merge goes into it as well. The other logins keep their wallets and everything else
+-- untouched; the policy only stops letting them in. Refused for a name that is not bound or has no
+-- other login on its Steam account (not_grouped), has an unresolved conflict (identity_conflict),
+-- is bound only by a rounded double while the Steam account has exact logins (not_exact: the
+-- canonical must be one of those), or shares the Steam account with a login that took part in a
+-- merge (merged_group, with that login: its money already moved into the canonical).
+function Id.setPrimary(name, actor, reason, ms)
+    if unreadable then return nil, "unreadable" end
+    if not validName(name) then return nil, "invalid_args" end
+    local b = bindings[name]
+    if b == nil or b.reserved then return nil, "not_grouped" end
+    local key, set = Id.sidText(b.sid), bySid[b.sid]
+    if (doubles[b.sid] or 0) > 1 then
+        if not b.exact then return nil, "not_grouped" end
+        key, set = b.text, byText[b.text]
+    end
+    if set == nil or set.n < 2 then return nil, "not_grouped" end
+    if Id.unresolved(name) then return nil, "identity_conflict" end
+    for n in pairs(set.names) do
+        if tookPartInMerge(n) then return nil, "merged_group", n end
+        if not b.exact and bindings[n].exact then return nil, "not_exact" end
+    end
+    local before = onlineVerdicts()
+    local was = primaryOf(key, set.names, true)
+    if not settle(key, name, "admin", "ADMIN", ms, false) then return nil, "write_failed" end
+    -- the other login stays in the private part, as for an alert: the ring must not say which
+    -- logins share a Steam account
+    audit("IDENTITY_PRIMARY", name, "ADMIN", actor, { reason = reason }, { steamId = b.text, before = was })
+    imported(ms)
+    announce(before)
+    return { primary = name }
+end
+
 -- ---------- status ----------
 
 -- Every Steam account with two or more bound logins, as the one-account policy sees it right now
--- (decided without writing): each login is the primary, merged into it, blocked by the policy, or
--- allowed. Members primary first, then by name.
+-- (decided without writing): each login is the primary, merged into it, blocked by the policy,
+-- allowed, or open (no login of the Steam account used the economy yet). Members primary first,
+-- then by name.
 local function multiGroups()
     local groups = {}
     local function add(key, set)
@@ -1283,7 +1417,10 @@ local function multiGroups()
         local members = {}
         for name in pairs(set.names) do
             local state = "allowed"
-            if name == primary then
+            if primary == nil then
+                -- none of its logins used the economy yet: all of them are let in
+                if not multiAllowed() then state = "open" end
+            elseif name == primary then
                 state = "primary"
             elseif S.accountOf(name) == S.accountOf(primary) then
                 state = "merged"
@@ -1337,7 +1474,7 @@ local function loginIn(row, filter)
 end
 
 -- One row per login that shares a Steam account with another: what the one-account policy makes
--- of it now (policy: blocked | allowed | merged | primary) and what the merge plan says (merge:
+-- of it now (policy: blocked | allowed | merged | primary | open) and what the merge plan says (merge:
 -- ready | blocked | ineligible | merged | canonical; why: the plan's reasons in its order; into:
 -- the plan's account where it is not the policy's primary). A Steam account's primary is a row's
 -- `account`, never a row of its own. group: its logins, primary first, capped (logins: the count).
@@ -1566,10 +1703,10 @@ end
 
 -- ---------- admin.identity ----------
 
--- admin.identity { action = "status" | "import" | "rebind", requestId, rows?, names?, reason?,
---                  logins? = { query?, filter, page } }
--- Exempt from the identity gate (S.IDENTITY_EXEMPT): status needs the read role, import and
--- rebind the write role; roles come from the connection, never from the name. A reply to a role
+-- admin.identity { action = "status" | "import" | "rebind" | "primary", requestId, rows?, names?,
+--                  name?, reason?, logins? = { query?, filter, page } }
+-- Exempt from the identity gate (S.IDENTITY_EXEMPT): status needs the read role, import, rebind
+-- and primary the write role; roles come from the connection, never from the name. A reply to a role
 -- that may read carries the status, with the companion export (status.export) and the merge plan
 -- counts (status.merge), and the logins page when one was asked for (Id.loginsPage). A refused
 -- request learns nothing else: the status names who plays which logins and its conflicts carry
@@ -1579,7 +1716,7 @@ S.handlers["admin.identity"] = function(player, args)
     local action = args.action
     local requestId = type(args.requestId) == "string" and #args.requestId <= A.REQUEST_ID_MAX
         and not string.find(args.requestId, "%c") and args.requestId or nil
-    local write = action == "import" or action == "rebind"
+    local write = action == "import" or action == "rebind" or action == "primary"
     local res
     if action ~= "status" and not write then
         res = { ok = false, error = "invalid_args" }
@@ -1591,13 +1728,18 @@ S.handlers["admin.identity"] = function(player, args)
     elseif action == "import" then
         local out, err, name = Id.import(args.rows, actorOf(player), EC.now())
         res = out and { ok = true } or { ok = false, error = err, name = name }
-    elseif action == "rebind" then
+    elseif action == "rebind" or action == "primary" then
         local rerr, reason = A.reasonError(args.reason)
         if rerr then
             res = { ok = false, error = rerr }
         else
-            local out, err, name = Id.rebind(args.names, actorOf(player), reason, EC.now())
-            res = out and { ok = true, rebound = out.rebound, moved = out.moved, stale = out.stale }
+            local out, err, name
+            if action == "rebind" then
+                out, err, name = Id.rebind(args.names, actorOf(player), reason, EC.now())
+            else
+                out, err, name = Id.setPrimary(args.name, actorOf(player), reason, EC.now())
+            end
+            res = out and { ok = true, rebound = out.rebound, moved = out.moved, stale = out.stale, primary = out.primary }
                 or { ok = false, error = err, name = name }
         end
     else
