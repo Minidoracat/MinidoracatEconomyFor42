@@ -22126,14 +22126,21 @@ local function loadButton()
     return EC.Client.FloatButton
 end
 
+local function shipped(path) -- the texture the spec names is really in the MOD tree (a typo shows a blank slot)
+    local f = io.open((MEDIA:gsub("media/lua$", "")) .. path, "rb")
+    if f then f:close() return true end
+    return false
+end
+
 framework(true)
 local F = loadButton()
 local spec = regs[1]
 if F then F.onResolutionChange() end
 check(F and F.docked == true and #regs == 1 and buttons == 0 and layouts == 0 and F.instance == nil
     and spec.id == "economy" and spec.order == 30 and spec.bind == "MinidoracatEconomy_Toggle"
-    and spec.icon == EC.CURRENCIES.survivor.iconDefault and spec.label() == "Economy Center",
-    "DK-1: with the Dock the entry registers once by name, hotkey and coin icon, and no button or layout of its own exists")
+    and spec.icon == "media/ui/MinidoracatEconomy/dock_pouch.png" and shipped(spec.icon)
+    and spec.icon ~= EC.CURRENCIES.survivor.iconDefault and spec.label() == "Economy Center",
+    "DK-1: with the Dock the entry registers once by name, hotkey and its own pouch icon (shipped, not the currency coin), and no button or layout of its own exists")
 local C = EC.Client
 local idle = spec and spec.getBadge() == 0 and spec.getStatus() == nil
 C.unclaimed = 3.6

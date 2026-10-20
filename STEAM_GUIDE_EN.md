@@ -8,7 +8,7 @@
 The mod on Steam Workshop:
 https://steamcommunity.com/sharedfiles/filedetails/?id=3801482125
 [olist]
-[*] [b]Open the Economy Center[/b] with the "[" key (rebindable in Key Bindings) or the coin icon in the family toolbar; the icon shows a count when your Mailbox has items to claim.
+[*] [b]Open the Economy Center[/b] with the "[" key (rebindable in Key Bindings) or the money pouch icon in the family toolbar; the icon shows a count when your Mailbox has items to claim.
 [*] [b]Find a terminal[/b]: away from a terminal you can only browse; the top bar shows the direction and distance of the nearest terminal or ATM, and [b]Guide me[/b] shows the way with a golden arrow.
 [*] [b]Trade at a terminal[/b]: to trade, list or claim items, walk up to a map ATM or an admin-built terminal and right-click [b]Use economy terminal[/b].
 [*] [b]Daily reward[/b]: claim your daily online reward on the Rewards page to start earning Survivor Coins.
@@ -231,7 +231,7 @@ A server option.
 [/list]
 [h3]Hide the Economy Center button[/h3]
 [list]
-[*] [b]Shown by default[/b]: the button is the coin icon in the family toolbar, or a floating button without one.
+[*] [b]Shown by default[/b]: the button is the money pouch icon in the family toolbar, or a floating button without one.
 [*] [b]Hide it[/b]: untick [b]Show Economy Center button[/b] under Options > MODS > Minidoracat Economy and apply: it disappears at once and stays hidden after respawning or rejoining; tick it again to bring it back.
 [*] [b]While hidden[/b]: open the Economy Center with its hotkey, rebindable under Options > Key Bindings (default "[" key).
 [/list]

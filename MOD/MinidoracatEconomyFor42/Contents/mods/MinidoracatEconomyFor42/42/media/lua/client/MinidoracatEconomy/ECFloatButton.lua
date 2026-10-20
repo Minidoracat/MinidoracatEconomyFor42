@@ -22,7 +22,9 @@ local LAYOUT_NAME = "MinidoracatEconomyFloatButton"
 local SIZE = 40
 local RIGHT_MARGIN = 8
 local ICON_SIZE = 28
-local ICON_PATH = EC.CURRENCIES.survivor.iconDefault -- shipped 64 px texture; text fallback if it fails to load
+-- Toolbar / float button only (64 px money pouch, family Dock art 2026-10-21); the currency coin stays
+-- EC.CURRENCIES.*.iconDefault (U.drawCoin). Text fallback if it fails to load.
+local ICON_PATH = "media/ui/MinidoracatEconomy/dock_pouch.png"
 local TEXT = { r = 1, g = 0.85, b = 0.4, a = 1 }
 local BADGE = 18                                          -- pending-mail bubble, top right corner
 local BADGE_FILL = { r = 0.85, g = 0.2, b = 0.2, a = 1 }  -- the vanilla "unread" red
