@@ -1158,6 +1158,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: a car part's vehicle cla
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: item pages as grids of tiles (scenario GV: strips and the filter the picker shares, the hit test, the keys and their edges, the per-page list / grid preference, tiles per strip, what a shop / market / auction tile says, a pick that lands on the table and a cursor that follows it, the focus ring's tile and its caption)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: the primary of a Steam account (scenario PR-1..9: no primary while no login used the economy though an earlier tie-break recorded one, the page's open rows and the waiting plan, the first use replaces the canonical, a used primary stands, the administrator's choice with its gates, the push it sends, audit privacy and the plan following it, choosing back and the restart, merged and lone logins refused; FS2: an import that takes over from an unlisted primary opens the Steam account until the first use)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the facade's reward day (scenario 16 RD-1..3: rewardDay(ms) is the rewards' own key and next reset, no argument reads the clock, a NaN / infinite / string argument is nil)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the facade's source status (scenario 22 SS-1..5: unknown and malformed ids are nil and create no row, a registered source reads cap 0 and today's key, the admin's cap reads back, today's mint counts and the answer is a copy, a disabled source reads disabled)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2427,6 +2428,13 @@ local root = S.modData()
 check(root.config.sources["MinidoracatMiniMapFor42"] and root.config.sources["MinidoracatMiniMapFor42"].dailyMintCap == 0
     and root.config.sources["MinidoracatMiniMapFor42"].enabled == true, "init creates the source config with mint cap 0 (debit-only by default)")
 L.credit("joe", "survivor", 500, "SYSTEM_MINT", { requestId = "seed-joe", reasonCode = "t" })
+local function status(id) return V.sourceStatus and V.sourceStatus(id) end
+check(type(V.sourceStatus) == "function" and status("Nobody") == nil and root.config.sources["Nobody"] == nil
+    and status("bad id") == nil and status(42) == nil and status(nil) == nil,
+    "SS-1: v1.sourceStatus is nil for an unknown source (no row created) and for a malformed modId")
+local ss = status("MinidoracatMiniMapFor42")
+check(ss ~= nil and ss.enabled == true and ss.dailyMintCap == 0 and ss.mintToday == 0 and ss.day == EC.Rewards.dayKey(nowMs),
+    "SS-2: a registered source reads enabled, mint cap 0, nothing minted, today's reward day")
 
 -- 未註冊來源
 local res = V.debit("joe", "survivor", 10, { modId = "Nobody", requestId = "n1", reasonCode = "gps_subscription" })
@@ -2483,11 +2491,19 @@ check(setRes.ok == true and setRes.sources[1].dailyMintCap == 100 and setRes.sou
 local au = X.auditEntries(1)[1]
 check(au.action == "source" and au.target == "MinidoracatMiniMapFor42" and au.field == "dailyMintCap" and au.after == 100 and au.admin == "boss",
     "cap changes are audited")
+check((status("MinidoracatMiniMapFor42") or {}).dailyMintCap == 100, "SS-3: v1.sourceStatus reads the cap the admin set")
 check(src.credit("joe", "survivor", 60, { requestId = "m2", reasonCode = "nav_route" }).ok == true, "mint within the cap succeeds")
 check(src.credit("joe", "survivor", 41, { requestId = "m3", reasonCode = "nav_route" }).error == "cap_exceeded"
     and src.credit("joe", "survivor", 40, { requestId = "m4", reasonCode = "nav_route" }).ok == true,
     "the daily mint cap is enforced on the running total")
 check(L.getBalance("MOD:MinidoracatMiniMapFor42", "survivor").available == 20, "MOD account = burned 120 - minted 100")
+ss = status("MinidoracatMiniMapFor42") or {}
+local mintSeen = ss.mintToday
+ss.dailyMintCap, ss.mintToday, ss.enabled = 999, 0, false
+local ss2 = status("MinidoracatMiniMapFor42") or {}
+check(mintSeen == 100 and ss2.mintToday == 100 and ss2.dailyMintCap == 100 and ss2.enabled == true
+    and root.config.sources["MinidoracatMiniMapFor42"].dailyMintCap == 100,
+    "SS-4: today's mint counts the credits, and changing the answer changes nothing inside")
 
 -- burn 額度（預設無上限）與停用
 nowMs = nowMs + 600
@@ -2498,6 +2514,7 @@ check(src.debit("joe", "survivor", 11, { requestId = "b1", reasonCode = "nav_rou
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.sources", boss, { action = "set", modId = "MinidoracatMiniMapFor42", dailyBurnCap = false, enabled = false, reason = "disable the source for now" })
 check(src.debit("joe", "survivor", 1, { requestId = "d1", reasonCode = "nav_route" }).error == "source_disabled", "a disabled source is refused")
+check((status("MinidoracatMiniMapFor42") or {}).enabled == false, "SS-5: v1.sourceStatus reads a disabled source as disabled")
 nowMs = nowMs + 600
 fire("OnClientCommand", EC.COMMAND_MODULE, "admin.sources", boss, { action = "set", modId = "MinidoracatMiniMapFor42", enabled = true, reason = "re-enable the source again" })
 check(S.modData().config.sources["MinidoracatMiniMapFor42"].dailyBurnCap == nil, "dailyBurnCap=false clears the cap (unlimited)")

@@ -568,6 +568,18 @@ function G.rewardDay(ms)
     return R.dayKey(ms), R.nextResetMs(ms)
 end
 
+-- A source's switch, daily mint cap and today's mint, as a fresh table (a consumer warns its admin
+-- before it plans past the cap). nil before the world data loads, for a malformed modId and for a
+-- source with no config row (none is created). Read only: outside the tick budget, not audited.
+function G.sourceStatus(modId)
+    if not md or not validModId(modId) then return nil end
+    local cfg = configRow(modId, false)
+    if not cfg then return nil end
+    local day = R.dayKey(EC.now())
+    local today = dailyRow(day, modId, false)
+    return { enabled = cfg.enabled ~= false, dailyMintCap = cfg.dailyMintCap or 0, mintToday = today and today.mint or 0, day = day }
+end
+
 function G.init(root)
     md = root
     md.config.sources = md.config.sources or {}
@@ -592,6 +604,7 @@ EC.v1 = {
     getBalance = G.getBalance,
     currencies = G.currencies,
     rewardDay = G.rewardDay,
+    sourceStatus = G.sourceStatus,
 }
 
 return G

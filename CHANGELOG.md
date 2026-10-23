@@ -16,7 +16,7 @@
 
 ### 新增
 
-> 技術要點：伺服器端 `MinidoracatEconomy.v1.rewardDay(ms?)` 回傳每日獎勵的日鍵（`"YYYYMMDD"`）與下一次換日的時刻（epoch 毫秒），讓其他 MOD 的每日重置和簽到同一刻換日；唯讀，不升 `API_REVISION`，以 `type(E.rewardDay) == "function"` 探測。說明見 `docs/entitlements-api.md`「其他伺服器函式」。
+> 技術要點：伺服器端 `MinidoracatEconomy.v1.rewardDay(ms?)` 回傳每日獎勵的日鍵（`"YYYYMMDD"`）與下一次換日的時刻（epoch 毫秒），讓其他 MOD 的每日重置和簽到同一刻換日；`MinidoracatEconomy.v1.sourceStatus(modId)` 回傳該來源的開關、每日發幣上限與今天已發的量（新表，未註冊的來源回 `nil`），讓來源 MOD 在超過上限前先警告管理員。兩者都唯讀，不升 `API_REVISION`，以 `type(E.rewardDay) == "function"`、`type(E.sourceStatus) == "function"` 探測。說明見 `docs/entitlements-api.md`「其他伺服器函式」。
 
 ### 修正
 

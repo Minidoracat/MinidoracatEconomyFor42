@@ -286,11 +286,16 @@ Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action 
 | 函式 | 用途 | 回傳 | 探測 |
 |---|---|---|---|
 | `rewardDay(ms?)` | 取 Economy 每日獎勵的換日時刻（沙盒 `RewardDayResetHour`、`RewardTimezoneUTC`），讓別的 MOD 的每日重置和簽到同一刻換日。`ms` 省略時用伺服器現在時間；不讀寫 ModData、不計入來源的每 tick 呼叫上限 | `dayKey, nextResetMs`：`ms` 所在獎勵日的當地日期字串（`"YYYYMMDD"`）與下一次換日的 epoch 毫秒（一定大於 `ms`）；`ms` 不是有限數字時回 `nil` | `type(E.rewardDay) == "function"` |
+| `sourceStatus(modId)` | 讀某個來源目前的開關、每日發幣上限與今天已發的量，讓來源 MOD 在規劃會超過上限的發放前先警告管理員。上限由服主在 Economy 管理台設定，來源不能自己改；不建立設定列、不計入每 tick 呼叫上限、不寫稽核 | 新表 `{ enabled, dailyMintCap, mintToday, day }`：`dailyMintCap` 未設定時為 0；`mintToday` 是今天已計入上限的發幣量（退款不算）；`day` 是目前獎勵日的日鍵（同 `rewardDay`，額度在這個時刻歸零）。改這張表不影響 Economy。世界資料還沒載入、`modId` 不合規則、或這個來源沒有設定列（從沒註冊過）時回 `nil` | `type(E.sourceStatus) == "function"` |
 
 ```lua
 local E = MinidoracatEconomy and MinidoracatEconomy.v1
 if E and type(E.rewardDay) == "function" then
     local day, resetAt = E.rewardDay()   -- 例："20260906", 1788724800000（台灣 04:00 換日）
+end
+if E and type(E.sourceStatus) == "function" then
+    local st = E.sourceStatus("MyMod")   -- 例：{ enabled = true, dailyMintCap = 5000, mintToday = 1200, day = "20260906" }
+    if st and planned > st.dailyMintCap - st.mintToday then --[[ 警告管理員 ]] end
 end
 ```
 
