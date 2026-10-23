@@ -208,6 +208,19 @@ if PZAPI and PZAPI.ModOptions then
     options:addTickBox("ShowButton", "UI_MinidoracatEconomy_ShowButton", true,
         "UI_MinidoracatEconomy_ShowButton_tooltip")
     options.apply = accept   -- the options screen calls this after "Accept"
+    -- 原版主選單在沒有任何 MOD 建選項時按「套用」會把 ModOptions.ini 清成 0 byte；框架 rev 23
+    -- 從它的備份逐筆補回本 MOD 的設定。OnGameBoot：全部 Lua（含框架）已載入、選項都加完，且早於
+    -- OnMainMenuEnter 裡 MainOptions:create 的 load，補回的值會被那次 load 套上。
+    Events.OnGameBoot.Add(function()
+        local UI = MinidoracatUI and MinidoracatUI.v1
+        if UI and UI.API_MAJOR == 1 and type(UI.API_REVISION) == "number" and UI.API_REVISION >= 23
+                and UI.CAPABILITIES and UI.CAPABILITIES.modOptionsBackup and UI.ModOptionsBackup then
+            local restored = UI.ModOptionsBackup.protect(options)
+            if type(restored) == "number" and restored > 0 then
+                EC.log("restored " .. restored .. " settings from the backup (ModOptions.ini was wiped)")
+            end
+        end
+    end)
 end
 
 -- No ModOptions (stub / very old build): the slider still works for the session.

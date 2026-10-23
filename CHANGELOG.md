@@ -18,6 +18,12 @@
 
 > 技術要點：伺服器端 `MinidoracatEconomy.v1.rewardDay(ms?)` 回傳每日獎勵的日鍵（`"YYYYMMDD"`）與下一次換日的時刻（epoch 毫秒），讓其他 MOD 的每日重置和簽到同一刻換日；唯讀，不升 `API_REVISION`，以 `type(E.rewardDay) == "function"` 探測。說明見 `docs/entitlements-api.md`「其他伺服器函式」。
 
+### 修正
+
+- **在主選單的選項按了套用之後，經濟系統的設定進遊戲全部回到預設**：通知停留秒數、視窗透明度、側欄收合、清單／網格、入口按鈕是否顯示，可能在主選單的選項畫面按過「套用」後全部被重設。現在會自動備份這些設定，被重設後下次進伺服器（或重開遊戲）就自動補回。需要同時把 Minidoracat UI Library 更新到新版才會生效（更新後至少玩過一次、有了備份才補得回來）。
+
+> 技術要點：使用 UI 框架 API rev 23 的 `UI.ModOptionsBackup.protect`（`CAPABILITIES.modOptionsBackup`，舊版框架自動略過）；備份檔在 `Zomboid/Lua/MinidoracatUI/ModOptions_MinidoracatEconomy.ini`。
+
 ## [42.21.0-0.20.1] - 2026-10-21
 
 ### 變更
