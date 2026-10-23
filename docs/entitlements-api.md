@@ -279,6 +279,21 @@ Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action 
 
 管理員可查帳號權益與退款（`action = "account"`、`action = "refund"`；帳號頁逐張列出租約、各期條款、同意自動續租時的條款，並標出與目前方案不同之處），但不能替玩家開啟自動續租。
 
+## 其他伺服器函式
+
+不需要來源 handle、直接掛在 `MinidoracatEconomy.v1` 上的唯讀函式。沒有對應的 `API_REVISION`：以函式存在與否探測。
+
+| 函式 | 用途 | 回傳 | 探測 |
+|---|---|---|---|
+| `rewardDay(ms?)` | 取 Economy 每日獎勵的換日時刻（沙盒 `RewardDayResetHour`、`RewardTimezoneUTC`），讓別的 MOD 的每日重置和簽到同一刻換日。`ms` 省略時用伺服器現在時間；不讀寫 ModData、不計入來源的每 tick 呼叫上限 | `dayKey, nextResetMs`：`ms` 所在獎勵日的當地日期字串（`"YYYYMMDD"`）與下一次換日的 epoch 毫秒（一定大於 `ms`）；`ms` 不是有限數字時回 `nil` | `type(E.rewardDay) == "function"` |
+
+```lua
+local E = MinidoracatEconomy and MinidoracatEconomy.v1
+if E and type(E.rewardDay) == "function" then
+    local day, resetAt = E.rewardDay()   -- 例："20260906", 1788724800000（台灣 04:00 換日）
+end
+```
+
 ## 客戶端 API
 
 能力探測位於 `MinidoracatEconomy.v1.Client`（不是客戶端的 `.v1.API_MAJOR`）。確認 major 1、rev >= 2、`CAPABILITIES.entitlements` 與 `CAPABILITIES.rentals` 後取 `.Entitlements`（rev 3 起另有 `CAPABILITIES.freeze`：租約可能是 `frozen`；rev 6 起另有 `CAPABILITIES.rentalPeriods` 與 `RENTAL_PERIODS_MAX = 365`：`quote` 可帶 `periods`）：

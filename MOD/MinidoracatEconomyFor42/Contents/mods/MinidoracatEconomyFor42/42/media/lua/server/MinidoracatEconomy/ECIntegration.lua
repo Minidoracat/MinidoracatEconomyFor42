@@ -559,6 +559,15 @@ function G.onTick()
     tickCalls = {}
 end
 
+-- The reward day's key and the next reset (epoch ms) at `ms` (default now): the same day turn the
+-- daily rewards use, so a consumer mod resets in step with them. Read only, outside the tick budget.
+-- nil for a non-finite or non-number `ms`.
+function G.rewardDay(ms)
+    if ms == nil then ms = EC.now() end
+    if type(ms) ~= "number" or ms ~= ms or ms == math.huge or ms == -math.huge then return nil end
+    return R.dayKey(ms), R.nextResetMs(ms)
+end
+
 function G.init(root)
     md = root
     md.config.sources = md.config.sources or {}
@@ -582,6 +591,7 @@ EC.v1 = {
     debit = G.debit,
     getBalance = G.getBalance,
     currencies = G.currencies,
+    rewardDay = G.rewardDay,
 }
 
 return G

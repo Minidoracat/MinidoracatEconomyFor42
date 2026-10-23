@@ -1157,6 +1157,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: compact JSON lines take 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: a car part's vehicle class in its names (scenario IN-3..5: the English column adds the class the way an English game does and an axe keeps its English; the picker shows the class in both columns and either language's class word finds that part alone; a language that words two classes alike gets no guessed class)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: item pages as grids of tiles (scenario GV: strips and the filter the picker shares, the hit test, the keys and their edges, the per-page list / grid preference, tiles per strip, what a shop / market / auction tile says, a pick that lands on the table and a cursor that follows it, the focus ring's tile and its caption)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: the primary of a Steam account (scenario PR-1..9: no primary while no login used the economy though an earlier tie-break recorded one, the page's open rows and the waiting plan, the first use replaces the canonical, a used primary stands, the administrator's choice with its gates, the push it sends, audit privacy and the plan following it, choosing back and the restart, merged and lone logins refused; FS2: an import that takes over from an unlisted primary opens the Steam account until the first use)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the facade's reward day (scenario 16 RD-1..3: rewardDay(ms) is the rewards' own key and next reset, no argument reads the clock, a NaN / infinite / string argument is nil)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -1729,6 +1730,18 @@ nowMs = 1788699986478                      -- 2026-09-06 ~05:46 UTC = 台灣 13:
 fire("OnServerStarted")
 check(R.dayKey(nowMs) == "20260906" and R.dayKey(nowMs + 15 * 3600000) == "20260907", "reward day key is the local date and flips at the configured local hour, not at UTC midnight")
 check(R.nextResetMs(nowMs) == 1788724800000, "nextResetMs is the next 20:00 UTC")
+do
+    local rewardDay = MinidoracatEconomy.v1.rewardDay
+    local later = nowMs + 15 * 3600000
+    local key, reset = (rewardDay or function() end)(later)
+    check(type(rewardDay) == "function" and key == R.dayKey(later) and key == "20260907"
+        and reset == R.nextResetMs(later) and reset > later,
+        "RD-1: v1.rewardDay(ms) answers the rewards' day key and a next reset after ms")
+    if rewardDay then key, reset = rewardDay() end
+    check(key == "20260906" and reset == 1788724800000, "RD-2: v1.rewardDay() reads the server clock")
+    check(rewardDay ~= nil and rewardDay(0 / 0) == nil and rewardDay(math.huge) == nil and rewardDay(-math.huge) == nil
+        and rewardDay("1788699986478") == nil, "RD-3: v1.rewardDay refuses a NaN, infinite or non-number argument with nil")
+end
 
 local dave = fakePlayer("dave")
 onlinePlayers = { dave }

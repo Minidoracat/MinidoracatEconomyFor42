@@ -12,6 +12,12 @@
 
 格式基於 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循 `{PZ版本}-{主版本}.{次版本}.{修訂}` 格式。
 
+## [Unreleased]
+
+### 新增
+
+> 技術要點：伺服器端 `MinidoracatEconomy.v1.rewardDay(ms?)` 回傳每日獎勵的日鍵（`"YYYYMMDD"`）與下一次換日的時刻（epoch 毫秒），讓其他 MOD 的每日重置和簽到同一刻換日；唯讀，不升 `API_REVISION`，以 `type(E.rewardDay) == "function"` 探測。說明見 `docs/entitlements-api.md`「其他伺服器函式」。
+
 ## [42.21.0-0.20.1] - 2026-10-21
 
 ### 變更
