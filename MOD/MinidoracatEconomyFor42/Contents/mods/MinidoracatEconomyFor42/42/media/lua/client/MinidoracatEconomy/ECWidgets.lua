@@ -752,13 +752,31 @@ end
 local REASON_KEY = { daily_checkin = "Kind_checkin", survival_milestone = "Kind_milestone",
     player_transfer = "Kind_transfer" }
 
+-- The words for a reason code, or nil when neither this mod nor the source mod translates it (a
+-- source may ship IGUI_MinidoracatEconomy_Reason_<code> in its own Translate files).
+function U.reasonName(code)
+    if type(code) ~= "string" or code == "" then return nil end
+    return getTextOrNull(T .. (REASON_KEY[code] or ("Kind_" .. code))) or getTextOrNull(T .. "Reason_" .. code)
+end
+
 function U.reasonText(code, written)
     if type(written) == "string" and written ~= "" then return written end
     if type(code) ~= "string" or code == "" then return nil end
-    local name = getTextOrNull(T .. (REASON_KEY[code] or ("Kind_" .. code))) or getTextOrNull(T .. "Reason_" .. code)
+    local name = U.reasonName(code)
     if name then return name end
     logUnknown("reason", code)
     return getText(T .. "Reason_custom", code)
+end
+
+-- The statement's type column: a transfer reads as sent or received by its sign; an integration
+-- posting (entitlement payments included) reads as its reason when that has words, otherwise as
+-- the generic "mod" kind (an untranslated code, or a receipt written without one); the kind
+-- filter still groups every one of them by kind.
+function U.statementKindText(kind, amount, code)
+    if kind == "transfer" then
+        return getText(T .. ((tonumber(amount) or 0) < 0 and "Kind_transfer_out" or "Kind_transfer_in"))
+    end
+    return kind == "mod" and U.reasonName(code) or U.kindText(kind)
 end
 
 -- The kinds whose SYSTEM_BURN posting is a charge on one party, and the word for it: a transfer's

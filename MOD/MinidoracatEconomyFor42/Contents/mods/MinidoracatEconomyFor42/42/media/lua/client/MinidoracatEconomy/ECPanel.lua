@@ -1142,8 +1142,8 @@ local function normalize(e, offsetMin)
     local desc = "-"
     local kind = e.kind or e.type
     local qty = math.floor(tonumber(e.qty) or 1)
-    -- an entitlement payment / renewal / refund says which one (Reason_entitlement_*) instead of
-    -- the generic "mod" kind; the kind filter still groups it under "mod"
+    -- an entitlement payment / renewal / refund names its product in the note (its label, like any
+    -- integration posting's, is the reason: U.statementKindText)
     local entitlement = type(e.reasonCode) == "string" and string.sub(e.reasonCode, 1, 12) == "entitlement_"
     if cpClass == "player" then
         -- a transfer names the other player and, when there is one, the memo both sides wrote;
@@ -1171,9 +1171,7 @@ local function normalize(e, offsetMin)
         desc = accountName(cp)
     end
     local valueText = signedText(amount)
-    -- a transfer reads as sent or received by its sign; the filter chip still groups both
-    local label = kind == "transfer" and getText(T .. (amount < 0 and "Kind_transfer_out" or "Kind_transfer_in"))
-        or (entitlement and U.reasonText(e.reasonCode)) or kindText(kind)
+    local label = U.statementKindText(kind, amount, e.reasonCode)
     local item = type(e.item) == "string" and e.item or nil
     -- the part of the amount that was a fee or a tax; lines written before receipts carried it
     -- say nothing rather than claim there was none. It rides on the note as a muted

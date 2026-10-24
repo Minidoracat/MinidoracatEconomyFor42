@@ -1160,6 +1160,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: the primary of a Steam 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the facade's reward day (scenario 16 RD-1..3: rewardDay(ms) is the rewards' own key and next reset, no argument reads the clock, a NaN / infinite / string argument is nil)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the facade's source status (scenario 22 SS-1..5: unknown and malformed ids are nil and create no row, a registered source reads cap 0 and today's key, the admin's cap reads back, today's mint counts and the answer is a copy, a disabled source reads disabled)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: shares per shop order (scenario BQ-1..8: the ShopMaxPerOrder default, snapshot fields and ceiling, refused past the limit before any debit, raised and pushed with a 30-share order delivered whole, the 100-item ceiling still binding, the option's range, malformed past the ceiling and refused past the limit, a resend after lowering answered with its first result, selling back under the same limit; BQ-9..10: the buy dialog's most per order, a typed count, one past the most, an empty box, the Max chip)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: an integration posting's reason on the statement (scenario 22 IR-1: the receipt file line keeps a facade posting's reason code, the ring check now asserts it too; TX-2b: the wallet's type column reads as the source's translated reason, the mod kind otherwise)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -2457,8 +2458,9 @@ check(L.getBalance("joe", "survivor").available == 380 and L.getBalance("MOD:Min
     "the MOD account holds what the mod burned")
 local rc = L.receipts("joe")
 local last = rc[#rc]
-check(last.kind == "mod" and last.sourceMod == "MinidoracatMiniMapFor42" and last.reasonText == nil and last.amount == -120,
-    "the receipt ring names the mod; its wording stays out of Global ModData (the receipt file carries it)")
+check(last.kind == "mod" and last.sourceMod == "MinidoracatMiniMapFor42" and last.reasonText == nil and last.amount == -120
+    and last.reasonCode == "gps_subscription",
+    "the receipt ring names the mod and its reason code; its wording stays out of Global ModData (the receipt file carries it)")
 local push = lastSent("wallet.changed")
 check(push == nil or push.player ~= joe or push.args.balances.survivor.available == 380, "wallet push (when online) reflects the debit")
 
@@ -2540,6 +2542,18 @@ for i = 1, 25 do
 end
 check(limited > 0, "calls beyond CALLS_PER_TICK in one tick are rate limited")
 fire("OnTickEvenPaused")
+do
+    -- IR-1: the statement's receipt file line of a facade posting keeps its reason code (the wallet
+    -- labels the row with the source's translation of it, U.statementKindText); the export queue
+    -- writes a bounded number of lines a tick, so drain it first
+    for _ = 1, 20 do if X.queuedLines() > 0 then fire("OnTickEvenPaused") end end
+    local found = false
+    for _, l in ipairs((files[X.receiptsPath("joe", nowMs)] or { lines = {} }).lines) do
+        if string.find(l, '"delta":-120', 1, true) and string.find(l, '"sourceMod":"MinidoracatMiniMapFor42"', 1, true)
+            and string.find(l, '"reasonCode":"gps_subscription"', 1, true) then found = true end
+    end
+    check(found, "IR-1: a facade posting's receipt file line carries its reason code and source mod")
+end
 check(src.debit("joe", "survivor", 1, { requestId = "rl-next", reasonCode = "nav_route" }).ok == true, "the budget refills on the next tick")
 
 -- 讀取
@@ -21491,6 +21505,21 @@ check(call(U.reasonText, "daily_checkin") == say("Kind_checkin") and call(U.reas
     and call(U.marketReasonText, "downtime") == say("Reason_auction_downtime")
     and call(U.marketReasonText, "sold out of stock") == "sold out of stock",
     "TX-2: own reasons and system accounts read as words without their code; another mod's reason code is framed; an admin's own reason stays as typed")
+-- TX-2b: the statement's type column (U.statementKindText, ECPanel normalize): an integration
+-- posting whose source mod ships Reason_<code> reads as that; an untranslated code, a receipt
+-- without one and every other kind keep the kind's word; entitlement rows keep their reason
+dict[T .. "Reason_mq_exchange"] = "Quest points exchange"
+logged = {}
+check(call(U.statementKindText, "mod", 50, "mq_exchange") == "Quest points exchange"
+    and call(U.statementKindText, "mod", 50, "zz_untranslated") == say("Kind_mod")
+    and call(U.statementKindText, "mod", 50, nil) == say("Kind_mod")
+    and call(U.statementKindText, "mod", -9, "entitlement_purchase") == say("Reason_entitlement_purchase")
+    and call(U.statementKindText, "shop_buy", -9, "shop_buy") == say("Kind_shop_buy")
+    and call(U.statementKindText, "transfer", -9, "player_transfer") == say("Kind_transfer_out")
+    and call(U.statementKindText, "transfer", 9, "player_transfer") == say("Kind_transfer_in")
+    and say("Kind_mod") ~= nil and #logged == 0,
+    "TX-2b: an integration row reads as the source's translated reason, otherwise as the mod kind; other kinds and transfers unchanged")
+dict[T .. "Reason_mq_exchange"] = nil
 -- TX-3: an unknown code reads as the translated generic word and lands in the log, not on screen
 logged = {}
 local shown = { call(U.adminErrorText, "zz_new_code"), call(U.accountClassName, "zz_new_code"),
