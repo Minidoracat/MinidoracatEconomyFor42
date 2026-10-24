@@ -1051,6 +1051,51 @@ do
         and singleRec.rec.orderId == single.orderId and singleRec.rec.kinds == nil,
         "W-14m: a one-type order stores, shows and records no alts and no kinds")
 
+    -- W-14n: the buyer's statement counts an order's kinds on its create, release and raise lines, in
+    -- the receipt files (the statement's history) and in the receipt ring (wallet.state and the
+    -- admin's lookup read it; it keeps the last L.RECEIPT_RING lines); a one-type order's lines carry
+    -- none, and a delivery is only its own type. Its own function: this chunk is at Lua's 200-local
+    -- limit here.
+    do local w14n = function()
+        for _ = 1, 30 do if EC.Export.queuedLines() > 0 then fire("OnTickEvenPaused") end end
+        local full = { "wanted_create=3", "wanted_create=2", "wanted_release=3", "wanted_create=2", "wanted_release=2",
+            "wanted_release=2", "wanted_create=2", "wanted_raise=2", "wanted_create=nil" }
+        local tail = {}
+        for i = math.max(1, #full - L.RECEIPT_RING + 1), #full do tail[#tail + 1] = full[i] end
+        local ring = {}
+        for _, r in ipairs(cmd(buyer14, "wallet.state", {}).receipts) do
+            if string.sub(tostring(r.kind), 1, 7) == "wanted_" then ring[#ring + 1] = r.kind .. "=" .. tostring(r.kinds) end
+        end
+        -- the buyer's receipt file lines (one file a month), one a transaction (its reserved-bucket
+        -- mirror shares the seq), in commit order; the buyer's side of a delivery is that mirror alone
+        local lines, seen, fillKinds = {}, {}, 0
+        for path, f in pairs(ctx.files()) do
+            if string.find(path, "receipts", 1, true) and string.find(path, EC.safeName(bu14), 1, true) then
+                for _, l in ipairs(f.lines) do
+                    local e = EC.jsonDecode(l)
+                    if type(e) ~= "table" or string.sub(tostring(e.type), 1, 7) ~= "wanted_" then
+                    elseif e.type == "wanted_fill" then
+                        if e.kinds ~= nil then fillKinds = fillKinds + 1 end
+                    elseif not seen[e.seq] then
+                        seen[e.seq] = true
+                        local at = #lines + 1
+                        while at > 1 and lines[at - 1].seq > e.seq do at = at - 1 end
+                        table.insert(lines, at, e)
+                    end
+                end
+            end
+        end
+        local file = {}
+        for i, e in ipairs(lines) do file[i] = e.type .. "=" .. tostring(e.kinds) end
+        for _, r in ipairs(cmd(seller14, "wallet.state", {}).receipts) do
+            if r.kind == "wanted_fill" and r.kinds ~= nil then fillKinds = fillKinds + 1 end
+        end
+        local got = table.concat(file, ",") .. " / ring " .. table.concat(ring, ",")
+        check(table.concat(file, ",") == table.concat(full, ",") and table.concat(ring, ",") == table.concat(tail, ",")
+            and fillKinds == 0,
+            "W-14n: the buyer's receipt files and ring count the kinds of an order's create, release and raise; a one-type order and a delivery carry none (" .. got .. ")")
+    end w14n() end
+
     EC.Export.market, EC.Export.emit, L.post = realMarket, realEmit, realPost
     ctx.setOnline({})
 end

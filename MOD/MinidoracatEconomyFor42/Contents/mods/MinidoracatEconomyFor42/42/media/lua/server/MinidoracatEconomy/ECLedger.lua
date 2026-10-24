@@ -456,6 +456,7 @@ function L.post(tx)
             sourceMod = tx.payload and tx.payload.sourceMod or nil, reasonCode = tx.reasonCode,
             nameKey = tx.payload and tx.payload.nameKey or nil,
             item = tx.payload and tx.payload.item or nil, qty = tx.payload and tx.payload.qty or nil,
+            kinds = tx.payload and tx.payload.kinds or nil,
         }) end
     end
 

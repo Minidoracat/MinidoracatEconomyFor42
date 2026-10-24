@@ -764,7 +764,7 @@ function Wd.create(player, args)
     if #postings > 0 then
         local res = L.post({
             kind = "wanted_create", requestId = requestId, reasonCode = "wanted_create", actor = username,
-            idemMeta = meta, payload = { item = order.item, qty = order.qty, orderId = order.id },
+            idemMeta = meta, payload = { item = order.item, kinds = kindsOf(order), qty = order.qty, orderId = order.id },
             postings = postings,
         })
         if not res.ok then
@@ -812,7 +812,8 @@ local function release(order)
     if #postings == 0 then return true, refunded end
     local res = L.post({
         kind = "wanted_release", requestId = "wclose:" .. order.id, reasonCode = "wanted_release", actor = order.owner,
-        allowFrozen = true, payload = { item = order.item, qty = order.qty, orderId = order.id }, postings = postings,
+        allowFrozen = true, payload = { item = order.item, kinds = kindsOf(order), qty = order.qty, orderId = order.id },
+        postings = postings,
     })
     if not res.ok then return false, res.error end
     for _, opt in ipairs(order.options) do
@@ -1201,7 +1202,8 @@ function Wd.raise(player, args)
     meta.currency, meta.held, meta.delta, meta.fee, meta.met = opt.currency, opt.held + delta, delta, fee, #met
     local res = L.post({
         kind = "wanted_raise", requestId = requestId, reasonCode = "wanted_raise", actor = username, idemMeta = meta,
-        payload = { item = order.item, qty = order.qty, orderId = order.id, option = args.option, currency = opt.currency },
+        payload = { item = order.item, kinds = kindsOf(order), qty = order.qty, orderId = order.id, option = args.option,
+            currency = opt.currency },
         postings = postings,
     })
     if not res.ok then return { ok = false, error = res.error, currency = opt.currency } end

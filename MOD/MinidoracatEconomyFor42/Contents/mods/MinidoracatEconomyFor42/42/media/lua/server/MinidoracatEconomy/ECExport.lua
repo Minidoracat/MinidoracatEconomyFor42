@@ -367,6 +367,7 @@ local function onCommitted(ev)
                 ref = ev.payload and ev.payload.ref or nil,
                 item = ev.payload and ev.payload.item or nil,
                 qty = ev.payload and ev.payload.qty or nil,
+                kinds = ev.payload and ev.payload.kinds or nil,
             }))
         end
     end

@@ -1163,6 +1163,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: shares per shop order (
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: an integration posting's reason on the statement (scenario 22 IR-1: the receipt file line keeps a facade posting's reason code, the ring check now asserts it too; TX-2b: the wallet's type column reads as the source's translated reason, the mod kind otherwise)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the admin's player receipts name an integration posting by its translated reason (TX-2c: the real ECAdminPanel's table cell, detail card and detail text; an untranslated code and a transfer keep the kind's word)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 13   -- +13: buy orders for any of several item types (scripts/test_wanted.lua W-14a..m: the alts' shape, a refused type named, the order and its created records, resend and conflict, rows / search / category, candidates per type, wrong and mixed types, the delivered type on letter / ledger / history / notice / event, its resend, new-only per type, closing and expiry records, offer and raise records, a one-type order unchanged)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a buy order's statement lines count its kinds (scripts/test_wanted.lua W-14n: create, release and raise in the receipt ring and the receipt files; a one-type order and a delivery carry none)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")

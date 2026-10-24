@@ -1164,8 +1164,9 @@ local function normalize(e, offsetMin)
         desc = product or accountName("MOD:" .. tostring(e.sourceMod))
         if type(e.reasonText) == "string" and e.reasonText ~= "" then desc = desc .. " - " .. e.reasonText end
     elseif type(e.item) == "string" then
-        -- shop purchases carry the item and count (ring and receipt files alike)
-        desc = itemName(e.item) .. " x" .. tostring(qty)
+        -- shop purchases carry the item and count (ring and receipt files alike); a buy order's
+        -- create / raise / release name the order as a group when it takes several types
+        desc = C.wantedName(e.item, e.kinds) .. " x" .. tostring(qty)
     elseif cpClass ~= nil then
         -- the faucet, the burn drain, a Discord deposit: name what moved the money, not a dash
         desc = accountName(cp)
@@ -1182,7 +1183,7 @@ local function normalize(e, offsetMin)
     return {
         recordKey = U.recordKey(e),
         ts = e.ts, txId = e.txId, kind = kind, currency = e.currency, amount = amount,
-        item = item, qty = qty, counterparty = cp, cpClass = cpClass,
+        item = item, qty = qty, kinds = tonumber(e.kinds), counterparty = cp, cpClass = cpClass,
         after = e.after or e.availableAfter, rolledBack = e.rolledBack == true,
         time = stampText(e.ts, offsetMin), kindText = label, desc = desc,
         reasonText = type(e.reasonText) == "string" and e.reasonText or nil,

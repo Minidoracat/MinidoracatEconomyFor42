@@ -117,7 +117,7 @@ function K.statement(panel, e, title)
         detail = e.desc
     end
     if e.item then
-        c.name = tr("Card_ItemQty", itemName(e.item), tostring(e.qty or 1))
+        c.name = tr("Card_ItemQty", C.wantedName(e.item, e.kinds), tostring(e.qty or 1))
         c.sub = detail and join({ e.kindText, detail }) or e.kindText
     else
         c.iconKey = KIND_ICONS[e.kind] or "coins"

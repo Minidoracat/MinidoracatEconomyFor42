@@ -2790,6 +2790,7 @@ local function txSummary(rec)
         item = type(payload.item) == "string" and payload.item
             or (type(payload.fullType) == "string" and payload.fullType or nil),
         qty = isFiniteInt(payload.qty) and payload.qty or nil,
+        kinds = isFiniteInt(payload.kinds) and payload.kinds or nil,
         sku = type(payload.sku) == "string" and payload.sku or nil,
         sourceMod = type(payload.sourceMod) == "string" and payload.sourceMod or nil,
         accounts = accounts, amounts = amounts, postingCount = count,

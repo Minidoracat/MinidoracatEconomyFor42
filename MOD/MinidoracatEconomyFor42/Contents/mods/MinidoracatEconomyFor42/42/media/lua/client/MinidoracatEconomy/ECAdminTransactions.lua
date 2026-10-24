@@ -213,11 +213,12 @@ local function txButtonRow(buttons, visible, x, y, width, height, skipA, skipB)
     return x
 end
 
--- "Market sale  Hammer x1": the kind and the item it moved, the head of a row and of the card.
+-- "Market sale  Hammer x1": the kind and the item it moved, the head of a row and of the card; a
+-- buy order's own transactions (create, raise, release) name it as a group when it takes several types.
 local function txHeadText(e)
     local head = U.kindText(tostring(e.kind or "?"))
     if type(e.item) == "string" and e.item ~= "" then
-        head = head .. "  " .. itemName(e.item)
+        head = head .. "  " .. C.wantedName(e.item, e.kinds)
         -- an event that never carried a lot size says nothing rather than inventing one
         local qty = math.floor(tonumber(e.qty) or 0)
         if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
@@ -1747,7 +1748,7 @@ function Page:txSummaryText(e)
     pair(tr("Admin_Tx_Amount"), txAmountText(e.amounts))
     pair(tr("Admin_Tx_Account"), txAccountsText(e.accounts))
     if type(e.item) == "string" and e.item ~= "" then
-        local label = getText(T .. "Paren", itemName(e.item), e.item)
+        local label = getText(T .. "Paren", C.wantedName(e.item, e.kinds), e.item)
         local qty = tonumber(e.qty)
         if qty ~= nil and qty > 1 then
             label = label .. "  " .. getText(T .. "Market_Lot", tostring(math.floor(qty)))

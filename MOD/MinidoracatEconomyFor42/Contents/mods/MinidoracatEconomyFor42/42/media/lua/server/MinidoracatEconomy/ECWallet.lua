@@ -55,7 +55,7 @@ function W.state(username)
             before = r.before, after = r.after,
             reservedBefore = r.reservedBefore, reservedAfter = r.reservedAfter,
             counterparty = r.counterparty,
-            item = r.item, qty = r.qty, sourceMod = r.sourceMod,
+            item = r.item, qty = r.qty, kinds = r.kinds, sourceMod = r.sourceMod,
             reasonCode = r.reasonCode, nameKey = r.nameKey,
             rolledBack = S.isRolledBack(epoch, r.seq),
         }

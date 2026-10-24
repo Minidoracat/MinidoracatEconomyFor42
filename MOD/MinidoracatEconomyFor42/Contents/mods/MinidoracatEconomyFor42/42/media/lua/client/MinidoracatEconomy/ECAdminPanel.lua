@@ -2930,10 +2930,8 @@ end
 function Admin:historyCard(row, auction)
     local rec = row.rec or EMPTY_ROW
     local hasItem = type(rec.item) == "string" and rec.item ~= ""
-    local name = hasItem and itemName(rec.item) or marketKindLabel(rec.kind)
     -- a record about a whole buy order of several types says how many it takes
-    local kinds = math.floor(tonumber(rec.kinds) or 1)
-    if hasItem and kinds > 1 then name = getText(T .. "Wanted_ItemGroup", name, tostring(kinds)) end
+    local name = hasItem and C.wantedName(rec.item, rec.kinds) or marketKindLabel(rec.kind)
     local qty = math.floor(tonumber(rec.qty) or 0)
     if qty > 1 then name = name .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
     local rows, tech = {}, {}
@@ -2973,7 +2971,7 @@ function Admin:receiptCard(e)
     local id = e.id
     local hasItem = type(e.item) == "string" and e.item ~= ""
     local qty = tonumber(e.qty)
-    local name = hasItem and itemName(e.item) or e.kindLabel
+    local name = hasItem and C.wantedName(e.item, e.kinds) or e.kindLabel
     if hasItem and qty ~= nil then name = name .. "  " .. getText(T .. "Market_Lot", tostring(math.floor(qty))) end
     local amount = tonumber(e.amount) or 0
     local rows, tech = {}, {}
@@ -3198,7 +3196,7 @@ function Admin:receiptDetailText(e)
         -- the count is optional as well: a line that names an item without one is printed
         -- without a number, because a 1 the file never carried would be reconciled against
         local qty = tonumber(e.qty)
-        body = body .. "\n" .. getText(T .. "Admin_Rcpt_Item", itemName(e.item),
+        body = body .. "\n" .. getText(T .. "Admin_Rcpt_Item", C.wantedName(e.item, e.kinds),
             qty ~= nil and tostring(math.floor(qty)) or "-")
     end
     if e.reasonText then body = body .. "\n" .. getText(T .. "Admin_Rcpt_Reason", e.reasonText) end
@@ -6302,7 +6300,7 @@ function Admin:rebuildReceipts()
             txId = e.txId, currency = e.currency, kind = e.kind, ts = e.ts, amount = amount,
             -- the type the table, the card and the detail text all say (U.postingKindText)
             kindLabel = kindLabel,
-            item = e.item, qty = e.qty, reasonText = U.reasonText(e.reason, e.reasonText),
+            item = e.item, qty = e.qty, kinds = e.kinds, reasonText = U.reasonText(e.reason, e.reasonText),
             sourceMod = e.sourceMod, before = e.before, after = e.after,
             reservedBefore = e.reservedBefore, reservedAfter = e.reservedAfter,
             rolled = e.rolledBack == true, actions = geo,
@@ -6310,7 +6308,7 @@ function Admin:rebuildReceipts()
             -- the transaction id is read in the detail window and opened by the row's button
             cells = {
                 stampText(e.ts, self.offsetMin),
-                kindLabel .. (type(e.item) == "string" and ("  " .. itemName(e.item)
+                kindLabel .. (type(e.item) == "string" and ("  " .. C.wantedName(e.item, e.kinds)
                     .. (qty ~= nil and (" x" .. tostring(math.floor(qty))) or "")) or ""),
                 amountStr, balanceStr,
             },
@@ -6907,9 +6905,7 @@ end
 function Admin:historyRow(rec, lh, width)
     local kind = tostring(rec.kind or "?")
     local qty = math.max(1, math.floor(tonumber(rec.qty) or 1))
-    local name = itemName(rec.item)
-    local kinds = math.floor(tonumber(rec.kinds) or 1)
-    if kinds > 1 then name = getText(T .. "Wanted_ItemGroup", name, tostring(kinds)) end
+    local name = C.wantedName(rec.item, rec.kinds)
     local head = marketKindLabel(kind) .. "  " .. name
     if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
     local meta = stampText(rec.ts, self.offsetMin)
