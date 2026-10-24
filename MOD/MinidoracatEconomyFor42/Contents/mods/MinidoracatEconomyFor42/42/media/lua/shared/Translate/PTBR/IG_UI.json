@@ -76,6 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "Texto completo copiado para a área de transferência",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "Falha ao copiar: a área de transferência não está disponível",
   "IGUI_MinidoracatEconomy_Title": "Central Econômica",
+  "IGUI_MinidoracatEconomy_WhatsNew": "Loja: digite a quantidade ou clique em Máx. O servidor define o limite por pedido.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "Moeda do Sobrevivente",
   "IGUI_MinidoracatEconomy_Currency_cat": "Moeda do Gato",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "Carteira",

@@ -76,6 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "已複製完整內容到剪貼簿",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "複製失敗，剪貼簿無法使用",
   "IGUI_MinidoracatEconomy_Title": "經濟中心",
+  "IGUI_MinidoracatEconomy_WhatsNew": "商店購買與出售可以直接輸入份數，也能按「最多」一次填滿；每筆上限由服主設定。",
   "IGUI_MinidoracatEconomy_Currency_survivor": "倖存幣",
   "IGUI_MinidoracatEconomy_Currency_cat": "貓幣",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "錢包",

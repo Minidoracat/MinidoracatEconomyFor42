@@ -76,6 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "Ganzer Text in die Zwischenablage kopiert",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "Kopieren fehlgeschlagen: Zwischenablage nicht verfügbar",
   "IGUI_MinidoracatEconomy_Title": "Wirtschaftszentrum",
+  "IGUI_MinidoracatEconomy_WhatsNew": "Laden: Menge direkt eingeben oder „Max.“ anklicken. Das Limit pro Bestellung legt der Server fest.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "Überlebensmünze",
   "IGUI_MinidoracatEconomy_Currency_cat": "Katzenmünze",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "Geldbörse",

@@ -76,6 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "全文をクリップボードにコピーしました",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "コピーに失敗しました（クリップボードが利用できません）",
   "IGUI_MinidoracatEconomy_Title": "経済センター",
+  "IGUI_MinidoracatEconomy_WhatsNew": "ショップで数量を直接入力したり、「最大」で上限まで入れたりできます。1回の上限はサーバーで設定されます。",
   "IGUI_MinidoracatEconomy_Currency_survivor": "サバイバーコイン",
   "IGUI_MinidoracatEconomy_Currency_cat": "ネココイン",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "ウォレット",

@@ -126,6 +126,23 @@ do
     F.docked = dock ~= nil
 end
 
+-- Update note (framework rev 24, WhatsNew): the first game after a player's update shows this
+-- version's note at the top right. release_train.py ready reads this block by regex: literal
+-- strings, one field per line; since moves to a version only when it ships a new note
+-- (family conventions.md, in-game update notes).
+do
+    local ui = MinidoracatUI and MinidoracatUI.v1
+    if ui ~= nil and ui.API_MAJOR == 1 and type(ui.API_REVISION) == "number" and ui.API_REVISION >= 24
+            and ui.CAPABILITIES ~= nil and ui.CAPABILITIES.whatsNew == true and ui.WhatsNew ~= nil then
+        ui.WhatsNew.register({
+            modId = "MinidoracatEconomyFor42",
+            since = "0.22.0",
+            name = "IGUI_MinidoracatEconomy_Title",
+            text = "IGUI_MinidoracatEconomy_WhatsNew",
+        })
+    end
+end
+
 -- Reject non-finite saved coordinates; the widget clamps finite out-of-bounds values.
 local function coord(value)
     local number = tonumber(value)

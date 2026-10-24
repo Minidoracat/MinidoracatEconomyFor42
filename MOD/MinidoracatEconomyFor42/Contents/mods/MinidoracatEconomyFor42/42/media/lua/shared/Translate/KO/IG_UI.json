@@ -76,6 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "전체 텍스트를 클립보드에 복사했습니다",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "복사 실패: 클립보드를 사용할 수 없습니다",
   "IGUI_MinidoracatEconomy_Title": "경제 센터",
+  "IGUI_MinidoracatEconomy_WhatsNew": "상점에서 수량을 직접 입력하거나 '최대'로 한 번에 채울 수 있습니다. 주문당 한도는 서버에서 정합니다.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "생존자 코인",
   "IGUI_MinidoracatEconomy_Currency_cat": "고양이 코인",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "지갑",
