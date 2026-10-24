@@ -76,7 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "Full text copied to the clipboard",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "Copy failed: the clipboard is unavailable",
   "IGUI_MinidoracatEconomy_Title": "Economy Center",
-  "IGUI_MinidoracatEconomy_WhatsNew": "Shop: type the quantity or press Max to fill it in. The server sets the limit per order.",
+  "IGUI_MinidoracatEconomy_WhatsNew": "Buy orders can now take up to 10 item types: press \"+ Also accept...\". Sellers may deliver any of them.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "Survivor Coin",
   "IGUI_MinidoracatEconomy_Currency_cat": "Cat Coin",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "Wallet",

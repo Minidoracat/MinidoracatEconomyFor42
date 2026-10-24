@@ -157,6 +157,7 @@ A server option; it only appears once the server allows it.
 [h3]Creating a buy order[/h3]
 [list]
 [*] [b]Where[/b]: at a terminal open Buy orders, then Create buy order. Pick the item and quantity (up to 50).
+[*] [b]Several types[/b]: after picking the item, press "+ Also accept..." to add more, up to 10 types per order, all at the same price and condition; press a type's tag to take it off. Lists show the order as "Axe (3 types)".
 [*] [b]Condition[/b]: Any condition, New only, or Durability at least a percentage; for tools with a head, such as axes, the lower of the body and the head counts.
 [*] [b]Payment options[/b]: up to three: a price each in a currency, or one kind of item from your bag at so many per unit.
 [*] [b]Held at creation[/b]: payment coins are held at once and payment items are taken from your main inventory.
@@ -166,6 +167,7 @@ A server option; it only appears once the server allows it.
 [h3]Delivering[/h3]
 [list]
 [*] [b]Deliver[/b]: a seller opens an order on the Browse tab of Buy orders at a terminal, picks one payment option and delivers, in parts if they like.
+[*] [b]Orders for several types[/b]: any type on the list counts, one type per delivery. The details list every type, and searching for any of them finds the order.
 [*] [b]Tax[/b]: coins pay the market sales tax; items do not.
 [*] [b]Mailed[/b]: delivered goods are mailed to the buyer, even if the buyer is offline or their mailbox is full.
 [/list]

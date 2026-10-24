@@ -76,7 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "Metnin tamamı panoya kopyalandı",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "Kopyalama başarısız: pano kullanılamıyor",
   "IGUI_MinidoracatEconomy_Title": "Ekonomi Merkezi",
-  "IGUI_MinidoracatEconomy_WhatsNew": "Mağaza: miktarı yazın ya da Maks. düğmesine basın. Sipariş başına sınırı sunucu belirler.",
+  "IGUI_MinidoracatEconomy_WhatsNew": "Alım talepleri artık 10 türe kadar eşya alır: “+ Bunları da kabul et...”. Herhangi biri sayılır.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "Hayatta Kalan Sikkesi",
   "IGUI_MinidoracatEconomy_Currency_cat": "Kedi Sikkesi",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "Cüzdan",

@@ -76,7 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "Полный текст скопирован в буфер обмена",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "Не удалось скопировать: буфер обмена недоступен",
   "IGUI_MinidoracatEconomy_Title": "Экономический центр",
-  "IGUI_MinidoracatEconomy_WhatsNew": "Магазин: введите количество или нажмите «Макс.». Лимит на заказ задаёт сервер.",
+  "IGUI_MinidoracatEconomy_WhatsNew": "Заявки на покупку принимают до 10 видов предметов: «+ Принимать также...». Подойдёт любой.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "Монета выжившего",
   "IGUI_MinidoracatEconomy_Currency_cat": "Кошачья монета",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "Кошелёк",
