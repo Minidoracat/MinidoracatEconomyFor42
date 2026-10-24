@@ -35,7 +35,7 @@
 --   meters                    { { label, frac, value, token } } 8 px bars
 --   rows                      { { label, value, note, token, coin } } label left, value right
 --   flow                      { { name, role, delta, token, note } } who paid, who received
---   sections                  { { title, lines = { { pill | mark = "ok"|"no", text, note } } } }
+--   sections                  { { title, lines = { { pill | mark = "ok"|"no" | item = fullType, text, note } } } }
 --   text                      free text ("\n\n" paragraphs, "\n" lines)
 --   note                      one muted line above the actions
 --   actions, actionsLeft      { { id, label, style, enabled, coin, tooltip, run } } -- the window
@@ -501,6 +501,10 @@ local function buildLine(b, ln, y, tx, tw)
     elseif ln.mark == "ok" or ln.mark == "no" then
         local s = markSize()
         push(ops, { k = K_MARK, x = b.x, y = y + math.floor((fontH.small - s) / 2), w = s, h = s, ok = ln.mark == "ok" })
+    elseif ln.item ~= nil then
+        -- an item's own icon, a text line high (a buy order's list of the types it takes)
+        local tex = U.itemTexture(ln.item)
+        if tex then push(ops, { k = K_TEX, tex = tex, x = b.x, y = y, w = fontH.small, h = fontH.small }) end
     end
     local top = y
     if not blank(ln.text) then
@@ -541,6 +545,8 @@ local function buildSection(b, s, y)
                     col1 = math.max(col1, U.pillWidth(label, value, coin, dot))
                 elseif ln.mark == "ok" or ln.mark == "no" then
                     col1 = math.max(col1, markSize())
+                elseif ln.item ~= nil then
+                    col1 = math.max(col1, fontH.small)
                 end
             end
         end

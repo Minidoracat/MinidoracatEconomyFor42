@@ -107,10 +107,23 @@ local function options(v)
     return type(v.options) == "table" and v.options or {}
 end
 
+-- The types an order also accepts besides its main item (adminView.alts; none on most orders).
+local function alts(v)
+    return type(v.alts) == "table" and v.alts or {}
+end
+
+-- The order's name: its main item, or "<main> and N types" when it takes several -- the words of
+-- C.wantedName, built on U.itemName like every other name on this page.
+local function orderName(v)
+    local n = 1 + #alts(v)
+    if n > 1 then return getText(T .. "Wanted_ItemGroup", U.itemName(v.item), tostring(n)) end
+    return U.itemName(v.item)
+end
+
 -- What a forced cancel gives back, one line each: every coin option's held money to the buyer's
 -- wallet, the item option's escrowed items to the buyer's mailbox. The listing fee is not refunded.
 function P.cancelLines(v)
-    local lines = { getText(T .. "Admin_Wd_CancelHead", U.itemName(v.item), tostring(num(v.qty)), tostring(num(v.qtyTotal))) }
+    local lines = { getText(T .. "Admin_Wd_CancelHead", orderName(v), tostring(num(v.qty)), tostring(num(v.qtyTotal))) }
     for _, o in ipairs(options(v)) do
         if type(o) == "table" and num(o.held) > 0 then
             if o.kind == "coin" then
@@ -391,7 +404,7 @@ function Page:openCancel(row, problem)
     local width = DIALOG_W
     if type(getCore) == "function" then width = math.min(DIALOG_W, getCore():getScreenWidth() - 40) end
     local dialog
-    dialog = api.show({ title = getText(T .. "Admin_Wd_CancelTitle", U.itemName(v.item), tostring(v.owner)),
+    dialog = api.show({ title = getText(T .. "Admin_Wd_CancelTitle", orderName(v), tostring(v.owner)),
         text = table.concat(lines, "\n"), theme = U.theme, width = width,
         input = { placeholder = tr("Admin_Wd_ReasonHint") },
         confirmText = tr("Admin_Wd_Cancel"), cancelText = tr("Admin_Wd_Keep"), danger = true,
@@ -450,12 +463,22 @@ function Page:detailOf(row)
         end
     end
     local id = row.id
+    local sections = { { title = tr("Admin_Wd_Col_Pay"), lines = lines } }
+    if #alts(v) > 0 then
+        -- every type the order takes, each with its icon: any one of them fills it
+        local kinds = { { item = v.item, text = U.itemName(v.item) } }
+        for _, alt in ipairs(alts(v)) do kinds[#kinds + 1] = { item = alt, text = U.itemName(alt) } end
+        local title = getText(T .. "Wanted_KindsTitle", tostring(#kinds))
+        table.insert(sections, 1, { title = title, lines = kinds })
+        out[#out + 1] = title
+        for _, k in ipairs(kinds) do out[#out + 1] = k.text end
+    end
     local card = {
         source = tr("Admin_Wd_Detail"), sourceIcon = "market", item = v.item, iconKey = "market",
-        name = U.itemName(v.item), sub = getText(T .. "Admin_Wd_Qty", tostring(num(v.qty)), tostring(num(v.qtyTotal))),
+        name = orderName(v), sub = getText(T .. "Admin_Wd_Qty", tostring(num(v.qty)), tostring(num(v.qtyTotal))),
         chips = { { value = status, token = token, dot = true } },
         rows = rows,
-        sections = { { title = tr("Admin_Wd_Col_Pay"), lines = lines } },
+        sections = sections,
         tech = { { label = tr("Detail_ItemCode"), value = tostring(v.item) }, { label = tr("Admin_Wd_Col_Id"), value = tostring(id) } },
         techOpen = true,
         actions = {
@@ -465,7 +488,7 @@ function Page:detailOf(row)
                 run = function() self:cardAction(id, "cancel") end },
         },
     }
-    return U.itemName(v.item), table.concat(out, "\n"), card
+    return orderName(v), table.concat(out, "\n"), card
 end
 
 function Page:rowById(id)
@@ -537,7 +560,7 @@ function Page:rebuild()
             local qty = getText(T .. "Admin_Wd_Qty", tostring(num(v.qty)), tostring(num(v.qtyTotal)))
             local qtyW = textWidth(qty)
             local nameRoom = math.max(20, e.pillX - 8 - nameX - qtyW - PAD)
-            e.nameText = fitText(U.itemName(v.item), nameRoom)
+            e.nameText = fitText(orderName(v), nameRoom)
             e.qtyX = nameX + textWidth(e.nameText) + PAD
             e.qtyText = e.qtyX + qtyW <= e.pillX - 8 and qty or nil
             -- payment options left to right; what does not fit is counted, never cut mid-number

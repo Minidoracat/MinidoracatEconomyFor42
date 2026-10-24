@@ -909,3 +909,148 @@ do
         "W-13g: a memo file that exists but cannot be read is never rewritten and takes no new memo; once readable the memos are back")
     ctx.setOnline({})
 end
+
+-- ---- W-14: an order that takes any of several item types (`alts`): the shape, a refusal names
+-- its type, matching, the delivered type on every record of a fill, whole-order records count the
+-- kinds, and a one-type order exactly as before ----
+do
+    local admin14, buyer14, seller14 = fresh("w14")
+    local bu14 = buyer14:getUsername()
+    local function create(args)
+        args.options = args.options or { { kind = "coin", currency = "survivor", unitPrice = 10 } }
+        return cmd(buyer14, "wanted.create", args)
+    end
+    local market, events, posts = {}, {}, {}
+    local realMarket, realEmit, realPost = EC.Export.market, EC.Export.emit, L.post
+    EC.Export.market = function(user, rec) market[#market + 1] = { user = user, rec = rec }; return realMarket(user, rec) end
+    EC.Export.emit = function(kind, fields) events[#events + 1] = { kind = kind, fields = fields }; return realEmit(kind, fields) end
+    L.post = function(tx) posts[#posts + 1] = tx; return realPost(tx) end
+    local function last(list, pred)
+        for i = #list, 1, -1 do if pred(list[i]) then return list[i] end end
+        return nil
+    end
+
+    cmd(buyer14, "wanted.mine", {})        -- the first command binds the login: not a refusal's doing
+    local before14 = state(buyer14)
+    local tooMany = {}
+    for i = 1, Wd.ALTS_MAX + 1 do tooMany[i] = "Base.Alt" .. i end
+    local shapes = { {}, { "Base.Nails" }, { "Base.Screws", "Base.Screws" }, { 7 }, { string.rep("x", 129) }, tooMany,
+        { x = "Base.Screws" }, "Base.Screws" }
+    local allInvalid = true
+    for _, alts in ipairs(shapes) do
+        if create({ item = "Base.Nails", qty = 1, alts = alts }).error ~= "invalid_args" then allInvalid = false end
+    end
+    check(allInvalid and state(buyer14) == before14,
+        "W-14a: alts are 1..ALTS_MAX distinct type names other than the item; any other shape is invalid_args with zero change")
+
+    local blocked = create({ item = "Base.Nails", qty = 1, alts = { "Base.Screws", "Base.Map" } })
+    local unknown = create({ item = "Base.Nails", qty = 1, alts = { "Base.Nope" } })
+    local primary = create({ item = "Base.Map", qty = 1, alts = { "Base.Screws" } })
+    check(blocked.error == "not_whitelisted" and blocked.rule == "category" and blocked.item == "Base.Map"
+        and unknown.error == "unknown_item" and unknown.item == "Base.Nope"
+        and primary.error == "not_whitelisted" and primary.item == "Base.Map" and state(buyer14) == before14,
+        "W-14b: a type the whitelist refuses, wanted or also accepted, is refused by its name with zero change")
+
+    local o = create({ item = "Base.Nails", qty = 6, alts = { "Base.Screws", "Base.Hammer" } })
+    local rid = "want-" .. serial
+    local rec = order(o.orderId)
+    local hammerCat = EC.itemCategory(ScriptManager.instance:FindItem("Base.Hammer"))
+    local created = last(market, function(m) return m.rec.kind == "wanted_created" end)
+    local createdEv = last(events, function(e) return e.kind == "wanted.created" end)
+    check(o.ok and o.kinds == 3 and #rec.alts == 2 and rec.alts[1].item == "Base.Screws" and rec.alts[1].name == "Base.Screws"
+        and rec.alts[2].item == "Base.Hammer" and rec.alts[2].category == hammerCat and hammerCat ~= rec.category
+        and created.rec.item == "Base.Nails" and created.rec.kinds == 3 and createdEv.fields.alts[2] == "Base.Hammer",
+        "W-14c: the order keeps its own item and the alts in order with their names and categories; the reply and the created records count three kinds")
+
+    local again = create({ requestId = rid, item = "Base.Nails", qty = 6, alts = { "Base.Screws", "Base.Hammer" } })
+    local swapped = create({ requestId = rid, item = "Base.Nails", qty = 6, alts = { "Base.Hammer", "Base.Screws" } })
+    local plain = create({ requestId = rid, item = "Base.Nails", qty = 6 })
+    check(again.duplicate == true and again.orderId == o.orderId and again.kinds == 3 and swapped.error == "request_conflict"
+        and plain.error == "request_conflict" and S.modData().wanted.count == 1,
+        "W-14d: a resend answers the first order with its kinds; other alts, or none, under the same id are request_conflict")
+
+    local row = cmd(seller14, "wanted.browse", {}).rows[1]
+    local mineRow = cmd(buyer14, "wanted.mine", {}).orders[1]
+    local adminRow = cmd(admin14, "admin.wanted", { action = "list" }).rows[1]
+    local function total(args) return cmd(seller14, "wanted.browse", args).total end
+    check(row.alts[1] == "Base.Screws" and row.alts[2] == "Base.Hammer" and mineRow.alts[2] == "Base.Hammer"
+        and adminRow.alts[1] == "Base.Screws" and total({ query = "hammer" }) == 1
+        and total({ query = "zzlocal", types = { "Base.Screws" } }) == 1 and total({ category = hammerCat }) == 1
+        and total({ query = "rope" }) == 0,
+        "W-14e: browse, mine and admin rows carry the alts as type names; a query, a resolved type or the category of any type it takes finds the order")
+
+    local screws, hammer, rope = native(seller14, "Base.Screws", 3), native(seller14, "Base.Hammer", 1), native(seller14, "Base.Rope", 1)
+    local counts, nRows = {}, 0
+    for _, r in ipairs(cmd(seller14, "wanted.candidates", { orderId = o.orderId }).rows) do
+        counts[r.item], nRows = (counts[r.item] or 0) + r.count, nRows + 1
+    end
+    check(nRows == 2 and counts["Base.Screws"] == 3 and counts["Base.Hammer"] == 1 and counts["Base.Rope"] == nil,
+        "W-14f: candidates list the seller's copies of every type the order takes, one row per type, and nothing else")
+
+    before14 = state(buyer14, seller14)
+    local wrong = cmd(seller14, "wanted.fill", { orderId = o.orderId, option = 1, itemIds = ids(rope), unitPrice = 10 })
+    local twoTypes = cmd(seller14, "wanted.fill", { orderId = o.orderId, option = 1,
+        itemIds = { screws[1]:getID(), hammer[1]:getID() }, unitPrice = 10 })
+    check(wrong.error == "wrong_item" and twoTypes.error == "mixed_items" and state(buyer14, seller14) == before14,
+        "W-14g: a type the order does not take is wrong_item; two of its types in one delivery are mixed_items; zero change")
+
+    local filled = cmd(seller14, "wanted.fill", { orderId = o.orderId, option = 1, itemIds = ids(screws, 1, 2), unitPrice = 10 })
+    local fillRid = "want-" .. serial
+    local letter = nil
+    for _, e in ipairs(M.list(bu14)) do if e.kind == "wanted" then letter = e end end
+    local post = last(posts, function(t) return t.kind == "wanted_fill" end)
+    local bought = last(market, function(m) return m.rec.kind == "wanted_filled" end)
+    local sold = last(market, function(m) return m.rec.kind == "wanted_sold" end)
+    local told = notices(buyer14, "wanted_filled")
+    local filledEv = last(events, function(e) return e.kind == "wanted.filled" end)
+    check(filled.ok and filled.item == "Base.Screws" and filled.qty == 2 and order(o.orderId).qty == 4
+        and letter and letter.item == "Base.Screws" and letter.qty == 2 and post.payload.item == "Base.Screws"
+        and bought.rec.item == "Base.Screws" and bought.rec.kinds == nil and sold.rec.item == "Base.Screws"
+        and told[#told].item == "Base.Screws" and filledEv.fields.item == "Base.Screws" and reservedInvariant(),
+        "W-14h: a delivery of another type the order takes is that type on the buyer's letter, the ledger payload (the price report reads it), both history lines, the notice and the event")
+    local resent = cmd(seller14, "wanted.fill", { requestId = fillRid, orderId = o.orderId, option = 1,
+        itemIds = ids(screws, 1, 2), unitPrice = 10 })
+    check(resent.duplicate == true and resent.item == "Base.Screws" and order(o.orderId).qty == 4,
+        "W-14i: a resent delivery answers with the type it delivered")
+
+    local o2 = create({ item = "Base.Nails", qty = 2, cond = { new = true }, alts = { "Base.Axe" } })
+    local worn = native(seller14, "Base.Axe", 1)[1]
+    worn.condition = 9
+    local refusedNew = cmd(seller14, "wanted.fill", { orderId = o2.orderId, option = 1, itemIds = { worn:getID() }, unitPrice = 10 })
+    local tookNew = cmd(seller14, "wanted.fill", { orderId = o2.orderId, option = 1, itemIds = ids(native(seller14, "Base.Axe", 1)),
+        unitPrice = 10 })
+    check(o2.ok and refusedNew.error == "not_new" and tookNew.ok and tookNew.item == "Base.Axe",
+        "W-14j: new-only judges a copy of another type the order takes against that type's own new copy")
+
+    local cancelled = cmd(buyer14, "wanted.cancel", { orderId = o.orderId })
+    local closedRec = last(market, function(m) return m.rec.kind == "wanted_closed" and m.rec.orderId == o.orderId end)
+    local o3 = create({ item = "Base.Nails", qty = 1, alts = { "Base.Screws" } })
+    advance(EC.sandbox("MarketListingDays", 7) * 86400000 + 1)
+    fire("OnTickEvenPaused")
+    local expiredNote = nil
+    for _, n in ipairs(notices(buyer14, "wanted_expired")) do if n.orderId == o3.orderId then expiredNote = n end end
+    check(cancelled.ok and closedRec and closedRec.rec.item == "Base.Nails" and closedRec.rec.kinds == 3
+        and expiredNote and expiredNote.item == "Base.Nails" and expiredNote.kinds == 2,
+        "W-14k: a closed order's record and its expiry notice name the order's own item and count its kinds")
+
+    local o4 = create({ item = "Base.Nails", qty = 2, alts = { "Base.Screws" } })
+    local offered = cmd(seller14, "wanted.offer", { orderId = o4.orderId, option = 1, unitPrice = 12, qty = 1 })
+    local raised = cmd(buyer14, "wanted.raise", { orderId = o4.orderId, option = 1, unitPrice = 12 })
+    local offerNote, raisedNote = notices(buyer14, "wanted_offer"), notices(seller14, "wanted_raised")
+    local raisedRec = last(market, function(m) return m.rec.kind == "wanted_raised" end)
+    local metRec = last(market, function(m) return m.rec.kind == "wanted_offer_met" end)
+    check(offered.ok and raised.ok and raised.met == 1 and offerNote[#offerNote].kinds == 2 and raisedNote[#raisedNote].kinds == 2
+        and raisedRec.rec.kinds == 2 and metRec.rec.kinds == 2,
+        "W-14l: an offer, a raise and the offer it meets count the order's kinds on their notices and records")
+
+    local single = create({ item = "Base.Rope", qty = 1 })
+    local singleRow = nil
+    for _, r in ipairs(cmd(seller14, "wanted.browse", {}).rows) do if r.id == single.orderId then singleRow = r end end
+    local singleRec = last(market, function(m) return m.rec.kind == "wanted_created" end)
+    check(single.ok and single.kinds == nil and order(single.orderId).alts == nil and singleRow and singleRow.alts == nil
+        and singleRec.rec.orderId == single.orderId and singleRec.rec.kinds == nil,
+        "W-14m: a one-type order stores, shows and records no alts and no kinds")
+
+    EC.Export.market, EC.Export.emit, L.post = realMarket, realEmit, realPost
+    ctx.setOnline({})
+end

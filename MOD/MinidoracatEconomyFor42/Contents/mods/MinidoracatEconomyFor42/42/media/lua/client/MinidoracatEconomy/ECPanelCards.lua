@@ -344,7 +344,7 @@ function K.history(panel, e, title, auction)
     local cur = e.currency
     local c = { source = title, sourceIcon = auction and "auction" or "market", item = e.item, rows = {}, tech = {} }
     if e.item then
-        c.name = tr("Card_KindItem", e.kindText, lotName(itemName(e.item), e.qty or 1))
+        c.name = tr("Card_KindItem", e.kindText, lotName(C.wantedName(e.item, rec.kinds), e.qty or 1))
     else
         c.iconKey, c.name = auction and "auction" or "market", e.kindText
     end

@@ -600,6 +600,7 @@ end)()
     C.Keyboard = { invalidate = noop }
     C.DetailWindow = { close = noop, isOpen = function() return false end }
     C.itemLabel = function(t) return "item:" .. tostring(t) end
+    C.wantedName = function(t, n) return (tonumber(n) or 1) > 1 and ("group:" .. tostring(t) .. "|" .. n) or C.itemLabel(t) end
     C.ItemPicker = { queryTypes = function(q)
         if q == "zz-local" then return { "Base.Bandage" }, { ["Base.Bandage"] = true } end
         return nil, {}
@@ -669,6 +670,12 @@ end)()
     local types = last("browse").types
     check(type(types) == "table" and types[1] == "Base.Bandage" and last("browse").query == "zz-local",
         "page: a translated keyword is sent with the item types it names, for the server to match before paging")
+    -- an order of several types is named as a group and matches a keyword that names any of its types
+    p:onReply("browse", { ok = true, requestId = last("browse").requestId, query = "zz-local", page = 1, pages = 1, rows = {
+        { id = "w2", item = "Base.Nails", alts = { "Base.Bandage" }, qty = 1, qtyTotal = 1, options = {} },
+        { id = "w3", item = "Base.Nails", qty = 1, qtyTotal = 1, options = {} } } })
+    check(#p.rows == 1 and p.rows[1].id == "w2" and p.rows[1].name == "group:Base.Nails|2",
+        "page: an order of several types is listed by its group name and found by any type it takes")
     -- the candidates of another order are never shown in this fill dialog
     local got = nil
     p.dialog = { kind = "fill", ctx = { view = { id = "B" } }, onCandidates = function(_, a) got = a end }
@@ -688,7 +695,7 @@ end)()
     p:onEmpty()
     check(p.mode == "browse", "page: the empty record's button switches to browsing")
     C.ReadGate, ISPanel = savedGate, savedPanel
-    C.UI, C.PanelWidgets, C.itemLabel, C.WantedText, C.PanelWanted = nil, nil, nil, nil, nil
+    C.UI, C.PanelWidgets, C.itemLabel, C.wantedName, C.WantedText, C.PanelWanted = nil, nil, nil, nil, nil, nil
     C.Keyboard, C.DetailWindow, C.ItemPicker, C.nearTerminal, C.sendWanted = nil, nil, nil, nil, nil
     for _, m in ipairs({ "ISUI/ISPanel", "MinidoracatEconomy/ECRowActions", "MinidoracatEconomy/ECDetailWindow" }) do
         package.loaded[m] = nil

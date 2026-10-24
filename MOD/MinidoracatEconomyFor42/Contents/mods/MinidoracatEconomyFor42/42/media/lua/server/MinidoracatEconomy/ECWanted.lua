@@ -5,10 +5,11 @@
 --   wanted.offer / wanted.raise / wanted.dismiss                             counter-offers
 --   admin.wanted {action = list | cancel}                                    read / write gate
 --
--- A buyer asks for one item type (1..50 units, optionally new-only or a minimum durability) and
--- offers up to three ways to be paid: at most one coin option per currency and at most one item
--- option (one kind of item, perUnit copies per unit wanted). Everything is escrowed when the
--- order is created:
+-- A buyer asks for one item type, or for any of up to ten (`item` plus ALTS_MAX `alts`, one price
+-- for all of them; one delivery is one type), 1..50 units, optionally new-only or a minimum
+-- durability, and offers up to three ways to be paid: at most one coin option per currency and at
+-- most one item option (one kind of item, perUnit copies per unit wanted). Everything is escrowed
+-- when the order is created:
 --   * every coin option reserves unitPrice x qty in the buyer's own wallet (bucket "reserved") and
 --     pays its listing fee in the same `wanted_create` transaction, so `held == unitPrice x qty`
 --     for every coin option for as long as the order is open;
@@ -57,6 +58,7 @@ local Wd = EC.Wanted
 Wd.MAX_ORDERS = 500               -- server-wide: every item option is a receipt the recovery core keeps
 Wd.PAGE = 20
 Wd.OPTIONS_MAX = 3
+Wd.ALTS_MAX = 9                   -- types an order takes besides its own item: ten in all
 Wd.QTY_MAX = Mk.QTY_MAX
 Wd.CANDIDATES_MAX = 200
 Wd.OFFERS_MAX = 10                -- per order
@@ -324,11 +326,36 @@ local function offerOf(order, username)
     return nil
 end
 
+-- The types an order also takes, as the wire carries them (nil for a one-type order).
+local function altTypes(order)
+    if not order.alts then return nil end
+    local out = {}
+    for i, a in ipairs(order.alts) do out[i] = a.item end
+    return out
+end
+
+-- Does the order take this type: its own item or one of its alts.
+local function accepts(order, fullType)
+    if fullType == order.item then return true end
+    if order.alts then
+        for _, a in ipairs(order.alts) do
+            if a.item == fullType then return true end
+        end
+    end
+    return false
+end
+
+-- How many types the order takes, on its whole-order records; nil (one type) keeps them as before.
+local function kindsOf(order)
+    return order.alts and #order.alts + 1 or nil
+end
+
 -- mode: nil (public row: the viewer's own offer only), "mine" (held, fees, every offer) or
 -- "admin" (held and fees, the number of offers but not their text).
 local function view(order, viewer, mode)
     local full = mode ~= nil
     local v = { id = order.id, owner = order.owner, item = order.item, name = order.name, category = order.category,
+        alts = altTypes(order),
         weight = order.weight, qty = order.qty, qtyTotal = order.qtyTotal, at = order.at, expiresAt = order.expiresAt,
         mine = order.owner == viewer, blocked = order.blocked, options = {},
         cond = order.cond and { new = order.cond.new, minPct = order.cond.minPct } or nil }
@@ -373,13 +400,30 @@ local function queryOf(args)
     return q ~= "" and q or nil
 end
 
--- An order matches when its type is one the client resolved the query to (Mk.typesOf), or when the raw query
--- is found in its fullType, English name or buyer. Types only widen a query; alone they are ignored.
+-- An order matches when one of its types is one the client resolved the query to (Mk.typesOf), or
+-- when the raw query is found in a fullType or English name it takes, or its buyer. Types only widen
+-- a query; alone they are ignored.
 local function matches(o, query, types)
     if not query then return true end
     if types and types[o.item] then return true end
-    local hay = string.lower(tostring(o.item) .. " " .. tostring(o.name or "") .. " " .. tostring(o.owner))
-    return string.find(hay, query, 1, true) ~= nil
+    local hay = tostring(o.item) .. " " .. tostring(o.name or "") .. " " .. tostring(o.owner)
+    if o.alts then
+        for _, a in ipairs(o.alts) do
+            if types and types[a.item] then return true end
+            hay = hay .. " " .. tostring(a.item) .. " " .. tostring(a.name or "")
+        end
+    end
+    return string.find(string.lower(hay), query, 1, true) ~= nil
+end
+
+local function inCategory(o, category)
+    if o.category == category then return true end
+    if o.alts then
+        for _, a in ipairs(o.alts) do
+            if a.category == category then return true end
+        end
+    end
+    return false
 end
 
 local function page(rows, requested, viewer, mode)
@@ -393,8 +437,9 @@ local function page(rows, requested, viewer, mode)
 end
 
 -- args = { page?, query?, types?, category?, currency? = "all" }. Newest first; the query matches
--- the fullType, the English name and the buyer, or one of the `types` the client resolved it to
--- from translated names -- before paging, so a localized search finds every page's orders.
+-- the fullType and English name of any type the order takes and the buyer, or one of the `types`
+-- the client resolved it to from translated names -- before paging, so a localized search finds
+-- every page's orders. The category is any of its types' categories.
 function Wd.browse(username, args)
     args = type(args) == "table" and args or {}
     local query = queryOf(args)
@@ -411,7 +456,7 @@ function Wd.browse(username, args)
     end
     local rows = {}
     for _, o in pairs(md.wanted.orders) do
-        local take = matches(o, query, types) and (category == nil or o.category == category)
+        local take = matches(o, query, types) and (category == nil or inCategory(o, category))
         if take and currency ~= Mk.CURRENCY_ALL then
             take = false
             for _, opt in ipairs(o.options) do
@@ -433,12 +478,13 @@ end
 
 -- ---------- item checks ----------
 
--- Why this copy cannot fill the order, or nil: the condition first (new-only, minimum durability),
--- then the market's own whitelist and state check. Returns reason, rule, pct.
-local function refusal(order, item)
+-- Why this copy (of `fullType`, a type the order takes) cannot fill the order, or nil: the
+-- condition first (new-only against that type's own new copy, minimum durability), then the
+-- market's own whitelist and state check. Returns reason, rule, pct.
+local function refusal(order, item, fullType)
     local cond = order.cond
     if cond and cond.new then
-        if not Codec.isCanonical(item, order.item) then return "not_new" end
+        if not Codec.isCanonical(item, fullType) then return "not_new" end
     elseif cond and cond.minPct then
         local pct = Codec.durabilityPct(item)
         if pct < cond.minPct then return "worn", nil, pct end
@@ -448,8 +494,8 @@ local function refusal(order, item)
     return nil
 end
 
--- The seller's top-level copies of the wanted type, folded by snapshot signature and verdict (the
--- shape of Mk.candidates), at most CANDIDATES_MAX copies looked at.
+-- The seller's top-level copies of every type the order takes, folded by snapshot signature (the
+-- type is part of it) and verdict (the shape of Mk.candidates), at most CANDIDATES_MAX copies looked at.
 function Wd.candidates(player, order)
     local rows, groups, seen = {}, {}, 0
     local inv = player:getInventory()
@@ -460,9 +506,9 @@ function Wd.candidates(player, order)
         local it = items:get(i)
         local id, fullType = nil, nil
         pcall(function() id = it:getID() fullType = it:getFullType() end)
-        if id and fullType == order.item then
+        if id and fullType and accepts(order, fullType) then
             seen = seen + 1
-            local reason, rule, pct = refusal(order, it)
+            local reason, rule, pct = refusal(order, it, fullType)
             local snap = Codec.snapshot(it)
             local key = tostring(reason) .. "|" .. tostring(rule) .. "|" .. tostring(pct) .. "|" .. Codec.signature(snap)
             local row = groups[key]
@@ -546,10 +592,21 @@ local function parseCreate(args)
             return nil
         end
     end
+    -- the types the order also takes: distinct type names, none of them the item itself
+    local alts = args.alts
+    if alts ~= nil then
+        if type(alts) ~= "table" or #alts < 1 or #alts > Wd.ALTS_MAX or EC.countKeys(alts) ~= #alts then return nil end
+        local seen = { [args.item] = true }
+        for _, t in ipairs(alts) do
+            if type(t) ~= "string" or t == "" or #t > 128 or seen[t] then return nil end
+            seen[t] = true
+        end
+    end
     local list = args.options
     if type(list) ~= "table" or #list < 1 or #list > Wd.OPTIONS_MAX or EC.countKeys(list) ~= #list then return nil end
+    -- alts in the order sent, "" for none: a resend with other alts (or none) is request_conflict
     local fp = { item = args.item, qty = args.qty, condNew = cond ~= nil and cond.new == true,
-        condPct = cond and cond.minPct or 0, n = #list }
+        condPct = cond and cond.minPct or 0, n = #list, alts = alts and table.concat(alts, ",") or "" }
     local options, currencies, items = {}, {}, 0
     for i, o in ipairs(list) do
         if type(o) ~= "table" then return nil end
@@ -584,7 +641,7 @@ local function scriptFacts(fullType)
     return type(name) == "string" and name or nil, type(category) == "string" and category or "other"
 end
 
--- args = { item, qty, cond?, options = { {kind="coin", currency, unitPrice} | {kind="item", itemIds, perUnit} }, requestId }
+-- args = { item, alts?, qty, cond?, options = { {kind="coin", currency, unitPrice} | {kind="item", itemIds, perUnit} }, requestId }
 function Wd.create(player, args)
     local username, login = S.principal(player), S.login(player)
     if type(args) ~= "table" or not requestIdOf(args) then return { ok = false, error = "invalid_args" } end
@@ -604,14 +661,20 @@ function Wd.create(player, args)
                 if cur then prior.held[cur] = value end
             end
             prior.item, prior.qty, prior.expiresAt = recorded.item, recorded.qty, recorded.expiresAt
+            prior.kinds = recorded.kinds
         end
         return prior
     end
     -- a new request: from here the live configuration decides
     local max = EC.sandbox("WantedMaxPerPlayer", 5)
     if max <= 0 then return { ok = false, error = "wanted_disabled" } end
+    -- every type is judged on its own; a refusal names the type it refused
     local allowed, why, rule = Codec.typeAllowed(args.item)
-    if not allowed then return { ok = false, error = why, rule = rule } end
+    if not allowed then return { ok = false, error = why, rule = rule, item = args.item } end
+    for _, t in ipairs(args.alts or {}) do
+        allowed, why, rule = Codec.typeAllowed(t)
+        if not allowed then return { ok = false, error = why, rule = rule, item = t } end
+    end
     local pmin, pmax = EC.sandbox("MarketPriceMin", 1), EC.sandbox("MarketPriceMax", 1000000)
     local feePct = EC.sandbox("MarketListingFeePercent", 2)
     for _, opt in ipairs(options) do
@@ -656,14 +719,23 @@ function Wd.create(player, args)
 
     local ms = EC.now()
     local name, category = scriptFacts(args.item)
+    local alts = nil
+    if args.alts then
+        alts = {}
+        for i, t in ipairs(args.alts) do
+            local altName, altCategory = scriptFacts(t)
+            alts[i] = { item = t, name = altName, category = altCategory }
+        end
+    end
     local order = {
-        id = S.newId(), owner = username, item = args.item, name = name, category = category,
+        id = S.newId(), owner = username, item = args.item, name = name, category = category, alts = alts,
         weight = M.scriptWeight(args.item), qtyTotal = args.qty, qty = args.qty, cond = cond,
         options = {}, offers = {}, tradeSchema = L.TRADE_SCHEMA, at = ms,
         expiresAt = ms + EC.sandbox("MarketListingDays", 7) * 86400000,
     }
     local meta = copy(fp)
     meta.orderId, meta.lotQty, meta.expiresAt = order.id, lotOpt and #lotOpt.itemIds or nil, order.expiresAt
+    meta.kinds = kindsOf(order)
     for cur, fee in pairs(fees) do meta["fee:" .. cur], meta["held:" .. cur] = fee, held[cur] end
     local rec = nil
     if lotOpt then
@@ -716,12 +788,12 @@ function Wd.create(player, args)
         X.emit("ledger.anomaly", { kind = "wanted", orderId = order.id, username = username,
             resolution = "idempotency-record-refused" })
     end
-    X.emit("wanted.created", { orderId = order.id, owner = username, item = order.item, qty = order.qty,
-        held = held, fees = fees, lotId = lotOpt and lotOpt.lot.id or nil, lotItem = lotOpt and lotOpt.lot.item or nil,
-        lotQty = lotOpt and lotOpt.lot.lotQty or nil, expiresAt = order.expiresAt })
-    X.market(username, { kind = "wanted_created", orderId = order.id, item = order.item, qty = order.qty })
-    return { ok = true, orderId = order.id, item = order.item, qty = order.qty, fees = fees, held = held,
-        lotQty = lotOpt and lotOpt.lot.lotQty or nil, expiresAt = order.expiresAt }
+    X.emit("wanted.created", { orderId = order.id, owner = username, item = order.item, alts = altTypes(order),
+        qty = order.qty, held = held, fees = fees, lotId = lotOpt and lotOpt.lot.id or nil,
+        lotItem = lotOpt and lotOpt.lot.item or nil, lotQty = lotOpt and lotOpt.lot.lotQty or nil, expiresAt = order.expiresAt })
+    X.market(username, { kind = "wanted_created", orderId = order.id, item = order.item, kinds = kindsOf(order), qty = order.qty })
+    return { ok = true, orderId = order.id, item = order.item, kinds = kindsOf(order), qty = order.qty, fees = fees,
+        held = held, lotQty = lotOpt and lotOpt.lot.lotQty or nil, expiresAt = order.expiresAt }
 end
 
 -- ---------- closing ----------
@@ -775,8 +847,8 @@ local function closeOrder(order, reason, closeReason)
     X.emit("wanted.closed", { orderId = order.id, owner = order.owner, item = order.item, qty = order.qty,
         qtyTotal = order.qtyTotal, reason = reason, refunded = refunded, returnedQty = entry and entry.qty or nil,
         mailId = entry and entry.id or nil, closeReason = closeReason })
-    X.market(order.owner, { kind = "wanted_closed", orderId = order.id, item = order.item, qty = order.qty,
-        qtyTotal = order.qtyTotal, reason = reason, mailId = entry and entry.id or nil })
+    X.market(order.owner, { kind = "wanted_closed", orderId = order.id, item = order.item, kinds = kindsOf(order),
+        qty = order.qty, qtyTotal = order.qtyTotal, reason = reason, mailId = entry and entry.id or nil })
     return true, refunded, entry
 end
 
@@ -823,7 +895,8 @@ function Wd.adminCancel(admin, orderId, reason)
     X.audit({ action = "wanted", admin = admin, target = order.owner, field = orderId, before = tostring(order.item),
         after = ok and "closed" or "refund_failed", reason = reason })
     if not ok then return false, "refund_failed" end
-    notify(order.owner, { kind = "wanted_cancelled", orderId = order.id, item = order.item, qty = order.qty, reason = reason })
+    notify(order.owner, { kind = "wanted_cancelled", orderId = order.id, item = order.item, kinds = kindsOf(order),
+        qty = order.qty, reason = reason })
     return true, refunded
 end
 
@@ -841,9 +914,10 @@ function Wd.onTick()
         local reason = o.closing or "expired"
         if closeOrder(o, reason, o.closeReason) then
             if reason == "expired" then
-                notify(o.owner, { kind = "wanted_expired", orderId = o.id, item = o.item, qty = o.qty })
+                notify(o.owner, { kind = "wanted_expired", orderId = o.id, item = o.item, kinds = kindsOf(o), qty = o.qty })
             elseif reason == "admin" then
-                notify(o.owner, { kind = "wanted_cancelled", orderId = o.id, item = o.item, qty = o.qty, reason = o.closeReason })
+                notify(o.owner, { kind = "wanted_cancelled", orderId = o.id, item = o.item, kinds = kindsOf(o), qty = o.qty,
+                    reason = o.closeReason })
             end
         end
     end
@@ -905,7 +979,7 @@ function Wd.fill(player, args)
             prior.qty, prior.currency, prior.price, prior.tax = recorded.qty, recorded.currency, recorded.paid, recorded.tax
             prior.unitPrice = recorded.currency and args.unitPrice or nil
             prior.payItem, prior.payQty, prior.mailId = recorded.payItem, recorded.payQty, recorded.mailId
-            prior.remaining, prior.closed = recorded.remaining, recorded.closed
+            prior.remaining, prior.closed, prior.item = recorded.remaining, recorded.closed, recorded.item
         end
         return prior
     end
@@ -941,8 +1015,8 @@ function Wd.fill(player, args)
     local items, refused, inv = takeable(player, args.itemIds, function(item)
         local fullType = nil
         pcall(function() fullType = item:getFullType() end)
-        if fullType ~= order.item then return { ok = false, error = "wrong_item" } end
-        local reason, rule, pct = refusal(order, item)
+        if not accepts(order, fullType) then return { ok = false, error = "wrong_item" } end
+        local reason, rule, pct = refusal(order, item, fullType)
         if not reason then return nil end
         return { ok = false, error = reason, rule = rule, pct = pct, minPct = pct and order.cond.minPct or nil }
     end)
@@ -950,6 +1024,8 @@ function Wd.fill(player, args)
 
     for _, item in ipairs(items) do Codec.detachParts(item, inv) end
     local snapshot = Codec.lotSnapshot(items)
+    -- the type delivered (one delivery is one signature, so one type): what every record of this fill names
+    local got = snapshot.type
     local fillId = S.newId()
     local _, seq = EC.parseId(fillId)
     local price = coin and opt.unitPrice * n or nil
@@ -966,7 +1042,7 @@ function Wd.fill(player, args)
     local payQty = (not coin) and opt.perUnit * n or nil
     -- the seller's payment letter gets its id now, so the record a resend answers from can name it
     local payMailId = payQty and S.newId() or nil
-    meta.orderId, meta.fillId, meta.qty = order.id, fillId, n
+    meta.orderId, meta.fillId, meta.qty, meta.item = order.id, fillId, n, got
     meta.remaining, meta.closed = order.qty - n, order.qty - n == 0
     if coin then meta.currency, meta.paid, meta.tax = opt.currency, opt.unitPrice * n, tax
     else meta.payItem, meta.payQty, meta.mailId = opt.lot.item, payQty, payMailId end
@@ -974,7 +1050,7 @@ function Wd.fill(player, args)
     if #postings > 0 then
         local res = L.post({
             kind = "wanted_fill", requestId = requestId, reasonCode = "wanted_fill", actor = username, idemMeta = meta,
-            payload = { item = order.item, qty = n, orderId = order.id, option = args.option, seller = username,
+            payload = { item = got, qty = n, orderId = order.id, option = args.option, seller = username,
                 buyer = order.owner, tax = coin and tax or nil, currency = coin and opt.currency or nil },
             postings = postings,
         })
@@ -994,7 +1070,7 @@ function Wd.fill(player, args)
         table.remove(order.offers, own)
         dropMemos(order.id, { ownOffer })
     end
-    local entry = M.add(order.owner, { kind = "wanted", item = order.item, qty = n, txId = txId, price = price,
+    local entry = M.add(order.owner, { kind = "wanted", item = got, qty = n, txId = txId, price = price,
         currency = coin and opt.currency or nil, seller = username, snapshot = snapshot })
     local pay = payQty and M.add(username, { kind = "wanted_pay", item = opt.lot.item, qty = payQty, txId = txId,
         snapshot = opt.lot.snapshot, listingId = opt.lot.id, seller = order.owner }, payMailId) or nil
@@ -1007,19 +1083,19 @@ function Wd.fill(player, args)
     end
     local closed = order.qty == 0 and closeOrder(order, "completed") or false
     local currency = coin and opt.currency or nil
-    X.emit("wanted.filled", { orderId = order.id, owner = order.owner, seller = username, item = order.item, qty = n,
+    X.emit("wanted.filled", { orderId = order.id, owner = order.owner, seller = username, item = got, qty = n,
         option = args.option, price = price, unitPrice = coin and opt.unitPrice or nil, tax = coin and tax or nil,
         currency = currency, payItem = pay and pay.item or nil, payQty = payQty, txId = txId, mailId = entry.id,
         payMailId = pay and pay.id or nil, remaining = order.qty, closed = closed })
-    X.market(order.owner, { kind = "wanted_filled", orderId = order.id, item = order.item, qty = n, price = price,
+    X.market(order.owner, { kind = "wanted_filled", orderId = order.id, item = got, qty = n, price = price,
         currency = currency, payItem = pay and pay.item or nil, payQty = payQty, other = username, txId = txId })
-    X.market(username, { kind = "wanted_sold", orderId = order.id, item = order.item, qty = n, price = price,
+    X.market(username, { kind = "wanted_sold", orderId = order.id, item = got, qty = n, price = price,
         tax = coin and tax or nil, currency = currency, payItem = pay and pay.item or nil, payQty = payQty,
         other = order.owner, txId = txId, mailId = pay and pay.id or nil })
-    notify(order.owner, { kind = "wanted_filled", orderId = order.id, item = order.item, qty = n, price = price,
+    notify(order.owner, { kind = "wanted_filled", orderId = order.id, item = got, qty = n, price = price,
         unitPrice = coin and opt.unitPrice or nil, currency = currency, payItem = pay and pay.item or nil,
         payQty = payQty, from = username, remainingQty = order.qty })
-    local out = { ok = true, txId = txId, orderId = order.id, option = args.option, qty = n, currency = currency,
+    local out = { ok = true, txId = txId, orderId = order.id, option = args.option, item = got, qty = n, currency = currency,
         price = price, unitPrice = coin and opt.unitPrice or nil, tax = coin and tax or nil,
         payItem = pay and pay.item or nil, payQty = payQty, remaining = order.qty, closed = closed }
     if coin then
@@ -1067,8 +1143,8 @@ function Wd.offer(player, args)
     order.offers[#order.offers + 1] = f
     X.emit("wanted.offered", { orderId = order.id, owner = order.owner, from = username, option = args.option,
         unitPrice = f.unitPrice, qty = f.qty, currency = opt.currency })
-    notify(order.owner, { kind = "wanted_offer", orderId = order.id, item = order.item, qty = f.qty, price = f.unitPrice,
-        currency = opt.currency, from = username, memo = memo })
+    notify(order.owner, { kind = "wanted_offer", orderId = order.id, item = order.item, kinds = kindsOf(order), qty = f.qty,
+        price = f.unitPrice, currency = opt.currency, from = username, memo = memo })
     return { ok = true, orderId = order.id, offer = offerView(order, f) }
 end
 
@@ -1134,14 +1210,14 @@ function Wd.raise(player, args)
     dropMemos(order.id, met)
     X.emit("wanted.raised", { orderId = order.id, owner = username, option = args.option, currency = opt.currency,
         unitPrice = opt.unitPrice, delta = delta, fee = fee, met = #met, txId = res.txId })
-    X.market(username, { kind = "wanted_raised", orderId = order.id, item = order.item, qty = order.qty,
-        price = opt.unitPrice, currency = opt.currency, fee = fee, txId = res.txId })
+    X.market(username, { kind = "wanted_raised", orderId = order.id, item = order.item, kinds = kindsOf(order),
+        qty = order.qty, price = opt.unitPrice, currency = opt.currency, fee = fee, txId = res.txId })
     for _, f in ipairs(met) do
         local seller = S.accountOf(f.from)
-        X.market(seller, { kind = "wanted_offer_met", orderId = order.id, item = order.item, qty = order.qty,
-            price = opt.unitPrice, currency = opt.currency, other = username })
-        notify(seller, { kind = "wanted_raised", orderId = order.id, item = order.item, qty = order.qty,
-            price = opt.unitPrice, currency = opt.currency, from = username })
+        X.market(seller, { kind = "wanted_offer_met", orderId = order.id, item = order.item, kinds = kindsOf(order),
+            qty = order.qty, price = opt.unitPrice, currency = opt.currency, other = username })
+        notify(seller, { kind = "wanted_raised", orderId = order.id, item = order.item, kinds = kindsOf(order),
+            qty = order.qty, price = opt.unitPrice, currency = opt.currency, from = username })
     end
     return { ok = true, txId = res.txId, orderId = order.id, option = args.option, currency = opt.currency,
         unitPrice = opt.unitPrice, held = opt.held, delta = delta, fee = fee,

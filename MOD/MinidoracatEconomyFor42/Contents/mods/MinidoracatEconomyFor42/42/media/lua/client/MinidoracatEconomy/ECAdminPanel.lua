@@ -2931,6 +2931,9 @@ function Admin:historyCard(row, auction)
     local rec = row.rec or EMPTY_ROW
     local hasItem = type(rec.item) == "string" and rec.item ~= ""
     local name = hasItem and itemName(rec.item) or marketKindLabel(rec.kind)
+    -- a record about a whole buy order of several types says how many it takes
+    local kinds = math.floor(tonumber(rec.kinds) or 1)
+    if hasItem and kinds > 1 then name = getText(T .. "Wanted_ItemGroup", name, tostring(kinds)) end
     local qty = math.floor(tonumber(rec.qty) or 0)
     if qty > 1 then name = name .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
     local rows, tech = {}, {}
@@ -6904,7 +6907,10 @@ end
 function Admin:historyRow(rec, lh, width)
     local kind = tostring(rec.kind or "?")
     local qty = math.max(1, math.floor(tonumber(rec.qty) or 1))
-    local head = marketKindLabel(kind) .. "  " .. itemName(rec.item)
+    local name = itemName(rec.item)
+    local kinds = math.floor(tonumber(rec.kinds) or 1)
+    if kinds > 1 then name = getText(T .. "Wanted_ItemGroup", name, tostring(kinds)) end
+    local head = marketKindLabel(kind) .. "  " .. name
     if qty > 1 then head = head .. "  " .. getText(T .. "Market_Lot", tostring(qty)) end
     local meta = stampText(rec.ts, self.offsetMin)
     if type(rec.other) == "string" and rec.other ~= "" then

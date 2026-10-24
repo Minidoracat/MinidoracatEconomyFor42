@@ -20,7 +20,7 @@
 --       the item types a keyword names through that same `search` text: list (sent with every
 --       item keyword search, at most 200) and set (for a page's own filter); nil, {} for none.
 --
---   C.ItemPicker.create(owner, policy, onPick, onCancel, noDrag)
+--   C.ItemPicker.create(owner, policy, onPick, onCancel, noDrag, multi?)
 --       the framework's UI.ItemPicker overlay (rev 11), NOT added: the owning page adds it last
 --       (so it paints over its own content), positions it at (0, 0) and resizes it to the whole
 --       page (`noDrag`: the host takes no dropped item, so the hint line does not offer it).
@@ -29,6 +29,13 @@
 --       itself; neither sends a command. Methods: open(), close(), isOpen(), cancel(),
 --       resize(w, h), keyboardTargets(), dispose(). The overlay debounces its own search and
 --       re-asks when the English index lands (revision), so no host ticks it.
+--       multi = { max?, title?, exclude?(rec) -> true hides the row, onPickMany(records) }: when
+--       P.canMulti(), the overlay ticks rows instead (framework rev 25): open(fullTypes) ticks
+--       those first, "Done" closes it and hands every ticked record over in the order ticked;
+--       onPick is then never called. Without the capability `multi` is ignored (one pick).
+--
+--   C.ItemPicker.canMulti()
+--       whether the framework's picker has that ticking mode (API rev 25, itemPickerMulti).
 
 require "MinidoracatEconomy/ECWidgets"
 require "MinidoracatEconomy/ECItemNames"
@@ -163,16 +170,30 @@ local function namesNote(noDrag)
     return tr("Admin_Pick_DragHint")
 end
 
-function P.create(owner, policy, onPick, onCancel, noDrag)
-    return U.framework.ItemPicker.new({
+function P.canMulti()
+    local ui = U.framework
+    return ui ~= nil and (tonumber(ui.API_REVISION) or 0) >= 25 and ui.CAPABILITIES ~= nil
+        and ui.CAPABILITIES.itemPickerMulti == true
+end
+
+function P.create(owner, policy, onPick, onCancel, noDrag, multi)
+    local filter = policy == "market" and notFixed or nil
+    local opts = {
         theme = U.theme, placeholder = tr("Admin_Pick_Search"),
         items = function() return P.universe().items end,
-        filter = policy == "market" and notFixed or nil,
+        filter = filter,
         revision = function() return Names.revision end,
         note = function() return namesNote(noDrag) end,
         onPick = function(_, rec) onPick(rec) end,
         onCancel = function() if onCancel then onCancel() end end,
-    })
+    }
+    if multi and P.canMulti() then
+        local exclude = multi.exclude
+        opts.filter = function(rec) return (filter == nil or filter(rec)) and not (exclude and exclude(rec)) end
+        opts.multi, opts.maxPicks, opts.title = true, multi.max, multi.title
+        opts.onPickMany = function(_, recs) multi.onPickMany(recs) end
+    end
+    return U.framework.ItemPicker.new(opts)
 end
 
 return P

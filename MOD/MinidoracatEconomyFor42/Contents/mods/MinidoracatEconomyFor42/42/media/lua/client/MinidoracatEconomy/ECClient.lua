@@ -900,7 +900,7 @@ end
 -- unclaimed }; and to both sides of a buy order: wanted_filled / wanted_expired / wanted_cancelled
 -- (the buyer), wanted_offer (the buyer: a seller asks for more), wanted_raised (the sellers whose
 -- asking price the buyer just met), with { orderId, item, qty, price?, currency?, payItem?,
--- payQty?, from?, memo?, remainingQty?, reason? }. The toast has to fire without any page being
+-- payQty?, from?, memo?, remainingQty?, reason?, kinds? }. The toast has to fire without any page being
 -- open, so it lives here.
 -- %3 of the message: a sale nets the tax off, a cancellation names its reason, every auction
 -- money line is the amount that moved; auction_unsold uses two parameters only.
@@ -936,8 +936,11 @@ handlers["market.notice"] = function(args)
     -- %4 / %5 of a buy-order notice: the other account and the units still wanted
     local from = type(args.from) == "string" and args.from or "-"
     local remaining = tostring(math.max(0, math.floor(tonumber(args.remainingQty) or 0)))
+    -- a delivery names the type that was handed over; a notice about the whole order names its
+    -- main item and, on an order of several types, how many it takes
+    local name = kind == "wanted_filled" and C.itemLabel(args.item) or C.wantedName(args.item, args.kinds)
     -- the args go in the one lookup: probing the key bare makes the engine warn about %1
-    local text = getTextOrNull("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, C.itemLabel(args.item),
+    local text = getTextOrNull("IGUI_MinidoracatEconomy_Market_Notice_" .. kind, name,
         tostring(math.max(1, math.floor(tonumber(args.qty) or 1))), third, from, remaining)
     if text then
         -- a seller's note to the buyer is shown as written: it is the player's own words
@@ -1183,6 +1186,15 @@ function C.itemLabel(fullType)
         end
         itemLabels[fullType] = name
     end
+    return name
+end
+
+-- A buy order's name: its main item, and on an order of several types (kinds = 1 + its alts)
+-- "<main> and N types" (Wanted_ItemGroup). One type reads exactly like C.itemLabel.
+function C.wantedName(fullType, kinds)
+    local name = type(fullType) == "string" and C.itemLabel(fullType) or tostring(fullType or "-")
+    local n = math.floor(tonumber(kinds) or 1)
+    if n > 1 then return getText("IGUI_MinidoracatEconomy_Wanted_ItemGroup", name, tostring(n)) end
     return name
 end
 

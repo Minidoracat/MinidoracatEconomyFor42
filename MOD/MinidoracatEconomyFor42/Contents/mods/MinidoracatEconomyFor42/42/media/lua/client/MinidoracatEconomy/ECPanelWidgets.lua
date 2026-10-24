@@ -1295,7 +1295,8 @@ local function historyRow(rec, offsetMin)
     elseif money and EACH_KINDS[kind] then
         money = getText(T .. "Wanted_Each", money)
     end
-    local name = itemName(rec.item)
+    -- a record about a whole buy order of several types says how many it takes (rec.kinds)
+    local name = C.wantedName(rec.item, rec.kinds)
     local lot = lotText(qty)
     local parts = { stampText(tonumber(rec.ts) or 0, offsetMin) }
     if type(rec.other) == "string" and rec.other ~= "" then

@@ -16,8 +16,11 @@
 -- onTimeout). A press after a timeout carries the same requestId, so the server answers a
 -- repeat with what it already did instead of doing it twice; anything changed is a new request.
 --
---   create  item type (the framework item picker over the market universe), count 1..50, the
---           condition (any / new only / durability at least N%), 1..3 payment options: coins
+--   create  item type (the framework item picker over the market universe) and up to ALTS_MAX more
+--           types it also accepts (one shared unit price; a seller hands over any one of them):
+--           ticked in a second picker where the framework can (rev 25), one at a time through the
+--           first otherwise; count 1..50, the condition (any / new only / durability at least N%,
+--           open while any of the types has durability), 1..3 payment options: coins
 --           (one currency each, unit price) or items (one option at most: a backpack group from
 --           market.candidates and how many per unit). The reader states each option's reserve and
 --           listing fee, the items taken from the backpack, the expiry and the mailbox slot.
@@ -53,6 +56,7 @@ local fill, border, text, textWidth, fitText = U.fill, U.border, U.text, U.textW
 local OPTIONS_MAX = 3
 local QTY_MAX = 50
 local MEMO_MAX = 64
+local ALTS_MAX = 9    -- the types an order takes besides its main item (10 in all)
 
 local function tr(key, ...) return getText(T .. key, ...) end
 local function int(v) return math.floor(tonumber(v) or 0) end
@@ -85,6 +89,33 @@ local function fillFitted(combo, keys, label, selected)
     for i, o in ipairs(combo.options) do
         local full = label(keys[i])
         if o.text ~= full then o.tooltip = full end
+    end
+end
+
+-- How many types an order takes: its main item and the ones it also accepts (view.alts).
+local function kindsOf(v) return 1 + (type(v.alts) == "table" and #v.alts or 0) end
+
+-- One type the order also accepts: a chip with the item's icon, its name and a remove mark;
+-- pressing it takes the type off the list. The label is fitted when it is set (Dlg:itemRow),
+-- never per frame.
+local REMOVE_MARK = 10
+local AltChip = U.Button:derive("MinidoracatEconomyWantedAltChip")
+function AltChip:render()
+    local title = self.title
+    self.title = ""
+    U.Button.render(self)
+    self.title = title
+    local s = fontH.small
+    local y = math.floor((self.height - s) / 2)
+    if self.tex then self:drawTextureScaled(self.tex, 8, y, s, s, 1, 1, 1, 1) end
+    local hovered = self.enable and self.mouseOver and self:isMouseOver()
+    text(self, title, 8 + s + 4, y, hovered and "text" or "textMuted")
+    -- the framework's close icon; a plain x where the icon set has none
+    local Icons = U.framework and U.framework.Icons
+    local mx = self.width - 6 - REMOVE_MARK
+    if not (Icons and Icons.draw(self, "close", mx, math.floor((self.height - REMOVE_MARK) / 2), REMOVE_MARK,
+        U.color(hovered and "text" or "textFaint"), 1)) then
+        text(self, "x", mx + 2, y, hovered and "text" or "textFaint")
     end
 end
 
@@ -215,7 +246,8 @@ end
 function Dlg:dispose()
     self:closeCombos()
     Keys.blurInputs(self.panel)
-    if self.picker then self.picker:dispose() end
+    if self.itemPicker then self.itemPicker:dispose() end
+    if self.altPicker then self.altPicker:dispose() end
 end
 
 function Dlg:onCancel() self.page:closeDialog() end
@@ -270,32 +302,133 @@ function Dlg:buildCreate()
     end
     self.optCount = 1
     self.addButton = self:add(button(self, tr("Wanted_AddOption"), Dlg.onAddOption))
+    -- the types the order also accepts: one chip each, a button to add more, and the count
+    self.alts, self.altChips = {}, {}
+    for i = 1, ALTS_MAX do
+        local b = self:add(button(self, "", Dlg.onRemoveAlt))
+        setmetatable(b, AltChip)
+        b.internal, b.kindControl = i, true
+        self.altChips[i] = b
+    end
+    self.itemButton.kindControl = true
+    self.alsoButton = self:add(button(self, tr("Wanted_AlsoAccept"), Dlg.onAlsoAccept))
+    self.alsoButton.focusLabel = tr("Wanted_AlsoAccept")
+    self.kindLabel = newLabel(self.form)
+    self.kindLabel.noFocus = true
+    self.all[#self.all + 1] = self.kindLabel
     self.first = self.itemButton
-    -- last child: it paints over the whole dialog while it is open
-    self.picker = C.ItemPicker.create(self, "market", function(rec) self:onItemPicked(rec) end,
-        function() self.panel:layoutDialog(self) end, true)
-    self:addChild(self.picker)
+    -- last children: they paint over the whole dialog while open. self.picker is whichever one
+    -- is in use (the window's Escape, the layout and the keyboard read it)
+    self.itemPicker = C.ItemPicker.create(self, "market", function(rec) self:onItemPicked(rec) end,
+        function() self.pickingAlt = nil; self.panel:layoutDialog(self) end, true)
+    self:addChild(self.itemPicker)
+    self.picker = self.itemPicker
+    if C.ItemPicker.canMulti() then
+        self.altPicker = C.ItemPicker.create(self, "market", nil, function()
+            self.picker = self.itemPicker
+            self.panel:layoutDialog(self)
+        end, true, { max = ALTS_MAX, title = tr("Wanted_PickAltsTitle"),
+            exclude = function(rec) return rec.fullType == self.itemType end,
+            onPickMany = function(recs) self:onAltsPicked(recs) end })
+        self:addChild(self.altPicker)
+    end
 end
 
 function Dlg:onPickItem()
     self:closeCombos()
+    self.pickingAlt = nil
     self.picker:open()
     self.panel:layoutDialog(self)
     Keys.invalidate(self.panel)
 end
 
--- The type the order asks for. Whether a durability bar means anything for it is read from its
--- script (Item.getConditionMax, Item.java:851); without one the "at least N%" choice is shut.
-function Dlg:onItemPicked(rec)
-    self.itemType, self.itemName = rec.fullType, C.itemLabel(rec.fullType)
+-- Whether a durability bar means anything for a type, read from its script
+-- (Item.getConditionMax, Item.java:851).
+local function hasDurability(fullType)
+    local rec = C.ItemPicker.universe().byType[fullType]
     local ok, max = pcall(function() return rec.script:getConditionMax() end)
-    self.hasCondition = ok and (tonumber(max) or 0) > 0
-    if not self.hasCondition and self.condTabs:getSelected() == "min" then self.condTabs:setSelected("any", true) end
+    return ok and (tonumber(max) or 0) > 0
+end
+
+-- The "at least N%" choice stays open while any type the order takes has a durability bar;
+-- without one it is shut.
+function Dlg:refreshCondition()
+    local any = self.itemType ~= nil and hasDurability(self.itemType)
+    for _, ft in ipairs(self.alts) do any = any or hasDurability(ft) end
+    self.hasCondition = any
+    if not any and self.condTabs:getSelected() == "min" then self.condTabs:setSelected("any", true) end
+end
+
+-- The main type the order asks for; a type it already accepted besides leaves that list. With
+-- the one-pick picker (no rev 25) a pick for "also accept" lands here too and is added instead.
+function Dlg:onItemPicked(rec)
+    if self.pickingAlt then
+        self.pickingAlt = nil
+        return self:addAlt(rec.fullType)
+    end
+    self.itemType, self.itemName = rec.fullType, C.itemLabel(rec.fullType)
+    for i = #self.alts, 1, -1 do
+        if self.alts[i] == rec.fullType then table.remove(self.alts, i) end
+    end
+    self:refreshCondition()
     self.itemButton:setWidth(math.min(320, textWidth(self.itemName) + 22))
     U.setButtonTitle(self.itemButton, self.itemName)
     self:setError(nil)
     self:edited()
     Keys.focusControl(self.qtyField._entry, Keys.isKeyboardFocused(Keys.focused()))
+end
+
+-- "Also accept...": the ticking picker with what is on the list ticked already, or (an older
+-- framework) the one-pick picker, marked so its pick is added to the list.
+function Dlg:onAlsoAccept()
+    if self.itemType == nil then return end
+    self:closeCombos()
+    if self.altPicker then
+        self.picker = self.altPicker
+        self.altPicker:open(self.alts)
+    else
+        if #self.alts >= ALTS_MAX then return end
+        self.pickingAlt = true
+        self.picker:open()
+    end
+    self.panel:layoutDialog(self)
+    Keys.invalidate(self.panel)
+end
+
+-- The ticking picker's "Done": its ticks are the list now, in the order they were ticked.
+function Dlg:onAltsPicked(recs)
+    self.picker = self.itemPicker
+    local alts = {}
+    for _, rec in ipairs(recs) do
+        if rec.fullType ~= self.itemType and #alts < ALTS_MAX then alts[#alts + 1] = rec.fullType end
+    end
+    self.alts = alts
+    self:altsChanged(self.alsoButton)
+end
+
+function Dlg:addAlt(fullType)
+    local known = fullType == self.itemType or #self.alts >= ALTS_MAX
+    for _, ft in ipairs(self.alts) do known = known or ft == fullType end
+    if not known then self.alts[#self.alts + 1] = fullType end
+    self:altsChanged(#self.alts < ALTS_MAX and self.alsoButton or self.altChips[#self.alts])
+end
+
+function Dlg:onRemoveAlt(b)
+    if self.alts[b.internal] == nil then return end
+    table.remove(self.alts, b.internal)
+    self:altsChanged(self.altChips[math.min(b.internal, #self.alts)] or self.alsoButton)
+end
+
+-- The list changed: a refusal that named one of its types is answered, the condition follows,
+-- and the keyboard lands on `focus` (the row's controls were just laid out again).
+function Dlg:altsChanged(focus)
+    local c = self.err and self.err.control
+    if c and c.kindControl then self:setError(nil) end
+    self:refreshCondition()
+    self:edited()
+    self.panel:layoutDialog(self)
+    Keys.invalidate(self.panel)
+    if focus then Keys.focusControl(focus, Keys.isKeyboardFocused(Keys.focused())) end
 end
 
 function Dlg:onOptionKind(id, tabs)
@@ -379,6 +512,8 @@ end
 -- option's lot. Fields that do not read yet count as nothing.
 function Dlg:createLines()
     local out = {}
+    -- an order of several types: any one of them is a delivery, at the one unit price
+    if #self.alts > 0 then out[1] = tr("Wanted_SumKinds", tostring(1 + #self.alts)) end
     local qty = number(self.qtyField) or 0
     local info = self:policy()
     for i = 1, self.optCount do
@@ -456,11 +591,46 @@ function Dlg:createArgs()
             options[i] = { kind = "item", itemIds = ids, perUnit = per }
         end
     end
-    return { item = self.itemType, qty = qty, cond = self:condValue(), options = options }
+    local args = { item = self.itemType, qty = qty, cond = self:condValue(), options = options }
+    if #self.alts > 0 then
+        local alts = {}
+        for i, ft in ipairs(self.alts) do alts[i] = ft end
+        args.alts = alts
+    end
+    return args
+end
+
+-- The item row: the main type, a chip per type also accepted (pressing one takes it off), "also
+-- accept..." (shut until the main type is picked, and at ALTS_MAX with the one-pick picker) and,
+-- with a list, how many types the order takes.
+function Dlg:itemRow()
+    local items = { self.itemButton }
+    local s = fontH.small
+    for i, ft in ipairs(self.alts) do
+        local b, name = self.altChips[i], C.itemLabel(ft)
+        local room = math.min(200, textWidth(name))
+        b:setWidth(8 + s + 4 + room + 6 + REMOVE_MARK + 6)
+        b.fullTitle, b.tex = name, U.itemTexture(ft)
+        b:setTitle(fitText(name, room))
+        b.focusLabel = tr("Wanted_RemoveAlt", name)
+        b.tooltip = b.focusLabel
+        items[#items + 1] = b
+    end
+    self.alsoButton:setEnable(self.itemType ~= nil and (self.altPicker ~= nil or #self.alts < ALTS_MAX))
+    items[#items + 1] = self.alsoButton
+    if #self.alts > 0 then
+        local l = self.kindLabel
+        local count = tr("Wanted_KindCount", tostring(1 + #self.alts), tostring(1 + ALTS_MAX))
+        l:setWidth(textWidth(count) + 4)
+        l:setHeight(self.alsoButton.height)
+        setLabel(l, count)
+        items[#items + 1] = l
+    end
+    return items
 end
 
 function Dlg:createRows(rows)
-    rows[#rows + 1] = { label = tr("Wanted_F_Item"), items = { self.itemButton } }
+    rows[#rows + 1] = { label = tr("Wanted_F_Item"), items = self:itemRow() }
     rows[#rows + 1] = { label = tr("Wanted_F_Qty"), items = { self.qtyField } }
     local condItems = { self.condTabs }
     if self.condTabs:getSelected() == "min" then condItems[2] = self.pctField end
@@ -743,8 +913,14 @@ function Dlg:onConfirm()
     -- the answer is about the option that goes out now (a moved price is that option's)
     self.sentChoice = args.option
     self:setError(nil)
-    local item = self.kind == "create" and args.item or self.ctx.view.item
-    self.page:send(self.kind, args, item, self.kind)
+    -- the toast names what this press is about: a delivery the type handed over, otherwise the order
+    local item, kinds = self.ctx.view and self.ctx.view.item, self.ctx.view and kindsOf(self.ctx.view)
+    if self.kind == "create" then
+        item, kinds = args.item, 1 + #self.alts
+    elseif self.kind == "fill" then
+        item, kinds = self:group().item or item, nil
+    end
+    self.page:send(self.kind, args, item, self.kind, nil, kinds)
 end
 
 -- The server refused: the next press is a new request. Two refusals are a question put back to
@@ -764,7 +940,19 @@ function Dlg:onRefused(args)
     if code == "item_not_found" and self.kind == "create" then self.panel:askCandidates(C.newRequestId()) end
     self.dirtySummary = true
     local name = FIELD_OF[code]
-    self:setError(X.errorText(args), name and self[name] or nil)
+    local msg, control = X.errorText(args), name and self[name] or nil
+    -- a type of a new order refused on its own (the whitelist, a unique item): named first, and
+    -- the refusal marks its button or chip
+    if self.kind == "create" and type(args.item) == "string" then
+        msg = tr("Wanted_ErrItem", C.itemLabel(args.item), msg)
+        if control == nil then
+            if args.item == self.itemType then control = self.itemButton end
+            for i, ft in ipairs(self.alts) do
+                if ft == args.item then control = self.altChips[i] end
+            end
+        end
+    end
+    self:setError(msg, control)
 end
 
 -- No answer: it may or may not have landed. Nothing is resent; a press repeats the same request.
@@ -791,13 +979,16 @@ function Dlg:placeRows(rows, y)
             c:setVisible(true)
             x = x + c.width + 6
             lineH = math.max(lineH, c.height)
-            local d = { kind = "button", control = c, label = row.label ~= "" and row.label or c.fullTitle }
-            if c.addOptionWithData then
-                d.kind = "combo"
-            elseif c._focusKind == "entry" then
-                d.kind, d.control, d.frame = "entry", c._entry, c
+            -- a plain count is read, not focused; a control may name itself (an item chip's "remove")
+            if not c.noFocus then
+                local d = { kind = "button", control = c, label = c.focusLabel or (row.label ~= "" and row.label or c.fullTitle) }
+                if c.addOptionWithData then
+                    d.kind = "combo"
+                elseif c._focusKind == "entry" then
+                    d.kind, d.control, d.frame = "entry", c._entry, c
+                end
+                self.targets[#self.targets + 1] = d
             end
-            self.targets[#self.targets + 1] = d
         end
         local l = self:label(i)
         l:setX(0); l:setY(y); l:setWidth(self.labelW); l:setHeight(math.max(lineH, CHIP_H))
@@ -814,7 +1005,7 @@ local TITLES = { create = "Wanted_CreateTitle", fill = "Wanted_FillTitle", offer
 function Dlg:title()
     if self.kind == "create" then return tr(TITLES.create) end
     local v = self.ctx.view
-    return tr(TITLES[self.kind], tostring(v.owner or "-"), C.itemLabel(v.item))
+    return tr(TITLES[self.kind], tostring(v.owner or "-"), C.wantedName(v.item, kindsOf(v)))
 end
 
 function Dlg:confirmLabel()

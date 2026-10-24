@@ -75,9 +75,12 @@ local function hasCoin(view)
     return false
 end
 
+-- How many types an order takes: its main item and the ones it also accepts (view.alts).
+local function kindsOf(v) return 1 + (type(v.alts) == "table" and #v.alts or 0) end
+
 -- The fields every order row shares, browse or own.
 local function orderBase(v, kind)
-    local name = C.itemLabel(v.item)
+    local name = C.wantedName(v.item, kindsOf(v))
     local left = (tonumber(v.expiresAt) or 0) - EC.now()
     return {
         kind = kind, key = kind .. ":" .. tostring(v.id), id = v.id, item = v.item, view = v,
@@ -105,7 +108,13 @@ local function browseRow(v)
         row.actions = { "fill" }
         if hasCoin(v) then row.actions[2] = "offer" end
     end
-    row.search = string.lower(table.concat({ row.name, row.altName or "", tostring(v.item), tostring(v.owner or "") }, " "))
+    -- every type the order takes is searchable: its name and its id
+    local words = { row.name, row.altName or "", tostring(v.item), tostring(v.owner or "") }
+    for _, alt in ipairs(type(v.alts) == "table" and v.alts or {}) do
+        words[#words + 1] = C.itemLabel(alt)
+        words[#words + 1] = alt
+    end
+    row.search = string.lower(table.concat(words, " "))
     return row
 end
 
@@ -431,8 +440,15 @@ function Page:rebuild()
     for _, v in ipairs(self.browseSnap and self.browseSnap.rows or {}) do
         local row = browseRow(v)
         -- the snapshot on screen is filtered at once while the next read is on its way: by the
-        -- player's own words, or by a type those words name (the server's own match, C.ItemPicker.queryTypes)
-        if q == nil or string.find(row.search, q, 1, true) or types[v.item] then rows[#rows + 1] = row end
+        -- player's own words, or by a type those words name (the server's own match, C.ItemPicker.queryTypes);
+        -- an order of several types matches on any of them
+        local hit = q == nil or string.find(row.search, q, 1, true) or types[v.item]
+        if not hit and type(v.alts) == "table" then
+            for _, alt in ipairs(v.alts) do
+                if types[alt] then hit = true; break end
+            end
+        end
+        if hit then rows[#rows + 1] = row end
     end
     self.rows = rows
     self.list:setItems(rows)
@@ -612,9 +628,10 @@ function Page:onWrite(kind, args)
     self.panel:layout()
 end
 
--- The toast of a write that landed.
+-- The toast of a write that landed. A delivery names the type handed over (the answer's item, or
+-- the group the seller picked); every other write names the order, with how many types it takes.
 function Page:doneText(kind, args, pending)
-    local name = C.itemLabel(args.item or pending.item)
+    local name = C.wantedName(args.item or pending.item, kind ~= "fill" and (args.kinds or pending.kinds) or nil)
     if kind == "create" then
         local fees
         for cur, fee in pairs(type(args.fees) == "table" and args.fees or {}) do
@@ -642,11 +659,13 @@ end
 -- ---------- writes ----------
 
 -- Every write goes out here: one in flight, matched on its requestId, given up on after the
--- timeout (never resent on its own). `dialog` names the dialog that waits for the answer.
-function Page:send(command, args, item, dialog, currency)
+-- timeout (never resent on its own). `dialog` names the dialog that waits for the answer; `kinds`
+-- is how many types the order takes, for the toast's name.
+function Page:send(command, args, item, dialog, currency, kinds)
     if self.pending then return false end
     args.requestId = args.requestId or C.newRequestId()
-    self.pending = { requestId = args.requestId, at = EC.now(), item = item, dialog = dialog, currency = currency }
+    self.pending = { requestId = args.requestId, at = EC.now(), item = item, dialog = dialog, currency = currency,
+        kinds = kinds }
     C.sendWanted(command, args)
     return true
 end
@@ -703,7 +722,7 @@ end
 function Page:confirmCancel(v)
     local Dialog = frameworkDialog()
     if Dialog == nil then return end
-    local lines = { tr("Card_Join2", C.itemLabel(v.item), tr("Wanted_LeftQty", tostring(int(v.qty)))) }
+    local lines = { tr("Card_Join2", C.wantedName(v.item, kindsOf(v)), tr("Wanted_LeftQty", tostring(int(v.qty)))) }
     local coins
     for _, opt in ipairs(v.options or {}) do
         if opt.kind == "coin" and int(opt.held) > 0 then
@@ -720,7 +739,9 @@ function Page:confirmCancel(v)
         confirmText = tr("Wanted_Cancel"), cancelText = tr("Wanted_Keep"), danger = true,
         onResult = function(ok)
             -- a frozen account may still take its order down (the server refunds with allowFrozen)
-            if ok and not page:gateReason("cancel") then page:send("cancel", { orderId = v.id }, v.item) end
+            if ok and not page:gateReason("cancel") then
+                page:send("cancel", { orderId = v.id }, v.item, nil, nil, kindsOf(v))
+            end
         end })
 end
 
@@ -734,7 +755,7 @@ function Page:confirmRaise(row)
     local delta = (row.unitPrice - int(opt.unitPrice)) * int(v.qty)
     local fee = X.pct(delta, self:info().feePercent)
     local text = table.concat({
-        tr("Wanted_RaiseLine", C.itemLabel(v.item), X.money(opt.unitPrice, opt.currency),
+        tr("Wanted_RaiseLine", C.wantedName(v.item, kindsOf(v)), X.money(opt.unitPrice, opt.currency),
             X.money(row.unitPrice, opt.currency), tostring(int(v.qty))),
         tr("Wanted_RaiseHold", X.money(delta, opt.currency)),
         tr("Wanted_RaiseFee", X.money(fee, opt.currency)),
@@ -745,7 +766,7 @@ function Page:confirmRaise(row)
         onResult = function(ok)
             if ok and not page:gateReason("raise") then
                 page:send("raise", { orderId = v.id, option = row.option, unitPrice = row.unitPrice }, v.item, nil,
-                    opt.currency)
+                    opt.currency, kindsOf(v))
             end
         end })
 end
@@ -787,9 +808,16 @@ function Page:cardOf(row)
         return C.PanelCards.history(self.panel, row, tr("Wanted_History"), false)
     end
     local v = row.view
+    local kinds = kindsOf(v)
     local c = { source = tr("Tab_Wanted"), sourceIcon = "tag", item = v.item,
-        name = tr("Card_ItemQty", C.itemLabel(v.item), tostring(int(v.qty))), rows = {}, tech = {}, chips = {} }
+        name = tr("Card_ItemQty", C.wantedName(v.item, kinds), tostring(int(v.qty))), rows = {}, tech = {}, chips = {} }
     c.sub = row.altName or C.itemLabel(v.item)
+    if kinds > 1 then
+        -- every type the order takes, each with its icon: any one of them fills it
+        local lines = { { item = v.item, text = C.itemLabel(v.item) } }
+        for _, alt in ipairs(v.alts) do lines[#lines + 1] = { item = alt, text = C.itemLabel(alt) } end
+        c.sections = { { title = tr("Wanted_KindsTitle", tostring(kinds)), lines = lines } }
+    end
     if v.mine ~= true and row.kind == "browse" then c.sub = tr("Card_Join2", c.sub, tr("Card_Buyer", tostring(v.owner or "-"))) end
     if row.kind == "order" then c.chips[1] = { value = row.status, token = row.statusToken, dot = true } end
     c.chips[#c.chips + 1] = { label = tr("Wanted_Remaining"), value = tr("Wanted_QtyOf", tostring(int(v.qty)),
@@ -833,6 +861,10 @@ local function cardText(c)
     for _, r in ipairs(c.rows or {}) do
         out[#out + 1] = getText(T .. "Detail_Line", r.label, r.value)
         if r.note then out[#out + 1] = r.note end
+    end
+    for _, s in ipairs(c.sections or {}) do
+        out[#out + 1] = s.title
+        for _, ln in ipairs(s.lines) do out[#out + 1] = ln.text end
     end
     for _, t in ipairs(c.tech or {}) do out[#out + 1] = getText(T .. "Detail_Line", t.label, t.value) end
     return table.concat(out, "\n")
