@@ -1161,6 +1161,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the facade's reward day 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the facade's source status (scenario 22 SS-1..5: unknown and malformed ids are nil and create no row, a registered source reads cap 0 and today's key, the admin's cap reads back, today's mint counts and the answer is a copy, a disabled source reads disabled)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: shares per shop order (scenario BQ-1..8: the ShopMaxPerOrder default, snapshot fields and ceiling, refused past the limit before any debit, raised and pushed with a 30-share order delivered whole, the 100-item ceiling still binding, the option's range, malformed past the ceiling and refused past the limit, a resend after lowering answered with its first result, selling back under the same limit; BQ-9..10: the buy dialog's most per order, a typed count, one past the most, an empty box, the Max chip)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: an integration posting's reason on the statement (scenario 22 IR-1: the receipt file line keeps a facade posting's reason code, the ring check now asserts it too; TX-2b: the wallet's type column reads as the source's translated reason, the mod kind otherwise)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the admin's player receipts name an integration posting by its translated reason (TX-2c: the real ECAdminPanel's table cell, detail card and detail text; an untranslated code and a transfer keep the kind's word)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -21519,6 +21520,46 @@ check(call(U.statementKindText, "mod", 50, "mq_exchange") == "Quest points excha
     and call(U.statementKindText, "transfer", 9, "player_transfer") == say("Kind_transfer_in")
     and say("Kind_mod") ~= nil and #logged == 0,
     "TX-2b: an integration row reads as the source's translated reason, otherwise as the mod kind; other kinds and transfers unchanged")
+-- TX-2c: the admin's player receipts (the real ECAdminPanel, loaded with its UI classes stubbed):
+-- the table cell, the detail card and the detail text of an integration receipt say the source's
+-- translated reason; an untranslated one and a transfer keep the kind's own word
+do
+    local classes, savedPanel, savedTM, savedFont = {}, ISPanel, getTextManager, UIFont
+    ISPanel = { derive = function(self, name) local c = setmetatable({}, { __index = self }); classes[name] = c; return c end }
+    -- the file's last lines register its reply handlers and two listeners on the client
+    EC.Client.handlers = EC.Client.handlers or {}
+    EC.Client.onMarket, EC.Client.onViews = function() end, function() end
+    local okA, errA = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECAdminPanel.lua")
+    ISPanel = savedPanel
+    UIFont = UIFont or { Small = 1 }
+    getTextManager = function() return { MeasureStringX = function(_, _, s) return #s * 6 end } end
+    local Admin = classes.MinidoracatEconomyAdminPanel or {}
+    local items
+    local fake = setmetatable({ offsetMin = 0, lookupUser = "ann",
+        lookupFile = {
+            { txId = "1:1", ts = 1000, currency = "survivor", type = "mod", delta = 50, availableAfter = 50,
+                sourceMod = "MinidoracatQuestFor42", reasonCode = "mq_exchange" },
+            { txId = "1:2", ts = 2000, currency = "survivor", type = "mod", delta = 5, availableAfter = 55,
+                sourceMod = "OtherMod", reasonCode = "zz_untranslated" },
+            { txId = "1:3", ts = 3000, currency = "survivor", type = "transfer", delta = -5, availableAfter = 50 },
+        },
+        receiptList = { width = 800, rowHeight = 28, cols = {}, setItems = function(_, rows) items = rows end,
+            setSelectedIndex = function() end },
+        reselect = function() end }, { __index = Admin })
+    local okR, errR = pcall(Admin.rebuildReceipts, fake)
+    local byTx = {}
+    for _, row in ipairs(items or {}) do byTx[row.txId] = row end
+    local quest, other, xfer = byTx["1:1"] or {}, byTx["1:2"] or {}, byTx["1:3"] or {}
+    local okC, cardQ = pcall(Admin.receiptCard, fake, quest)
+    local okD, textQ = pcall(Admin.receiptDetailText, fake, quest)
+    getTextManager, UIFont = savedTM, savedFont
+    local word = "Quest points exchange"
+    if not (okA and okR and okC and okD) then io.write("  TX-2c load ", tostring(errA), " / ", tostring(errR), " / ", tostring(cardQ), " / ", tostring(textQ), "\n") end
+    check(okA and okR and okC and okD and (quest.cells or {})[2] == word and type(cardQ) == "table" and cardQ.name == word
+        and type(textQ) == "string" and string.sub(textQ, 1, #word) == word
+        and (other.cells or {})[2] == say("Kind_mod") and (xfer.cells or {})[2] == say("Kind_transfer"),
+        "TX-2c: the admin's player receipts name an integration posting by its translated reason in the table, card and detail text; untranslated codes and transfers keep the kind's word")
+end
 dict[T .. "Reason_mq_exchange"] = nil
 -- TX-3: an unknown code reads as the translated generic word and lands in the log, not on screen
 logged = {}

@@ -2970,7 +2970,7 @@ function Admin:receiptCard(e)
     local id = e.id
     local hasItem = type(e.item) == "string" and e.item ~= ""
     local qty = tonumber(e.qty)
-    local name = hasItem and itemName(e.item) or kindText(e.kind)
+    local name = hasItem and itemName(e.item) or e.kindLabel
     if hasItem and qty ~= nil then name = name .. "  " .. getText(T .. "Market_Lot", tostring(math.floor(qty))) end
     local amount = tonumber(e.amount) or 0
     local rows, tech = {}, {}
@@ -2987,7 +2987,7 @@ function Admin:receiptCard(e)
     return {
         source = tr("Admin_Rcpt_DetailTitle"), sourceIcon = "users", item = hasItem and e.item or nil,
         iconKey = P.kindIcon(e.kind), name = name,
-        sub = hasItem and getText(T .. "ACard_Pair", kindText(e.kind), user) or user,
+        sub = hasItem and getText(T .. "ACard_Pair", e.kindLabel, user) or user,
         hero = P.cardHero(signedText(amount), e.currency, amount >= 0 and "positive" or "negative", e.rolled),
         chips = e.rolled and { P.rolledChip() } or nil, rows = rows, tech = tech,
         actions = { { id = "tx", label = tr("ACard_OpenTx"), enabled = e.txId ~= nil,
@@ -3189,7 +3189,7 @@ end
 -- The whole receipt as lines. A field the server did not send is left out entirely: a printed 0
 -- would read as a real balance, and these lines are what a dispute is reconciled against.
 function Admin:receiptDetailText(e)
-    local body = kindText(e.kind) .. " / " .. currencyName(e.currency) .. " / "
+    local body = e.kindLabel .. " / " .. currencyName(e.currency) .. " / "
         .. signedText(e.amount or 0) .. "\n" .. stampText(e.ts, self.offsetMin)
     if type(e.item) == "string" and e.item ~= "" then
         -- the count is optional as well: a line that names an item without one is printed
@@ -6289,6 +6289,7 @@ function Admin:rebuildReceipts()
         if e.before == nil then e.before = e.availableBefore end
         if e.kind == nil then e.kind = e.type end
         local amountStr, balanceStr = signedText(amount), amountText(e.after)
+        local kindLabel = U.postingKindText(e.kind, e.reasonCode)
         if textWidth(amountStr) > textWidth(wideAmount) then wideAmount = amountStr end
         if textWidth(balanceStr) > textWidth(wideBalance) then wideBalance = balanceStr end
         rows[#rows + 1] = {
@@ -6296,6 +6297,8 @@ function Admin:rebuildReceipts()
             -- very line it was reading after a poll, so the identity carries all three
             id = tostring(e.txId or "-") .. "\1" .. tostring(e.ts or 0) .. "\1" .. tostring(e.currency or "-"),
             txId = e.txId, currency = e.currency, kind = e.kind, ts = e.ts, amount = amount,
+            -- the type the table, the card and the detail text all say (U.postingKindText)
+            kindLabel = kindLabel,
             item = e.item, qty = e.qty, reasonText = U.reasonText(e.reason, e.reasonText),
             sourceMod = e.sourceMod, before = e.before, after = e.after,
             reservedBefore = e.reservedBefore, reservedAfter = e.reservedAfter,
@@ -6304,7 +6307,7 @@ function Admin:rebuildReceipts()
             -- the transaction id is read in the detail window and opened by the row's button
             cells = {
                 stampText(e.ts, self.offsetMin),
-                kindText(e.kind) .. (type(e.item) == "string" and ("  " .. itemName(e.item)
+                kindLabel .. (type(e.item) == "string" and ("  " .. itemName(e.item)
                     .. (qty ~= nil and (" x" .. tostring(math.floor(qty))) or "")) or ""),
                 amountStr, balanceStr,
             },
