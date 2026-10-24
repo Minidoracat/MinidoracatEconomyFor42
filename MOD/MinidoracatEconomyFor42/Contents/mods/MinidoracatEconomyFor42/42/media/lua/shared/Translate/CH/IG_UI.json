@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "總開關與「設定＞系統商店」相同；開啟後才依各商品收購設定生效",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "購買：%1",
   "IGUI_MinidoracatEconomy_Shop_Count": "數量（份）",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "最多",
   "IGUI_MinidoracatEconomy_Shop_Total": "總價",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "交易後餘額",
   "IGUI_MinidoracatEconomy_Shop_Bought": "已購買 %1 ×%2，支付 %3",

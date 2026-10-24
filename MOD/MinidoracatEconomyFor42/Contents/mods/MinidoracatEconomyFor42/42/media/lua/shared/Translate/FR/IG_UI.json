@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "Même interrupteur que Réglages > Boutique système ; lorsqu'il est activé, les réglages de rachat de chaque objet s'appliquent",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Acheter : %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Quantité (unités)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Max",
   "IGUI_MinidoracatEconomy_Shop_Total": "Total",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Solde après",
   "IGUI_MinidoracatEconomy_Shop_Bought": "Achat : %1 x%2 pour %3",

@@ -98,6 +98,8 @@
   "Sandbox_MinidoracatEconomy_TransferMinAccountDays_tooltip": "帳號第一次進入本伺服器經濟系統後，要滿幾個現實天數才能轉出。開放轉帳這一版之前就存在的帳號不受限。0＝不限。",
   "Sandbox_MinidoracatEconomy_ShopMaxItems": "系統商店商品上限",
   "Sandbox_MinidoracatEconomy_ShopMaxItems_tooltip": "商店目錄（catalog.json）最多能有幾項商品，最高 1000。每次改動目錄都會把整份目錄推送給所有在線玩家，商品越多，每次推送越大。調低不會刪除既有商品，只是在數量降到上限以下之前不能再新增。已下架的商品也佔名額；不用的商品可以在「經濟管理台＞商店」刪除。預設 200",
+  "Sandbox_MinidoracatEconomy_ShopMaxPerOrder": "商店每筆最多份數",
+  "Sandbox_MinidoracatEconomy_ShopMaxPerOrder_tooltip": "玩家在商店一次購買或賣回同一項商品最多幾份，最高 100。一筆最多 100 件物品，所以每份件數多的商品能選的份數更少（例如每份 20 件最多 5 份）；每日限購與收購額度照樣計算。預設 10",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "開放系統收購",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "開啟後玩家可在終端旁把目錄中標示「收購」的物品賣給伺服器，換取新發行的貨幣。關閉時立即停止收購，既有餘額不受影響。預設關閉；建議先觀察儀表板的發行／銷毀量再開放",
   "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "每人每日收購上限（倖存幣）",

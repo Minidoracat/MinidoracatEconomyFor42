@@ -87,6 +87,7 @@ A server option; it only appears once the server allows it.
 [*] [b]Title bar[/b]: shows today's sell-back allowance and the countdown to the limit reset.
 [*] [b]Buying and selling[/b]: use each row's own button; entries that ran out show "Sold out".
 [*] [b]Buy window[/b]: shows only the quantity, total, your balance after and whether it fits your bag; specs and limits are under Details and limits.
+[*] [b]Quantity[/b]: type it in, or press Max for the most this order can buy (or sell); the server owner sets how many units one order may carry (default 10), and one order holds at most 100 pieces.
 [*] [b]Currencies[/b]: Survivor Coin and Cat Coin sell and buyback prices are set per entry; each trade uses the currency you choose, and [b]no quote never means free[/b].
 [/list]
 [h3]Selling back (buyback)[/h3]
@@ -335,6 +336,7 @@ A server option.
 [*] [b]Re-adding[/b]: the same ID continues its purchase counts.
 [*] [b]Delisting[/b]: only stops sales: also turn off buyback, or delete the entry, to retire it.
 [*] [b]Entry cap[/b]: under Settings - System shop (default 200, up to 1000).
+[*] [b]Units per order[/b]: how many units a player may buy or sell back at once, under Settings - System shop (default 10, up to 100); one order holds at most 100 pieces, so entries with more pieces per unit allow fewer units.
 [*] [b]Buyback[/b]: takes only items as good as new; food only needs to be uneaten (cooked, burnt, frozen or stale is fine).
 [*] [b]Cat Coin buyback limits[/b]: default to 0 (off); raise them explicitly to allow it.
 [/list]

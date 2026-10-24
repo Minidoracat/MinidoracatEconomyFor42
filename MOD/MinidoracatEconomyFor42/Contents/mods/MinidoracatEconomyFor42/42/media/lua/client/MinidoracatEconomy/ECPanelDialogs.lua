@@ -133,6 +133,19 @@ function BuyDialog:createChildren()
     self.plusButton = Button.create(0, 0, step + 6, step, "+", self, BuyDialog.onStep, "chip")
     self.plusButton.internal = 1
     self:addChild(self.plusButton)
+    -- the count can be typed as well (digits only, as many as the largest order the shop allows:
+    -- ShopMaxPerOrder tops out at 100), and the chip after the stepper takes the most this order
+    -- may carry
+    local digits = #tostring(EC.OPTION_BY_KEY.ShopMaxPerOrder.max)
+    self.countEntry = U.newEntry(math.max(48, textWidth(string.rep("0", digits)) + 28), step,
+        { maxLen = digits, numbers = true })
+    self.countEntry._entry.target = self
+    self.countEntry._entry.onTextChangeFunction = BuyDialog.onCountTyped
+    U.setEntryText(self.countEntry, tostring(self.count or 1))
+    self:addChild(self.countEntry)
+    local most = getText(T .. "Shop_CountMax")
+    self.maxButton = Button.create(0, 0, textWidth(most) + 22, step, most, self, BuyDialog.onMaxCount, "chip")
+    self:addChild(self.maxButton)
     local buy = getText(T .. (self.sell and "Shop_SellConfirm" or "Shop_Buy"))
     local bh = math.max(28, fontH.medium + 10)
     self.confirmButton = Button.create(0, 0, math.max(120, textWidth(buy, UIFont.Medium) + 40), bh, buy, self, BuyDialog.onConfirm, "primary")
@@ -204,9 +217,16 @@ end
 function BuyDialog:clampCount()
     local max = self:maxCount()
     if max < 1 or self.count <= max then return end
-    self.count = max
+    self:setCount(max)
     self.requoteRequired = true
     self.message = getText(T .. "Trade_CountClamped", tostring(max))
+end
+
+-- The one way a control moves the count: the box always shows the count the order carries.
+function BuyDialog:setCount(n)
+    self.count = n
+    self.countBad = nil
+    U.setEntryText(self.countEntry, tostring(n))
 end
 
 function BuyDialog:onCurrency(button)
@@ -245,10 +265,12 @@ local function sellRoom(cand, currency)
     }
 end
 
--- Lots per purchase: the server cap, and never more than the share the sku has left -- a share
--- that has run out is 0 lots, not one, whichever of the three cap modes counts it. Selling:
--- whole SKU units the backpack holds, within every remaining cap the server reported (units for
--- the SKU, coins for the account and the server); 0 when there is nothing to sell.
+-- Lots per purchase: the server cap, never more items than one order carries (a lot of 20 nails
+-- allows 5 of them), and never more than the share the sku has left -- a share that has run out
+-- is 0 lots, not one, whichever of the three cap modes counts it. Selling: whole SKU units the
+-- backpack holds (the candidate reply is already held to the item ceiling), within every remaining
+-- cap the server reported (units for the SKU, coins for the account and the server); 0 when there
+-- is nothing to sell.
 function BuyDialog:maxCount()
     local max = math.max(1, tonumber(C.shop and C.shop.countMax) or 1)
     local row = self.row
@@ -263,6 +285,10 @@ function BuyDialog:maxCount()
         if room.account ~= nil then units = math.min(units, math.floor(room.account / bid)) end
         if room.server ~= nil then units = math.min(units, math.floor(room.server / bid)) end
         return math.max(0, math.min(max, units))
+    end
+    local itemsMax = tonumber(C.shop and C.shop.itemsMax)
+    if itemsMax then
+        max = math.min(max, math.floor(itemsMax / math.max(1, math.floor(tonumber(row.qty) or 1))))
     end
     if row.dailyCap > 0 and row.remaining then
         max = math.min(max, math.max(0, math.floor(row.remaining)))
@@ -284,10 +310,42 @@ end
 
 function BuyDialog:onStep(button)
     if self:frozen() then return end
-    self.count = math.max(1, math.min(self:maxCount(), self.count + button.internal))
+    self:setCount(math.max(1, math.min(self:maxCount(), self.count + button.internal)))
     self.message = nil
     -- a smaller lot may fit again: the consent to park this purchase belongs to one count
     self.mailRequired = nil
+end
+
+function BuyDialog:onMaxCount()
+    if self:frozen() then return end
+    local max = self:maxCount()
+    if max < 1 then return end
+    self:setCount(max)
+    self.message = nil
+    self.mailRequired = nil
+end
+
+-- A typed count: digits only (the box filters the keyboard, this filters a paste). Past the most
+-- this order may carry it is cut to that, in the box as well; an empty box or a zero is no order
+-- at all, and the confirm stays shut until the box holds a count again. While the allowance is
+-- unknown (a sale waiting for its candidates) the typed count is kept as it is.
+function BuyDialog:onCountTyped()
+    if self:frozen() then return end
+    local raw = string.match(entryText(self.countEntry), "^%s*(.-)%s*$")
+    local n = string.match(raw, "^%d+$") and tonumber(raw) or nil
+    self.message = nil
+    self.mailRequired = nil
+    if n == nil or n < 1 then
+        self.countBad = true
+        return
+    end
+    local max = self:maxCount()
+    if max >= 1 and n > max then
+        self:setCount(max)
+    else
+        self.count = math.floor(n)
+        self.countBad = nil
+    end
 end
 
 -- The room this purchase needs against the room the player has, estimated on this client from
@@ -304,6 +362,8 @@ end
 
 function BuyDialog:onCancel() self.panel:closeBuy() end
 function BuyDialog:onConfirm()
+    -- an empty or zero count box is not an order: the confirm is shut, and so is this way in
+    if self.countBad then return end
     if self.sell then self.panel:submitSell(self) else self.panel:submitBuy(self) end
 end
 
@@ -501,13 +561,14 @@ function BuyDialog:layoutInside(maxW, maxH)
         y = placeChips(self.currencyButtons, chipsX, y, w - PAD, 8)
     end
     self.countY = y
-    -- the stepper keeps the right edge and the label whatever is left of the row: a wide
-    -- translation at the largest font is cut, never painted over the buttons
-    self.numW = math.max(34, textWidth(tostring(self:maxCount()), UIFont.Medium) + 16)
-    self.plusButton:setX(w - PAD - self.plusButton.width)
+    -- the stepper row keeps the right edge, [-] [box] [+] [Max], and the label whatever is left of
+    -- the row: a wide translation at the largest font is cut, never painted over the controls
+    local most, field = self.maxButton, self.countEntry
+    most:setX(w - PAD - most.width); most:setY(y)
+    self.plusButton:setX(most.x - 6 - self.plusButton.width)
     self.plusButton:setY(y)
-    self.numX = self.plusButton.x - self.numW
-    self.minusButton:setX(self.numX - self.minusButton.width)
+    field:setX(self.plusButton.x - 4 - field.width); field:setY(y)
+    self.minusButton:setX(field.x - 4 - self.minusButton.width)
     self.minusButton:setY(y)
     self.countLabelW = math.max(0, self.minusButton.x - PAD * 2)
     y = y + step + 6
@@ -552,7 +613,9 @@ end
 function BuyDialog:keyboardTargets()
     local out = {
         { kind = "group", controls = self.currencyButtons, label = getText(T .. "Trade_Currency") },
-        { kind = "group", controls = { self.minusButton, self.plusButton }, label = getText(T .. "Market_Col_Qty") },
+        { kind = "entry", control = self.countEntry._entry, frame = self.countEntry,
+            label = getText(T .. (self.sell and "Shop_SellUnits" or "Shop_Count")) },
+        { kind = "group", controls = { self.minusButton, self.plusButton, self.maxButton }, label = getText(T .. "Market_Col_Qty") },
     }
     if self.specButton:getIsVisible() then
         out[#out + 1] = { kind = "button", control = self.specButton, label = getText(T .. "Shop_Spec") }
@@ -574,7 +637,7 @@ function BuyDialog:prerender()
     -- not answered yet -- the count the player asked for is left exactly as it is.
     if max >= 1 then
         self:clampCount()
-        if self.count < 1 then self.count = 1 end
+        if self.count < 1 then self:setCount(1) end
     end
     -- a moved value lays the dialog out again before anything of it is painted
     self:syncSummary()
@@ -609,17 +672,17 @@ function BuyDialog:prerender()
     end
     text(self, fitText(getText(T .. (sell and "Shop_SellUnits" or "Shop_Count")), self.countLabelW),
         PAD, self.countY + math.floor((stepH - fontH.small) / 2), "textMuted")
-    textCentre(self, tostring(self.count), self.numX + self.numW / 2,
-        self.countY + math.floor((stepH - fontH.medium) / 2), "text", UIFont.Medium)
     local total = self:total()
     local after = total and (sell and (self:available() + total) or (self:available() - total)) or nil
     local pending = self.panel.buyPending ~= nil
     self.minusButton:setEnable(self.count > 1 and not pending)
     self.plusButton:setEnable(self.count < max and not pending)
+    self.maxButton:setEnable(max >= 1 and (self.count < max or self.countBad == true) and not pending)
+    U.setEntryEditable(self.countEntry, not pending)
     -- the order on the wire owns the currency too: the chips read as shut while it is out
     for _, b in ipairs(self.currencyButtons) do b:setEnable(not pending) end
     -- A fresh zero allowance disables confirmation even if this dialog was already open.
-    local ok = total ~= nil and max >= 1 and self.count >= 1 and (sell or after >= 0)
+    local ok = total ~= nil and max >= 1 and self.count >= 1 and not self.countBad and (sell or after >= 0)
     self.confirmButton:setEnable(ok and not pending and self.panel:tradeAllowed())
 end
 

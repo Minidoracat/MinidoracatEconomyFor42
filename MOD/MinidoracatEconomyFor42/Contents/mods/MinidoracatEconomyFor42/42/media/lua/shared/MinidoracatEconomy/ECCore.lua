@@ -773,6 +773,10 @@ EC.OPTIONS = {
     -- how many rows the shop catalog may hold (ECShop.maxItems). The top of the range is the hard
     -- ceiling one catalog reply can carry, and ECShop.MAX_SKUS reads it from here
     { key = "ShopMaxItems", group = "shop", kind = "int", min = 1, max = 1000, step = 50, default = 200 },
+    -- how many shares of one item one shop order may carry (ECShop.countMax). The top of the range
+    -- is ECShop.ITEMS_PER_BUY_MAX: a share is at least one item, and no order carries more items
+    -- than that; ECShop.COUNT_MAX reads it from here
+    { key = "ShopMaxPerOrder", group = "shop", kind = "int", min = 1, max = 100, step = 10, default = 10 },
     { key = "ShopBuybackEnabled", group = "shop", kind = "bool", default = false },
     { key = "ShopBuybackPerAccountDaily", group = "shop", kind = "int", min = 0, max = 100000000, step = 100, default = 500, unit = "coin", zeroOff = true },
     { key = "ShopBuybackServerDaily", group = "shop", kind = "int", min = 0, max = 100000000, step = 1000, default = 20000, unit = "coin", zeroOff = true },

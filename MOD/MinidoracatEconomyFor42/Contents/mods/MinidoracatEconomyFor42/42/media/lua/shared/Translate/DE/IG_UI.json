@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "Derselbe Schalter wie Einstellungen > Systemladen; wenn an, gelten die Ankaufseinstellungen jedes Artikels",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Kaufen: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Menge (Einheiten)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Max.",
   "IGUI_MinidoracatEconomy_Shop_Total": "Gesamt",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Kontostand danach",
   "IGUI_MinidoracatEconomy_Shop_Bought": "%1 x%2 für %3 gekauft",

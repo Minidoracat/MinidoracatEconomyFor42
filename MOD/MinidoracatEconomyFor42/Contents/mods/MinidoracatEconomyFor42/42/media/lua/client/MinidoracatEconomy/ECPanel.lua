@@ -1736,6 +1736,7 @@ function Panel:closeBuy()
     local dlg = self.buyDialog
     if not dlg then return end
     self.buyDialog = nil
+    pcall(function() dlg.countEntry:unfocus() end)   -- a hidden box must not keep the keyboard
     dlg:setVisible(false)
     self:removeChild(dlg)
     C.cancelSellCandidates()   -- a question nobody is left to read the answer of

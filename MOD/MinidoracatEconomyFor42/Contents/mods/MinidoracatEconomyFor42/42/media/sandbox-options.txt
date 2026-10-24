@@ -534,6 +534,18 @@ option MinidoracatEconomy.ShopMaxItems
     translation = MinidoracatEconomy_ShopMaxItems,
 }
 
+/* How many shares of one shop item a player may buy or sell back in one order. 100 is the
+   most: one order carries at most 100 items, and a share is at least one. */
+option MinidoracatEconomy.ShopMaxPerOrder
+{
+    type = integer,
+    min = 1,
+    max = 100,
+    default = 10,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_ShopMaxPerOrder,
+}
+
 option MinidoracatEconomy.ShopBuybackEnabled
 {
     type = boolean,

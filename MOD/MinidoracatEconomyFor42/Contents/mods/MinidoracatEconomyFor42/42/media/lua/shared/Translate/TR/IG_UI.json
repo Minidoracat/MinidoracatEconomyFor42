@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "Ayarlar > Sistem mağazası'ndaki anahtarın aynısı; açıkken her eşyanın geri alım ayarları geçerli olur",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Satın al: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Miktar (birim)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Maks.",
   "IGUI_MinidoracatEconomy_Shop_Total": "Toplam",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Sonraki bakiye",
   "IGUI_MinidoracatEconomy_Shop_Bought": "%1 x%2, %3 karşılığında satın alındı",

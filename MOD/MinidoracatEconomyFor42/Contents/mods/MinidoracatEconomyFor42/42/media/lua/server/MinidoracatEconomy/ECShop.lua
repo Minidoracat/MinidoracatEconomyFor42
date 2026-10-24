@@ -78,7 +78,11 @@ Shop.ID_MAX = 32
 Shop.CATEGORY_MAX = 32
 Shop.NAME_MAX = 48            -- characters (Kahlua's #); the wire budget above counts them as 3 bytes
 Shop.QTY_MAX = 50
-Shop.COUNT_MAX = 10
+-- Shares per order: the host's ShopMaxPerOrder (Shop.countMax); the top of that option is the hard
+-- ceiling a request is shaped against. An order never carries more than ITEMS_PER_BUY_MAX items
+-- whatever its shares (20 nails a share allow 5), and a share is at least one item, so the option
+-- stops at that number (ECCore: one number).
+Shop.COUNT_MAX = EC.OPTION_BY_KEY.ShopMaxPerOrder.max
 Shop.ITEMS_PER_BUY_MAX = 100
 Shop.PRICE_MAX = 1000000000
 Shop.CAP_MAX = 1000000
@@ -152,6 +156,12 @@ end
 -- ceiling. Lowering it removes nothing; adding is refused until the count is below it.
 function Shop.maxItems()
     return math.max(1, math.min(Shop.MAX_SKUS, optionInt("ShopMaxItems")))
+end
+
+-- How many shares one order may carry: the host's ShopMaxPerOrder, never past the hard ceiling.
+-- Every snapshot carries it (countMax), and an option change pushes a fresh one (ECConfig).
+function Shop.countMax()
+    return math.max(1, math.min(Shop.COUNT_MAX, optionInt("ShopMaxPerOrder")))
 end
 
 -- The gross mint caps of one currency for a reward day. ECConfig owns the effective values
@@ -795,7 +805,8 @@ function Shop.snapshot(username, ms)
     end)
     return {
         revision = Shop.revision(), items = items, count = #items,
-        file = Shop.fileStatus(), dayEndsMs = R.nextResetMs(ms), countMax = Shop.COUNT_MAX,
+        file = Shop.fileStatus(), dayEndsMs = R.nextResetMs(ms), countMax = Shop.countMax(),
+        itemsMax = Shop.ITEMS_PER_BUY_MAX,
         maxItems = Shop.maxItems(),
         buyback = { enabled = Shop.buybackEnabled(), byCurrency = Shop.buybackByCurrency(username, ms) },
     }
@@ -1225,6 +1236,8 @@ function Shop.buy(player, args)
     end
     if args.acceptMail ~= nil and type(args.acceptMail) ~= "boolean" then return { ok = false, error = "invalid_args" } end
     if type(args.currency) ~= "string" or args.currency == "" then return { ok = false, error = "invalid_args" } end
+    -- the shape is checked against the hard ceiling, the host's limit only once a resend has been
+    -- answered: lowering ShopMaxPerOrder must not turn a paid order's resend into a refusal
     local count = args.count == nil and 1 or args.count
     if not isInt(count, 1, Shop.COUNT_MAX) then return { ok = false, error = "invalid_args" } end
     -- the whole namespaced key is what the ledger will store: it is checked here, before any
@@ -1245,7 +1258,9 @@ function Shop.buy(player, args)
     if args.revision ~= Shop.revision() then return { ok = false, error = "catalog_changed" } end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
     if L.isFrozen(username) then return { ok = false, error = "account_frozen" } end
-    if sku.qty * count > Shop.ITEMS_PER_BUY_MAX then return { ok = false, error = "too_many_items" } end
+    if count > Shop.countMax() or sku.qty * count > Shop.ITEMS_PER_BUY_MAX then
+        return { ok = false, error = "too_many_items" }
+    end
     local ms = EC.now()
     local day = R.dayKey(ms)
     local used = Shop.used(username, sku.id, ms)
@@ -1357,7 +1372,7 @@ function Shop.sell(player, args)
     local quote, qerr = Shop.quote(sku, currency, "sell")
     if not quote then return { ok = false, error = qerr, currency = currency } end
     if args.revision ~= Shop.revision() then return { ok = false, error = "catalog_changed" } end
-    if count > Shop.COUNT_MAX then return { ok = false, error = "too_many_items" } end
+    if count > Shop.countMax() then return { ok = false, error = "too_many_items" } end
     if not T.near(player) then return { ok = false, error = "not_at_terminal" } end
     if L.isFrozen(username) then return { ok = false, error = "account_frozen" } end
     local ms = EC.now()

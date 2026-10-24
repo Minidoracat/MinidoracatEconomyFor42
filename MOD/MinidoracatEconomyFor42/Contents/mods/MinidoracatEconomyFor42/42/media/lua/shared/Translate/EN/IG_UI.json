@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "Same switch as Settings > System shop; when on, each item's buyback settings apply",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Buy: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Quantity (units)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Max",
   "IGUI_MinidoracatEconomy_Shop_Total": "Total",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Balance after",
   "IGUI_MinidoracatEconomy_Shop_Bought": "Bought %1 x%2 for %3",

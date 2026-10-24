@@ -98,6 +98,8 @@
   "Sandbox_MinidoracatEconomy_TransferMinAccountDays_tooltip": "계정이 이 서버의 경제 시스템에 처음 나타난 뒤 송금할 수 있을 때까지의 실제 일수입니다. 송금 기능이 추가된 버전 이전부터 있던 계정에는 적용되지 않습니다. 0 = 없음.",
   "Sandbox_MinidoracatEconomy_ShopMaxItems": "시스템 상점 아이템 한도",
   "Sandbox_MinidoracatEconomy_ShopMaxItems_tooltip": "상점 카탈로그(catalog.json)에 넣을 수 있는 아이템 수이며 최대 1000입니다. 카탈로그가 바뀔 때마다 접속 중인 모든 플레이어에게 전체가 전송되므로, 카탈로그가 클수록 업데이트도 커집니다. 낮춰도 아무것도 삭제되지 않으며, 개수가 한도 아래로 내려갈 때까지 새 아이템이 거부됩니다. 판매 중이 아닌 아이템도 포함되니 쓰지 않는 것은 경제 관리 - 상점에서 삭제하세요. 기본값 200",
+  "Sandbox_MinidoracatEconomy_ShopMaxPerOrder": "상점 1회 최대 단위 수",
+  "Sandbox_MinidoracatEconomy_ShopMaxPerOrder_tooltip": "플레이어가 상점에서 같은 아이템을 한 번에 구매하거나 되팔 수 있는 단위 수이며 최대 100입니다. 한 번의 거래에는 최대 100개만 담기므로 단위당 개수가 많은 아이템은 고를 수 있는 단위 수가 줄어듭니다(단위당 20개면 최대 5단위). 일일 구매 한도와 매입 한도는 그대로 적용됩니다. 기본값 10",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled": "시스템 매입 활성화",
   "Sandbox_MinidoracatEconomy_ShopBuybackEnabled_tooltip": "켜면 플레이어가 단말기에서 카탈로그에 매입 표시된 아이템을 서버에 팔고 새로 발행된 코인을 받을 수 있습니다. 끄면 즉시 매입이 멈추며 잔액은 건드리지 않습니다. 기본값은 꺼짐이며, 열기 전에 대시보드에서 발행과 소각을 살펴보세요",
   "Sandbox_MinidoracatEconomy_ShopBuybackPerAccountDaily": "계정당 일일 매입 (생존자 코인)",

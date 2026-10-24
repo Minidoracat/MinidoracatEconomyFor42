@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "設定 ＞ システムショップと同じスイッチです。有効にすると各商品の買い取り設定が適用されます",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "購入：%1",
   "IGUI_MinidoracatEconomy_Shop_Count": "数量（単位）",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "最大",
   "IGUI_MinidoracatEconomy_Shop_Total": "合計",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "取引後の残高",
   "IGUI_MinidoracatEconomy_Shop_Bought": "%1 ×%2 を購入しました（支払い %3）",

@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "Тот же переключатель, что в Настройки > Системный магазин; когда включён, действуют настройки скупки каждого товара",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Купить: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Количество (единиц)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Макс.",
   "IGUI_MinidoracatEconomy_Shop_Total": "Итого",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Баланс после",
   "IGUI_MinidoracatEconomy_Shop_Bought": "Куплено %1 x%2 за %3",

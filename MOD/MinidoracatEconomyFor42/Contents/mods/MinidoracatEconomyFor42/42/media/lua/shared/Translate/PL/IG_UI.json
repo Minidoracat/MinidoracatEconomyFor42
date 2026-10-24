@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "Ten sam przełącznik co Ustawienia > Sklep systemowy; gdy jest włączony, obowiązują ustawienia skupu poszczególnych przedmiotów",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Kup: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Ilość (sztuki)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Maks.",
   "IGUI_MinidoracatEconomy_Shop_Total": "Razem",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Saldo po zakupie",
   "IGUI_MinidoracatEconomy_Shop_Bought": "Kupiono %1 x%2 za %3",

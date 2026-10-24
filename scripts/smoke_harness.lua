@@ -1159,6 +1159,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 9    -- +9: item pages as grids of t
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: the primary of a Steam account (scenario PR-1..9: no primary while no login used the economy though an earlier tie-break recorded one, the page's open rows and the waiting plan, the first use replaces the canonical, a used primary stands, the administrator's choice with its gates, the push it sends, audit privacy and the plan following it, choosing back and the restart, merged and lone logins refused; FS2: an import that takes over from an unlisted primary opens the Steam account until the first use)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: the facade's reward day (scenario 16 RD-1..3: rewardDay(ms) is the rewards' own key and next reset, no argument reads the clock, a NaN / infinite / string argument is nil)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 5    -- +5: the facade's source status (scenario 22 SS-1..5: unknown and malformed ids are nil and create no row, a registered source reads cap 0 and today's key, the admin's cap reads back, today's mint counts and the answer is a copy, a disabled source reads disabled)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 10   -- +10: shares per shop order (scenario BQ-1..8: the ShopMaxPerOrder default, snapshot fields and ceiling, refused past the limit before any debit, raised and pushed with a 30-share order delivered whole, the 100-item ceiling still binding, the option's range, malformed past the ceiling and refused past the limit, a resend after lowering answered with its first result, selling back under the same limit; BQ-9..10: the buy dialog's most per order, a typed count, one past the most, an empty box, the Max chip)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -19959,6 +19960,103 @@ Cfg.setOption("ShopMaxItems", nil, "sd-admin")
 onlinePlayers = {}
 end)()
 
+-- ===== 情境 BQ：商店每筆最多份數（ShopMaxPerOrder）=====
+io.write("scenario BQ: shares per shop order\n")
+;(function()
+local Shop = S.Shop
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, writerDeny = {}, {}, {}
+nowMs = nowMs + 61000
+files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "twine", item = "Base.Twine", qty = 1, category = "material",
+        prices = { survivor = { price = 2, bidPrice = 1, buyback = true } } },
+    { id = "nails", item = "Base.Nails", qty = 20, category = "material", prices = { survivor = { price = 5 } } },
+} }) }, opens = 0 }
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = 100000
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = 100000
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("bq-admin"); boss.role = "admin"
+local zed = fakePlayer("bq-zed"); zed.x, zed.y = 101, 200; zed.inventory = fakeInventory(1000)
+onlinePlayers = { boss, zed }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function pushedTo(who)
+    for i = #sentCommands, 1, -1 do
+        local s = sentCommands[i]
+        if s.command == "shop.list" and s.player == who then return s.args end
+    end
+    return nil
+end
+local function bal() return L.getBalance("bq-zed", "survivor").available end
+local function twine() return zed.inventory.count("Base.Twine") end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("bq-zed", "survivor", 10000, "SYSTEM_MINT", { requestId = "bq-seed", reasonCode = "t" })
+local rev = Shop.revision()
+
+local snap = cmd(zed, "shop.list")
+check(Shop.countMax() == 10 and snap.countMax == 10 and snap.itemsMax == Shop.ITEMS_PER_BUY_MAX
+    and EC.OPTION_BY_KEY.ShopMaxPerOrder.max == Shop.COUNT_MAX and Shop.COUNT_MAX == Shop.ITEMS_PER_BUY_MAX,
+    "BQ-1: an order carries 10 shares by default, every snapshot says so with the item ceiling, and the option tops out at that ceiling")
+local b0 = bal()
+local eleven = cmd(zed, "shop.buy", { id = "twine", count = 11, revision = rev })
+local ten = cmd(zed, "shop.buy", { id = "twine", count = 10, revision = rev })
+check(eleven.error == "too_many_items" and ten.ok == true and ten.count == 10 and twine() == 10 and bal() == b0 - 20,
+    "BQ-2: one share past the host's limit is refused before any debit; at the limit the order goes through")
+sentCommands = {}
+local raised = cmd(boss, "admin.option", { key = "ShopMaxPerOrder", value = 30 })
+local push = pushedTo(zed)
+local b1 = bal()
+local thirty = cmd(zed, "shop.buy", { id = "twine", count = 30, revision = rev, requestId = "bq-thirty" })
+check(raised.ok == true and push ~= nil and push.countMax == 30 and thirty.ok == true and thirty.qty == 30
+    and thirty.delivered == true and twine() == 40 and bal() == b1 - 60 and Shop.used("bq-zed", "twine", nowMs) == 40,
+    "BQ-3: raising ShopMaxPerOrder pushes the new limit to everyone online, and a 30-share order is paid and handed over whole")
+local six = cmd(zed, "shop.buy", { id = "nails", count = 6, revision = rev })
+local five = cmd(zed, "shop.buy", { id = "nails", count = 5, revision = rev })
+check(six.error == "too_many_items" and five.ok == true and five.qty == 100 and zed.inventory.count("Base.Nails") == 100,
+    "BQ-4: whatever the host's limit, an order never carries more than 100 items: 6 shares of 20 nails are refused, 5 go through")
+check(cmd(boss, "admin.option", { key = "ShopMaxPerOrder", value = 0 }).error == "invalid_args"
+    and cmd(boss, "admin.option", { key = "ShopMaxPerOrder", value = 101 }).error == "invalid_args"
+    and Shop.countMax() == 30,
+    "BQ-5: the limit stays between 1 and the item ceiling")
+local b2 = bal()
+check(cmd(zed, "shop.buy", { id = "twine", count = 101, revision = rev }).error == "invalid_args"
+    and cmd(zed, "shop.buy", { id = "twine", count = 31, revision = rev }).error == "too_many_items"
+    and bal() == b2 and twine() == 40,
+    "BQ-6: a count past the ceiling is malformed, a count past the host's limit is refused, and neither moves anything")
+cmd(boss, "admin.option", { key = "ShopMaxPerOrder", value = 5 })
+local b3 = bal()
+local again = cmd(zed, "shop.buy", { id = "twine", count = 30, revision = rev, requestId = "bq-thirty" })
+local over = cmd(zed, "shop.buy", { id = "twine", count = 6, revision = rev })
+check(again.duplicate == true and again.txId == thirty.txId and over.error == "too_many_items" and bal() == b3 and twine() == 40,
+    "BQ-7: lowering the limit still answers a paid order's resend with its first result, and refuses a new order past it")
+local ids = {}
+for i = 1, 25 do
+    local it = instanceItem("Base.Twine")
+    zed.inventory:AddItem(it)
+    ids[i] = it.id
+end
+local b4, held = bal(), twine()
+local refused = cmd(zed, "shop.sell", { id = "twine", itemIds = { ids[1], ids[2], ids[3], ids[4], ids[5], ids[6] }, revision = rev })
+cmd(boss, "admin.option", { key = "ShopMaxPerOrder", value = 30 })
+local sold = cmd(zed, "shop.sell", { id = "twine", itemIds = ids, revision = rev })
+check(refused.error == "too_many_items" and sold.ok == true and sold.count == 25 and bal() == b4 + 25 and twine() == held - 25,
+    "BQ-8: selling back follows the same limit: 6 shares refused at 5 with the twine kept, 25 sold once it is 30")
+Cfg.setOption("ShopMaxPerOrder", nil, "bq-admin")
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
+SandboxVars.MinidoracatEconomy.ShopBuybackPerAccountDaily = nil
+SandboxVars.MinidoracatEconomy.ShopBuybackServerDaily = nil
+onlinePlayers = {}
+end)()
+
 -- ===== 情境 HV：雙手搬運的重物（ISEquipHeavyItem：放進主背包、兩隻手拿同一個物件） =====
 io.write("scenario HV: heavy items carried in both hands\n")
 ;(function()
@@ -21672,6 +21770,51 @@ check(okG and okRect and rx == 126 and ry == 148 and rw == 108 and rh == 130 and
 require, getText, getTextOrNull, EC.Client, EC.Options, PZAPI = saved.require, saved.getText, saved.getTextOrNull,
     saved.client, saved.options, saved.PZAPI
 ISButton, ISPanel, Keyboard, getTextManager, UIFont = saved.ISButton, saved.ISPanel, saved.Keyboard, saved.getTextManager, saved.UIFont
+end)()
+
+-- ===== 情境 BQ（客戶端）：購買框的份數框與「最多」=====
+-- ECPanelDialogs' BuyDialog against a fake box and panel: the most an order may carry, a typed
+-- count, one past it, an empty box that is no order, and the Max chip.
+io.write("scenario BQ: the buy dialog's count box\n")
+;(function()
+local saved = { require = require, getText = getText, getTextOrNull = getTextOrNull, client = EC.Client,
+    ISPanel = ISPanel, ISButton = ISButton }
+local function derive(self) return setmetatable({}, { __index = self }) end
+require = function() return true end
+ISButton, ISPanel = { derive = derive }, { derive = derive }
+EC.Client = { onMarket = function() end }
+getTextOrNull = function() return nil end
+getText = function(key) return key end
+local okU = pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECWidgets.lua")
+local okW = okU and pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECPanelWidgets.lua")
+local okD = okW and pcall(dofile, MEDIA .. "/client/MinidoracatEconomy/ECPanelDialogs.lua")
+local Buy = okD and EC.Client.PanelDialogs.BuyDialog or {}
+local function call(fn, ...) local ok, v = pcall(fn, ...); return ok and v or nil end
+local box = { text = "1" }
+box._entry = { getInternalText = function() return box.text end }
+function box:setText(v) self.text = v end
+local sent = nil
+local panel = { submitBuy = function(_, d) sent = d.count end }
+local function dialog(row) return setmetatable({ row = row, sell = false, count = 1, panel = panel, countEntry = box }, { __index = Buy }) end
+EC.Client.shop = { countMax = 30, itemsMax = 100 }
+local nails = dialog({ id = "nails", qty = 20, dailyCap = 0 })
+local capped = dialog({ id = "pack", qty = 1, dailyCap = 10, remaining = 7 })
+local twine = dialog({ id = "twine", qty = 1, dailyCap = 0 })
+check(okD and call(Buy.maxCount, nails) == 5 and call(Buy.maxCount, capped) == 7 and call(Buy.maxCount, twine) == 30,
+    "BQ-9: the most an order may carry is the host's limit, cut to 100 items (5 shares of 20 nails) and to what the daily cap leaves")
+box.text = "25"; call(Buy.onCountTyped, twine)
+local typed = twine.count
+box.text = "999"; call(Buy.onCountTyped, twine)
+local cut, cutBox = twine.count, box.text
+box.text = ""; call(Buy.onCountTyped, twine)
+call(Buy.onConfirm, twine)
+local emptySent = sent
+call(Buy.onMaxCount, twine)
+call(Buy.onConfirm, twine)
+check(typed == 25 and cut == 30 and cutBox == "30" and emptySent == nil and twine.count == 30 and box.text == "30" and sent == 30,
+    "BQ-10: a typed count is the order, one past the most is cut to it in the box too, an empty box orders nothing, Max fills the box and orders the most")
+require, getText, getTextOrNull, EC.Client = saved.require, saved.getText, saved.getTextOrNull, saved.client
+ISButton, ISPanel = saved.ISButton, saved.ISPanel
 end)()
 
 -- ===== 情境 RW：對帳頁把伺服器的代碼與參數組成各語言的句子 =====

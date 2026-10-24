@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "A mesma chave de Configurações > Loja do sistema; quando ligada, valem as configurações de recompra de cada item",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Comprar: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Quantidade (unidades)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Máx.",
   "IGUI_MinidoracatEconomy_Shop_Total": "Total",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Saldo depois",
   "IGUI_MinidoracatEconomy_Shop_Bought": "Comprado %1 x%2 por %3",

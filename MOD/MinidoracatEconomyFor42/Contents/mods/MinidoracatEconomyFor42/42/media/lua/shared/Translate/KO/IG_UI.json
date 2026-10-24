@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "설정 > 시스템 상점과 같은 스위치입니다. 켜져 있으면 각 아이템의 매입 설정이 적용됩니다",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "구매: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "수량 (단위)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "최대",
   "IGUI_MinidoracatEconomy_Shop_Total": "합계",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "구매 후 잔액",
   "IGUI_MinidoracatEconomy_Shop_Bought": "%1 x%2을(를) %3에 구매함",

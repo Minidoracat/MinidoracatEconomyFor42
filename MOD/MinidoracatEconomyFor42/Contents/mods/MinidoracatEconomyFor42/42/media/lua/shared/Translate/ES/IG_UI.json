@@ -684,6 +684,7 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_MasterHint": "Es el mismo interruptor que Configuración > Tienda del sistema; cuando está activado, se aplica la configuración de recompra de cada objeto",
   "IGUI_MinidoracatEconomy_Shop_BuyTitle": "Comprar: %1",
   "IGUI_MinidoracatEconomy_Shop_Count": "Cantidad (unidades)",
+  "IGUI_MinidoracatEconomy_Shop_CountMax": "Máx.",
   "IGUI_MinidoracatEconomy_Shop_Total": "Total",
   "IGUI_MinidoracatEconomy_Shop_AfterBalance": "Saldo después",
   "IGUI_MinidoracatEconomy_Shop_Bought": "Compraste %1 x%2 por %3",
