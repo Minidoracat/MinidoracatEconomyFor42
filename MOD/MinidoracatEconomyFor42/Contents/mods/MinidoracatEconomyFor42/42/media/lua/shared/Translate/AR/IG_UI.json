@@ -76,7 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "Texto completo copiado al portapapeles",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "Error al copiar: el portapapeles no está disponible",
   "IGUI_MinidoracatEconomy_Title": "Centro Económico",
-  "IGUI_MinidoracatEconomy_WhatsNew": "Los pedidos aceptan hasta 10 tipos de objeto: pulsa «+ Aceptar también...». Vale cualquiera.",
+  "IGUI_MinidoracatEconomy_WhatsNew": "Las pantallas de pago de otros mods ahora actualizan el saldo al instante, sin reconectarse.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "Moneda Superviviente",
   "IGUI_MinidoracatEconomy_Currency_cat": "Moneda Gato",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "Billetera",

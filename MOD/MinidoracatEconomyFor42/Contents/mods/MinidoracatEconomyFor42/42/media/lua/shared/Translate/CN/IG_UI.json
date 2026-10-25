@@ -76,7 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "已拷贝完整内容到剪贴板",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "拷贝失败，剪贴板无法使用",
   "IGUI_MinidoracatEconomy_Title": "经济中心",
-  "IGUI_MinidoracatEconomy_WhatsNew": "求购单可以一次收好几种物品：建立时按「+ 也接受...」再加，一张最多 10 种，卖家交哪一种都算。",
+  "IGUI_MinidoracatEconomy_WhatsNew": "其他模组的付款画面，现在会马上显示最新的钱包余额，不用重新进服。",
   "IGUI_MinidoracatEconomy_Currency_survivor": "幸存币",
   "IGUI_MinidoracatEconomy_Currency_cat": "猫币",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "钱包",

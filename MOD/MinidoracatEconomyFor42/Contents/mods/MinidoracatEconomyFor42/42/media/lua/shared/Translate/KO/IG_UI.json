@@ -76,7 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "전체 텍스트를 클립보드에 복사했습니다",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "복사 실패: 클립보드를 사용할 수 없습니다",
   "IGUI_MinidoracatEconomy_Title": "경제 센터",
-  "IGUI_MinidoracatEconomy_WhatsNew": "구매 주문은 '+ 함께 받기...'로 최대 10종까지 받을 수 있고, 그중 어느 것을 납품해도 됩니다.",
+  "IGUI_MinidoracatEconomy_WhatsNew": "다른 모드의 결제 화면에서도 지갑 잔액이 바로 갱신됩니다. 다시 접속하지 않아도 됩니다.",
   "IGUI_MinidoracatEconomy_Currency_survivor": "생존자 코인",
   "IGUI_MinidoracatEconomy_Currency_cat": "고양이 코인",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "지갑",

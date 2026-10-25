@@ -76,7 +76,7 @@
   "IGUI_MinidoracatEconomy_Kb_Copied": "全文をクリップボードにコピーしました",
   "IGUI_MinidoracatEconomy_Kb_CopyFailed": "コピーに失敗しました（クリップボードが利用できません）",
   "IGUI_MinidoracatEconomy_Title": "経済センター",
-  "IGUI_MinidoracatEconomy_WhatsNew": "買い注文は「+ ほかも受け付ける...」で最大10種類まで指定でき、どれを納品しても成立します。",
+  "IGUI_MinidoracatEconomy_WhatsNew": "他の MOD の支払い画面でも、ウォレットの残高がすぐ更新されるようになりました。再接続は不要です。",
   "IGUI_MinidoracatEconomy_Currency_survivor": "サバイバーコイン",
   "IGUI_MinidoracatEconomy_Currency_cat": "ネココイン",
   "IGUI_MinidoracatEconomy_Tab_Wallet": "ウォレット",
