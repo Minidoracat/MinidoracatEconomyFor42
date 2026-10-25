@@ -45,6 +45,9 @@
 --     the same revision answering an older request) never overwrites a newer one.
 --   * entitlement.changed is owner-only: an envelope is adopted like a reply; a public "refresh"
 --     signal (no entitlement in it) only makes the products this client already holds re-read.
+--   * an envelope's balances follow the wallet: every wallet push or read ECClient takes
+--     (wallet.changed / wallet.state) replaces them in each cached envelope that carries that
+--     currency, as a new envelope table, and onChanged fires (see "wallet" below).
 
 local EC = MinidoracatEconomy
 local C = EC.Client
@@ -324,6 +327,49 @@ C.handlers["entitlement.changed"] = function(args)
         if not ok then EC.log("entitlement push listener failed: " .. tostring(err)) end
     end
 end
+
+-- ---------- wallet ----------
+
+-- An envelope's balances are what the server read when it built the envelope, and no envelope is
+-- sent when only money moves (a check-in, a letter, a transfer), so the wallet's own messages keep
+-- them current. The server sends both in order, so the newest message is the truth. A changed
+-- envelope is stored as a new table: a page that compares getState with the table it laid out
+-- (VehicleManager's slot window) sees the change at once.
+local function walletBalances(old, wallet)
+    local out = nil
+    for id, b in pairs(old) do
+        local w = wallet[id]
+        if type(w) == "table" and type(w.available) == "number" and (type(b) ~= "table"
+            or w.available ~= b.available or w.reserved ~= b.reserved or w.rev ~= b.rev) then
+            out = out or {}
+            out[id] = { available = w.available, reserved = w.reserved, rev = w.rev }
+        end
+    end
+    if out == nil then return nil end
+    for id, b in pairs(old) do
+        if out[id] == nil then out[id] = b end
+    end
+    return out
+end
+
+C.onWallet(function(_, args)
+    local wallet = type(args) == "table" and args.balances or nil
+    if type(wallet) ~= "table" then return end
+    local changed = {}
+    for key, env in pairs(cache) do
+        local balances = type(env.balances) == "table" and walletBalances(env.balances, wallet) or nil
+        if balances ~= nil then
+            local copy = {}
+            for k, v in pairs(env) do copy[k] = v end
+            copy.balances = balances
+            changed[#changed + 1] = { key, copy }
+        end
+    end
+    for _, c in ipairs(changed) do
+        cache[c[1]] = c[2]
+        notify(c[2])
+    end
+end)
 
 -- ---------- public API ----------
 

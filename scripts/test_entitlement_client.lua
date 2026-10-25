@@ -9,7 +9,8 @@ command and the server's 500 ms window respected (counted from the previous repl
 here and in the read gate ECReadGate), every caller's callback kept, stale replies
 never overwriting a newer snapshot, a timeout reported as unknown without a re-send (keeping the
 quote / order identity), a late answer updating the cache without a second callback, public
-refresh signals, the one shared reading of an order lookup (instant products included), rental
+refresh signals, cached balances following the wallet's pushes and reads (as a new envelope
+table), the one shared reading of an order lookup (instant products included), rental
 ids checked locally and carried on quote / auto-renew, an error code never reaching the screen,
 and the admin integration page: order content / status / auto-renew reason / rental line /
 refund dialog / settings file problem wording, the order list's pages and player filter, and a
@@ -66,6 +67,7 @@ Events = {
 }
 
 local counter = 0
+local walletListeners = {}
 MinidoracatEconomy = {
     COMMAND_MODULE = "MinidoracatEconomy",
     now = function() return nowMs end,
@@ -78,6 +80,7 @@ MinidoracatEconomy = {
             counter = counter + 1
             return "r" .. counter
         end,
+        onWallet = function(fn) walletListeners[#walletListeners + 1] = fn end,
     },
 }
 
@@ -93,6 +96,7 @@ local function tick(ms)
 end
 
 local function reply(command, args) C.handlers[command](args) end
+local function wallet(kind, args) for _, fn in ipairs(walletListeners) do fn(kind, args) end end
 
 local function envelope(rev, planRev, extra)
     local env = { ok = true, sourceMod = "MinidoracatVehicleManagerFor42", productId = "claim_slot",
@@ -442,6 +446,38 @@ end)()
     for _, fn in ipairs(gameStart) do fn() end
     list, err = E.getList()
     check(list == nil and err == nil, "a new world forgets the list and its error")
+end)()
+
+-- ---------- the balances a cached envelope carries follow the wallet's pushes and reads ----------
+;(function()
+    for _, fn in ipairs(gameStart) do fn() end
+    local function money(available, rev) return { available = available, reserved = 0, rev = rev } end
+    reply("entitlement.changed", envelope(1, 1, { balances = { survivor = money(40, 7) } }))
+    reply("entitlement.changed", envelope(1, 1, { productId = "other_slot",
+        balances = { survivor = money(40, 7), cat = money(5, 2) } }))
+    reply("entitlement.changed", envelope(1, 1, { productId = "free_slot" }))
+    local before, first, other, free = #changed, E.getState(SRC, PROD), E.getState(SRC, "other_slot"),
+        E.getState(SRC, "free_slot")
+    wallet("changed", { balances = { survivor = money(500, 8), cat = money(5, 2), dog = money(9, 1) }, kind = "checkin" })
+    local now, now2 = E.getState(SRC, PROD), E.getState(SRC, "other_slot")
+    check(now ~= first and now.balances.survivor.available == 500 and now.balances.survivor.rev == 8
+        and now.entitlement == first.entitlement and now.plan == first.plan,
+        "a wallet push puts the new balance in the cached envelope")
+    check(first.balances.survivor.available == 40,
+        "the envelope a page already holds is not changed in place: getState answers a new table")
+    check(now2 ~= other and now2.balances.survivor.available == 500 and now2.balances.cat == other.balances.cat
+        and now.balances.dog == nil and now2.balances.dog == nil,
+        "every cached product with that currency follows; a currency the envelope does not carry is not added")
+    check(E.getState(SRC, "free_slot") == free, "an envelope without balances is left alone")
+    check(#changed == before + 2, "onChanged fires once for each envelope that changed")
+    wallet("changed", { balances = { survivor = money(500, 8) } })
+    wallet("history", { entries = {} })
+    check(E.getState(SRC, PROD) == now and #changed == before + 2,
+        "the same balance, or a wallet message without balances, changes nothing")
+    wallet("state", { balances = { survivor = money(450, 9) }, receipts = {} })
+    check(E.getState(SRC, PROD).balances.survivor.available == 450 and #changed == before + 4,
+        "a wallet read updates the cache like a push")
+    for _, fn in ipairs(gameStart) do fn() end
 end)()
 
 -- ---------- an error code never reaches the screen ----------

@@ -311,6 +311,7 @@ end
 - `setAutoRenew(sourceMod, productId, enabled, revision, termsRevision, cb, rental)`：`rental` 必填；同一產品一次只送一筆同意或取消，前一筆未回時回 `nil, "pending"`。
 - 租約 id 與其他 id 同規則（1–96 字元字串、不含控制字元），不合格時本機回 `nil, "invalid_args"`。
 - `requestList(cb?)`／`getList()`／`onPush(fn)`：Economy 錢包「名額」分頁用。`requestList` 讀回自己全部商品（同一條排隊／合併／逾時規則），每個 snapshot 也寫進 `getState` 的快取；`getList()` 回 `{ entries, more }`（上一次成功讀到的商品，各取快取中最新的一份）與上一次讀取的錯誤；`onPush` 在每個 `entitlement.changed` 之後呼叫。
+- 快取裡 snapshot 的 `balances` 跟著錢包更新：只有錢變動時（簽到、領信、轉帳、別的 MOD 扣款）伺服器不會送新的 snapshot，客戶端每收到一次 `wallet.changed` 或 `wallet.state`，就把餘額寫進快取裡帶有該幣別的 snapshot：換成新的表（`getState` 回傳的表會不同），並呼叫 `onChanged`。整合 MOD 顯示餘額不必另外重送 `requestState`；以 `getState` 回傳的表有沒有換來決定重排的畫面也會立即更新。42.21.0-0.23.0 和更早的客戶端不會更新，要等下一次讀取或推送。
 
 `Client.openAdminPlans(sourceMod?, productId?)` 開啟管理台的唯讀方案總覽並選到該產品；讀取權限仍由伺服器重新驗證。
 
