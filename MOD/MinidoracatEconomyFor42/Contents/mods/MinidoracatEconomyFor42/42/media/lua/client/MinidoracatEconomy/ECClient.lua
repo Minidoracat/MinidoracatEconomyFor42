@@ -1365,6 +1365,7 @@ end)
 -- registerRefusalText(fullType, fn(detail) -> text) for its unique_refused (ECPanelWidgets reads
 -- both, each call in pcall). CAPABILITIES.rentalPeriods (rev 6): Entitlements.quote takes a
 -- trailing `periods` (1..RENTAL_PERIODS_MAX), one order paying that many rental periods.
+-- CAPABILITIES.adminSources (rev 7): openAdminSources.
 -- API_MAJOR lives on the server table on purpose: probing
 -- `MinidoracatEconomy.v1.API_MAJOR` on the client stays nil.
 require "MinidoracatEconomy/ECEntitlementClient"
@@ -1379,9 +1380,9 @@ end
 EC.v1 = EC.v1 or {}
 EC.v1.Client = {
     API_MAJOR = 1,
-    API_REVISION = 6,
+    API_REVISION = 7,
     CAPABILITIES = { wallet = true, entitlements = true, adminPlans = true, rentals = true, freeze = true,
-        shopAdd = true, uniqueItemViews = true, rentalPeriods = true },
+        shopAdd = true, uniqueItemViews = true, rentalPeriods = true, adminSources = true },
     RENTAL_PERIODS_MAX = C.Entitlements.RENTAL_PERIODS_MAX,
     registerItemView = registerHook(C.itemViews),
     registerRefusalText = registerHook(C.refusalTexts),
@@ -1394,6 +1395,13 @@ EC.v1.Client = {
         local AW = C.AdminWindow
         if AW == nil or AW.openPlans == nil then return false end
         return AW.openPlans(sourceMod, productId) == true
+    end,
+    -- Opens the admin window's integration sources page with that mod's source picked, where the
+    -- economy write role sets its daily caps. true, or false and invalid_args / forbidden / unavailable.
+    openAdminSources = function(sourceMod)
+        local AW = C.AdminWindow
+        if AW == nil or AW.openSources == nil then return false, "unavailable" end
+        return AW.openSources(sourceMod)
     end,
     -- Opens the admin window's shop page with every listed full type the catalog does not sell
     -- yet as a new SKU draft (at most 64; repeats and unknown types skipped). The admin prices

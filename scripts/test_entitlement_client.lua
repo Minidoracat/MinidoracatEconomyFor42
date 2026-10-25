@@ -20,7 +20,8 @@ refusal read as a sentence, never as its code; the per-write gates (a frozen acc
 cancel), the unknown policy, the localized search types, the own-order count and the dialog
 height bound; and the page's state machine (ECPanelWanted with its controls replaced): no create
 before the policy is read, a frozen cancel, a bare refusal of the read in flight, the types sent
-with a keyword, another order's candidates dropped, and the empty record's button.
+with a keyword, another order's candidates dropped, and the empty record's button. Last, the admin
+window's sources shortcut (ECAdminWindow openSources): its refusals and the source it picks.
 ]]
 
 local MEDIA = os.getenv("EC_LUA_ROOT") or "MOD/MinidoracatEconomyFor42/Contents/mods/MinidoracatEconomyFor42/42/media/lua"
@@ -1250,6 +1251,47 @@ end)()
     owner.writeAllowed = function() return true end
     p:updateEnabled()
     check(p.list.optionsDisabled == false, "write role: force cancel enabled")
+end)()
+
+-- ---------- another mod's "change my daily cap" (v1.Client.openAdminSources, rev 7) ----------
+;(function()
+    local function noop() end
+    ISCollapsableWindow = { derive = function()
+        local class = {}
+        class.__index = class
+        return class
+    end }
+    local mods = { "ISUI/ISCollapsableWindow", "ISUI/ISLayoutManager", "MinidoracatEconomy/ECKeyboard",
+        "MinidoracatEconomy/ECAdminPanel", "MinidoracatEconomy/ECDetailWindow", "MinidoracatEconomy/ECNavigation" }
+    for _, m in ipairs(mods) do package.loaded[m] = true end
+    local readable = false
+    C.UI = { PAD = 8, T = "IGUI_MinidoracatEconomy_", fontH = { small = 16, medium = 20 }, color = noop, fill = noop,
+        text = noop, textWidth = function() return 0 end }
+    C.Keyboard, C.DetailWindow, C.Navigation, C.PanelWidgets = {}, {}, {}, { drawBadge = noop }
+    C.AdminPanel = { TAB_ICONS = {}, canRead = function() return readable end }
+    dofile(MEDIA .. "/client/MinidoracatEconomy/ECAdminWindow.lua")
+    local AW = C.AdminWindow
+    local picked, opened, window = {}, 0, nil
+    AW.open = function()
+        opened = opened + 1
+        return window
+    end
+    window = { adminPanel = { showSource = function(_, id) picked[#picked + 1] = id end } }
+
+    local function refused(id) return select(2, AW.openSources(id)) end
+    check(refused("Bad Mod") == "invalid_args" and refused(nil) == "invalid_args" and refused(string.rep("a", 65)) == "invalid_args",
+        "sources shortcut: a malformed mod id is refused")
+    check(refused("MinidoracatQuestFor42") == "forbidden" and opened == 0,
+        "sources shortcut: a player who may not read the admin pages gets no window")
+    readable = true
+    check(AW.openSources("MinidoracatQuestFor42") == true and opened == 1 and picked[1] == "MinidoracatQuestFor42",
+        "sources shortcut: the window opens on the asking mod's source")
+    window = nil
+    check(refused("MinidoracatQuestFor42") == "unavailable" and #picked == 1,
+        "sources shortcut: no admin window (no UI framework) is unavailable")
+
+    ISCollapsableWindow, C.UI, C.Keyboard, C.DetailWindow, C.Navigation, C.PanelWidgets, C.AdminPanel = nil, nil, nil, nil, nil, nil, nil
+    for _, m in ipairs(mods) do package.loaded[m] = nil end
 end)()
 
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))

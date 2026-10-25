@@ -5196,6 +5196,16 @@ function Admin:showIntegrationPlan(sourceMod, productId)
     end)
 end
 
+-- A consumer mod's admin shortcut (EC.v1.Client.openAdminSources): the integration sources page with
+-- that mod's source picked, where its daily caps are set (changing them still takes the write role).
+-- An id without a row there leaves the first row picked, as selectedSource does for any stale pick.
+function Admin:showSource(sourceMod)
+    self:requestClose(function()
+        self.srcSelected = sourceMod
+        if self.tab == "Sources" then self:refresh() else self:setTab("Sources") end
+    end)
+end
+
 -- ----- dialog lifecycle -----
 
 -- `ctx.allowed` is the right this particular dialog needs, decided by the caller that knows

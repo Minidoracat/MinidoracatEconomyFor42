@@ -12,6 +12,14 @@
 
 格式基於 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循 `{PZ版本}-{主版本}.{次版本}.{修訂}` 格式。
 
+## [Unreleased]
+
+### 新增
+
+- **其他模組可以直接帶你到「整合來源」頁**：會發倖存幣的模組（例如任務與成就模組）在自己的管理面板放了「到經濟管理台調整上限」按鈕時，按下去會打開經濟管理台的「整合來源」頁，並選好那個模組，直接在那裡改它的今日發放額度，不用自己找頁面。沒有經濟管理台權限的人按了不會開任何視窗。
+
+> 技術要點：客戶端 facade（`MinidoracatEconomy.v1.Client`）升到 revision 7，新增 `CAPABILITIES.adminSources` 與 `openAdminSources(sourceModId)`（回 `ok, err`，`err` 為 `invalid_args`／`forbidden`／`unavailable`）。只換頁、不寫入；`forbidden` 是本機玩家不能讀管理頁（唯讀角色可以開，改額度仍要寫入權）。規格見 `docs/entitlements-api.md`「到整合來源頁」。
+
 ## [42.21.0-0.23.1] - 2026-10-25
 
 ### 修正

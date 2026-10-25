@@ -489,6 +489,21 @@ function AW.openPlans(sourceMod, productId)
     return true
 end
 
+-- The consumer mods' "change my daily cap" (EC.v1.Client.openAdminSources): the window, on the
+-- integration sources page with that mod's source picked. true, or false and invalid_args /
+-- forbidden (this player may not read the admin pages) / unavailable (no admin window: no UI framework).
+function AW.openSources(sourceMod)
+    if type(sourceMod) ~= "string" or #sourceMod > 64 or string.match(sourceMod, "^[A-Za-z0-9_%-]+$") == nil then
+        return false, "invalid_args"
+    end
+    if not C.AdminPanel.canRead() then return false, "forbidden" end
+    local win = AW.open()
+    local admin = win and win.adminPanel
+    if admin == nil then return false, "unavailable" end
+    admin:showSource(sourceMod)
+    return true
+end
+
 -- The item menu's way in (ECItemMenu): the window, on the shop page (tab "Shop", a new SKU) or the
 -- whitelist page ("Whitelist", a rule), with `item` added exactly as a drop adds it.
 function AW.addItem(tab, item)

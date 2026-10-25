@@ -315,6 +315,31 @@ end
 
 `Client.openAdminPlans(sourceMod?, productId?)` 開啟管理台的唯讀方案總覽並選到該產品；讀取權限仍由伺服器重新驗證。
 
+### 到整合來源頁（客戶端 rev 7，`CAPABILITIES.adminSources`）
+
+發幣的 MOD 可以在自己的管理介面放「到經濟管理台調整上限」按鈕：Economy 的管理視窗開到「整合來源」頁，並選好這個 MOD 的來源列，服主在那裡改每日發放／回收額度、開關與轉帳權。只換頁，不寫入任何設定。
+
+```lua
+local EC = MinidoracatEconomy and MinidoracatEconomy.v1 and MinidoracatEconomy.v1.Client
+local canOpen = EC and EC.API_MAJOR == 1 and (EC.API_REVISION or 0) >= 7
+    and EC.CAPABILITIES and EC.CAPABILITIES.adminSources == true
+if canOpen then
+    local ok, err = EC.openAdminSources("MyMod")
+    if not ok then --[[ err: "invalid_args" / "forbidden" / "unavailable" ]] end
+end
+```
+
+`Client.openAdminSources(sourceModId)` → `ok, err?`
+
+| 回傳 | 意義 |
+|---|---|
+| `true` | 管理視窗已開到「整合來源」頁並選好這個來源（有未套用的商店編輯時先問要不要放棄；選留下就停在原頁） |
+| `false, "invalid_args"` | Mod ID 不合規則（與伺服器 `registerSource` 同規則：1–64 字元，英數、底線、連字號） |
+| `false, "forbidden"` | 本機玩家不能讀 Economy 的管理頁（`AdminRoles`、`ReadOnlyRoles` 都沒有他的角色）。唯讀角色開得了、看得到額度，改額度仍要管理寫入權，伺服器每次寫入都重新驗證 |
+| `false, "unavailable"` | 管理視窗開不了（沒有 UI 框架） |
+
+這個 Mod ID 還沒有來源列（從沒呼叫過 `registerSource`）時，頁面照常打開，選到清單第一列。
+
 ### 到商店上架（客戶端 rev 4，`CAPABILITIES.shopAdd`）
 
 提供物品的 MOD 可以在自己的介面放「到經濟中心上架」按鈕，把一批物品交給 Economy 管理視窗的商店頁變成草稿。只開草稿：價格、分類、每份件數、限購都由管理員填，按「套用變更」後才走商店既有流程寫 `catalog.json`；Economy 不會自動上架、不會自動定價。
