@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "Фильтрует список по одной категории; \"Все категории\" - без фильтра. Смена сбрасывает выбранные строки.",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "Все категории",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "Категория не может быть пустой и не длиннее 32 символов",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "Своя категория...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "Название новой категории",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "Эта категория только фильтрует магазин; исходная категория предмета не меняется: %1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "Предмет",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "Лимиты продажи и покупки",

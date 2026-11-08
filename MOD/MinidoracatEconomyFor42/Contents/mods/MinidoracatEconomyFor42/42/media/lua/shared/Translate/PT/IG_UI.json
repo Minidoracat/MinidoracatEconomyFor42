@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "Filtra a lista por uma categoria; \"Todas as categorias\" é sem filtro. Mudar isso limpa as linhas escolhidas.",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "Todas as categorias",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "Uma categoria não pode ser vazia e tem no máximo 32 caracteres",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "Categoria personalizada...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "Nome da nova categoria",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "Esta categoria só filtra a loja; ela não muda a categoria original do item: %1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "O item",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "Limites de venda e compra",

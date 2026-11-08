@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "只筛一个分类；选「全部分类」就是不筛。变更分类会清掉已选取的商品列。",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "全部分类",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "分类不能空白，最多 32 个字符",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "自订分类...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "新分类名称",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "商品分类只影响商店筛选，不会修改原物品分类：%1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "商品数据",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "上架与限购份数",

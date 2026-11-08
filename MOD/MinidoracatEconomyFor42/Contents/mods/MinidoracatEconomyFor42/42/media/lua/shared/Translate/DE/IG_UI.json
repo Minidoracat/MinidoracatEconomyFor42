@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "Filtert die Liste auf eine Kategorie; \"Alle Kategorien\" ist kein Filter. Eine Änderung hebt die gewählten Zeilen auf.",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "Alle Kategorien",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "Eine Kategorie darf nicht leer sein und hat höchstens 32 Zeichen",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "Eigene Kategorie...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "Name der neuen Kategorie",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "Diese Kategorie filtert nur den Laden; sie ändert nicht die Originalkategorie des Gegenstands: %1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "Der Gegenstand",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "Angebots- und Kauflimits",

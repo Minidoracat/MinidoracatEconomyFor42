@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "Filters the list to one category; \"All items\" is no filter. Changing it clears the picked rows.",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "All items",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "A category cannot be empty and is at most 32 characters",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "Custom category...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "New category name",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "This category only filters the shop; it does not change the item's original category: %1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "The item",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "Listing and purchase limits",

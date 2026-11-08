@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "목록을 한 분류로 필터링합니다. \"모든 분류\"는 필터 없음입니다. 바꾸면 선택한 행이 해제됩니다.",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "모든 분류",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "분류는 비워 둘 수 없으며 최대 32자입니다",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "사용자 지정 분류...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "새 분류 이름",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "이 분류는 상점 필터링에만 쓰이며 아이템의 원래 분류는 바뀌지 않습니다: %1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "아이템",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "등록 및 구매 한도",

@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "Listeyi tek bir kategoriye göre filtreler; \"Tüm kategoriler\" filtre yok demektir. Değiştirmek seçili satırları temizler.",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "Tüm kategoriler",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "Kategori boş olamaz ve en fazla 32 karakter olabilir",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "Özel kategori...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "Yeni kategori adı",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "Bu kategori yalnızca mağazayı filtreler; eşyanın orijinal kategorisini değiştirmez: %1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "Eşya",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "Satış ve satın alma limitleri",

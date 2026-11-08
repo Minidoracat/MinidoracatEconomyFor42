@@ -336,6 +336,7 @@ A server option.
 [list]
 [*] [b]Delete[/b]: one at a time or several at once; entries leave the catalog only after you give a reason, and sent mail and transaction records are kept.
 [*] [b]Re-adding[/b]: the same ID continues its purchase counts.
+[*] [b]Custom categories[/b]: the category list ends with "Custom category..."; pick it and type a new category name in the box under it (single or batch edits). A name equal to a built-in category's goes under that built-in; players' shop filter shows the name exactly as typed.
 [*] [b]Delisting[/b]: only stops sales: also turn off buyback, or delete the entry, to retire it.
 [*] [b]Entry cap[/b]: under Settings - System shop (default 200, up to 1000).
 [*] [b]Units per order[/b]: how many units a player may buy or sell back at once, under Settings - System shop (default 10, up to 100); one order holds at most 100 pieces, so entries with more pieces per unit allow fewer units.

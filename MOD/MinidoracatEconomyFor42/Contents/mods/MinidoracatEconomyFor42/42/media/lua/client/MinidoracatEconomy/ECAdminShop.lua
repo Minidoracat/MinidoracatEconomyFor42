@@ -147,6 +147,10 @@ local DEFAULT_CATEGORY = "other"
 -- category string can ever collide with it.
 local MIXED = {}
 
+-- The dropdown's last option, "Custom category...": the category is then whatever catEntry holds
+-- (Page:customCategory). A table for the same reason as MIXED.
+local CUSTOM = {}
+
 -- At most this many target names are spelled out: a set of 200 SKUs is a count plus a sample, not
 -- a block nobody reads.
 local BATCH_NAMES_MAX = 12
@@ -798,6 +802,7 @@ function Page:createChildren()
     self.capEntry = field({ maxLen = 7 })
     self.bcapEntry = field({ maxLen = 7 })
     self.nameEntry = field({ maxLen = NAME_MAX })
+    self.catEntry = field({ maxLen = CATEGORY_MAX })   -- under the dropdown on "Custom category..."
 
     local function formChip(label, handler)
         local b = Button.create(0, 0, textWidth(label) + 24, chipH(), label, self, handler, "chip")
@@ -850,7 +855,7 @@ function Page:createChildren()
     self.fieldByKey.name.tip = tip("Admin_Shop_TipName")
 
     -- every box the editor may make editable; the id is a new SKU's alone
-    self.entryFields = { self.qtyEntry, self.capEntry, self.bcapEntry, self.nameEntry }
+    self.entryFields = { self.qtyEntry, self.capEntry, self.bcapEntry, self.nameEntry, self.catEntry }
     for _, cur in ipairs(EC.CURRENCY_ORDER) do
         self.entryFields[#self.entryFields + 1] = self.quotes[cur].priceEntry
         self.entryFields[#self.entryFields + 1] = self.quotes[cur].bidEntry
@@ -858,7 +863,7 @@ function Page:createChildren()
     self.newFields = { self.idEntry }
     -- everything that lives inside the scrolling field area, so placeForm hides what scrolled out
     -- of it in one pass
-    self.formControls = { self.idEntry, self.nameEntry }
+    self.formControls = { self.idEntry, self.nameEntry, self.catEntry }
     for _, spec in ipairs(self.fields) do self.formControls[#self.formControls + 1] = spec.control end
     for _, b in ipairs(self.tips) do self.formControls[#self.formControls + 1] = b end
 
@@ -1008,7 +1013,9 @@ function Page:draftValue(spec)
         if q == nil then return nil end
         return q[spec.leaf]
     end
-    return d[spec.key]
+    local v = d[spec.key]
+    if v == CUSTOM then return self:customCategory() end
+    return v
 end
 
 -- One currency's column, word order left to the translation ("%1 (%2)": field, currency).
@@ -1047,6 +1054,22 @@ function Page:specOut(spec, value)
     return s, categoryText(s)
 end
 
+-- The custom box as a category, trimmed. A built-in's own translated name ("Medical") is that
+-- built-in, so one category never shows up twice in the filters.
+function Page:customCategory()
+    local s = trimText(entryText(self.catEntry))
+    for _, key in ipairs(BUILTIN_CATEGORIES) do
+        if categoryText(key) == s then return key end
+    end
+    return s
+end
+
+-- Whether the dropdown stands on "Custom category...": the box under it is on screen then.
+function Page:customPicked()
+    if self.batch ~= nil then return self.batch.value.category == CUSTOM end
+    return self.draft ~= nil and self.draft.category == CUSTOM
+end
+
 function Page:fillEntries(d)
     setEntryText(self.idEntry, d.id)
     setEntryText(self.qtyEntry, d.qty)
@@ -1057,6 +1080,7 @@ function Page:fillEntries(d)
         setEntryText(ctl.priceEntry, q.price)
         setEntryText(ctl.bidEntry, q.bidPrice)
     end
+    setEntryText(self.catEntry, "")
     self:fillCategoryCombo(d.category, false)
     -- the send name: empty means the item's own name, which is what the empty box shows
     setEntryText(self.nameEntry, d.name or "")
@@ -1109,6 +1133,8 @@ function Page:fillCategoryCombo(selected, allowMixed)
     if type(selected) == "string" and not found then
         combo:addOptionWithData(categoryText(selected), selected)
     end
+    -- last: a category the catalog does not use yet, typed into the box under the dropdown
+    combo:addOptionWithData(tr("Admin_Shop_CatCustom"), CUSTOM)
     self.catSignature = keySignature(keys)
     comboSelect(combo, selected == nil and MIXED or selected)
 end
@@ -1121,8 +1147,11 @@ function Page:syncCategoryCombo()
     if self.draft == nil and self.batch == nil then return end
     if self.catSignature == signature then return end
     if self.batch ~= nil then
-        local spec = self.fieldByKey.category
-        self:fillCategoryCombo(self:batchValue(spec), self.batch.start.category == nil)
+        -- the raw value, not batchValue: "Custom category..." has to stay the picked option
+        local b = self.batch
+        local v = b.value.category
+        if v == nil then v = b.start.category elseif v == MIXED then v = nil end
+        self:fillCategoryCombo(v, b.start.category == nil)
     else
         self:fillCategoryCombo(self.draft.category, false)
     end
@@ -1852,6 +1881,7 @@ function Page:startBatch(ids)
         if spec.entry then setEntryText(spec.control, start[spec.key] or "") end
     end
     setEntryText(self.idEntry, "")
+    setEntryText(self.catEntry, "")
     self:fillCategoryCombo(start.category, start.category == nil)
     self.view = "editor"
     self.form.scrollOffset = 0
@@ -1887,6 +1917,7 @@ function Page:batchValue(spec)
     local set = b.value[spec.key]
     if set ~= nil then
         if set == MIXED then return nil end
+        if set == CUSTOM then return self:customCategory() end
         return set
     end
     return b.start[spec.key]
@@ -2482,6 +2513,7 @@ function Page:buildDetailText()
     -- the send name as the box holds it right now (like the count and the cap above): empty is the
     -- item's own name
     local sendName = self:sendName()
+    local category = categoryText(self:draftValue(self.fieldByKey.category))
     local lines = {
         tr("Admin_Shop_Id") .. ": " .. tostring(d.id),
         getText(T .. "Admin_Shop_DetailName", itemName(d.item)),
@@ -2489,7 +2521,7 @@ function Page:buildDetailText()
         getText(T .. "Admin_Shop_DetailOriginal", itemOriginal(d.item) or itemName(d.item)),
         getText(T .. "Admin_Shop_DetailType", tostring(d.item)),
         getText(T .. "Admin_Shop_DetailQty", tostring(qty)),
-        getText(T .. "Admin_Shop_DetailCategory", categoryText(d.category)),
+        getText(T .. "Admin_Shop_DetailCategory", category),
         capText(cap, qty) .. "  /  " .. scopeDailyText(d.dailyCapScope),
         self:resetNote(d.dailyCapScope),
         -- the master switch, once: the per-currency lines below are the caps and the room the
@@ -2499,7 +2531,7 @@ function Page:buildDetailText()
     -- the card says the same things: the facts as rows, the switch as a chip, the rules as text
     local rows = {
         { label = tr("PCard_Shop_Qty"), value = tostring(qty) },
-        { label = tr("PCard_Shop_Category"), value = categoryText(d.category) },
+        { label = tr("PCard_Shop_Category"), value = category },
         { label = tr("PCard_Shop_Cap"), value = capText(cap, qty), note = scopeDailyText(d.dailyCapScope) },
         { label = tr("PCard_Shop_Reset"), value = self:resetNote(d.dailyCapScope) },
     }
@@ -2749,7 +2781,7 @@ local QUOTE_STATES = { "Admin_Shop_QuoteSellOn", "Admin_Shop_QuoteSellOff", "Adm
 -- labels are column titles, and a title must not widen the label column of the plain rows.
 function Page:formMetrics(quoteLabels)
     local nameSpec = self.fieldByKey.name
-    local labelW = math.max(textWidth(tr("Admin_Shop_Id")),
+    local labelW = math.max(textWidth(tr("Admin_Shop_Id")), textWidth(tr("Admin_Shop_CatName")),
         textWidth(tr(nameSpec.label)) + (nameSpec.tip and self:tipSize() + 4 or 0))
     for _, spec in ipairs(self.fields) do
         if quoteLabels or spec.currency == nil then
@@ -2916,6 +2948,28 @@ function Page:placeQuoteTable(x, top, cols)
     return y
 end
 
+-- A row marked `under` belongs right under the row before it (the custom category box under its
+-- dropdown). Two to a line, that is two places on: the row after it moves up between them, or an
+-- empty place does when there is none, so the box never pushes another field across.
+local GAP = { gap = true }
+local function pairedRows(rows)
+    local out, i = {}, 1
+    while i <= #rows do
+        local row, after = rows[i], rows[i + 1]
+        if row.under then
+            if after ~= nil and after.control ~= nil then
+                out[#out + 1] = after
+                i = i + 1
+            else
+                out[#out + 1] = GAP
+            end
+        end
+        out[#out + 1] = row
+        i = i + 1
+    end
+    return out
+end
+
 -- One group of the editor: a heading and its rows, at the place the fixed order gave it.
 -- Returns the new bottom of the column.
 function Page:placeGroup(group, x, top, colW, labelW, valueW)
@@ -2933,9 +2987,12 @@ function Page:placeGroup(group, x, top, colW, labelW, valueW)
     local paired = group.paired and colW >= 2 * (labelW + valueW + 8) + PAD
     local fieldW = paired and math.floor((colW - PAD) / 2) or colW
     local slot = 0
-    for _, row in ipairs(group.rows) do
+    for _, row in ipairs(paired and pairedRows(group.rows) or group.rows) do
         ay = y - scroll
-        if row.note then
+        if row.gap then
+            slot = 1 - slot
+            if slot == 0 then y = y + rowH + 4 end
+        elseif row.note then
             if slot > 0 then y, slot = y + rowH + 4, 0 end
             -- a fact is wrapped whole, never cut to three lines: half a sentence about what this
             -- form would write (or about what the server reported) is worse than the room it
@@ -3064,7 +3121,7 @@ function Page:refreshIdent()
     -- price is per unit), so they come first and the category is what a narrow line gives up
     set(3, getText(T .. "Admin_Shop_IdentSku", tostring(d.id),
         tostring(math.max(1, parseCount(trimText(entryText(self.qtyEntry))) or 1)),
-        categoryText(d.category)))
+        categoryText(self:draftValue(self.fieldByKey.category))))
 end
 
 -- ----- the editor's groups -----
@@ -3213,6 +3270,9 @@ function Page:formGroups()
     end
     itemRows[#itemRows + 1] = self:fieldRow("qty")
     itemRows[#itemRows + 1] = self:fieldRow("category")
+    if self:customPicked() then
+        itemRows[#itemRows + 1] = { label = tr("Admin_Shop_CatName"), control = self.catEntry, under = true }
+    end
     itemRows[#itemRows + 1] = self:fieldRow("name")
     if self:nameHidden() then
         itemRows[#itemRows + 1] = { note = tr("Admin_Shop_NameHidden"), token = "textFaint" }
@@ -3272,11 +3332,13 @@ function Page:batchGroups()
             head[#head + 1] = { note = "- " .. line, token = "accent" }
         end
     end
+    local itemRows = { self:fieldRow("qty"), self:fieldRow("category") }
+    if self:customPicked() then
+        itemRows[#itemRows + 1] = { label = tr("Admin_Shop_CatName"), control = self.catEntry, under = true }
+    end
     local groups = {
         { head = tr("Admin_Shop_BatchSummaryHead"), rows = head, tip = self.batchTip },
-        { head = tr("Admin_Shop_GroupItem"), paired = true, rows = {
-            self:fieldRow("qty"), self:fieldRow("category"),
-        } },
+        { head = tr("Admin_Shop_GroupItem"), paired = true, rows = itemRows },
         { head = tr("Admin_Shop_GroupLimits"), paired = true, rows = {
             self:fieldRow("enabled"), self:fieldRow("dailyCap"), self:fieldRow("dailyCapScope"),
             self:fieldRow("buybackCap"),
@@ -3898,6 +3960,9 @@ function Page:keyboardTargets()
             if spec.entry then kind = "entry" elseif spec.combo then kind = "combo" end
             tip(spec.tip)
             field(kind, self:specLabel(spec), spec.control)
+            if spec.key == "category" and self:customPicked() then
+                field("entry", tr("Admin_Shop_CatName"), self.catEntry)
+            end
             -- the send name sits right under the category in a single SKU's form only
             if spec.key == "category" and self.batch == nil then
                 local name = self.fieldByKey.name

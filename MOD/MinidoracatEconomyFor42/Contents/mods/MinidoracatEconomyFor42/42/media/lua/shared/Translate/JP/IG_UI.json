@@ -2088,6 +2088,8 @@
   "IGUI_MinidoracatEconomy_Admin_Shop_CatFilterHint": "リストを1つのカテゴリに絞り込みます。「すべてのカテゴリ」は絞り込みなしです。変更すると選択中の行は解除されます。",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatAll": "すべてのカテゴリ",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatInvalid": "カテゴリは空にできません（最大32文字）",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatCustom": "カスタムカテゴリ...",
+  "IGUI_MinidoracatEconomy_Admin_Shop_CatName": "新しいカテゴリ名",
   "IGUI_MinidoracatEconomy_Admin_Shop_CatNote": "商品分類はショップの絞り込み専用です。元のアイテム分類は変更しません：%1",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupItem": "商品情報",
   "IGUI_MinidoracatEconomy_Admin_Shop_GroupLimits": "出品と購入上限",
