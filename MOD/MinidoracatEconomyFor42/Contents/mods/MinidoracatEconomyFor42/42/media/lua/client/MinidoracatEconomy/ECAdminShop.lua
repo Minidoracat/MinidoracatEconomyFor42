@@ -1419,7 +1419,7 @@ function Page:choosePicks(ids, anchor, openId)
         end
         self:layout()
     end
-    if kept or not self:isDirty() then commit() else self:requestLeave(commit) end
+    if kept then commit() else self:requestLeave(commit) end
 end
 
 -- One press on a row, from the mouse or from the keyboard's Enter (both arrive here through
@@ -1450,20 +1450,32 @@ function Page:onRow(item, index)
     return self:choosePicks({ item.id }, item.id, item.id)
 end
 
+-- The footer line is the controller's; a refusal on it (error = true) is about the form that was
+-- refused, as saveError is. It goes when that form is left or started over. A success line
+-- ("saved", "3 items deleted") answers what was just done and stays.
+function Page:dropRefusal()
+    local m = self.owner.message
+    if type(m) == "table" and m.error == true then self.owner.message = nil end
+end
+
 -- The gate every navigation goes through, and the controller's own hook: leaving the Shop tab
 -- and closing the window ask here first. Pristine passes straight, a save in flight stays put
 -- (the answer decides what the draft becomes), a dirty draft asks. A forced permission loss does
--- NOT come here -- that goes through clear().
+-- NOT come here -- that goes through clear(). However the form is left, its refusal goes with it.
 function Page:requestLeave(callback)
-    if not self:isDirty() then
+    local function leave()
+        self:dropRefusal()
         callback()
+    end
+    if not self:isDirty() then
+        leave()
         return
     end
     if self.saveRequestId ~= nil then
         self.owner.message = { text = tr("Admin_Shop_SavePending"), error = true }
         return
     end
-    self.confirm:open(callback)
+    self.confirm:open(leave)
     self:layout()
 end
 
@@ -1767,6 +1779,7 @@ function Page:onCategoryPicked(combo)
 end
 
 function Page:onCancelEdit()
+    self:dropRefusal()        -- the form starts over: what refused it is not on screen any more
     if self.batch ~= nil then
         -- back to "nothing marked", on the same rows: the batch equivalent of re-reading the SKU
         self:startBatch(self.batch.ids)
