@@ -260,6 +260,44 @@ local function guardRadioWindow()
     end
 end
 
+-- OnAddToMenu (the admin-only terminal entries) is honoured by the recipe list widgets alone
+-- (ISRecipeScrollingListBox.lua:344-348, ISTiledIconPanel.lua:193-197). When the build window
+-- opens filtered by an item (vanilla "Show build recipes used",
+-- ISInventoryPaneContextMenu.doBuildRecipeListForItem), ISEntityUI.OpenBuildWindow selects
+-- getRecipeList():getFirstRecipe() without asking it (ISEntityUI.lua:586-595, 42.22.2), so the
+-- detail panel could show an entry the list hides. Such a selection moves to the first recipe the
+-- list shows; with none, the window closes. Display only: the server refuses the build itself.
+local function hiddenFor(player, recipe)
+    local fn = recipe and recipe:getOnAddToMenu()
+    return fn ~= nil and not callLuaBool(fn, { player = player, recipe = recipe, shouldShowAll = false })
+end
+
+local function guardBuildWindow()
+    if not ISEntityUI or ISEntityUI.MinidoracatEconomyGuarded then return end
+    ISEntityUI.MinidoracatEconomyGuarded = true
+    local base = ISEntityUI.OpenBuildWindow
+    ISEntityUI.OpenBuildWindow = function(player, ...)
+        local result = base(player, ...)
+        local ok, err = pcall(function()
+            local window = ISEntityUI.GetWindowInstance(player:getPlayerNum(), "BuildWindow")
+            local logic = window and window.BuildPanel and window.BuildPanel.logic
+            if not logic or not hiddenFor(player, logic:getRecipe()) then return end
+            local list = logic:getRecipeList()
+            local all = list and list:getAllRecipes()
+            for i = 0, (all and all:size() or 0) - 1 do
+                local recipe = all:get(i)
+                if not hiddenFor(player, recipe) then
+                    logic:setRecipe(recipe)
+                    return
+                end
+            end
+            window:close()
+        end)
+        if not ok then EC.log("build window selection guard failed: " .. tostring(err)) end
+        return result
+    end
+end
+
 -- A terminal code as words; a code with no sentence of its own reads as the family's "unknown"
 -- sentence, the code in the log.
 local function codeText(family, code)
@@ -289,3 +327,4 @@ C.handlers["terminal.demolish"] = function(args) onReply("Terminal_Demolished", 
 Events.OnFillWorldObjectContextMenu.Add(onFillMenu)
 Events.OnGameStart.Add(guardDestroyCursor)
 Events.OnGameStart.Add(guardRadioWindow)
+Events.OnGameStart.Add(guardBuildWindow)
