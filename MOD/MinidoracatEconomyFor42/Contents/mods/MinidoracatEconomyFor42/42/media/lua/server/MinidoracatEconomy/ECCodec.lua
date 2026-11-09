@@ -1079,7 +1079,7 @@ end
 --   MIC42_*: MinidoracatCleaner's "<last mover>,<hour>" and dropper stamps
 --     (MinidoracatCleaner_Core.lua:21-34), rewritten whenever the item is moved or dropped
 --   <Module.Type> = count: the inputs of a craft with a single output
---     (ISHandcraftAction:performRecipe, ISHandcraftAction.lua:236-247)
+--     (ISHandcraftAction:performRecipe, ISHandcraftAction.lua:240-251 in 42.22.2)
 local function looseRecord(k, v)
     if type(k) ~= "string" then return false end
     if string.sub(k, 1, 6) == "MIC42_" then return true end
