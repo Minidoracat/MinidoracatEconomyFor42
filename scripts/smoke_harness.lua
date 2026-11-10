@@ -464,10 +464,11 @@ function instanceItem(fullType)
     end
     if k.device then
         -- DeviceData 的建置數值照真 setter：setUseDelta 存 f/60（DeviceData.java:597-599），腳本 UseDelta = 0.6
-        -- 就是存 0.01；每件新品自己擲一份預設頻道（DeviceData.generatePresets :122-184），所以清單依建立序號不同
-        local dev = { channel = 88000, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1,
+        -- 就是存 0.01；每件新品自己擲一份預設頻道（DeviceData.generatePresets :122-184）、再從裡面挑一個當目前頻道
+        -- （setRandomChannel :548-556），所以清單與頻道都依建立序號不同
+        local dev = { channel = 90000 + id * 200, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1,
             batteryPowered = true, transmitRange = 1000, volumeRange = 10, minChannel = 88000, maxChannel = 108000, useDelta = 0.01, highTier = false,
-            presets = { { name = "rolled " .. id, freq = 90000 + id * 200 } } }
+            presets = { { name = "rolled " .. id, freq = 90000 + id * 200 } }, maxPresets = 10 }
         it.dev = dev
         it.getDeviceData = function() return {
             getChannel = function() return dev.channel end, setChannelRaw = function(_, v) dev.channel = v end,
@@ -487,8 +488,11 @@ function instanceItem(fullType)
             getMaxChannelRange = function() return dev.maxChannel end, setMaxChannelRange = function(_, v) dev.maxChannel = v end,
             getUseDelta = function() return dev.useDelta end, setUseDelta = function(_, v) dev.useDelta = v / 60 end,
             getIsHighTier = function() return dev.highTier end, setIsHighTier = function(_, v) dev.highTier = v end,
-            -- DevicePresets.getPresets() 是 ArrayList<PresetEntry>：原版面板直接對它 add／remove（RWMChannel.lua:88-108）
-            getDevicePresets = function() return { getPresets = function() return {
+            -- DevicePresets.getPresets() 是 ArrayList<PresetEntry>：原版面板直接對它 add／remove（RWMChannel.lua:88-108）；
+            -- maxPresets 是存讀檔時留幾筆（DevicePresets.java:14, 130-142）
+            getDevicePresets = function() return {
+                getMaxPresets = function() return dev.maxPresets end, setMaxPresets = function(_, v) dev.maxPresets = v end,
+                getPresets = function() return {
                 size = function() return #dev.presets end,
                 get = function(_, i)
                     local p = dev.presets[i + 1]
@@ -1185,7 +1189,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: an integration posting's
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the admin's player receipts name an integration posting by its translated reason (TX-2c: the real ECAdminPanel's table cell, detail card and detail text; an untranslated code and a transfer keep the kind's word)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 13   -- +13: buy orders for any of several item types (scripts/test_wanted.lua W-14a..m: the alts' shape, a refused type named, the order and its created records, resend and conflict, rows / search / category, candidates per type, wrong and mixed types, the delivered type on letter / ledger / history / notice / event, its resend, new-only per type, closing and expiry records, offer and raise records, a one-type order unchanged)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a buy order's statement lines count its kinds (scripts/test_wanted.lua W-14n: create, release and raise in the receipt ring and the receipt files; a one-type order and a delivery carry none)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, left out of the signature and kept by a lot only when every copy agrees; listed and taken back through the market)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, part of the signature so only copies with the same list share a row or a lot, left out of the buyback comparison like the channel a new copy rolled; listed and taken back through the market; room for a longer list on the rebuilt copy; the buyback takes a new copy and refuses a lot tuned or bookmarked differently)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20399,9 +20403,11 @@ local function built()
     return it
 end
 local BUILT, NEW = "4321/12.5/40000/600000/" .. tostring(1 / 256) .. "/true", stats(instanceItem(RADIO).dev)
+-- the snapshot holds the drain as the setter takes it (the reading times 60)
+local KEPT = "4321/12.5/40000/600000/" .. tostring(60 / 256) .. "/true"
 local hand, plain = built(), instanceItem(RADIO)
 local handSnap, plainSnap = Codec.snapshot(hand), Codec.snapshot(plain)
-check(stats(handSnap.device) == BUILT and stats(plainSnap.device) == "nil/nil/nil/nil/nil/nil",
+check(stats(handSnap.device) == KEPT and stats(plainSnap.device) == "nil/nil/nil/nil/nil/nil",
     "HR-1: the snapshot keeps the six readings a recipe gave a hand-built set, and none of them for a new copy (" .. stats(handSnap.device) .. " | " .. stats(plainSnap.device) .. ")")
 local handBack = Codec.rebuild(handSnap)
 check(handBack ~= nil and handBack ~= hand and stats(handBack.dev) == BUILT and handBack.dev.battery == false and handBack.dev.power == 0,
@@ -20454,10 +20460,11 @@ for _, k in ipairs(STATS) do fullest.dev[k] = built().dev[k] end
 fullest:setName("My set"); fullest:setCustomName(true)   -- the engine keeps the flag in modData: one leaf
 for i = 2, Codec.MODDATA_MAX_LEAVES do fullest.modData["k" .. i] = i end
 local fullestSnap = Codec.stateCheck(fullest) == true and Codec.snapshot(fullest) or {}
-check(#(fullestSnap.presets or {}) == Codec.PRESETS_MAX and stats(fullestSnap.device or {}) == BUILT
+check(#(fullestSnap.presets or {}) == Codec.PRESETS_MAX and stats(fullestSnap.device or {}) == KEPT
     and S.RecoveryJournal.packable(fullestSnap) == true,
     "HR-7b: the fullest radio a snapshot takes still fits a recovery journal line")
--- one listing: new copies differ only in the channels they rolled, so they are one row and one lot
+-- one listing: the saved channels are part of what a copy is (like a watch's alarm), so copies are
+-- one row and one lot only when their lists are the same - nothing of one copy reaches another
 local n1, n2 = instanceItem(RADIO), instanceItem(RADIO)
 local s1, s2 = instanceItem(RADIO), instanceItem(RADIO)
 s1.dev.presets, s2.dev.presets = { MINE[1], MINE[3] }, { { name = "Market", freq = 101100 }, { name = "Base camp", freq = 99400 } }
@@ -20469,16 +20476,25 @@ for _, r in ipairs(cmd(seller, "market.candidates").items) do
     if r.item == RADIO then rows[#rows + 1] = r.count end
 end
 table.sort(rows)
-check(#rows == 3 and rows[1] == 1 and rows[2] == 2 and rows[3] == 2,
-    "HR-8: copies that differ only in saved channels are one row, the hand-built set a row of its own (" .. table.concat(rows, ",") .. ")")
-check(cmd(seller, "market.list", { itemIds = { n1.id, mine.id }, price = 30 }).error == "mixed_items",
-    "HR-9: a hand-built set and a new copy are not one lot")
-local rolled = cmd(seller, "market.list", { itemIds = { n1.id, n2.id }, price = 30 })
+check(#rows == 4 and rows[1] == 1 and rows[2] == 1 and rows[3] == 1 and rows[4] == 2,
+    "HR-8: copies with the same saved channels are one row, each other list and the hand-built set a row of its own (" .. table.concat(rows, ",") .. ")")
+-- two sets a hair apart in drain and in loudness (neighbouring floats): the shared encoder
+-- writes six decimals, a signature compares these in full
+local hairA, hairB = instanceItem(RADIO), instanceItem(RADIO)
+hairA.dev.useDelta, hairB.dev.useDelta = 0.00390625, 0.0039062504656612873
+hairA.dev.presets, hairB.dev.presets = {}, {}
+hairA.dev.channel, hairB.dev.channel = 99400, 99400
+local loudA, loudB = Codec.snapshot(hairA), Codec.snapshot(hairA)
+loudA.device.volumeRange, loudB.device.volumeRange = 12.5, 12.50000095367431640625
+check(cmd(seller, "market.list", { itemIds = { n1.id, mine.id }, price = 30 }).error == "mixed_items"
+    and cmd(seller, "market.list", { itemIds = { n1.id, n2.id }, price = 30 }).error == "mixed_items"
+    and Codec.signature(Codec.snapshot(hairA)) ~= Codec.signature(Codec.snapshot(hairB))
+    and Codec.signature(loudA) ~= Codec.signature(loudB),
+    "HR-9: a hand-built set and a new copy are not one lot, nor are two copies with different saved channels or a slightly different drain")
 local same = cmd(seller, "market.list", { itemIds = { s1.id, s2.id }, price = 30 })
-local listings = S.modData().market.listings
-check(rolled.ok == true and listings[rolled.listingId].qty == 2 and listings[rolled.listingId].snapshot.presets == nil
-    and same.ok == true and channels(listings[same.listingId].snapshot.presets) == channels(s1.dev.presets),
-    "HR-10: a lot keeps saved channels only when every copy has the same list, so one copy's never reaches another")
+local lot = S.modData().market.listings[same.listingId]
+check(same.ok == true and lot.qty == 2 and channels(lot.snapshot.presets) == channels(s1.dev.presets),
+    "HR-10: copies with the same saved channels are one lot, and the lot keeps that list")
 -- the whole way: listed, cancelled, back in the backpack through the mailbox
 mine.dev.presets = MINE
 local solo = cmd(seller, "market.list", { itemIds = { mine.id }, price = 40 })
@@ -20487,6 +20503,36 @@ local got = seller.inventory.items[#seller.inventory.items]
 check(solo.ok == true and back.ok == true and back.delivered == true and got ~= mine and got.fullType == RADIO
     and stats(got.dev) == BUILT and got.dev.battery == true and channels(got.dev.presets) == channels(MINE),
     "HR-11: a hand-built set listed and taken back is the same set (" .. tostring(got and stats(got.dev)) .. " | " .. tostring(got and channels(got.dev.presets)) .. ")")
+-- a list longer than a new copy keeps across a save (another mod raised the limit, DevicePresets
+-- load cuts at it): the rebuilt copy keeps as many as it was given
+local roomy = withChannels(12, 4); roomy.dev.maxPresets = 12
+local roomyBack = Codec.rebuild(Codec.snapshot(roomy))
+check(#roomyBack.dev.presets == 12 and roomyBack.dev.maxPresets == 12 and tunedBack.dev.maxPresets == 10,
+    "HR-12: a rebuilt copy has room for every saved channel it was given, and a short list leaves the room as it was ("
+    .. #roomyBack.dev.presets .. "/" .. tostring(roomyBack.dev.maxPresets) .. ", " .. tostring(tunedBack.dev.maxPresets) .. ")")
+-- the buyback: a new copy sells whatever it rolled; one snapshot stands for the lot a rollback
+-- returns, so copies tuned or bookmarked differently are not sold as one lot
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true
+files[S.Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "radio", item = RADIO, qty = 1, price = 20, dailyCap = 0, buyback = true, bidPrice = 3, buybackCap = 0 },
+} }) }, opens = 0 }
+assert(S.Shop.load())
+local b1, b2, b3, b4, b5 = instanceItem(RADIO), instanceItem(RADIO), instanceItem(RADIO), instanceItem(RADIO), instanceItem(RADIO)
+b3.dev.presets, b4.dev.presets, b5.dev.presets = { MINE[1] }, { MINE[1] }, { MINE[1] }
+b3.dev.channel, b4.dev.channel, b5.dev.channel = 99400, 99400, 101100
+for _, it in ipairs({ b1, b2, b3, b4, b5 }) do seller.inventory:AddItem(it) end
+local function sell(ids) return cmd(seller, "shop.sell", { id = "radio", itemIds = ids, revision = S.Shop.revision() }) end
+local before = L.getBalance("rd-seller", "survivor").available
+local lists, tuning = sell({ b1.id, b2.id }), sell({ b4.id, b5.id })
+local kept = seller.inventory:contains(b1) and seller.inventory:contains(b2) and seller.inventory:contains(b4) and seller.inventory:contains(b5)
+    and L.getBalance("rd-seller", "survivor").available == before
+local one, alike = sell({ b1.id }), sell({ b3.id, b4.id })
+check(lists.error == "mixed_items" and tuning.error == "mixed_items" and kept and one.ok == true and alike.ok == true
+    and not seller.inventory:contains(b1) and not seller.inventory:contains(b3) and seller.inventory:contains(b2)
+    and L.getBalance("rd-seller", "survivor").available == before + 9,
+    "HR-13: the buyback takes a new copy, and two tuned and bookmarked alike as one lot; copies that differ in either are refused (mixed_items) and nothing moves ("
+    .. tostring(lists.error) .. ", " .. tostring(tuning.error) .. ", " .. tostring(one.error) .. ", " .. tostring(alike.error) .. ")")
+SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
 onlinePlayers = {}
 end)()
 

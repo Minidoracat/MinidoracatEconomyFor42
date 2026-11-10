@@ -1404,10 +1404,15 @@ function Shop.sell(player, args)
     -- One snapshot (the first copy's) stands for the lot in the pending record a rollback returns
     -- the goods from. A plain map's region is left out of the "new" comparison (every new
     -- Base.Map rolls one, Codec.isCanonical), so copies of different regions would all come back
-    -- as the first one's: they are sold one region at a time.
+    -- as the first one's: they are sold one region at a time. The same goes for the channel a
+    -- radio is tuned to and the channels it has saved.
     local snapshot = Codec.snapshot(items[1])
+    local function rolled(s)
+        return EC.jsonEncode({ s.mapId or false, s.presets or false, type(s.device) == "table" and s.device.channel or false })
+    end
+    local first = rolled(snapshot)
     for i = 2, #items do
-        if Codec.snapshot(items[i]).mapId ~= snapshot.mapId then return { ok = false, error = "mixed_items" } end
+        if rolled(Codec.snapshot(items[i])) ~= first then return { ok = false, error = "mixed_items" } end
     end
 
     local id = S.newId()

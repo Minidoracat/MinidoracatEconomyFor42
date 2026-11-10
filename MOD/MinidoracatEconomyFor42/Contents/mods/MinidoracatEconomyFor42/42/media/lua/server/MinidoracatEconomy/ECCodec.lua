@@ -576,8 +576,9 @@ end
 -- What a recipe gives a hand-built set: its own reach, loudness, band, battery drain and tier
 -- (RecipeCodeOnCreate.radioCraft, RecipeCodeOnCreate.java:569-589), where every other copy has its
 -- script's (Item.java:1780-1800); DeviceData.save keeps them (DeviceData.java:1249-1284).
--- { snapshot key, getter, setter, scale }: setUseDelta stores a sixtieth of what it is given
--- (:597-599), so that reading is written back times 60.
+-- { snapshot key, getter, setter, scale }: setUseDelta keeps a sixtieth of what it is given
+-- (:597-599), so the snapshot holds that reading times 60 - the value the setter takes, and one
+-- whose differences survive the six decimals a signature is written with (EC.jsonEncode).
 local DEVICE_BUILD = {
     { "transmitRange", "getTransmitRange", "setTransmitRange" },
     { "volumeRange", "getBaseVolumeRange", "setBaseVolumeRange" },
@@ -586,6 +587,12 @@ local DEVICE_BUILD = {
     { "useDelta", "getUseDelta", "setUseDelta", 60 },
     { "highTier", "getIsHighTier", "setIsHighTier" },
 }
+
+local function buildReading(dev, f)
+    local v = call(dev, f[2])
+    if f[4] and type(v) == "number" then v = v * f[4] end
+    return v
+end
 
 -- A new copy's build readings, from one fresh copy per fullType (false when none can be made
 -- here), the way isCanonical and the preview keep theirs.
@@ -599,7 +606,7 @@ local function deviceBaseOf(fullType)
         local dev = fresh and call(fresh, "getDeviceData")
         if dev then
             base = {}
-            for _, f in ipairs(DEVICE_BUILD) do base[f[1]] = call(dev, f[2]) end
+            for _, f in ipairs(DEVICE_BUILD) do base[f[1]] = buildReading(dev, f) end
         end
         deviceBase[fullType] = base
     end
@@ -612,7 +619,7 @@ local function buildReadings(dev, fullType, d)
     local base = deviceBaseOf(fullType)
     if not base then return end
     for _, f in ipairs(DEVICE_BUILD) do
-        local v = call(dev, f[2])
+        local v = buildReading(dev, f)
         if v ~= nil and v == v and v ~= base[f[1]] then d[f[1]] = v end
     end
 end
@@ -870,11 +877,12 @@ local canonical = {}
 local FOOD_PORTION = { "hunger", "calories", "proteins", "lipids", "carbs" }
 local function canonicalCopy(s)
     local copy = {}
-    -- a title and a schematic's recipes are rolled for every new copy, like a look, an alarm or the
-    -- region of a plain map (a radio's saved channels are too: Codec.signature leaves them out)
+    -- a title and a schematic's recipes are rolled for every new copy, like a look, an alarm, the
+    -- region of a plain map or the channels a radio has saved - and the one of them it is tuned
+    -- to (DeviceData.setRandomChannel, Item.java:1780-1800), which is dropped below
     for k, v in pairs(s) do
         if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" and k ~= "label" and k ~= "title" and k ~= "recipes"
-            and k ~= "mapId" then
+            and k ~= "mapId" and k ~= "presets" then
             copy[k] = v
         end
     end
@@ -883,6 +891,11 @@ local function canonicalCopy(s)
         for _, key in ipairs(FOOD_PORTION) do portion[key] = s.food[key] end
         if type(s.food.thirst) == "number" and s.food.thirst < 0 then portion.thirst = s.food.thirst end
         copy.food = portion
+    end
+    if type(s.device) == "table" then
+        local device = {}
+        for k, v in pairs(s.device) do if k ~= "channel" then device[k] = v end end
+        copy.device = device
     end
     return copy
 end
@@ -1124,7 +1137,8 @@ function Codec.snapshot(item)
             mediaIndex = call(dev, "getMediaIndex"),
         }
         -- a hand-built set's own readings, and the channels the device has saved: every new copy
-        -- rolls its own list, so it is always stored and compared by nothing, like a watch's alarm
+        -- rolls its own list, so it is always stored and left out of the buyback comparison,
+        -- like a watch's alarm
         buildReadings(dev, s.type, s.device)
         s.presets = savedChannels(item) or nil
     end
@@ -1164,12 +1178,21 @@ local function looseRecord(k, v)
 end
 
 -- Items with the same signature are interchangeable copies (one listing may carry several of
--- them): the whole snapshot except the clock it was taken at, the loose records above and the
--- channels a device has saved (every new copy rolls its own list: bookmarks, not goods).
+-- them): the whole snapshot except the clock it was taken at and the loose records above.
 function Codec.signature(s)
     local copy = {}
     for k, v in pairs(s) do copy[k] = v end
-    copy.presets = nil
+    -- a hand-built set's drain and loudness are floats a recipe rolled: compared in full (Kahlua's
+    -- number text keeps the whole double, KahluaUtil.java:180-189), where the encoder below
+    -- writes six decimals and would call two sets a hair apart one
+    local d = s.device
+    if type(d) == "table" and (type(d.useDelta) == "number" or type(d.volumeRange) == "number") then
+        local device = {}
+        for k, v in pairs(d) do device[k] = v end
+        if type(d.useDelta) == "number" then device.useDelta = tostring(d.useDelta) end
+        if type(d.volumeRange) == "number" then device.volumeRange = tostring(d.volumeRange) end
+        copy.device = device
+    end
     local food = s.food
     if type(food) == "table" and food.listedHours ~= nil then
         local f = {}
@@ -1190,22 +1213,11 @@ function Codec.signature(s)
 end
 
 -- The one snapshot a lot is stored as, once every copy passed the same signature: the first
--- copy's, with a loose record or the saved channels kept only when all of them carry the same.
+-- copy's, with a loose record kept only when all of them carry it with the same value.
 function Codec.lotSnapshot(items)
     local s = Codec.snapshot(items[1])
     -- a unique item is its own lot (Codec.escrowUnique refuses two): nothing of it is merged
-    if #items < 2 or Codec.uniqueTypes[s.type] then return s end
-    if s.presets ~= nil then
-        local first = EC.jsonEncode(s.presets)
-        for i = 2, #items do
-            local other = savedChannels(items[i])
-            if not other or EC.jsonEncode(other) ~= first then
-                s.presets = nil
-                break
-            end
-        end
-    end
-    if type(s.modData) ~= "table" then return s end
+    if #items < 2 or type(s.modData) ~= "table" or Codec.uniqueTypes[s.type] then return s end
     local others = {}
     for i = 2, #items do others[#others + 1] = call(items[i], "getModData") end
     local md, any = {}, false
@@ -1362,11 +1374,12 @@ local function rebuildState(s)
         local dev = call(item, "getDeviceData")
         local d = s.device
         if dev then
-            -- a hand-built set's own readings over the new copy's (DEVICE_BUILD); a snapshot from
-            -- before they were kept has none and leaves the copy as it is
+            -- a hand-built set's own readings over the new copy's (DEVICE_BUILD: stored as the
+            -- setter takes them); a snapshot from before they were kept has none and leaves the
+            -- copy as it is
             for _, f in ipairs(DEVICE_BUILD) do
                 local v = d[f[1]]
-                if v ~= nil and type(v) == type(call(dev, f[2])) then call(dev, f[3], f[4] and v * f[4] or v) end
+                if v ~= nil and v == v and type(v) == type(call(dev, f[2])) then call(dev, f[3], v) end
             end
             if type(d.channel) == "number" then call(dev, "setChannelRaw", d.channel) end
             if type(d.power) == "number" then call(dev, "setPower", d.power) end
@@ -1386,6 +1399,9 @@ local function rebuildState(s)
         local presets = dev and call(dev, "getDevicePresets")
         local list = presets and call(presets, "getPresets")
         if list then
+            -- room for all of them: a list longer than the copy's limit is cut when the item
+            -- is next loaded (DevicePresets.java:130-142; another mod may have raised the limit)
+            if #s.presets > (call(presets, "getMaxPresets") or 0) then call(presets, "setMaxPresets", #s.presets) end
             call(list, "clear")
             for _, p in ipairs(s.presets) do
                 if type(p) == "table" and type(p.name) == "string" and type(p.freq) == "number" then

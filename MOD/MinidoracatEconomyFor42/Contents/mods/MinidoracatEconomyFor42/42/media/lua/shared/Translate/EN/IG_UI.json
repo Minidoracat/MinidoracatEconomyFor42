@@ -726,7 +726,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_fluid": "Holds a different liquid or amount than a new one",
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "Has holes, patches, dirt, blood or is wet",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "Ammo, magazine or fire mode differs from a new one",
-  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Power, channel or light settings differ from a new one",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Power, volume or light settings differ from a new one",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "Not in the same state as a new one",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "Today's buyback of this item is full (still allowed: %1): sell fewer or wait for the daily reset",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "Your buyback allowance for today is too low (%1 left): sell less or wait for the daily reset",

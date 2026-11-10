@@ -726,7 +726,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_fluid": "Содержит другую жидкость или другое количество, чем новый",
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "Есть дыры, заплатки, грязь, кровь или влага",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "Патроны, магазин или режим огня отличаются от нового",
-  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Питание, канал или настройки света отличаются от нового",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Питание, громкость или настройки света отличаются от нового",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "Состояние отличается от нового",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "Сегодняшняя скупка этого товара заполнена (можно ещё %1 ед.): продайте меньше или дождитесь дневного сброса",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "Ваш лимит скупки на сегодня слишком мал (осталось %1): продайте меньше или дождитесь дневного сброса",
