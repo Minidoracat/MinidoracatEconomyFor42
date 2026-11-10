@@ -463,7 +463,7 @@ function instanceItem(fullType)
         it.setSpices = function(_, list) it.spices = list end
     end
     if k.device then
-        -- DeviceData 的建置數值照真 setter：setUseDelta 存 f/60（DeviceData.java:597-599），腳本 UseDelta = 0.6
+        -- DeviceData 的建置數值照真 setter：setUseDelta 存 f/60（DeviceData.java:597-599），頻率上下限與發射距離照引擎箝制（:244-254, 468-470），腳本 UseDelta = 0.6
         -- 就是存 0.01；每件新品自己擲一份預設頻道（DeviceData.generatePresets :122-184）、再從裡面挑一個當目前頻道
         -- （setRandomChannel :548-556），所以清單與頻道都依建立序號不同
         local dev = { channel = 90000 + id * 200, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1,
@@ -482,10 +482,10 @@ function instanceItem(fullType)
             getMediaIndex = function() return dev.mediaIndex end, setMediaIndex = function(_, v) dev.mediaIndex = v end,
             getIsBatteryPowered = function() return dev.batteryPowered end,
             hasMedia = function() return dev.mediaIndex >= 0 end,
-            getTransmitRange = function() return dev.transmitRange end, setTransmitRange = function(_, v) dev.transmitRange = v end,
+            getTransmitRange = function() return dev.transmitRange end, setTransmitRange = function(_, v) dev.transmitRange = v > 0 and v or 0 end,
             getBaseVolumeRange = function() return dev.volumeRange end, setBaseVolumeRange = function(_, v) dev.volumeRange = v end,
-            getMinChannelRange = function() return dev.minChannel end, setMinChannelRange = function(_, v) dev.minChannel = v end,
-            getMaxChannelRange = function() return dev.maxChannel end, setMaxChannelRange = function(_, v) dev.maxChannel = v end,
+            getMinChannelRange = function() return dev.minChannel end, setMinChannelRange = function(_, v) dev.minChannel = (v >= 200 and v <= 1000000) and v or 200 end,
+            getMaxChannelRange = function() return dev.maxChannel end, setMaxChannelRange = function(_, v) dev.maxChannel = (v >= 200 and v <= 1000000) and v or 1000000 end,
             getUseDelta = function() return dev.useDelta end, setUseDelta = function(_, v) dev.useDelta = v / 60 end,
             getIsHighTier = function() return dev.highTier end, setIsHighTier = function(_, v) dev.highTier = v end,
             -- DevicePresets.getPresets() 是 ArrayList<PresetEntry>：原版面板直接對它 add／remove（RWMChannel.lua:88-108）；
@@ -1189,7 +1189,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: an integration posting's
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the admin's player receipts name an integration posting by its translated reason (TX-2c: the real ECAdminPanel's table cell, detail card and detail text; an untranslated code and a transfer keep the kind's word)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 13   -- +13: buy orders for any of several item types (scripts/test_wanted.lua W-14a..m: the alts' shape, a refused type named, the order and its created records, resend and conflict, rows / search / category, candidates per type, wrong and mixed types, the delivered type on letter / ledger / history / notice / event, its resend, new-only per type, closing and expiry records, offer and raise records, a one-type order unchanged)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a buy order's statement lines count its kinds (scripts/test_wanted.lua W-14n: create, release and raise in the receipt ring and the receipt files; a one-type order and a delivery carry none)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 14   -- +14: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, part of the signature so only copies with the same list share a row or a lot, left out of the buyback comparison like the channel a new copy rolled; listed and taken back through the market; room for a longer list on the rebuilt copy; the buyback takes a new copy and refuses a lot tuned or bookmarked differently)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, part of the signature so only copies with the same list share a row or a lot, left out of the buyback comparison like the channel a new copy rolled; listed and taken back through the market; room for a longer list on the rebuilt copy; the buyer's preview of the readings; the buyback takes a new copy and refuses a lot tuned or bookmarked differently)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20510,6 +20510,14 @@ local roomyBack = Codec.rebuild(Codec.snapshot(roomy))
 check(#roomyBack.dev.presets == 12 and roomyBack.dev.maxPresets == 12 and tunedBack.dev.maxPresets == 10,
     "HR-12: a rebuilt copy has room for every saved channel it was given, and a short list leaves the room as it was ("
     .. #roomyBack.dev.presets .. "/" .. tostring(roomyBack.dev.maxPresets) .. ", " .. tostring(tunedBack.dev.maxPresets) .. ")")
+-- what the buyer sees before paying: a hand-built set's readings (the ones it does not store are
+-- a new copy's), its drain as a share of a new copy's; a set off the shelf shows none of this
+local seen, oneSeen = Codec.preview(handSnap).radio or {}, Codec.preview(oneSnap).radio or {}
+check(seen.reach == 4321 and seen.loud == 12.5 and seen.bandMin == 40000 and seen.bandMax == 600000 and seen.highTier == true
+    and seen.drain == 39 and oneSeen.reach == 250 and oneSeen.bandMin == 88000 and oneSeen.bandMax == 108000 and oneSeen.drain == 100
+    and oneSeen.highTier == nil and Codec.preview(plainSnap).radio == nil and Codec.preview(old).radio == nil,
+    "HR-14: the buyer's preview shows a hand-built set's reach, band, loudness, tier and drain against a new copy's, and nothing for a set off the shelf ("
+    .. EC.jsonEncode(seen) .. " | " .. EC.jsonEncode(oneSeen) .. ")")
 -- the buyback: a new copy sells whatever it rolled; one snapshot stands for the lot a rollback
 -- returns, so copies tuned or bookmarked differently are not sold as one lot
 SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = true

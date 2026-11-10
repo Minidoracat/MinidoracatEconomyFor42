@@ -371,6 +371,18 @@ local function stateTokens(st, skipMeters)
     end
     if st.battery == false then add("Market_State_NoBattery")
     elseif tonumber(st.power) and not bars then add("Market_State_Power", int(st.power)) end
+    -- a hand-built radio's own readings (Codec.preview `radio`); a frequency reads in MHz as on
+    -- the vanilla radio panel (stored in kHz)
+    local radio = type(st.radio) == "table" and st.radio or nil
+    if radio then
+        if radio.highTier == true then add("Market_State_HighTier") end
+        if tonumber(radio.reach) then add("Market_State_Reach", int(radio.reach)) end
+        if tonumber(radio.bandMin) and tonumber(radio.bandMax) then
+            add("Market_State_Band", string.format("%.1f", radio.bandMin / 1000), string.format("%.1f", radio.bandMax / 1000))
+        end
+        if tonumber(radio.drain) then add("Market_State_Drain", int(radio.drain)) end
+        if tonumber(radio.loud) then add("Market_State_Loudness", string.format("%.1f", radio.loud)) end
+    end
     if (tonumber(st.holes) or 0) > 0 then add("Market_State_Holes", int(st.holes)) end
     if (tonumber(st.patches) or 0) > 0 then add("Market_State_Patches", int(st.patches)) end
     if (tonumber(st.blood) or 0) > 0 then add("Market_State_Blood", int(st.blood)) end

@@ -1604,6 +1604,22 @@ function Codec.preview(s)
         if d.battery == false then p.battery = false
         elseif num(d.power) then p.power = math.floor(math.max(0, math.min(1, d.power)) * 100 + 0.5) end
     end
+    -- a hand-built set's own readings (DEVICE_BUILD; one it does not store is a new copy's): what
+    -- the buyer pays for. The drain is a share of a new copy's.
+    local base = type(d) == "table" and deviceBaseOf(s.type)
+    if base then
+        local own, any = {}, false
+        for _, f in ipairs(DEVICE_BUILD) do
+            own[f[1]] = base[f[1]]
+            if d[f[1]] ~= nil then own[f[1]], any = d[f[1]], true end
+        end
+        if any then
+            p.radio = { reach = num(own.transmitRange), bandMin = num(own.minChannel), bandMax = num(own.maxChannel),
+                loud = num(own.volumeRange), highTier = own.highTier == true or nil }
+            local drain, stock = num(own.useDelta), num(base.useDelta)
+            if drain and stock and stock > 0 then p.radio.drain = math.floor(drain / stock * 100 + 0.5) end
+        end
+    end
     if (num(m.ammo) or 0) > 0 then p.ammo, p.ammoMax = num(s.ammo) or 0, m.ammo end
     if s.clip then p.clip = true end
     if s.chamber then p.chamber = true end
