@@ -46,6 +46,9 @@
 --   raw custom name (getName adds prefixes)         InventoryItem.java:2428-2479, 3204-3206
 --   preview maxima                                  InventoryItem.java:2502, 2705-2715, 3909-3911 ; FluidContainer.java:530
 --   device battery / medium                         DeviceData.java:84, 259-273, 588-601, 1310-1330 ; KahluaConverterManager.java:206
+--   device build readings / saved channels (42.22.2) RecipeCodeOnCreate.java:569-589 ; Item.java:1780-1800 ;
+--                                                   DeviceData.java:122-184, 597-599, 1249-1284 ;
+--                                                   DevicePresets.java:14, 119-142 ; PresetEntry.java:18-21
 --   wristwatch alarm (hour, minute, set)            AlarmClockClothing.java:71-79, 232-254, 262-310
 --                                                   (42.21.0; the server sets it the same way,
 --                                                   SyncPlayerAlarmClockPacket.java:45-58)
@@ -77,6 +80,8 @@ Codec.LABEL_MAX = 256
 Codec.SPICES_MAX = 16
 -- recipes a copy teaches of its own (a schematic rolls up to 5, ItemCodeOnCreate.java:388-405)
 Codec.RECIPES_MAX = 16
+-- the channels a device has saved (DevicePresets keeps 10, DevicePresets.java:14, 130-142)
+Codec.PRESETS_MAX = 16
 Codec.FILE_LINES_MAX = 5000
 Codec.FIELDS = { "categories", "types", "excludeTypes" }
 Codec.DEFAULT = {
@@ -568,6 +573,72 @@ local function ownMapId(item)
     return mapId
 end
 
+-- What a recipe gives a hand-built set: its own reach, loudness, band, battery drain and tier
+-- (RecipeCodeOnCreate.radioCraft, RecipeCodeOnCreate.java:569-589), where every other copy has its
+-- script's (Item.java:1780-1800); DeviceData.save keeps them (DeviceData.java:1249-1284).
+-- { snapshot key, getter, setter, scale }: setUseDelta stores a sixtieth of what it is given
+-- (:597-599), so that reading is written back times 60.
+local DEVICE_BUILD = {
+    { "transmitRange", "getTransmitRange", "setTransmitRange" },
+    { "volumeRange", "getBaseVolumeRange", "setBaseVolumeRange" },
+    { "minChannel", "getMinChannelRange", "setMinChannelRange" },
+    { "maxChannel", "getMaxChannelRange", "setMaxChannelRange" },
+    { "useDelta", "getUseDelta", "setUseDelta", 60 },
+    { "highTier", "getIsHighTier", "setIsHighTier" },
+}
+
+-- A new copy's build readings, from one fresh copy per fullType (false when none can be made
+-- here), the way isCanonical and the preview keep theirs.
+local deviceBase = {}
+local function deviceBaseOf(fullType)
+    if type(fullType) ~= "string" then return false end
+    local base = deviceBase[fullType]
+    if base == nil then
+        base = false
+        local fresh = instanceItem(fullType)
+        local dev = fresh and call(fresh, "getDeviceData")
+        if dev then
+            base = {}
+            for _, f in ipairs(DEVICE_BUILD) do base[f[1]] = call(dev, f[2]) end
+        end
+        deviceBase[fullType] = base
+    end
+    return base
+end
+
+-- Writes into `d` the build readings of `dev` that are not a new copy's: a set off the shelf keeps
+-- the snapshot it always had, so new copies still share one signature.
+local function buildReadings(dev, fullType, d)
+    local base = deviceBaseOf(fullType)
+    if not base then return end
+    for _, f in ipairs(DEVICE_BUILD) do
+        local v = call(dev, f[2])
+        if v ~= nil and v == v and v ~= base[f[1]] then d[f[1]] = v end
+    end
+end
+
+-- The channels a device has saved, in their order: { { name, freq }, ... }. Every new copy rolls
+-- its own (DeviceData.generatePresets, DeviceData.java:122-184), the native panel lets the player
+-- add, rename and delete them, repeats included (RWMChannel.lua:88-160), and they are saved with
+-- the device (DevicePresets.java:119-128). nil when the item keeps no such list, false when the
+-- list is more than a snapshot carries.
+local function savedChannels(item)
+    local dev = call(item, "getDeviceData")
+    local presets = dev and call(dev, "getDevicePresets")
+    local list = presets and call(presets, "getPresets")
+    local n = list and call(list, "size")
+    if type(n) ~= "number" then return nil end
+    if n > Codec.PRESETS_MAX then return false end
+    local out = {}
+    for i = 0, n - 1 do
+        local entry = call(list, "get", i)
+        local name, freq = entry and call(entry, "getName"), entry and call(entry, "getFrequency")
+        if type(name) ~= "string" or #name > Codec.MODDATA_STRING_MAX or type(freq) ~= "number" then return false end
+        out[i + 1] = { name = name, freq = freq }
+    end
+    return out
+end
+
 -- State an item must not be in to leave a backpack through us, whatever the list says. Returns
 -- ok, reason. Vanilla itself writes modData (customName, condition:<type>,
 -- InventoryItem.java:3253-3256, 3262-3271), so a mod-data key is never a reason by itself: the
@@ -605,6 +676,8 @@ function Codec.stateCheck(item, carriesContents)
     -- number converts. The rebuilt device would come out empty and the disc would be gone.
     local dev = call(item, "getDeviceData")
     if dev and call(dev, "hasMedia") == true then return false, "device_media" end
+    -- nor are more saved channels, or a longer name for one, than a snapshot keeps (savedChannels)
+    if savedChannels(item) == false then return false, "moddata_too_big" end
     -- A stash map (StashSystem.doStashItem, StashSystem.java:148-191) is a city map with the stash's
     -- markers printed into its symbols, which Lua cannot read (MapItem.getSymbols is @HiddenFromLua,
     -- MapItem.java:142-145), and a stash link that spawns the cache when it is read
@@ -798,7 +871,7 @@ local FOOD_PORTION = { "hunger", "calories", "proteins", "lipids", "carbs" }
 local function canonicalCopy(s)
     local copy = {}
     -- a title and a schematic's recipes are rolled for every new copy, like a look, an alarm or the
-    -- region of a plain map
+    -- region of a plain map (a radio's saved channels are too: Codec.signature leaves them out)
     for k, v in pairs(s) do
         if k ~= "age" and k ~= "modData" and k ~= "look" and k ~= "alarm" and k ~= "label" and k ~= "title" and k ~= "recipes"
             and k ~= "mapId" then
@@ -1050,6 +1123,10 @@ function Codec.snapshot(item)
             mediaType = call(dev, "getMediaType"),
             mediaIndex = call(dev, "getMediaIndex"),
         }
+        -- a hand-built set's own readings, and the channels the device has saved: every new copy
+        -- rolls its own list, so it is always stored and compared by nothing, like a watch's alarm
+        buildReadings(dev, s.type, s.device)
+        s.presets = savedChannels(item) or nil
     end
     -- a wristwatch: every new one rolls its alarm (AlarmClockClothing.randomizeAlarm), so it is
     -- always stored, and left out of the buyback comparison like a garment's look
@@ -1087,10 +1164,12 @@ local function looseRecord(k, v)
 end
 
 -- Items with the same signature are interchangeable copies (one listing may carry several of
--- them): the whole snapshot except the clock it was taken at and the loose records above.
+-- them): the whole snapshot except the clock it was taken at, the loose records above and the
+-- channels a device has saved (every new copy rolls its own list: bookmarks, not goods).
 function Codec.signature(s)
     local copy = {}
     for k, v in pairs(s) do copy[k] = v end
+    copy.presets = nil
     local food = s.food
     if type(food) == "table" and food.listedHours ~= nil then
         local f = {}
@@ -1111,11 +1190,22 @@ function Codec.signature(s)
 end
 
 -- The one snapshot a lot is stored as, once every copy passed the same signature: the first
--- copy's, with a loose record kept only when all of them carry it with the same value.
+-- copy's, with a loose record or the saved channels kept only when all of them carry the same.
 function Codec.lotSnapshot(items)
     local s = Codec.snapshot(items[1])
     -- a unique item is its own lot (Codec.escrowUnique refuses two): nothing of it is merged
-    if #items < 2 or type(s.modData) ~= "table" or Codec.uniqueTypes[s.type] then return s end
+    if #items < 2 or Codec.uniqueTypes[s.type] then return s end
+    if s.presets ~= nil then
+        local first = EC.jsonEncode(s.presets)
+        for i = 2, #items do
+            local other = savedChannels(items[i])
+            if not other or EC.jsonEncode(other) ~= first then
+                s.presets = nil
+                break
+            end
+        end
+    end
+    if type(s.modData) ~= "table" then return s end
     local others = {}
     for i = 2, #items do others[#others + 1] = call(items[i], "getModData") end
     local md, any = {}, false
@@ -1272,6 +1362,12 @@ local function rebuildState(s)
         local dev = call(item, "getDeviceData")
         local d = s.device
         if dev then
+            -- a hand-built set's own readings over the new copy's (DEVICE_BUILD); a snapshot from
+            -- before they were kept has none and leaves the copy as it is
+            for _, f in ipairs(DEVICE_BUILD) do
+                local v = d[f[1]]
+                if v ~= nil and type(v) == type(call(dev, f[2])) then call(dev, f[3], f[4] and v * f[4] or v) end
+            end
             if type(d.channel) == "number" then call(dev, "setChannelRaw", d.channel) end
             if type(d.power) == "number" then call(dev, "setPower", d.power) end
             if type(d.volume) == "number" then call(dev, "setDeviceVolumeRaw", d.volume) end
@@ -1281,6 +1377,22 @@ local function rebuildState(s)
             if type(d.mediaType) == "number" then call(dev, "setMediaType", d.mediaType) end
             -- no setMediaIndex: see device_media in Codec.stateCheck (a listed device holds no medium)
             if d.on then call(dev, "setTurnedOnRaw", true) end
+        end
+    end
+    -- the channels it had saved go over the ones this copy just rolled, each added to the list the
+    -- way the native panel adds one (RWMChannel.lua:88-108): a name or a frequency may repeat
+    if type(s.presets) == "table" and PresetEntry then
+        local dev = call(item, "getDeviceData")
+        local presets = dev and call(dev, "getDevicePresets")
+        local list = presets and call(presets, "getPresets")
+        if list then
+            call(list, "clear")
+            for _, p in ipairs(s.presets) do
+                if type(p) == "table" and type(p.name) == "string" and type(p.freq) == "number" then
+                    local ok, entry = pcall(PresetEntry.new, p.name, p.freq)
+                    if ok and entry ~= nil then call(list, "add", entry) end
+                end
+            end
         end
     end
     if type(s.alarm) == "table" then

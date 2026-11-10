@@ -463,8 +463,11 @@ function instanceItem(fullType)
         it.setSpices = function(_, list) it.spices = list end
     end
     if k.device then
+        -- DeviceData 的建置數值照真 setter：setUseDelta 存 f/60（DeviceData.java:597-599），腳本 UseDelta = 0.6
+        -- 就是存 0.01；每件新品自己擲一份預設頻道（DeviceData.generatePresets :122-184），所以清單依建立序號不同
         local dev = { channel = 88000, power = 1, on = false, volume = 0.5, headphones = -1, muted = false, battery = true, mediaType = -1, mediaIndex = -1,
-            batteryPowered = true }
+            batteryPowered = true, transmitRange = 1000, volumeRange = 10, minChannel = 88000, maxChannel = 108000, useDelta = 0.01, highTier = false,
+            presets = { { name = "rolled " .. id, freq = 90000 + id * 200 } } }
         it.dev = dev
         it.getDeviceData = function() return {
             getChannel = function() return dev.channel end, setChannelRaw = function(_, v) dev.channel = v end,
@@ -478,6 +481,22 @@ function instanceItem(fullType)
             getMediaIndex = function() return dev.mediaIndex end, setMediaIndex = function(_, v) dev.mediaIndex = v end,
             getIsBatteryPowered = function() return dev.batteryPowered end,
             hasMedia = function() return dev.mediaIndex >= 0 end,
+            getTransmitRange = function() return dev.transmitRange end, setTransmitRange = function(_, v) dev.transmitRange = v end,
+            getBaseVolumeRange = function() return dev.volumeRange end, setBaseVolumeRange = function(_, v) dev.volumeRange = v end,
+            getMinChannelRange = function() return dev.minChannel end, setMinChannelRange = function(_, v) dev.minChannel = v end,
+            getMaxChannelRange = function() return dev.maxChannel end, setMaxChannelRange = function(_, v) dev.maxChannel = v end,
+            getUseDelta = function() return dev.useDelta end, setUseDelta = function(_, v) dev.useDelta = v / 60 end,
+            getIsHighTier = function() return dev.highTier end, setIsHighTier = function(_, v) dev.highTier = v end,
+            -- DevicePresets.getPresets() 是 ArrayList<PresetEntry>：原版面板直接對它 add／remove（RWMChannel.lua:88-108）
+            getDevicePresets = function() return { getPresets = function() return {
+                size = function() return #dev.presets end,
+                get = function(_, i)
+                    local p = dev.presets[i + 1]
+                    return p and { getName = function() return p.name end, getFrequency = function() return p.freq end }
+                end,
+                clear = function() dev.presets = {} end,
+                add = function(_, entry) dev.presets[#dev.presets + 1] = entry end,
+            } end } end,
         } end
     end
     it.name, it.customName = fullType, false
@@ -606,6 +625,8 @@ function instanceItem(fullType)
     return it
 end
 ArrayList = { new = function() local items = {}; return { add = function(_, it) items[#items + 1] = it end, size = function() return #items end, get = function(_, i) return items[i + 1] end, items = items } end }
+-- PresetEntry.new(name, frequency)（PresetEntry.java:18-21；LuaManager 對兩端都 setExposed，:2252-2254）
+PresetEntry = { new = function(name, freq) return { name = name, freq = freq } end }
 sentItemPackets = {}
 function sendAddItemsToContainer(container, list) sentItemPackets[#sentItemPackets + 1] = { container = container, add = list.items } end
 function sendAddItemToContainer(container, item) sentItemPackets[#sentItemPackets + 1] = { container = container, add = { item } } end
@@ -1164,6 +1185,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: an integration posting's
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the admin's player receipts name an integration posting by its translated reason (TX-2c: the real ECAdminPanel's table cell, detail card and detail text; an untranslated code and a transfer keep the kind's word)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 13   -- +13: buy orders for any of several item types (scripts/test_wanted.lua W-14a..m: the alts' shape, a refused type named, the order and its created records, resend and conflict, rows / search / category, candidates per type, wrong and mixed types, the delivered type on letter / ledger / history / notice / event, its resend, new-only per type, closing and expiry records, offer and raise records, a one-type order unchanged)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a buy order's statement lines count its kinds (scripts/test_wanted.lua W-14n: create, release and raise in the receipt ring and the receipt files; a one-type order and a delivery carry none)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, left out of the signature and kept by a lot only when every copy agrees; listed and taken back through the market)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -20325,6 +20347,146 @@ local single = cmd(seller, "market.list", { itemIds = { h.id }, price = 10 })
 local one = single.ok and S.modData().market.listings[single.listingId].snapshot.modData or {}
 check(single.ok == true and one["Base.Rope"] == 1 and one.MIC42_t == "lm-seller,1790776800",
     "LM-4: a single copy keeps every record it had")
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 HR：手工收音機帶著配方給的數值走，收音機帶著自己存的頻道走 =====
+-- 原版 RecipeCodeOnCreate.radioCraft（RecipeCodeOnCreate.java:569-589）依電子技能擲出發射距離、音量範圍、
+-- 頻率上下限、耗電與高階旗標，DeviceData.save 都存（DeviceData.java:1249-1284）。假裝置照真 setter：
+-- setUseDelta 存 f/60，所以少乘 60 的重建會紅。預設頻道每件新品各擲一份（假件依建立序號不同）。
+io.write("scenario HR: a hand-built radio keeps what its recipe gave it, a radio its saved channels\n")
+;(function()
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands = {}, {}
+nowMs = nowMs + 61000
+fire("OnServerStarted")
+local Codec = S.Codec
+files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["Communications"],"types":[],"excludeTypes":[]}' }, opens = 0 }
+Codec.load()
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("rd-admin"); boss.role = "admin"
+local seller = fakePlayer("rd-seller"); seller.x, seller.y = 101, 200; seller.inventory = fakeInventory(80)
+onlinePlayers = { boss, seller }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("rd-seller", "survivor", 500, "SYSTEM_MINT", { requestId = "rd-seed", reasonCode = "t" })
+local RADIO = "Base.RadioRed"
+local STATS = { "transmitRange", "volumeRange", "minChannel", "maxChannel", "useDelta", "highTier" }
+local function stats(d)
+    local out = {}
+    for i, k in ipairs(STATS) do out[i] = tostring(d[k]) end
+    return table.concat(out, "/")
+end
+local function channels(list)
+    local out = {}
+    for i, p in ipairs(list or {}) do out[i] = tostring(p.name) .. "@" .. tostring(p.freq) end
+    return table.concat(out, ",")
+end
+-- a set as the recipe leaves it: no battery, its own readings (1/256 survives *60/60 exactly)
+local function built()
+    local it = instanceItem(RADIO)
+    local d = it.dev
+    d.transmitRange, d.volumeRange, d.minChannel, d.maxChannel, d.useDelta, d.highTier = 4321, 12.5, 40000, 600000, 1 / 256, true
+    d.battery, d.power = false, 0
+    return it
+end
+local BUILT, NEW = "4321/12.5/40000/600000/" .. tostring(1 / 256) .. "/true", stats(instanceItem(RADIO).dev)
+local hand, plain = built(), instanceItem(RADIO)
+local handSnap, plainSnap = Codec.snapshot(hand), Codec.snapshot(plain)
+check(stats(handSnap.device) == BUILT and stats(plainSnap.device) == "nil/nil/nil/nil/nil/nil",
+    "HR-1: the snapshot keeps the six readings a recipe gave a hand-built set, and none of them for a new copy (" .. stats(handSnap.device) .. " | " .. stats(plainSnap.device) .. ")")
+local handBack = Codec.rebuild(handSnap)
+check(handBack ~= nil and handBack ~= hand and stats(handBack.dev) == BUILT and handBack.dev.battery == false and handBack.dev.power == 0,
+    "HR-2: the rebuilt set has the same reach, loudness, band, drain and tier, not a new copy's (" .. tostring(handBack and stats(handBack.dev)) .. ")")
+local oneOff = instanceItem(RADIO); oneOff.dev.transmitRange = 250
+local oneSnap = Codec.snapshot(oneOff)
+check(stats(oneSnap.device) == "250/nil/nil/nil/nil/nil" and Codec.rebuild(oneSnap).dev.transmitRange == 250,
+    "HR-3: only a reading that differs from a new copy's is stored (" .. stats(oneSnap.device) .. ")")
+-- a listing stored before this: no readings, no saved channels -> a new copy, as it always came back
+local old = Codec.snapshot(built())
+for _, k in ipairs(STATS) do old.device[k] = nil end
+old.presets = nil
+local oldBack = Codec.rebuild(old)
+check(stats(oldBack.dev) == NEW and #oldBack.dev.presets == 1 and string.find(oldBack.dev.presets[1].name, "^rolled ") ~= nil,
+    "HR-4: a snapshot from before carries neither and still rebuilds as a new copy with its own roll (" .. stats(oldBack.dev) .. ")")
+-- with a battery put in and charged, only the readings tell it from a new copy
+local function charged()
+    local it = built()
+    it.dev.battery, it.dev.power = true, 1
+    return it
+end
+local wasNew, why = Codec.isCanonical(charged(), RADIO)
+check(wasNew == false and why == "device" and Codec.isCanonical(instanceItem(RADIO), RADIO) == true and Codec.isCanonical(instanceItem(RADIO), RADIO) == true,
+    "HR-5: the buyback does not take a charged hand-built set for a new one; new copies stay new whatever channels they rolled (" .. tostring(wasNew) .. ", " .. tostring(why) .. ")")
+-- saved channels: the native panel adds straight to the list (RWMChannel.lua:88-108), so a name or
+-- a frequency may repeat; the order is the player's
+local MINE = { { name = "Market", freq = 101100 }, { name = "Market", freq = 99400 }, { name = "Base camp", freq = 99400 } }
+local tuned = instanceItem(RADIO); tuned.dev.presets = MINE
+local tunedSnap = Codec.snapshot(tuned)
+local tunedBack = Codec.rebuild(tunedSnap)
+local emptied = instanceItem(RADIO); emptied.dev.presets = {}
+local emptiedBack = Codec.rebuild(Codec.snapshot(emptied))
+check(channels(tunedSnap.presets) == channels(MINE) and channels(tunedBack.dev.presets) == channels(MINE) and #emptiedBack.dev.presets == 0,
+    "HR-6: a radio's saved channels come back as they were, repeats and order included, and an emptied list stays empty ("
+    .. channels(tunedBack.dev.presets) .. " | " .. #emptiedBack.dev.presets .. ")")
+local function withChannels(n, nameLen)
+    local it = instanceItem(RADIO)
+    it.dev.presets = {}
+    for i = 1, n do it.dev.presets[i] = { name = string.rep("n", nameLen), freq = 88000 + i * 200 } end
+    return it
+end
+check(select(2, Codec.stateCheck(withChannels(Codec.PRESETS_MAX + 1, 4))) == "moddata_too_big"
+    and select(2, Codec.stateCheck(withChannels(2, Codec.MODDATA_STRING_MAX + 1))) == "moddata_too_big"
+    and Codec.stateCheck(withChannels(Codec.PRESETS_MAX, Codec.MODDATA_STRING_MAX)) == true,
+    "HR-7: more saved channels or a longer name than a snapshot carries is refused, not cut short")
+-- the fullest radio a snapshot takes (every reading its own, the most channels under the longest
+-- names, modData at its limit, renamed) must still fit one recovery journal line
+local fullest = withChannels(Codec.PRESETS_MAX, Codec.MODDATA_STRING_MAX)
+for _, k in ipairs(STATS) do fullest.dev[k] = built().dev[k] end
+fullest:setName("My set"); fullest:setCustomName(true)   -- the engine keeps the flag in modData: one leaf
+for i = 2, Codec.MODDATA_MAX_LEAVES do fullest.modData["k" .. i] = i end
+local fullestSnap = Codec.stateCheck(fullest) == true and Codec.snapshot(fullest) or {}
+check(#(fullestSnap.presets or {}) == Codec.PRESETS_MAX and stats(fullestSnap.device or {}) == BUILT
+    and S.RecoveryJournal.packable(fullestSnap) == true,
+    "HR-7b: the fullest radio a snapshot takes still fits a recovery journal line")
+-- one listing: new copies differ only in the channels they rolled, so they are one row and one lot
+local n1, n2 = instanceItem(RADIO), instanceItem(RADIO)
+local s1, s2 = instanceItem(RADIO), instanceItem(RADIO)
+s1.dev.presets, s2.dev.presets = { MINE[1], MINE[3] }, { { name = "Market", freq = 101100 }, { name = "Base camp", freq = 99400 } }
+s1.dev.channel, s2.dev.channel = 99400, 99400
+local mine = charged()
+for _, it in ipairs({ n1, n2, s1, s2, mine }) do seller.inventory:AddItem(it) end
+local rows = {}
+for _, r in ipairs(cmd(seller, "market.candidates").items) do
+    if r.item == RADIO then rows[#rows + 1] = r.count end
+end
+table.sort(rows)
+check(#rows == 3 and rows[1] == 1 and rows[2] == 2 and rows[3] == 2,
+    "HR-8: copies that differ only in saved channels are one row, the hand-built set a row of its own (" .. table.concat(rows, ",") .. ")")
+check(cmd(seller, "market.list", { itemIds = { n1.id, mine.id }, price = 30 }).error == "mixed_items",
+    "HR-9: a hand-built set and a new copy are not one lot")
+local rolled = cmd(seller, "market.list", { itemIds = { n1.id, n2.id }, price = 30 })
+local same = cmd(seller, "market.list", { itemIds = { s1.id, s2.id }, price = 30 })
+local listings = S.modData().market.listings
+check(rolled.ok == true and listings[rolled.listingId].qty == 2 and listings[rolled.listingId].snapshot.presets == nil
+    and same.ok == true and channels(listings[same.listingId].snapshot.presets) == channels(s1.dev.presets),
+    "HR-10: a lot keeps saved channels only when every copy has the same list, so one copy's never reaches another")
+-- the whole way: listed, cancelled, back in the backpack through the mailbox
+mine.dev.presets = MINE
+local solo = cmd(seller, "market.list", { itemIds = { mine.id }, price = 40 })
+local back = cmd(seller, "market.cancel", { listingId = solo.listingId })
+local got = seller.inventory.items[#seller.inventory.items]
+check(solo.ok == true and back.ok == true and back.delivered == true and got ~= mine and got.fullType == RADIO
+    and stats(got.dev) == BUILT and got.dev.battery == true and channels(got.dev.presets) == channels(MINE),
+    "HR-11: a hand-built set listed and taken back is the same set (" .. tostring(got and stats(got.dev)) .. " | " .. tostring(got and channels(got.dev.presets)) .. ")")
 onlinePlayers = {}
 end)()
 
