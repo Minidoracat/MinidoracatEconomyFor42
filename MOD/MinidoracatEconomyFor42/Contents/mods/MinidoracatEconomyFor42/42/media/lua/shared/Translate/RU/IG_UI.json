@@ -678,6 +678,7 @@
   "IGUI_MinidoracatEconomy_Shop_SellConfirm": "Продать",
   "IGUI_MinidoracatEconomy_Shop_SellHave": "Можно продать с верхнего уровня основного инвентаря: %1 (%3 за %2)",
   "IGUI_MinidoracatEconomy_Shop_SellNone": "Ни один такой предмет на верхнем уровне основного инвентаря нельзя продать",
+  "IGUI_MinidoracatEconomy_Shop_SellLater": "Ещё %1 тоже можно продать, но не в этой партии (другой настроенный канал, другие сохранённые каналы или другая область карты): сначала продайте эту партию",
   "IGUI_MinidoracatEconomy_Shop_SellRule": "Скупка принимает только предметы как новые: полное состояние, не использованы, не ремонтировались, не переименованы. Еда принимается, если она нетронута и не сгнила; приготовленная, сгоревшая, замороженная или залежалая подходит",
   "IGUI_MinidoracatEconomy_Shop_SellUnits": "Единицы",
   "IGUI_MinidoracatEconomy_Shop_SellTotal": "Вы получите",

@@ -1534,9 +1534,10 @@ end
 -- too, so the dialog counts only what shop.sell would take), the currency's bid price and the
 -- room left today - and, per reason, how many other copies of that item at the top level the
 -- shop will not take (refused = { [reason] = count }: "blocked" for every copy of a type another
--- mod blocked, "unique" for every copy of a unique type, a Codec.stateCheck code, not-new
--- reasons from Codec.isCanonical, or "mixed_items" for a copy the shop takes but not in one lot
--- with the first - rolledKey), so the dialog can say why instead of only counting what it takes.
+-- mod blocked, "unique" for every copy of a unique type, a Codec.stateCheck code, or not-new
+-- reasons from Codec.isCanonical), so the dialog can say why instead of only counting what it
+-- takes. `later` counts the copies the shop takes too, but not in one lot with the first
+-- (rolledKey): they are not refused, they are the next sale.
 -- id, currency and requestId are echoed so a late reply cannot be read as the answer to the
 -- currency the player has since switched to.
 function Shop.candidates(player, args)
@@ -1559,7 +1560,7 @@ function Shop.candidates(player, args)
         EC.log("shop candidates: no inventory for " .. S.claimedName(player))
         return { ok = false, error = "read_failed", id = sku.id, currency = requested }
     end
-    local ids, refused, lotKey = {}, {}, nil
+    local ids, refused, lotKey, later = {}, {}, nil, 0
     local read = pcall(function()
         local items = inv:getItems()
         if items == nil then error("getItems gave no container") end
@@ -1576,7 +1577,7 @@ function Shop.candidates(player, args)
                     local key = rolledKey(item)
                     lotKey = lotKey or key
                     if key ~= lotKey then
-                        refused.mixed_items = (refused.mixed_items or 0) + 1
+                        later = later + 1
                     elseif #ids < Shop.ITEMS_PER_BUY_MAX then
                         local itemId = item:getID()
                         if itemId == nil then error("an item id is not readable") end
@@ -1593,7 +1594,7 @@ function Shop.candidates(player, args)
     local ms = EC.now()
     local room = Shop.buybackRoom(S.principal(player), sku.id, ms, requested)
     return {
-        ok = true, id = sku.id, currency = requested, item = sku.item, itemIds = ids, count = #ids, refused = refused,
+        ok = true, id = sku.id, currency = requested, item = sku.item, itemIds = ids, count = #ids, refused = refused, later = later,
         unitQty = sku.qty, bidPrice = quote.bidPrice, revision = Shop.revision(),
         enabled = Shop.buybackEnabled(), accountRemaining = room.account, serverRemaining = room.server,
         buyback = Shop.buybackView(S.principal(player), ms, sku.id),

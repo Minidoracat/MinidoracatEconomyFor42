@@ -678,6 +678,7 @@
   "IGUI_MinidoracatEconomy_Shop_SellConfirm": "Sat",
   "IGUI_MinidoracatEconomy_Shop_SellHave": "Ana envanterinizin en üst seviyesinde satılabilir %1 (%2 başına %3)",
   "IGUI_MinidoracatEconomy_Shop_SellNone": "Ana envanterinizin en üst seviyesindeki bu eşyalardan hiçbiri satılamaz",
+  "IGUI_MinidoracatEconomy_Shop_SellLater": "%1 tane daha satılabilir, ama bu partide değil (farklı ayarlı kanal, farklı kayıtlı kanallar veya farklı harita bölgesi): önce bu partiyi satın",
   "IGUI_MinidoracatEconomy_Shop_SellRule": "Geri alım yalnızca yeni gibi eşyaları kabul eder: tam durumda, kullanılmamış, hiç onarılmamış, yeniden adlandırılmamış. Yiyecek yenmemiş ve çürümemiş olduğu sürece kabul edilir; pişmiş, yanmış, donmuş veya bayat olabilir",
   "IGUI_MinidoracatEconomy_Shop_SellUnits": "Birim",
   "IGUI_MinidoracatEconomy_Shop_SellTotal": "Alacağınız",

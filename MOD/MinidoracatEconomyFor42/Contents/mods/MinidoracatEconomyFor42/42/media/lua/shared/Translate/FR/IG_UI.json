@@ -678,6 +678,7 @@
   "IGUI_MinidoracatEconomy_Shop_SellConfirm": "Vendre",
   "IGUI_MinidoracatEconomy_Shop_SellHave": "Quantité vendable au premier niveau de votre inventaire principal : %1 (%3 par %2)",
   "IGUI_MinidoracatEconomy_Shop_SellNone": "Aucun exemplaire de cet objet au premier niveau de votre inventaire principal ne peut être vendu",
+  "IGUI_MinidoracatEconomy_Shop_SellLater": "%1 autres peuvent aussi être vendus, mais pas dans ce lot (autre canal réglé, autres canaux enregistrés ou autre zone de carte) : vendez d'abord ce lot",
   "IGUI_MinidoracatEconomy_Shop_SellRule": "Le rachat n'accepte que des objets comme neufs : état maximal, inutilisés, jamais réparés, non renommés. La nourriture est acceptée tant qu'elle n'est ni entamée ni pourrie ; cuite, brûlée, congelée ou périmée, c'est bon",
   "IGUI_MinidoracatEconomy_Shop_SellUnits": "Unités",
   "IGUI_MinidoracatEconomy_Shop_SellTotal": "Vous recevez",

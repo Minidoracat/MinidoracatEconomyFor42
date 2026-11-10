@@ -20431,9 +20431,10 @@ local function charged()
 end
 local wasNew, why = Codec.isCanonical(charged(), RADIO)
 local flat = instanceItem(RADIO); flat.dev.power = 0.4
-check(wasNew == false and why == "hand_built" and select(2, Codec.isCanonical(flat, RADIO)) == "device"
+check(wasNew == false and why == "hand_built" and select(2, Codec.isCanonical(built(), RADIO)) == "hand_built"
+    and select(2, Codec.isCanonical(flat, RADIO)) == "device"
     and Codec.isCanonical(instanceItem(RADIO), RADIO) == true and Codec.isCanonical(instanceItem(RADIO), RADIO) == true,
-    "HR-5: the buyback does not take a charged hand-built set for a new one and says why (a drained copy is device); new copies stay new whatever channels they rolled ("
+    "HR-5: the buyback does not take a hand-built set for a new one, charged or as its recipe left it, and says why (a drained copy is device); new copies stay new whatever channels they rolled ("
     .. tostring(wasNew) .. ", " .. tostring(why) .. ")")
 -- saved channels: the native panel adds straight to the list (RWMChannel.lua:88-108), so a name or
 -- a frequency may repeat; the order is the player's
@@ -20549,11 +20550,13 @@ check(lists.error == "mixed_items" and tuning.error == "mixed_items" and kept an
     "HR-13: the buyback takes a new copy, and two tuned and bookmarked alike as one lot; copies that differ in either are refused (mixed_items) and nothing moves ("
     .. tostring(lists.error) .. ", " .. tostring(tuning.error) .. ", " .. tostring(one.error) .. ", " .. tostring(alike.error) .. ")")
 -- what the sell dialog is offered is one lot the shop would take: the first new copy (n1) and the
--- copies like it - none here - while the six others wait their turn and the hand-built set is named
-check(offer.ok == true and offer.count == 1 and offer.itemIds[1] == n1.id and offer.refused.mixed_items == 6 and offer.refused.hand_built == 1
+-- copies like it - none here. The six others are not refused, they wait for a lot of their own;
+-- the hand-built set is refused and named
+check(offer.ok == true and offer.count == 1 and offer.itemIds[1] == n1.id and offer.later == 6 and offer.refused.mixed_items == nil
+    and offer.refused.hand_built == 1
     and sell(offer.itemIds).ok == true,
-    "HR-15: the candidates are one lot the buyback takes, the copies that rolled something else counted apart ("
-    .. tostring(offer.count) .. ", " .. EC.jsonEncode(offer.refused or {}) .. ")")
+    "HR-15: the candidates are one lot the buyback takes; the copies that rolled something else are counted as for later, not as refused ("
+    .. tostring(offer.count) .. ", " .. tostring(offer.later) .. ", " .. EC.jsonEncode(offer.refused or {}) .. ")")
 SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
 onlinePlayers = {}
 end)()

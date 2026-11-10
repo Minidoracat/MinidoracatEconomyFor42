@@ -678,6 +678,7 @@
   "IGUI_MinidoracatEconomy_Shop_SellConfirm": "Sprzedaj",
   "IGUI_MinidoracatEconomy_Shop_SellHave": "Do sprzedania na wierzchu głównego ekwipunku: %1 (%3 za %2)",
   "IGUI_MinidoracatEconomy_Shop_SellNone": "Żadnej sztuki tego przedmiotu na wierzchu głównego ekwipunku nie można sprzedać",
+  "IGUI_MinidoracatEconomy_Shop_SellLater": "Jeszcze %1 można sprzedać, ale nie w tej partii (inny ustawiony kanał, inne zapisane kanały lub inny obszar mapy): najpierw sprzedaj tę partię",
   "IGUI_MinidoracatEconomy_Shop_SellRule": "Skup przyjmuje tylko przedmioty jak nowe: w idealnym stanie, nieużywane, nigdy nienaprawiane, bez zmienionej nazwy. Żywność jest przyjmowana, jeśli jest nienaruszona i niezgniła; przygotowana, przypalona, zamrożona lub zleżała może być",
   "IGUI_MinidoracatEconomy_Shop_SellUnits": "Sztuki",
   "IGUI_MinidoracatEconomy_Shop_SellTotal": "Otrzymasz",

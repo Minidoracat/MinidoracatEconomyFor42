@@ -395,6 +395,11 @@ function BuyDialog:buildFacts(width)
         remain = getText(T .. "Shop_Left_" .. row.dailyCapScope, tostring(math.max(0, math.floor(row.remaining))))
     end
     self.remainLines = remain and U.wrapText(remain, width, 2) or {}
+    -- copies the shop takes too, but as a lot of their own (shop.candidates `later`): not refused
+    if sell and c and (tonumber(c.later) or 0) > 0 then
+        local later = getText(T .. "Shop_SellLater", tostring(math.floor(tonumber(c.later))))
+        for _, part in ipairs(U.wrapText(later, width, math.huge)) do self.remainLines[#self.remainLines + 1] = part end
+    end
     -- a sale also says, on its face, how many copies the server will not take and why (wrapped,
     -- never cut): the reason a backpack full of apples sells only five is not a spec detail
     if sell and c and type(c.refused) == "table" then

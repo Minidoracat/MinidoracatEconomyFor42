@@ -678,6 +678,7 @@
   "IGUI_MinidoracatEconomy_Shop_SellConfirm": "Sell",
   "IGUI_MinidoracatEconomy_Shop_SellHave": "%1 sellable on the top level of your main inventory (%3 per %2)",
   "IGUI_MinidoracatEconomy_Shop_SellNone": "None of this item on the top level of your main inventory can be sold",
+  "IGUI_MinidoracatEconomy_Shop_SellLater": "%1 more can be sold too, but not in this lot (a different tuned channel, saved channels or map area): sell this lot first",
   "IGUI_MinidoracatEconomy_Shop_SellRule": "Buyback takes only items as good as new: full condition, unused, never repaired, not renamed. Food is taken as long as it is uneaten and not rotten; cooked, burnt, frozen or stale is fine",
   "IGUI_MinidoracatEconomy_Shop_SellUnits": "Units",
   "IGUI_MinidoracatEconomy_Shop_SellTotal": "You receive",

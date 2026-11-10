@@ -678,6 +678,7 @@
   "IGUI_MinidoracatEconomy_Shop_SellConfirm": "Vender",
   "IGUI_MinidoracatEconomy_Shop_SellHave": "%1 vendibles en el nivel superior de tu inventario principal (%3 por %2)",
   "IGUI_MinidoracatEconomy_Shop_SellNone": "Ninguna unidad de este objeto en el nivel superior de tu inventario principal se puede vender",
+  "IGUI_MinidoracatEconomy_Shop_SellLater": "%1 más también se pueden vender, pero no en este lote (otro canal sintonizado, otros canales guardados u otra zona de mapa): vende primero este lote",
   "IGUI_MinidoracatEconomy_Shop_SellRule": "La recompra solo acepta objetos como nuevos: estado completo, sin usar, nunca reparados y sin renombrar. La comida se acepta mientras esté sin empezar y no esté podrida; cocinada, quemada, congelada o rancia está bien",
   "IGUI_MinidoracatEconomy_Shop_SellUnits": "Unidades",
   "IGUI_MinidoracatEconomy_Shop_SellTotal": "Recibes",

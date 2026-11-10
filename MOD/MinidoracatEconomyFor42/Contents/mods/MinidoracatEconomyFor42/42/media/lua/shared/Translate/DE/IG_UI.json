@@ -678,6 +678,7 @@
   "IGUI_MinidoracatEconomy_Shop_SellConfirm": "Verkaufen",
   "IGUI_MinidoracatEconomy_Shop_SellHave": "%1 verkäuflich auf der obersten Ebene deines Hauptinventars (%3 pro %2)",
   "IGUI_MinidoracatEconomy_Shop_SellNone": "Nichts von diesem Gegenstand auf der obersten Ebene deines Hauptinventars ist verkäuflich",
+  "IGUI_MinidoracatEconomy_Shop_SellLater": "%1 weitere sind ebenfalls verkäuflich, aber nicht in diesem Posten (anderer eingestellter Kanal, andere gespeicherte Kanäle oder anderes Kartengebiet): Verkaufe zuerst diesen Posten",
   "IGUI_MinidoracatEconomy_Shop_SellRule": "Der Ankauf nimmt nur neuwertige Gegenstände: voller Zustand, unbenutzt, nie repariert, nicht umbenannt. Lebensmittel werden genommen, solange sie unangebrochen und nicht verdorben sind; gekocht, verbrannt, gefroren oder abgestanden ist in Ordnung",
   "IGUI_MinidoracatEconomy_Shop_SellUnits": "Einheiten",
   "IGUI_MinidoracatEconomy_Shop_SellTotal": "Du erhältst",
