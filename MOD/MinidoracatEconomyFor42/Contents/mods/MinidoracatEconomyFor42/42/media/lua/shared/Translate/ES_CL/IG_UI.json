@@ -732,7 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_fluid": "Contiene un líquido o una cantidad distinta de uno nuevo",
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "Tiene agujeros, parches, suciedad, sangre o está mojado",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "La munición, el cargador o el modo de disparo difieren de uno nuevo",
-  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "La energía, la batería, el encendido, el volumen o la configuración de luz difieren de uno nuevo",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "La energía, la batería, el encendido, el volumen, los auriculares, el silencio del micrófono o la configuración de luz difieren de uno nuevo",
   "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "Montado a mano: su alcance, banda, rango de volumen o consumo de batería difieren de uno nuevo",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "No está en el mismo estado que uno nuevo",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "La recompra de hoy de este objeto está llena (aún se permiten: %1): vende menos o espera al reinicio diario",

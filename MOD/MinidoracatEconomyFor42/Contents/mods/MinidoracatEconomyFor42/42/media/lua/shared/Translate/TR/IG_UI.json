@@ -732,7 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_fluid": "Yenisinden farklı bir sıvı veya miktar içeriyor",
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "Delik, yama, kir, kan var veya ıslak",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "Cephane, şarjör veya atış modu yenisinden farklı",
-  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Güç, pil, açık/kapalı durumu, ses veya ışık ayarları yenisinden farklı",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Güç, pil, açık/kapalı durumu, ses, kulaklık, mikrofonun sessize alınması veya ışık ayarları yenisinden farklı",
   "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "Elle yapılmış: menzil, bant, ses aralığı veya pil tüketimi yenisinden farklı",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "Yenisiyle aynı durumda değil",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "Bu eşyanın bugünkü geri alımı dolu (%1 birim daha izinli): daha az satın veya günlük sıfırlamayı bekleyin",

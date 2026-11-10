@@ -732,7 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_fluid": "Contient un liquide ou une quantité différente d'un neuf",
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "A des trous, des rapiéçages, de la saleté, du sang ou est mouillé",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "Munitions, chargeur ou mode de tir différents d'un neuf",
-  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Alimentation, batterie, marche/arrêt, volume ou réglages de lumière différents d'un neuf",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Alimentation, batterie, marche/arrêt, volume, casque, micro coupé ou réglages de lumière différents d'un neuf",
   "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "Fabriqué à la main : portée, bande, plage de volume ou consommation différentes d'un neuf",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "Pas dans le même état qu'un neuf",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "Le rachat du jour de cet objet est complet (quantité encore autorisée : %1) : vendez-en moins ou attendez la réinitialisation quotidienne",
