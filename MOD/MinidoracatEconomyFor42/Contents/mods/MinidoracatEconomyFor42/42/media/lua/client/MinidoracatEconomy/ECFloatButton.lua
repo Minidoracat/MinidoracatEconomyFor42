@@ -136,7 +136,7 @@ do
             and ui.CAPABILITIES ~= nil and ui.CAPABILITIES.whatsNew == true and ui.WhatsNew ~= nil then
         ui.WhatsNew.register({
             modId = "MinidoracatEconomyFor42",
-            since = "0.23.1",
+            since = "0.25.0",
             name = "IGUI_MinidoracatEconomy_Title",
             text = "IGUI_MinidoracatEconomy_WhatsNew",
         })

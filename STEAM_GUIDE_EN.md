@@ -95,6 +95,7 @@ A server option; it only appears once the server allows it.
 [*] [b]As good as new[/b]: when buyback is enabled you can sell items as good as new back to the server.
 [*] [b]Food[/b]: only needs to be uneaten (cooked, burnt, frozen or stale is fine).
 [*] [b]Sell window[/b]: lists how many other copies in your bag it won't take and why.
+[*] [b]Radios and maps sell in lots[/b]: radios and walkie-talkies sell one lot at a time (same tuned channel and saved channels), maps one area at a time; the sell window says how many more can be sold afterwards. New radios mostly differ from each other, so they sell one by one.
 [*] [b]Buyback only[/b]: an entry the admin took off sale but still buys back shows "Buyback only" with its buyback price: you can sell it, not buy it.
 [/list]
 [h3]Name on delivery[/h3]
@@ -566,12 +567,13 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]Why won't the shop buy my item?[/h3]
 [list]
 [*] It only buys items as good as new: full condition, unused, never repaired, not renamed, clothing without holes or dirt; food only needs to be uneaten and not rotten.
+[*] Radios: tuned and saved channels don't matter; a different charge, battery, on/off state or volume is refused, and so are hand-built ones.
 [*] The sell window lists how many it won't take and why.
 [/list]
 [h3]Can I list clothing, watches, bags, keys or furniture?[/h3]
 [list]
 [*] Yes, once the server opens their categories in the whitelist (watches are Accessories; bags, keys, furniture and pocket watches are closed by default).
-[*] Holes, patches, blood, dirt, wetness, colour, alarm settings, key IDs, a padlock's key count and a lamp's bulb and colour reach the buyer as they are; empty bags and key rings first.
+[*] Holes, patches, blood, dirt, wetness, colour, alarm settings, key IDs, a padlock's key count, a lamp's bulb and colour, a radio's saved channels and a hand-built radio's stats reach the buyer as they are; empty bags and key rings first.
 [*] Take clothing off first: the picker marks "Wearing" and "In hand". A patch sewn over a hole cannot be kept: remove it, or at Tailoring 8+ remove it and repair the hole with the same fabric.
 [/list]
 [h3]Does food spoil while listed?[/h3]
