@@ -577,8 +577,8 @@ end
 -- (RecipeCodeOnCreate.radioCraft, RecipeCodeOnCreate.java:569-589), where every other copy has its
 -- script's (Item.java:1780-1800); DeviceData.save keeps them (DeviceData.java:1249-1284).
 -- { snapshot key, getter, setter, scale }: setUseDelta keeps a sixtieth of what it is given
--- (:597-599), so the snapshot holds that reading times 60 - the value the setter takes, and one
--- whose differences survive the six decimals a signature is written with (EC.jsonEncode).
+-- (:597-599), so the snapshot holds that reading times 60 - the value the setter takes. Two of
+-- these are floats: Codec.signature compares them in full.
 local DEVICE_BUILD = {
     { "transmitRange", "getTransmitRange", "setTransmitRange" },
     { "volumeRange", "getBaseVolumeRange", "setBaseVolumeRange" },
@@ -587,6 +587,8 @@ local DEVICE_BUILD = {
     { "useDelta", "getUseDelta", "setUseDelta", 60 },
     { "highTier", "getIsHighTier", "setIsHighTier" },
 }
+local BUILD_KEY = {}
+for _, f in ipairs(DEVICE_BUILD) do BUILD_KEY[f[1]] = true end
 
 local function buildReading(dev, f)
     local v = call(dev, f[2])
@@ -893,9 +895,17 @@ local function canonicalCopy(s)
         copy.food = portion
     end
     if type(s.device) == "table" then
-        local device = {}
-        for k, v in pairs(s.device) do if k ~= "channel" then device[k] = v end end
-        copy.device = device
+        -- a hand-built set's readings go apart, so a refusal can name them (NOT_NEW "hand_built")
+        local device, build = {}, nil
+        for k, v in pairs(s.device) do
+            if BUILD_KEY[k] then
+                build = build or {}
+                build[k] = v
+            elseif k ~= "channel" then
+                device[k] = v
+            end
+        end
+        copy.device, copy.build = device, build
     end
     return copy
 end
@@ -908,7 +918,7 @@ local NOT_NEW = {
     { "uses", "used" }, { "keys", "used" }, { "repaired", "repaired" }, { "headRepaired", "repaired" },
     { "readPages", "read" }, { "name", "renamed" }, { "fluid", "fluid" }, { "cloth", "clothing_wear" },
     { "ammo", "weapon" }, { "clip", "weapon" }, { "chamber", "weapon" }, { "jammed", "weapon" },
-    { "fireMode", "weapon" }, { "device", "device" }, { "light", "device" },
+    { "fireMode", "weapon" }, { "build", "hand_built" }, { "device", "device" }, { "light", "device" },
 }
 local function encoded(v) return v == nil and "" or EC.jsonEncode(v) end
 

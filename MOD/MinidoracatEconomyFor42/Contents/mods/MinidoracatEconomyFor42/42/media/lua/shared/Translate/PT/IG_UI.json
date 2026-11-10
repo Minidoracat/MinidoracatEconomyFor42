@@ -732,6 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "Tem furos, remendos, sujeira, sangue ou está molhado",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "A arma difere de uma nova quanto à munição, ao carregador ou ao modo de disparo",
   "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Energia, volume ou luz configurados diferente de um novo",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "Montado à mão: alcance, faixa, faixa de volume ou consumo de bateria diferentes de um novo",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "Não está no mesmo estado de um novo",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "A recompra de hoje deste item está cheia (ainda permitido: %1): venda menos ou espere a renovação diária",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "Sua cota de recompra de hoje é baixa demais (restam %1): venda menos ou espere a renovação diária",

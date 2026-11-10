@@ -1326,6 +1326,16 @@ end
 
 -- ---------- buyback (stage G) ----------
 
+-- One snapshot (the first copy's) stands for a sold lot in the pending record a rollback returns
+-- the goods from. What every new copy rolls for itself is left out of the "new" comparison
+-- (Codec.isCanonical), so copies that rolled differently would all come back as the first one's:
+-- a plain map's region, the channel a radio is tuned to and the channels it has saved. A lot is
+-- copies with the same key.
+local function rolledKey(item)
+    local s = S.Codec.snapshot(item)
+    return EC.jsonEncode({ s.mapId or false, s.presets or false, type(s.device) == "table" and s.device.channel or false })
+end
+
 -- args = { id, itemIds, currency, revision, requestId }: itemIds are canonical copies of the
 -- SKU's item from the top level of the backpack, a whole number of SKU units (qty each). The
 -- player is paid the chosen currency's bidPrice per unit; the items are destroyed. Order of
@@ -1401,19 +1411,12 @@ function Shop.sell(player, args)
         if not new then return { ok = false, error = "not_canonical", reason = why } end
         items[#items + 1] = item
     end
-    -- One snapshot (the first copy's) stands for the lot in the pending record a rollback returns
-    -- the goods from. A plain map's region is left out of the "new" comparison (every new
-    -- Base.Map rolls one, Codec.isCanonical), so copies of different regions would all come back
-    -- as the first one's: they are sold one region at a time. The same goes for the channel a
-    -- radio is tuned to and the channels it has saved.
-    local snapshot = Codec.snapshot(items[1])
-    local function rolled(s)
-        return EC.jsonEncode({ s.mapId or false, s.presets or false, type(s.device) == "table" and s.device.channel or false })
-    end
-    local first = rolled(snapshot)
+    -- one lot: copies that rolled something else than the first are sold apart (rolledKey)
+    local lotKey = rolledKey(items[1])
     for i = 2, #items do
-        if rolled(Codec.snapshot(items[i])) ~= first then return { ok = false, error = "mixed_items" } end
+        if rolledKey(items[i]) ~= lotKey then return { ok = false, error = "mixed_items" } end
     end
+    local snapshot = Codec.snapshot(items[1])
 
     local id = S.newId()
     local _, seq = EC.parseId(id)
@@ -1531,8 +1534,9 @@ end
 -- too, so the dialog counts only what shop.sell would take), the currency's bid price and the
 -- room left today - and, per reason, how many other copies of that item at the top level the
 -- shop will not take (refused = { [reason] = count }: "blocked" for every copy of a type another
--- mod blocked, "unique" for every copy of a unique type, a Codec.stateCheck code, or not-new
--- reasons from Codec.isCanonical), so the dialog can say why instead of only counting what it takes.
+-- mod blocked, "unique" for every copy of a unique type, a Codec.stateCheck code, not-new
+-- reasons from Codec.isCanonical, or "mixed_items" for a copy the shop takes but not in one lot
+-- with the first - rolledKey), so the dialog can say why instead of only counting what it takes.
 -- id, currency and requestId are echoed so a late reply cannot be read as the answer to the
 -- currency the player has since switched to.
 function Shop.candidates(player, args)
@@ -1555,7 +1559,7 @@ function Shop.candidates(player, args)
         EC.log("shop candidates: no inventory for " .. S.claimedName(player))
         return { ok = false, error = "read_failed", id = sku.id, currency = requested }
     end
-    local ids, refused = {}, {}
+    local ids, refused, lotKey = {}, {}, nil
     local read = pcall(function()
         local items = inv:getItems()
         if items == nil then error("getItems gave no container") end
@@ -1568,10 +1572,16 @@ function Shop.candidates(player, args)
                 if pass then pass, reason = Codec.isCanonical(item, sku.item, sku.name) end
                 if not pass then
                     refused[reason] = (refused[reason] or 0) + 1
-                elseif #ids < Shop.ITEMS_PER_BUY_MAX then
-                    local itemId = item:getID()
-                    if itemId == nil then error("an item id is not readable") end
-                    ids[#ids + 1] = itemId
+                else
+                    local key = rolledKey(item)
+                    lotKey = lotKey or key
+                    if key ~= lotKey then
+                        refused.mixed_items = (refused.mixed_items or 0) + 1
+                    elseif #ids < Shop.ITEMS_PER_BUY_MAX then
+                        local itemId = item:getID()
+                        if itemId == nil then error("an item id is not readable") end
+                        ids[#ids + 1] = itemId
+                    end
                 end
             end
         end

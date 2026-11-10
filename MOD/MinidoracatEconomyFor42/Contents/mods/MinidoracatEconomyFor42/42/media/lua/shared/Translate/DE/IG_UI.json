@@ -732,6 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "Hat Löcher, Flicken, Schmutz, Blut oder ist nass",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "Munition, Magazin oder Feuermodus weichen von einem neuen ab",
   "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Strom-, Lautstärke- oder Lichteinstellungen weichen von einem neuen ab",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "Selbst gebaut: Reichweite, Band, Lautstärkebereich oder Batterieverbrauch weichen von einem neuen ab",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "Nicht im selben Zustand wie ein neuer",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "Der heutige Ankauf dieses Artikels ist voll (noch erlaubt: %1): Verkaufe weniger oder warte auf den täglichen Reset",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "Dein Ankaufskontingent für heute reicht nicht (%1 übrig): Verkaufe weniger oder warte auf den täglichen Reset",

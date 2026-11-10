@@ -732,6 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "穴・継ぎ当て・汚れ・血・濡れがあります",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "弾薬・マガジン・射撃モードが新品と異なります",
   "IGUI_MinidoracatEconomy_Shop_NotNew_device": "電力・音量・照明の設定が新品と異なります",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "自作品のため、送信距離・周波数・音量範囲・電池消費が新品と異なります",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "新品と状態が異なります",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "このアイテムの本日の買い取り枠は上限です（あと %1 単位）。数を減らすか、日次リセットをお待ちください",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "本日の買い取り枠が不足しています（残り %1）。売る数を減らすか、日次リセットをお待ちください",

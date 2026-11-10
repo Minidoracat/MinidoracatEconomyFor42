@@ -732,6 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "구멍, 덧댄 천, 흙, 피가 있거나 젖어 있음",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "탄약, 탄창 또는 사격 방식이 새것과 다름",
   "IGUI_MinidoracatEconomy_Shop_NotNew_device": "전원, 음량 또는 조명 설정이 새것과 다름",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "직접 조립한 기기라 송신 거리, 주파수, 음량 범위 또는 배터리 소모가 새것과 다름",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "새것과 같은 상태가 아님",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "오늘 이 아이템의 매입이 가득 찼습니다 (%1단위 더 가능). 수량을 줄이거나 일일 초기화를 기다리세요",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "오늘 남은 매입 한도가 부족합니다 (%1 남음). 수량을 줄이거나 일일 초기화를 기다리세요",

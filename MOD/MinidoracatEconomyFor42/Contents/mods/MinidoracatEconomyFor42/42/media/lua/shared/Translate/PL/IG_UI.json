@@ -732,6 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "Ma dziury, łaty, brud, krew lub jest mokre",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "Amunicja, magazynek lub tryb ognia różnią się od nowego",
   "IGUI_MinidoracatEconomy_Shop_NotNew_device": "Zasilanie, głośność lub ustawienia światła różnią się od nowego",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "Złożone ręcznie: zasięg, pasmo, zakres głośności lub zużycie baterii różnią się od nowego",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "Nie jest w takim stanie jak nowy",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "Dzisiejszy limit skupu tego przedmiotu nie wystarcza (pozostało sztuk: %1): sprzedaj mniej lub poczekaj na reset dzienny",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "Twój dzisiejszy limit skupu jest za niski (pozostało %1): sprzedaj mniej lub poczekaj na reset dzienny",

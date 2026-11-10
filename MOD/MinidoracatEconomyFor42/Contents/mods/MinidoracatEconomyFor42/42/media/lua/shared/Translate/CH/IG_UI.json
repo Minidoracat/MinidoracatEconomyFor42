@@ -732,6 +732,7 @@
   "IGUI_MinidoracatEconomy_Shop_NotNew_clothing_wear": "有破洞、補丁、髒汙、血跡或潮濕的不收",
   "IGUI_MinidoracatEconomy_Shop_NotNew_weapon": "彈藥、彈匣或射擊模式和全新的不一樣，不收",
   "IGUI_MinidoracatEconomy_Shop_NotNew_device": "電量、音量或燈具狀態和全新的不一樣，不收",
+  "IGUI_MinidoracatEconomy_Shop_NotNew_hand_built": "手工組裝的機器，發射距離、頻率、音量範圍或耗電和全新的不一樣，不收",
   "IGUI_MinidoracatEconomy_Shop_NotNew_other": "狀態和全新的不一樣，不收",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_sku": "這項物品今天的收購量已滿（還能收 %1 份）：請減少份數，或等每日重置",
   "IGUI_MinidoracatEconomy_Shop_Error_buyback_cap_account": "你今天的收購額度不足（剩 %1）：請少賣一些，或等每日重置",
