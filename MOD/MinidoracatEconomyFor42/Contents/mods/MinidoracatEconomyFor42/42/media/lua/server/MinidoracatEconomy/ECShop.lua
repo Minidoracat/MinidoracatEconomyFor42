@@ -3,7 +3,8 @@
 -- The catalog is a server-owned file, {cachedir}/Lua/MinidoracatEconomy/catalog.json (one JSON
 -- document: {"items":[{"id","item","name"?,"qty","category","enabled","dailyCap","dailyCapScope",
 -- "buybackCap","prices":{"<currency>":{"price","bidPrice","enabled","buyback"}}}]}), read at
--- start and on admin.catalog{action="reload"}; a broken file keeps the previous catalog and the
+-- start, on admin.catalog{action="reload"} and by itself within about half a minute of a hand
+-- edit (S.watchFile); a broken file keeps the previous catalog and the
 -- error is shown in the panel. A SKU carries one quote per currency it trades in: `price` is
 -- what a copy costs in that currency, `bidPrice` what buyback pays for it, `enabled` whether it
 -- sells in that currency and `buyback` whether it is bought back in it. A currency with no quote
@@ -12,8 +13,8 @@
 -- prices.survivor once, on the way in; the writer only ever writes the current shape.
 -- The admin page edits the per-SKU numbers and flags, appends rows and removes them; every edit
 -- is written straight back into the file (the file is the single source of truth, it never
--- rolls back with the world save; a hand edit made since the last load is detected by hash and
--- refused until the admin reloads). Every change is pushed to everyone online. Players see the
+-- rolls back with the world save; a hand edit not taken in yet is detected by hash and the
+-- panel's write refused until it is). Every change is pushed to everyone online. Players see the
 -- catalog under a revision string (the file hash); shop.buy and shop.sell carry that revision
 -- and are refused when the catalog changed underneath (no silent repricing). A row taken off
 -- the shelf (enabled = false) only stops selling: its buyback quotes stay in force until they
@@ -62,6 +63,7 @@ EC.Shop = EC.Shop or {}
 local Shop = EC.Shop
 
 Shop.FILE = X.ROOT .. "/catalog.json"
+Shop.FILE_ACTOR = "catalog.json"   -- who the audit names when the server took a hand edit in by itself
 Shop.BURN_ACCOUNT = "SYSTEM_BURN"
 Shop.MINT_ACCOUNT = "SYSTEM_MINT"
 -- The hard ceiling on the catalog's size, and the top of the ShopMaxItems option (ECCore: one
@@ -400,6 +402,8 @@ local function parseCatalog(text)
     end
     local rows = type(doc) == "table" and doc.items or nil
     if type(rows) ~= "table" then return nil, { code = "no_items", field = "items" } end
+    -- the decoder reads {} and [] alike: an object where the list belongs would be an empty shop
+    if not string.find(text, '"items"%s*:%s*%[') then return nil, { code = "no_items", field = "items" } end
     if #rows > Shop.MAX_SKUS then return nil, { code = "too_many", field = "items", max = Shop.MAX_SKUS } end
     local items, byId = {}, {}
     for i, raw in ipairs(rows) do
@@ -475,6 +479,7 @@ end
 -- arbitrage_rejected, not just "the file is invalid") and the failure is the code-and-facts
 -- table the panel words (see validateSku).
 local function loadCatalog(text)
+    file.seen = text
     local parsed, failure, code = parseCatalog(text)
     if not parsed then
         file.errorCode, file.errorDetail = code or "catalog_invalid", failure
@@ -975,7 +980,7 @@ end
 -- read-back, one audit pass and one pushAll: a refused row leaves the file exactly as it was and
 -- nothing is audited or pushed. Refused with catalog_stale when the file on disk no longer
 -- matches what was loaded (a hand edit the panel would otherwise overwrite) or when
--- expectedRevision is not the loaded one: reload first. Daily usage is never cleared here - a
+-- expectedRevision is not the loaded one (the server takes a hand edit in by itself, S.watchFile; reload does it at once). Daily usage is never cleared here - a
 -- qty change does not hand anyone their cap back, and it does not touch a letter already sent.
 -- Returns ok, error, extra. A bad value or a candidate row that no longer parses is the same
 -- invalid_args a single edit has always answered, with extra.field / extra.id / extra.currency
@@ -1185,16 +1190,27 @@ end
 -- Returns ok, error code, failure (see loadCatalog). A hand-edited file that would open an
 -- arbitrage loop is refused with the same arbitrage_rejected code an admin edit answers with,
 -- and the live catalog (revision included) is left exactly as it was. The audit carries facts
--- only: ok, the row count, or the same errorCode/errorDetail pair the file status carries.
-function Shop.reload(actor)
-    local ok, code, failure = Shop.load()
+-- only: ok, the row count and the revisions before and after, or the same errorCode/errorDetail
+-- pair the file status carries.
+local function reloadWith(actor, load, text)
+    local from = file.hash
+    local ok, code, failure = load(text)
     local count = ok and file.count or nil
     X.emit("admin.catalog", { field = "reload", after = count, errorCode = code, errorDetail = failure, actor = actor })
     X.audit({ action = "catalog", target = "file", field = "reload", ok = ok, count = count,
+        from = from, to = ok and file.hash or nil,
         errorCode = code, errorDetail = failure, admin = actor })
-    if ok then Shop.pushAll() end
+    -- the same catalog again (a broken file put back as it was) is nothing new to anyone
+    if ok and file.hash ~= from then Shop.pushAll() end
     return ok, code, failure
 end
+
+function Shop.reload(actor)
+    return reloadWith(actor, Shop.load)
+end
+
+S.watchFile(Shop.FILE, readFile, function() return file.seen end,
+    function(text) reloadWith(Shop.FILE_ACTOR, loadCatalog, text) end)
 
 -- ---------- request identity ----------
 

@@ -329,7 +329,7 @@ A server option.
 [h3]Shop catalog and Listing whitelist[/h3]
 [list]
 [*] [b]Files[/b]: catalog.json (shop) and whitelist.json (Listing whitelist) are in the server data folder; panel edits are written back and pushed to online players.
-[*] [b]Hand edits[/b]: press Reload on the matching page first.
+[*] [b]Hand edits[/b]: the server takes a saved file in by itself within about half a minute, no restart needed; press Reload on the matching page to apply it at once. A file with a mistake leaves the current settings in place and the page shows why.
 [*] [b]Independent[/b]: adding a shop entry does not loosen the player market's listing rules.
 [*] [b]Drag and right-click[/b]: drag an item from your bag onto the admin Shop page to create an entry, or onto the Listing whitelist page to pick it for a rule; the item right-click "Economy" menu has "Add as a shop item" and "Add a whitelist rule" too.
 [/list]

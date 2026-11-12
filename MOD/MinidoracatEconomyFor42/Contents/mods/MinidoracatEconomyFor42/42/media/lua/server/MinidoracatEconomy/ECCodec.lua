@@ -8,7 +8,8 @@
 -- fullTypes, excluded fullTypes). The file is the single source of
 -- truth, like the shop's catalog.json: the admin page edits it through Codec.update (one category
 -- or one item per write, written straight back, refused with whitelist_stale when the file on disk
--- changed since the last load), and a hand edit takes effect after reload. Fixed rules on top of
+-- changed since the last load), and a hand edit takes effect on reload or by itself within about
+-- half a minute (S.watchFile). Fixed rules on top of
 -- the file: none of EC.LISTING_FIXED_TYPES (live animals; radios travel with their DeviceData,
 -- clothing with its per-part holes / blood / dirt / patches and its look, a watch or alarm clock
 -- with its alarm, a key with its id and a padlock with its key count, furniture with its sprite
@@ -69,6 +70,7 @@ EC.Codec = EC.Codec or {}
 local Codec = EC.Codec
 
 Codec.FILE = X.ROOT .. "/whitelist.json"
+Codec.FILE_ACTOR = "whitelist.json"   -- who the audit names when the server took a hand edit in by itself
 Codec.MODDATA_MAX_LEAVES = 32      -- scalar values a snapshot's modData may carry
 Codec.MODDATA_MAX_DEPTH = 3        -- nesting: modData -> table -> table
 Codec.MODDATA_STRING_MAX = 128
@@ -105,14 +107,15 @@ local function readFile()
     local ok = pcall(function() reader = getFileReader(Codec.FILE, false) end)
     if not ok or not reader then return nil end
     local lines = {}
-    pcall(function()
+    ok = pcall(function()
         for _ = 1, Codec.FILE_LINES_MAX do
             local line = reader:readLine()
             if line == nil then break end
             lines[#lines + 1] = line
         end
     end)
-    pcall(function() reader:close() end)
+    local closed = pcall(function() reader:close() end)
+    if not ok or not closed then return nil end   -- part of a file is not the file
     return table.concat(lines, "\n")
 end
 
@@ -172,18 +175,18 @@ local function reject(failure, why)
 end
 
 -- Returns ok, failure ({ code, ... } - see stringSet; also json and unavailable).
-function Codec.load()
-    local text = readFile()
-    if text == nil then
-        if not writeDoc(Codec.DEFAULT) then return reject({ code = "unavailable" }) end
-        text = readFile() or ""
-    end
+local function loadText(text)
+    wl.seen = text
     local doc, err = EC.jsonDecode(text)
     if doc == nil or type(doc) ~= "table" then
         return reject(jsonFailure(text, err), "json: " .. tostring(err or "not an object"))
     end
     local parsed, lists, counts = {}, {}, {}
     for _, field in ipairs(Codec.FIELDS) do
+        -- the decoder reads {} and [] alike: an object where the list belongs would be an empty list
+        if doc[field] ~= nil and not string.find(text, '"' .. field .. '"%s*:%s*%[') then
+            return reject({ code = "not_array", field = field })
+        end
         local set, ordered = stringSet(doc[field], field)
         if set == nil then return reject(ordered) end
         parsed[field], lists[field], counts[field] = set, ordered, #ordered
@@ -195,6 +198,18 @@ function Codec.load()
     wl.error = nil
     wl.hash = hashOf(text)
     return true
+end
+
+-- Only a missing file is written as the default: one that exists but cannot be opened is kept.
+function Codec.load()
+    local text = readFile()
+    if text == nil then
+        local checked, exists = pcall(cacheFileExists, Codec.FILE)
+        if not checked or exists then return reject({ code = "unavailable" }) end
+        if not writeDoc(Codec.DEFAULT) then return reject({ code = "unavailable" }) end
+        text = readFile() or ""
+    end
+    return loadText(text)
 end
 
 -- withLists adds the four arrays (the admin page edits from them); admin.system only wants counts.
@@ -232,7 +247,8 @@ end
 --                                                             over allow in Codec.check; inherit
 --                                                             clears both)
 -- Returns ok, err. Refused with whitelist_stale when the file on disk no longer matches what was
--- loaded (a hand edit the page would otherwise overwrite): reload first.
+-- loaded (a hand edit the page would otherwise overwrite): the server takes it in by itself
+-- (S.watchFile); reload does it at once.
 function Codec.update(args, actor)
     if type(args) ~= "table" then return false, "invalid_args" end
     local target, field, before, after
@@ -276,17 +292,31 @@ function Codec.update(args, actor)
     return true
 end
 
--- The audit says what happened as facts: ok, and for a refusal the same errorCode/errorDetail
--- pair the status carries, so the panel words both the same way.
-function Codec.reload(actor)
-    local ok, err = Codec.load()
+-- The audit says what happened as facts: ok and the file hashes before and after, and for a
+-- refusal the same errorCode/errorDetail pair the status carries, so the panel words both the
+-- same way.
+local function reloadWith(actor, load, text)
+    local from = wl.hash
+    local ok, err = load(text)
     local code = not ok and "whitelist_invalid" or nil
     X.emit("admin.whitelist", { field = "reload", after = ok and wl.counts.categories or nil,
         errorCode = code, errorDetail = err, actor = actor })
     X.audit({ action = "whitelist", target = "file", field = "reload", ok = ok,
+        from = from, to = ok and wl.hash or nil,
         errorCode = code, errorDetail = err, admin = actor })
+    return ok, err, ok and wl.hash ~= from      -- third: the lists are no longer the ones before
+end
+
+function Codec.reload(actor)
+    local ok, err = reloadWith(actor, Codec.load)
     return ok, err
 end
+
+-- an open picker re-asks for its candidates, as after an administrator's reload
+S.watchFile(Codec.FILE, readFile, function() return wl.seen end, function(text)
+    local _, _, changed = reloadWith(Codec.FILE_ACTOR, loadText, text)
+    if changed then S.broadcast("market.whitelist", { at = EC.now() }) end
+end)
 
 -- ---------- item introspection (every call guarded: the harness fakes only what a test needs) ----------
 

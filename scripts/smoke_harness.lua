@@ -1190,6 +1190,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the admin's player recei
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 13   -- +13: buy orders for any of several item types (scripts/test_wanted.lua W-14a..m: the alts' shape, a refused type named, the order and its created records, resend and conflict, rows / search / category, candidates per type, wrong and mixed types, the delivered type on letter / ledger / history / notice / event, its resend, new-only per type, closing and expiry records, offer and raise records, a one-type order unchanged)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a buy order's statement lines count its kinds (scripts/test_wanted.lua W-14n: create, release and raise in the receipt ring and the receipt files; a one-type order and a delivery carry none)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, part of the signature so only copies with the same list share a row or a lot, left out of the buyback comparison like the channel a new copy rolled; listed and taken back through the market; room for a longer list on the rebuilt copy; the buyer's preview of the readings; the buyback takes a new copy, names a hand-built one, refuses a lot tuned or bookmarked differently and offers the sell dialog one lot it would take)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: hand-edited files taken in without a restart (scenario LR-1..10 with 1b, 5b, 6b, 9b, 9c: a whitelist put back as it was told to nobody, an unreadable file logged once, a file put back as it was not pushed, the files opened once per look and the settle time kept across a clock set back, an object in place of a list refused for both files; an unchanged catalog is not loaded or pushed, a settled edit is taken in once with its audit line, the old revision is refused and the day's count kept, a half-saved file is never judged, a broken one keeps the previous catalog and is audited once, a missing one writes no default, a panel write is not taken in twice; the whitelist the same, with the panel's next edit not stale, and a broken one audited once; a whitelist that exists but cannot be opened is not overwritten with the default)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -23333,6 +23334,216 @@ check(toPlain.error == "not_canonical" and toPlain.reason == "renamed" and wrong
     and wrong.reason == "renamed" and back.ok == true and back.total == 20 and held("Base.Hammer", "KFC box") == nil,
     "SN-10: the named copy sells back to its own row only; elsewhere, and any other name, is renamed")
 SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = false
+onlinePlayers = {}
+end)()
+
+-- ===== 情境 LR：手改 catalog.json／whitelist.json 後伺服器自己套用 =====
+-- 沒變不解析不推播；變了且連續兩次讀到同一份才套用一次；壞檔沿用上一份、只記一次；
+-- 存到一半或不見的檔不動；舊 revision 的買單照舊被拒；面板自己寫的檔不重複套用。
+io.write("scenario LR: hand-edited files are taken in without a restart\n")
+;(function()
+local Shop, Codec, L, X = S.Shop, S.Codec, EC.Ledger, EC.Export
+modDataStore[EC.MODDATA_KEY] = nil
+files, sentCommands, writerDeny = {}, {}, {}
+nowMs = nowMs + 61000
+local function catalog(price) files[Shop.FILE] = { lines = { EC.jsonEncode({ items = {
+    { id = "nails", item = "Base.Nails", qty = 1, dailyCap = 5, category = "material", prices = { survivor = { price = price } } } } }) }, opens = 0 } end
+catalog(10)
+fire("OnServerStarted")
+worldSprites = { ["100,200,0"] = "MinidoracatEconomy_terminal_0" }
+local boss = fakePlayer("lr-admin"); boss.role = "admin"
+local zed = fakePlayer("lr-zed"); zed.x, zed.y = 101, 200
+onlinePlayers = { boss, zed }
+local function cmd(who, name, args)
+    nowMs = nowMs + 600
+    args = args or {}
+    args.requestId = args.requestId or (name .. nowMs)
+    withCurrency(name, args)
+    fire("OnClientCommand", EC.COMMAND_MODULE, name, who, args)
+    local s = lastSent(name)
+    return s and s.args or {}
+end
+local function tick(ms) nowMs = nowMs + ms; fire("OnTickEvenPaused") end
+local function pushes(command)
+    local n = 0
+    for _, s in ipairs(sentCommands) do if s.command == command then n = n + 1 end end
+    return n
+end
+local auditBase = 0     -- the catalog's lines written before the numbered checks start counting
+local function audits(actor)
+    local n, last = 0, nil
+    for _, e in ipairs(X.auditEntries(500)) do
+        if e.field == "reload" and e.admin == actor then n = n + 1; last = last or e end
+    end
+    if actor == Shop.FILE_ACTOR then n = n - auditBase end
+    return n, last
+end
+cmd(boss, "terminal.register", { x = 100, y = 200, z = 0, kind = "atm" })
+L.credit("lr-zed", "survivor", 500, "SYSTEM_MINT", { requestId = "lr-seed", reasonCode = "t" })
+local rev = Shop.revision()
+local first = cmd(zed, "shop.buy", { id = "nails", count = 2, revision = rev })
+
+local loadedAt = Shop.fileStatus().loadedAt
+sentCommands = {}
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS); tick(S.WATCH_MS)
+check(first.ok == true and pushes("shop.list") == 0 and audits(Shop.FILE_ACTOR) == 0 and Shop.revision() == rev
+    and Shop.fileStatus().loadedAt == loadedAt, "LR-1: an unchanged catalog.json is not loaded again, audited or pushed")
+
+-- the look itself is paced: both files opened once per S.WATCH_MS, however many ticks pass
+local opens, realOpen = 0, getFileReader
+getFileReader = function(path, create)
+    if path == Shop.FILE or path == Codec.FILE then opens = opens + 1 end
+    return realOpen(path, create)
+end
+for _ = 1, 20 do tick(1000) end
+local between = opens
+tick(S.WATCH_MS)
+local atLook = opens
+catalog(11)
+tick(S.WATCH_MS)                      -- sees the new text
+local seenOpens = opens - atLook
+tick(S.WATCH_SETTLE_MS - 1)           -- too early to judge it
+local tooEarly = { opens - atLook, Shop.sku("nails").prices.survivor.price }
+nowMs = nowMs - 600000                -- the clock is set back while the text waits
+fire("OnTickEvenPaused")
+local setBack = Shop.sku("nails").prices.survivor.price
+tick(S.WATCH_SETTLE_MS)
+getFileReader = realOpen
+nowMs = nowMs + 600000                -- back to the scenario's own time (the command throttle keeps the later stamps)
+check(between == 0 and atLook == 2 and seenOpens == 2 and tooEarly[1] == 2 and tooEarly[2] == 10 and setBack == 10
+    and Shop.sku("nails").prices.survivor.price == 11,
+    "LR-1b: the files are opened once per look, never between looks; new text waits the full settle time, again after the clock is set back")
+catalog(10)
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+rev = Shop.revision()
+auditBase = audits(Shop.FILE_ACTOR)
+sentCommands = {}
+
+catalog(25)
+tick(S.WATCH_MS)
+local early = Shop.sku("nails").prices.survivor.price
+tick(S.WATCH_SETTLE_MS)
+local n, line = audits(Shop.FILE_ACTOR)
+local rev2 = Shop.revision()
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+check(early == 10 and Shop.sku("nails").prices.survivor.price == 25 and rev2 ~= rev and pushes("shop.list") == 2
+    and n == 1 and line.action == "catalog" and line.ok == true and line.count == 1 and line.from == rev and line.to == rev2
+    and audits(Shop.FILE_ACTOR) == 1,
+    "LR-2: a hand edit read the same twice is taken in once: one push per online player, one audit line with both revisions")
+
+local stale = cmd(zed, "shop.buy", { id = "nails", count = 1, revision = rev })
+local fresh = cmd(zed, "shop.buy", { id = "nails", count = 1, revision = rev2 })
+check(stale.error == "catalog_changed" and fresh.ok == true and fresh.total == 25 and Shop.used("lr-zed", "nails", nowMs) == 3,
+    "LR-3: an order built on the old revision is refused, the new one pays the new price, and the day's purchases still count")
+
+sentCommands = {}
+files[Shop.FILE] = { lines = { '{"items":[{"id":"nails","item":"Base.Na' }, opens = 0 }
+tick(S.WATCH_MS)
+catalog(30)
+tick(S.WATCH_SETTLE_MS)
+local midPrice, midError, midAudits = Shop.sku("nails").prices.survivor.price, Shop.fileStatus().errorCode, audits(Shop.FILE_ACTOR)
+tick(S.WATCH_SETTLE_MS)
+check(midPrice == 25 and midError == nil and midAudits == 1 and Shop.sku("nails").prices.survivor.price == 30 and pushes("shop.list") == 2,
+    "LR-4: a file caught half-saved is never judged; the finished text is taken in once it reads the same twice")
+
+sentCommands = {}
+files[Shop.FILE] = { lines = { '{"items":[{"id":"nails","item":"Base.Na' }, opens = 0 }
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+local _, bad = audits(Shop.FILE_ACTOR)
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS); tick(S.WATCH_MS)
+check(Shop.sku("nails").prices.survivor.price == 30 and Shop.fileStatus().errorCode == "catalog_invalid" and pushes("shop.list") == 0
+    and audits(Shop.FILE_ACTOR) == 3 and bad.ok == false and bad.errorCode == "catalog_invalid" and bad.to == nil,
+    "LR-5: a broken catalog.json keeps the previous catalog, shows the error and is audited once, not on every look")
+
+files[Shop.FILE] = { lines = { '{"items":{}}' }, opens = 0 }
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+local shape = Shop.fileStatus()
+files[Shop.FILE] = { lines = { '{"items":[{"id":"nails","item":"Base.Na' }, opens = 0 }
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+check(Shop.sku("nails").prices.survivor.price == 30 and shape.count == 1 and shape.errorCode == "catalog_invalid"
+    and shape.errorDetail.code == "no_items" and pushes("shop.list") == 0,
+    "LR-5b: an object where the list of items belongs is refused, not read as an empty shop")
+auditBase = auditBase + 2
+
+files[Shop.FILE] = nil
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+check(files[Shop.FILE] == nil and Shop.sku("nails").prices.survivor.price == 30 and audits(Shop.FILE_ACTOR) == 3,
+    "LR-6: a file that is gone for a moment is left alone: no default written, catalog kept")
+
+local blind, realRead, realPrint = 0, getFileReader, print
+print = function(text) if string.find(tostring(text), "exists but cannot be read", 1, true) then blind = blind + 1 end end
+catalog(35)
+getFileReader = function(path, create)
+    if path == Shop.FILE then return nil end
+    return realRead(path, create)
+end
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS); tick(S.WATCH_MS); tick(S.WATCH_MS)
+getFileReader, print = realRead, realPrint
+files[Shop.FILE] = nil
+tick(S.WATCH_MS)
+check(blind == 1 and Shop.sku("nails").prices.survivor.price == 30 and audits(Shop.FILE_ACTOR) == 3,
+    "LR-6b: a file that exists but cannot be read is left alone and logged once, not on every look")
+
+sentCommands = {}
+catalog(30)
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+local repaired = { pushes("shop.list"), Shop.fileStatus().errorCode, audits(Shop.FILE_ACTOR) }
+local set = cmd(boss, "admin.catalog", { action = "set", id = "nails", prices = { survivor = { price = 40 } } })
+local afterSet = pushes("shop.list")
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+check(repaired[1] == 0 and repaired[2] == nil and repaired[3] == 4 and set.ok == true and Shop.sku("nails").prices.survivor.price == 40
+    and pushes("shop.list") == afterSet and audits(Shop.FILE_ACTOR) == 4,
+    "LR-7: a file put back as it was clears the error without a push, and a write from the panel is not taken in a second time")
+
+local function wcmd(args)
+    nowMs = nowMs + 700
+    args.requestId = "lr-wl" .. nowMs
+    fire("OnClientCommand", EC.COMMAND_MODULE, "admin.whitelist", boss, args)
+    return lastSent("admin.whitelist").args
+end
+sentCommands = {}
+local sawBefore = Codec.check(instanceItem("Base.Saw"))
+files[Codec.FILE] = { lines = { '{"categories":[],"types":[],"excludeTypes":[]}' }, opens = 0 }
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+local wn, wline = audits(Codec.FILE_ACTOR)
+local wpush = pushes("market.whitelist")
+local sawOff = Codec.check(instanceItem("Base.Saw"))
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+local panel = wcmd({ action = "set", category = "Tool", allowed = true })
+local wafter = pushes("market.whitelist")
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+check(sawBefore == true and pushes("market.whitelist") == wafter and sawOff == false and wn == 1 and wline.action == "whitelist" and wline.ok == true and wline.to ~= wline.from
+    and wpush == 2 and audits(Codec.FILE_ACTOR) == 1 and panel.ok == true and Codec.check(instanceItem("Base.Saw")) == true,
+    "LR-8: a hand-edited whitelist.json is taken in once, open pickers are told once, and the panel's next edit is not stale")
+
+local goodWl = files[Codec.FILE]
+files[Codec.FILE] = { lines = { '{"categories": 5}' }, opens = 0 }
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS); tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+local _, wbad = audits(Codec.FILE_ACTOR)
+check(Codec.check(instanceItem("Base.Saw")) == true and Codec.status().errorCode == "whitelist_invalid"
+    and audits(Codec.FILE_ACTOR) == 2 and wbad.ok == false and wbad.errorCode == "whitelist_invalid",
+    "LR-9: a broken whitelist.json keeps the previous lists and is audited once")
+files[Codec.FILE] = { lines = { '{"categories":{},"types":[],"excludeTypes":[]}' }, opens = 0 }
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+check(Codec.check(instanceItem("Base.Saw")) == true and Codec.status().errorDetail.code == "not_array"
+    and Codec.status().errorDetail.field == "categories",
+    "LR-9b: an object where a list belongs is refused, not read as an empty whitelist")
+local wtold, wlines = pushes("market.whitelist"), audits(Codec.FILE_ACTOR)
+files[Codec.FILE] = goodWl
+tick(S.WATCH_MS); tick(S.WATCH_SETTLE_MS)
+check(Codec.status().errorCode == nil and pushes("market.whitelist") == wtold and audits(Codec.FILE_ACTOR) == wlines + 1,
+    "LR-9c: a whitelist put back as it was clears the error and tells nobody")
+
+files[Codec.FILE] = { lines = { '{"categories":["Tool"],"types":[],"excludeTypes":[]}' }, opens = 0 }
+local realReader = getFileReader
+getFileReader = function(path, create)
+    if path == Codec.FILE then return nil end
+    return realReader(path, create)
+end
+local shutOk, shut = Codec.load()
+getFileReader = realReader
+check(shutOk == false and shut.code == "unavailable" and files[Codec.FILE].lines[1] == '{"categories":["Tool"],"types":[],"excludeTypes":[]}',
+    "LR-10: a whitelist.json that exists but cannot be opened is not overwritten with the default")
 onlinePlayers = {}
 end)()
 

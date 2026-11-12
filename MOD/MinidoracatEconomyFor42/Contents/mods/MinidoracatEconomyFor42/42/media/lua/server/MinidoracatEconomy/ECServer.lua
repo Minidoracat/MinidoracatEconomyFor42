@@ -665,6 +665,65 @@ end
 
 Events.OnServerStarted.Add(S.onServerStarted)
 Events.OnClientCommand.Add(S.dispatch)
-Events.OnTickEvenPaused.Add(function() S.pollDurable() end)
+
+-- ---------- hand-edited files ----------
+
+-- catalog.json and whitelist.json are also edited by hand on the host. Each is read once every
+-- S.WATCH_MS; text that differs from the last text its module took in, and reads the same again
+-- S.WATCH_SETTLE_MS later (so a file caught while it is being saved is normally not judged), is
+-- handed to the module once. A missing file is left alone; one that exists but cannot be read is
+-- too, and is logged once until it reads again; a refused text is not looked at again until it
+-- changes. The engine gives Lua no modification time or size of a file (only cacheFileExists,
+-- LuaManager), so the text itself is compared: one native string compare.
+S.WATCH_MS = 30000
+S.WATCH_SETTLE_MS = 2000
+local watched, watchedAt, watchWait = {}, 0, 0
+
+-- read() -> text or nil; seen() -> the last text the module loaded or refused; apply(text).
+function S.watchFile(path, read, seen, apply)
+    watched[#watched + 1] = { path = path, read = read, seen = seen, apply = apply }
+end
+
+function S.pollWatched()
+    if md == nil then return end
+    local now = EC.now()
+    local since = now - watchedAt
+    if since < 0 then
+        -- the clock was set back: nothing seen before it counts as having waited
+        for _, w in ipairs(watched) do w.pending = nil end
+    elseif since < watchWait then
+        return
+    end
+    watchedAt, watchWait = now, S.WATCH_MS
+    for _, w in ipairs(watched) do
+        local text = w.read()
+        if text == nil then
+            w.pending = nil
+            local checked, exists = pcall(cacheFileExists, w.path)
+            local blind = checked and exists == true
+            if blind and not w.blind then
+                EC.log(w.path .. " exists but cannot be read: hand edits wait until it can")
+            end
+            w.blind = blind
+        else
+            w.blind = false
+            if text == w.seen() then
+                w.pending = nil
+            elseif text == w.pending then
+                w.pending = nil
+                local ok, err = pcall(w.apply, text)
+                if not ok then EC.log("file reload failed: " .. tostring(err)) end
+            else
+                w.pending = text
+                watchWait = S.WATCH_SETTLE_MS
+            end
+        end
+    end
+end
+
+Events.OnTickEvenPaused.Add(function()
+    S.pollDurable()
+    S.pollWatched()
+end)
 
 return S
