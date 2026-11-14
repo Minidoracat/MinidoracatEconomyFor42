@@ -62,6 +62,8 @@
   "Sandbox_MinidoracatEconomy_WantedMaxPerPlayer_tooltip": "Wie viele Kaufgesuche ein Spieler gleichzeitig offen haben darf (0 = Spieler können keine Kaufgesuche aufgeben). Jedes offene Kaufgesuch belegt einen Postfachplatz.",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount": "Postfachplätze pro Spieler",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "Wie viele Plätze ein Spieler belegen darf: Jeder nicht abgeholte Postfacheintrag, jedes aktive Marktangebot und jedes offene Kaufgesuch belegt einen; ist es voll, kann der Spieler nicht kaufen oder einstellen, Rückgaben ins Postfach werden nie blockiert.",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount": "Alte Kopien, die ein anderes Konto übertragen hat, automatisch einziehen",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount_tooltip": "Nach einer Wiederherstellung nach einem Absturz kann ein Spieler noch eine alte Kopie eines Gegenstands tragen, den ein anderes Konto bereits ausgehend übertragen hat (eingestellt, versteigert, an das System verkauft usw.). Aus (Standard): Der Server entfernt nichts und hinterlässt nur einen Eintrag in der Abgleichsliste der Administratoren; der Gegenstand kann nicht über die Wirtschaft übertragen werden, bis er geklärt ist. An: Der Server entfernt die alte Kopie automatisch und behält eine Momentaufnahme, mit der ein Administrator sie zurückschicken kann. Alte Kopien von Übertragungen des eigenen Kontos betrifft diese Option nicht; sie werden immer eingezogen.",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "Mindestangebotspreis",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "Niedrigster erlaubter Angebotspreis (Marktwährung).",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "Höchstangebotspreis",

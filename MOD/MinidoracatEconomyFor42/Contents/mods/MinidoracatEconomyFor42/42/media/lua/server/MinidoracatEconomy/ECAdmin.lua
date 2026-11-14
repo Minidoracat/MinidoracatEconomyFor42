@@ -1793,13 +1793,25 @@ local function recoveryRow(username, rec, scan, pdata)
         local absent = entry == nil and why ~= "ambiguous"
         out.actions.approve = scan ~= nil and #rows > 0 and absent and not blocked
             and not consumedOnly and out.verdict ~= "rolledback"
+        -- an object naming a letter of another account: an administrator may take it back (the
+        -- snapshot is kept), the letter itself is never touched
+        local otherLetter = rec.detailCode == "letter_other_account"
         out.actions.remove = scan ~= nil and #rows > 0 and not blocked
-            and (consumedOnly or (absent and out.verdict == "rolledback"))
+            and (consumedOnly or otherLetter or (absent and out.verdict == "rolledback"))
         out.blocked = blocked
         fingerprint.state, fingerprint.present, fingerprint.verdict = out.sourceState, out.presentQty, out.verdict
         fingerprint.blocked = blocked
         fingerprint.letter = entry and { state = entry.state, claimSeq = entry.claimSeq,
             owner = entry.owner, units = entry.units, outUnits = entry.outUnits } or "none"
+    elseif rec.reason == "unit_spent_by_other" and rec.unit ~= nil then
+        -- the object the record names, as the scan sees it now: an administrator may take it back
+        -- (snapshot kept, M.reclaimHeld); it leaves the page by itself once the object is gone
+        local unit = scan and M.heldUnit(scan, rec) or nil
+        out.presentQty = scan and (unit and 1 or 0) or nil
+        out.actions.remove = unit ~= nil and Rcv.removalBlock(unit) == nil
+        if unit then out.item, out.nativeIds = unit.fullType, { unit.nativeId } end
+        -- the decision is on this very object: another one under the same name is another revision
+        fingerprint.unit = unit and { id = unit.nativeId, item = unit.fullType, stamp = unit.stamp } or "none"
     elseif rec.reason == "claim_epoch_unknown" and type(rec.mailId) == "string" then
         claimRow(out, fingerprint, rec, scan)
     elseif type(rec.opId) == "string" and (A.RECOVERY_MANUAL_REASONS[rec.reason]
@@ -2467,6 +2479,21 @@ S.handlers["admin.recovery"] = function(player, args)
             { ok = refused == 0, error = refused > 0 and "recovery_approve_failed" or nil,
                 key = key, decision = decision, approvalToken = table.concat(named, ","), refused = refused })
     end
+    if decision == "remove" and row.reason == "unit_spent_by_other" then
+        local done = M.reclaimHeld(online, target, held, scan)
+        Rcv.transmit(online)
+        X.emit("recovery.adminResolved", { admin = admin, username = target, key = key,
+            decision = decision, item = row.item, qty = done and 1 or 0, stuck = done and 0 or 1 })
+        facts.qty, facts.removed, facts.stuck = done and 1 or 0, done and 1 or 0, done and 0 or 1
+        X.audit(facts)
+        if not done then
+            return recoveryReply(player, target, requestId, page, { ok = false,
+                error = "recovery_remove_failed", key = key, removed = 0, stuck = 1 })
+        end
+        local closed = Rcv.heldRecord(target, key)
+        if closed then closed.decision = decision end
+        return recoveryReply(player, target, requestId, page, { ok = true, key = key, decision = decision, removed = 1 })
+    end
     if decision == "remove" then
         -- Every object is removed through the recovery core's confirmed removal: the container
         -- read afterwards is the postcondition, a call that did not throw is not. The held
@@ -2485,10 +2512,25 @@ S.handlers["admin.recovery"] = function(player, args)
             -- could not be read proves nothing, and the object stays where it is rather
             -- than being destroyed on a guess; the rollback verdict is separate evidence
             -- and stands on its own.
+            local otherLetter = row.detailCode == "letter_other_account" and type(origin) == "table" and origin.gen0 == true
             local allowed = type(origin) == "table" and not unit.duplicate and Rcv.removalBlock(unit) == nil
                 and ((origin.gen0 == true and Rcv.verdict(origin.epoch, origin.seq) == "rolledback")
+                    or otherLetter
                     or (row.reason == "legacy_unit_consumed" and consumed ~= nil and not unreadable))
+            local okShot, snapshot = true, nil
+            if allowed and otherLetter then
+                okShot, snapshot = pcall(S.Codec.snapshot, unit.item)
+                allowed = okShot
+            end
             if allowed and Rcv.dropRow(unit) then
+                if otherLetter then
+                    -- one line an object, as an automatic take-back writes it: the page offers
+                    -- to mail each one back from its own line
+                    local reclaimId = Rcv.noteReclaim({ username = target, item = unit.fullType, unit = unit.nativeId,
+                        opId = row.mailId, snapshot = snapshot })
+                    X.audit({ action = "recovery", admin = admin, target = target, field = row.mailId, after = "reclaimed",
+                        item = unit.fullType, qty = 1, reclaimId = reclaimId })
+                end
                 dropped = dropped + 1
                 if #ids < 32 then ids[#ids + 1] = tostring(unit.nativeId) end
             else

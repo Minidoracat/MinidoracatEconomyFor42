@@ -452,7 +452,8 @@ function R.gen0Stamp(stamp)
 end
 
 -- The delivery stamp this mod writes onto an item it hands over. A protocol 2 stamp carries the
--- unit token, the letter and its owner, and the epoch/seq of the claim.
+-- unit token, the letter and its owner, and the epoch/seq of the claim. Returns stamp, readable
+-- and, when the value is there but is nothing this mod writes, `malformed` (R.scanUnits walks on).
 function R.stampOf(item)
     local ok, stamp = pcall(function()
         if item.hasModData and not item:hasModData() then return nil end
@@ -462,7 +463,7 @@ function R.stampOf(item)
     if stamp == nil then return nil, true end
     if nativeStamp(stamp) then return stamp, true end
     if type(stamp) == "table" and type(stamp.mailId) == "string" then return stamp, true end
-    return nil, false
+    return nil, false, true
 end
 
 -- The key every map in this module is indexed by: the unit token for a delivered unit, and
@@ -665,6 +666,13 @@ function R.resolveObserved(username, playerData, scan)
                 if not row or row.gone then R.resolveHold(username, key, "no_conflicting_item") end
             elseif string.sub(key, 1, 10) == "duplicate:" then
                 if not scan.duplicates[unit] then R.resolveHold(username, key, "single_unit") end
+            elseif string.sub(key, 1, 7) == "legacy:" and held.detailCode == "letter_other_account" then
+                -- the object naming another account's letter left this backpack
+                local there = false
+                for _, row in ipairs(scan.stamped[held.mailId] and scan.stamped[held.mailId].items or {}) do
+                    if not row.gone then there = true end
+                end
+                if not there then R.resolveHold(username, key, "no_conflicting_item") end
             elseif string.sub(key, 1, 6) == "abort:" and playerData.pendingOuts[held.opId] == nil then
                 R.resolveHold(username, key, "returned")
             elseif string.sub(key, 1, 6) == "stamp:" and held.reason == "claim_epoch_unknown"
@@ -688,8 +696,9 @@ end
 
 -- Remove one observed object and prove it is gone: a call that did not throw is not a
 -- postcondition, the container read is (ItemContainer.java:630-632). No held record is touched
--- here - the caller decides what a partial result means.
-function R.dropRow(row)
+-- here - the caller decides what a partial result means. `holder`: the removal is announced once
+-- that player can be addressed (S.afterPlaced) instead of now.
+function R.dropRow(row, holder)
     if row.gone then return true end
     local ok, err = pcall(function() row.container:Remove(row.item) end)
     local checked, present = pcall(function() return row.container:contains(row.item) end)
@@ -698,8 +707,11 @@ function R.dropRow(row)
         return false
     end
     row.gone = true
-    local notified, notifyErr = pcall(sendRemoveItemFromContainer, row.container, row.item)
-    if not notified then EC.log("recovery removal notification failed: " .. tostring(notifyErr)) end
+    local function notify()
+        local notified, notifyErr = pcall(sendRemoveItemFromContainer, row.container, row.item)
+        if not notified then EC.log("recovery removal notification failed: " .. tostring(notifyErr)) end
+    end
+    if holder ~= nil then S.afterPlaced(holder, notify) else notify() end
     return true
 end
 
@@ -741,7 +753,7 @@ end
 -- The automatic path. A legacy-stamped object is never removed here: this server cannot name its
 -- source, so it is held instead. Removing one is an administrator's decision, taken against a
 -- named set of ids with a written reason (admin.recovery), and it goes through R.dropRow.
-function R.removeUnit(username, key, row, fields)
+function R.removeUnit(username, key, row, fields, holder)
     if row.gone then return true end
     local origin = R.originOf(row.item)
     local allowed = origin ~= nil and origin.src == "mail" and not row.duplicate
@@ -749,7 +761,16 @@ function R.removeUnit(username, key, row, fields)
         R.hold(username, key, row.duplicate and "duplicate_unit" or "stale_native_copy", fields)
         return false
     end
-    if not R.dropRow(row) then
+    -- a bag that still holds something is never deleted with it: its contents are not this unit
+    local okBag, full = pcall(function()
+        local inner = row.item.getInventory and row.item:getInventory() or nil
+        return inner ~= nil and inner:getItems():size() > 0
+    end)
+    if not okBag or full then
+        R.holdUpdate(username, key, okBag and "legacy_container_not_empty" or "legacy_item_unreadable", fields)
+        return false
+    end
+    if not R.dropRow(row, holder) then
         R.hold(username, key, "remove_unconfirmed", fields)
         return false
     end
@@ -766,7 +787,9 @@ function R.heldCount(username, traceable)
     if not traceable then return o.heldOpen end
     local n = 0
     for key, rec in pairs(o.held) do
-        if not rec.resolvedAt and not claimedHold(key, rec) then n = n + 1 end
+        -- what another account's receipt or letter names is that account's doing, never this holder's
+        if not rec.resolvedAt and not claimedHold(key, rec) and rec.reason ~= "unit_spent_by_other"
+            and rec.detailCode ~= "letter_other_account" then n = n + 1 end
     end
     return n
 end
@@ -1547,7 +1570,8 @@ local function markSources(username, receipt)
             local entry = Mb.entryOf(type(c.o) == "string" and c.o or username, c.m)
             if entry then
                 entry.outProof = entry.outProof or {}
-                entry.outProof[receipt.id] = { epoch = receipt.epoch, seq = receipt.seq }
+                -- `owner`: whose transfer it was, kept past the receipt (ECMailbox otherAccount)
+                entry.outProof[receipt.id] = { epoch = receipt.epoch, seq = receipt.seq, owner = receipt.owner }
                 -- A generation zero unit was named into this letter by a binding the world may
                 -- since have rolled back below. Its consumption is being recorded right now, so
                 -- its membership has to exist as well, or availableUnits would subtract nothing
@@ -1741,12 +1765,24 @@ end
 function R.reclaimClosed(above, downTo)
     if not R.ready() then return 0 end
     if md.recovery.count <= above then return 0 end
+    -- a receipt some holder's open record still stands on (ECMailbox unit_spent_by_other) goes
+    -- last: it is kept while anything else can make the room, and never keeps the table full
+    local standing = {}
+    for _, o in pairs(md.recovery.owners or {}) do
+        for _, rec in pairs(o.held or {}) do
+            if not rec.resolvedAt and rec.reason == "unit_spent_by_other" and rec.opId ~= nil then standing[rec.opId] = true end
+        end
+    end
     local closed = {}
     for _, r in pairs(md.recovery.ops) do
         local verdict = r.closed and R.receiptVerdict(r) or nil
         if verdict == "survived" or verdict == "unknown" then closed[#closed + 1] = r end
     end
-    EC.sortSafe(closed, function(a, b) return (a.closed or 0) < (b.closed or 0) end)
+    EC.sortSafe(closed, function(a, b)
+        local sa, sb = standing[a.id] == true, standing[b.id] == true
+        if sa ~= sb then return sb end
+        return (a.closed or 0) < (b.closed or 0)
+    end)
     local dropped = 0
     for _, r in ipairs(closed) do
         if md.recovery.count <= downTo then break end
@@ -1772,17 +1808,19 @@ end
 -- One walk of the backpack and the carried bags: every unit by token (identity), by native id
 -- (locator) and every stamp by letter. The mailbox reconcile and the pending adjudication read
 -- the same snapshot - nothing is scanned twice and nothing is decided from a container read taken
--- after the first change.
+-- after the first change. A value under this mod's key that is nothing it writes is no stamp: the
+-- object is walked as an unstamped one and counted in `malformed`, the walk goes on.
 function R.scanUnits(inv)
-    local scan = { byId = {}, byToken = {}, stamped = {}, duplicates = {}, failed = false }
+    local scan = { byId = {}, byToken = {}, stamped = {}, duplicates = {}, failed = false, malformed = 0 }
     local function walk(container, depth)
         local items = container:getItems()
         if not items then error("inventory list unavailable") end
         for i = 0, items:size() - 1 do
             local item = items:get(i)
             if item then
-                local stamp, readable = R.stampOf(item)
-                if not readable then error("inventory stamp unreadable") end
+                local stamp, readable, malformed = R.stampOf(item)
+                if malformed then scan.malformed = scan.malformed + 1
+                elseif not readable then error("inventory stamp unreadable") end
                 local id = nativeId(item)
                 local row = { item = item, container = container, stamp = stamp, nativeId = id, fullType = item:getFullType() }
                 if id ~= nil then
@@ -2284,6 +2322,13 @@ function R.judgeGen0(origin, holder, ctx)
     -- purchase itself survived (the letter is the proof that it was paid for), so the units are
     -- reconciled, never destroyed. Only when the letter is gone does the claim verdict decide,
     -- and then a rolled-back claim means the money came back with it.
+    -- Only the letter's own account has its units named from a generation zero stamp. Anyone
+    -- else's object is held for a person.
+    if entry and not (type(holder) == "string" and S.sameAccount(entry.owner, holder)) then
+        out.sourceState, out.owner, out.item = "present", entry.owner, entry.item
+        out.detailCode = "letter_other_account"
+        return nil, out
+    end
     if not entry then
         if why == "ambiguous" then
             out.detailCode = "letter_ambiguous"
@@ -2972,7 +3017,8 @@ function R.beginOut(player, id, items, rec)
                     local problem
                     if legacy.scan.failed then problem = "inventory_unreadable"
                     elseif legacy.scan.duplicates[origin.unit] then problem = "duplicate_unit" end
-                    if not problem then
+                    -- only the letter's own account has a slot of it named again (R.judgeGen0)
+                    if not problem and S.sameAccount(source.owner, username) then
                         local placed
                         placed, problem = R.gen0Admit(source, origin.unit, origin.seq, legacy.scan, true)
                         found = placed ~= nil

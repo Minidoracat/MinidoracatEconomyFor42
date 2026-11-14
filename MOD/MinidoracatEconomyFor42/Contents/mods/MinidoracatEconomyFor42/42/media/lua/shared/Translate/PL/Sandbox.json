@@ -62,6 +62,8 @@
   "Sandbox_MinidoracatEconomy_WantedMaxPerPlayer_tooltip": "Ile zleceń kupna jeden gracz może mieć otwartych jednocześnie (0 = gracze nie mogą wystawiać zleceń kupna). Każde otwarte zlecenie kupna zajmuje jedno miejsce w skrzynce.",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount": "Miejsca w skrzynce na gracza",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "Ile miejsc może zajmować jeden gracz: każdy nieodebrany wpis w skrzynce, każda aktywna oferta na rynku i każde otwarte zlecenie kupna zajmuje jedno; gdy są pełne, gracz nie może kupować ani wystawiać, a zwroty do skrzynki nigdy nie są blokowane.",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount": "Automatycznie odbieraj stare kopie przeniesione przez inne konto",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount_tooltip": "Po przywróceniu serwera po awarii gracz może nadal mieć starą kopię przedmiotu, który inne konto już przeniosło (wystawiło, wystawiło na aukcję, sprzedało systemowi itp.). Wyłączone (domyślnie): serwer niczego nie usuwa i zostawia tylko rekord na liście uzgodnień administratorów; do czasu rozstrzygnięcia przedmiotu nie można przenieść przez ekonomię. Włączone: serwer automatycznie usuwa starą kopię i zachowuje migawkę, którą administrator może odesłać do skrzynki. Ta opcja nie dotyczy starych kopii z przeniesień własnego konta; są one zawsze odbierane.",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "Minimalna cena oferty",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "Najniższa dozwolona cena oferty (waluta rynku).",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "Maksymalna cena oferty",

@@ -575,12 +575,13 @@ end
 
 -- Empty the hands holding any of `items` and tell the client once, before they are removed
 -- (ItemContainer.Remove empties them on the server only, ItemContainer.java:2036-2039). Returns
--- what was held, for restoreHands when the removal does not happen.
-local function releaseHands(player, items)
+-- what was held, for restoreHands when the removal does not happen. `early`: the client hears it
+-- once it can be addressed (S.afterPlaced).
+local function releaseHands(player, items, early)
     local held = heldOf(player, items)
     if #held == 0 then return held end
     for _, h in ipairs(held) do pcall(function() player:removeFromHands(h.item) end) end
-    sendHands(player)
+    if early then S.afterPlaced(player, function() sendHands(player) end) else sendHands(player) end
     return held
 end
 
@@ -1088,8 +1089,17 @@ end
 -- nothing), an id two objects of that type wear, an equipped or hotbar object, a bag with
 -- contents. A heavy item in the hands is no equip slot (R.removalBlock): the hands are emptied
 -- first, and put back if the removal does not happen.
-local function reclaimStaleCopies(player, username, scan)
+-- `early` = the holder's first tick: what the client has to hear waits until it can be addressed.
+-- A copy whose unit another account transferred is held (unit_spent_by_other) unless the
+-- server's owner chose to have it taken back as well (RecoveryReclaimOtherAccount).
+local function reclaimsOthers() return EC.sandbox("RecoveryReclaimOtherAccount", false) == true end
+local function otherAccount(receipt, username)
+    return not (type(receipt) == "table" and type(receipt.owner) == "string" and S.sameAccount(receipt.owner, username))
+end
+
+local function reclaimStaleCopies(player, username, scan, early)
     local notices, noticeOf = {}, {}
+    local function later(fn) if early then S.afterPlaced(player, fn) else fn() end end
     for id, rows in pairs(scan.byId) do
         for _, row in ipairs(rows) do
             local opId, receipt, proof = nil, nil, nil
@@ -1103,14 +1113,15 @@ local function reclaimStaleCopies(player, username, scan)
                 end
                 local blocked = (same > 1 and "duplicate_unit")
                     or (R.receiptVerdict(receipt) ~= "survived" and "stale_copy_unsaved")
+                    or (otherAccount(receipt, username) and not reclaimsOthers() and "unit_spent_by_other")
                     or R.removalBlock(row, player)
                 if not blocked then
                     -- a listing or an auction detached the parts before its snapshot and left
                     -- them with the seller; a sale to the system took them with the item
                     if receipt.kind ~= "buyback" then S.Codec.detachParts(row.item, player:getInventory()) end
                     local snapshot = S.Codec.snapshot(row.item)
-                    local held = releaseHands(player, { row.item })
-                    if R.dropRow(row) then
+                    local held = releaseHands(player, { row.item }, early)
+                    if R.dropRow(row, early and player or nil) then
                         local foreign = receipt.owner ~= username and receipt.owner or nil
                         local reclaimId = R.noteReclaim({ username = username, owner = receipt.owner, opId = opId,
                             opKind = receipt.kind, item = row.fullType, unit = id, snapshot = snapshot })
@@ -1129,17 +1140,134 @@ local function reclaimStaleCopies(player, username, scan)
                         end
                         notice.qty = notice.qty + 1
                     else
-                        restoreHands(player, held)
+                        restoreHands(player, held, early)
                         blocked = "remove_unconfirmed"
                     end
                 end
+                -- (the receipt this record stands on is kept while it is open, R.reclaimClosed)
                 if blocked then
                     R.holdUpdate(username, key, blocked, { opId = opId, unit = id, item = row.fullType, qty = 1 })
                 end
             end
         end
     end
-    for _, notice in ipairs(notices) do S.reply(player, "recovery.reclaimed", notice) end
+    for _, notice in ipairs(notices) do later(function() S.reply(player, "recovery.reclaimed", notice) end) end
+end
+
+-- What a taken-back copy leaves behind: a SYSTEM audit line and an event, and for a copy of
+-- another account's transfer a snapshot an administrator can mail back (R.noteReclaim; the
+-- account's own copy stands in its own listing or sale and needs none).
+local function noteTaken(username, key, row, unit, opId, receipt, snapshot)
+    local owner = type(receipt) == "table" and receipt.owner or nil
+    local foreign = owner ~= username and owner or nil
+    local reclaimId = nil
+    if otherAccount(receipt, username) then
+        reclaimId = R.noteReclaim({ username = username, owner = owner, opId = opId,
+            opKind = type(receipt) == "table" and receipt.kind or nil, item = row.fullType, unit = unit, snapshot = snapshot })
+    end
+    X.emit("ledger.anomaly", { kind = "recovery", username = username, resolution = "stale-copy-reclaimed",
+        key = key, opId = opId, owner = foreign, item = row.fullType, unit = unit, reclaimId = reclaimId })
+    X.audit({ action = "recovery", admin = "SYSTEM", target = username, field = opId, after = "reclaimed",
+        item = row.fullType, qty = 1, reclaimId = reclaimId, owner = foreign })
+end
+
+-- A delivered unit a transfer already moved out, still in this backpack: an old copy. The same
+-- cautions as reclaimStaleCopies: an equipped or hotbar object is held (R.removalBlock), so is a
+-- bag that still holds something (R.removeUnit), and the parts a listing left with the seller
+-- come off first. `tally` counts what went, by type, for one notice a type (tellSpent).
+local function takeSpent(player, username, key, row, token, opId, receipt, tally, early)
+    local fields = { opId = opId, unit = token, item = row.fullType, qty = 1 }
+    local blocked = R.removalBlock(row, player)
+    if blocked then
+        R.holdUpdate(username, key, blocked, fields)
+        return false
+    end
+    if not (type(receipt) == "table" and receipt.kind == "buyback") then
+        pcall(S.Codec.detachParts, row.item, player:getInventory())
+    end
+    local okShot, snapshot = pcall(S.Codec.snapshot, row.item)
+    -- a copy of another account's transfer goes only with the snapshot that can bring it back
+    if not okShot and otherAccount(receipt, username) then
+        R.holdUpdate(username, key, "legacy_item_unreadable", fields)
+        return false
+    end
+    local held = releaseHands(player, { row.item }, early)
+    if not R.removeUnit(username, key, row, fields, early and player or nil) then
+        restoreHands(player, held, early)
+        return false
+    end
+    noteTaken(username, key, row, token, opId, receipt, okShot and snapshot or nil)
+    tally[row.fullType] = (tally[row.fullType] or 0) + 1
+    return true
+end
+local function tellSpent(player, tally, early)
+    for item, qty in pairs(tally) do
+        local notice = { item = item, qty = qty }
+        if early then S.afterPlaced(player, function() S.reply(player, "recovery.reclaimed", notice) end)
+        else S.reply(player, "recovery.reclaimed", notice) end
+    end
+end
+
+-- The object a unit_spent_by_other record names, as this scan sees it: the stamped unit by its
+-- token, an unstamped copy by its locator and type.
+function M.heldUnit(scan, rec)
+    local row = nil
+    if type(rec.unit) == "string" then
+        row = scan.byToken[rec.unit]
+    else
+        for _, candidate in ipairs(scan.byId[rec.unit] or {}) do
+            if not candidate.gone and candidate.stamp == nil and candidate.fullType == rec.item then row = candidate; break end
+        end
+    end
+    if row and not row.gone and not row.duplicate then return row end
+    return nil
+end
+
+-- An administrator's decision on that record (ECAdmin, write-gated): the object is taken back
+-- with its snapshot kept, exactly as the owner's option would have. A unit this mod delivered
+-- goes the automatic way; any other object (unstamped, or named when it was first transferred)
+-- is removed here, on that decision alone. Without a snapshot nothing is removed.
+function M.reclaimHeld(player, username, rec, scan)
+    local row = M.heldUnit(scan, rec)
+    if row == nil then return false end
+    local receipt, tally = R.receipt(rec.opId), {}
+    local origin = R.originOf(row.item)
+    if origin ~= nil and origin.src == "mail" then
+        if not takeSpent(player, username, rec.key, row, rec.unit, rec.opId, receipt, tally) then return false end
+    else
+        if R.removalBlock(row, player) then return false end
+        if not (type(receipt) == "table" and receipt.kind == "buyback") then
+            pcall(S.Codec.detachParts, row.item, player:getInventory())
+        end
+        local okShot, snapshot = pcall(S.Codec.snapshot, row.item)
+        if not okShot then return false end
+        local held = releaseHands(player, { row.item })
+        if not R.dropRow(row) then
+            restoreHands(player, held)
+            return false
+        end
+        R.resolveHold(username, rec.key, "removed")
+        noteTaken(username, rec.key, row, rec.unit, rec.opId, receipt, snapshot)
+        tally[row.fullType] = 1
+    end
+    tellSpent(player, tally)
+    return true
+end
+
+-- First tick: the copies this account's own saved transfers moved out go at once, before the
+-- client has sent anything. Everything that needs a judgement stays with the full pass.
+local function reclaimSpent(player, username, scan)
+    local tally = {}
+    for token, row in pairs(scan.byToken) do
+        if not row.gone and not row.duplicate then
+            local opId, receipt, proof = R.consumer(R.originOf(row.item))
+            if opId and proof == nil and not otherAccount(receipt, username)
+                and R.receiptVerdict(receipt) == "survived" then
+                takeSpent(player, username, "unit:" .. opId .. ":" .. token, row, token, opId, receipt, tally, true)
+            end
+        end
+    end
+    tellSpent(player, tally, true)
 end
 
 -- A letter claimed on proof (acceptClaimProof, settleLostClaims) delivered nothing new: the objects
@@ -1181,12 +1309,38 @@ end
 -- 20-21), so the letter is marked claimed where it stands in the account's group (M.entryOf): a
 -- letter a merge moved and a world rollback put back under the alias - with merging turned off
 -- since - cannot be claimed a second time by the alias. The walk is over what the backpack holds,
--- never over a table the client wrote.
+-- never over a table the client wrote. What an object carries is not proof by itself (an object
+-- changes hands): the letter is marked only when every unit it still owes stands here as an
+-- object of the letter's own type (a stamp from before unit tokens stands for any one of them).
+-- Anything less leaves the letter as it is.
+-- a letter may name its item without the module; the engine's own lookup says which type that is
+local function letterType(item)
+    local ok, full = pcall(function()
+        local script = ScriptManager.instance:FindItem(item)
+        return script and script:getFullName() or nil
+    end)
+    return ok and type(full) == "string" and full or item
+end
+local function provesWhole(entry, letter)
+    local seen, loose, wanted = {}, 0, letterType(entry.item)
+    for _, row in ipairs(letter.items) do
+        local unit = row.stamp and row.stamp.unit
+        if not row.gone and not row.duplicate and row.fullType == wanted then
+            if type(unit) == "string" then seen[unit] = true else loose = loose + 1 end
+        end
+    end
+    local owed = availableUnits(entry)
+    for _, token in ipairs(owed) do
+        if not seen[token] then loose = loose - 1 end
+    end
+    return #owed > 0 and loose >= 0
+end
+
 local function proveClaims(player, login, account, scan, blockedLetters, ms)
     local changed = false
-    for mailId in pairs(scan.stamped) do
+    for mailId, letter in pairs(scan.stamped) do
         local entry = not blockedLetters[mailId] and M.entryOf(account, mailId) or nil
-        if entry and acceptClaimProof(entry, ms, login, player) then
+        if entry and counted(entry.state) and provesWhole(entry, letter) and acceptClaimProof(entry, ms, login, player) then
             anomaly(login, mailId, "mark-claimed", entry.owner ~= account and { owner = entry.owner } or nil)
             changed = true
         end
@@ -1496,8 +1650,9 @@ end
 -- Once per session, the first tick its login is verified (or the first command, whichever
 -- comes first): the session start goes into the ledger, the claims the world lost are settled,
 -- and the stamps in the backpack exactly as the save loaded them - before the client has had a
--- chance to move anything - mark their letters claimed. Nothing is handed over or removed here,
--- so a client that is not ready yet misses nothing.
+-- chance to move anything - mark their letters claimed. The old copies this account's own saved
+-- transfers moved out are taken back here as well, announced once the client can be addressed.
+-- Nothing is handed over here, so a client that is not ready yet misses nothing.
 function M.firstSight(player, login, session)
     if session.proved or type(login) ~= "string" then return end
     session.proved, session.login = true, login
@@ -1513,6 +1668,12 @@ function M.firstSight(player, login, session)
     local inv = player:getInventory()
     local scan = inv and R.scanUnits(inv) or nil
     if scan == nil or scan.failed then return end
+    -- neither removal may keep the proofs below from being read (session.proved is set already)
+    local okStale, staleErr = pcall(reclaimStaleCopies, player, login, scan, true)
+    local okSpent, spentErr = pcall(reclaimSpent, player, login, scan)
+    if not (okStale and okSpent) then
+        EC.log("mailbox first-tick reclaim failed for " .. login .. ": " .. tostring(staleErr or spentErr))
+    end
     -- the letters a live commitment of this save consumed are left to the full pass
     local blocked = {}
     for _, receipt in ipairs(R.ownerReceipts(login)) do
@@ -1571,6 +1732,7 @@ function M.reconcile(player)
     for token in pairs(scan.duplicates) do
         R.hold(username, "duplicate:" .. token, "duplicate_unit", { unit = token })
     end
+    if scan.malformed > 0 then anomaly(username, "-", "stamp-malformed", { qty = scan.malformed }) end
     local o = owner(username, false)
     local receipts, changed = R.ownerReceipts(username), false
     local protected, blockedLetters = {}, {}
@@ -1694,7 +1856,8 @@ function M.reconcile(player)
                 -- generation zero letter, claimed under this very claim seq, with a slot that was
                 -- never issued to anyone else. A matching prefix proves none of that.
                 local entry = M.entryOf(stamp.owner or username, mailId)
-                if entry and R.gen0Admit(entry, stamp.unit, stamp.seq, scan, true) == "bound" then
+                if entry and S.sameAccount(entry.owner, username)
+                    and R.gen0Admit(entry, stamp.unit, stamp.seq, scan, true) == "bound" then
                     rebound = rebound + 1
                 end
             end
@@ -1740,23 +1903,28 @@ function M.reconcile(player)
         elseif opId then
             local durable = R.receiptVerdict(receipt) == "survived"
             local insured = receipt and receipt.owner == username and p.pendingOuts[opId] ~= nil and not protected[opId]
-            consumed[token] = { opId = opId, proof = durable or insured, origin = origin }
+            consumed[token] = { opId = opId, proof = durable or insured, origin = origin, receipt = receipt }
             if not durable and not insured and origin and origin.mailId then blockedLetters[origin.mailId] = true end
         end
     end
     changed = redeliverMissing(player, username, account, scan, blockedLetters, ms) or changed
     changed = reconcileMissingLetters(username, scan, blockedLetters) or changed
+    local spent = {}
     for token, info in pairs(consumed) do
         local row = scan.byToken[token]
         if row and not row.gone then
             local key = "unit:" .. info.opId .. ":" .. token
-            if info.proof then
-                if R.removeUnit(username, key, row, { opId = info.opId, unit = token }) then changed = true end
+            if info.proof and otherAccount(info.receipt, username) and not reclaimsOthers() then
+                -- (the receipt this record stands on is kept while it is open, R.reclaimClosed)
+                R.holdUpdate(username, key, "unit_spent_by_other", { opId = info.opId, unit = token, item = row.fullType, qty = 1 })
+            elseif info.proof then
+                if takeSpent(player, username, key, row, token, info.opId, info.receipt, spent) then changed = true end
             else
                 R.hold(username, key, "current_commitment_uninsured", { opId = info.opId, unit = token })
             end
         end
     end
+    tellSpent(player, spent)
     R.resolveObserved(username, p, scan)
     for _, receipt in ipairs(receipts) do
         -- The source is asked on every pass, whether or not the save still carries the pending

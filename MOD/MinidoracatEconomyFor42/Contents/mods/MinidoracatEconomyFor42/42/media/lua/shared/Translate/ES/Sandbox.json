@@ -62,6 +62,8 @@
   "Sandbox_MinidoracatEconomy_WantedMaxPerPlayer_tooltip": "Cuántas órdenes de compra puede tener abiertas un jugador a la vez (0 = los jugadores no pueden publicar órdenes de compra). Cada orden de compra abierta ocupa un espacio del buzón.",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount": "Espacios del buzón por jugador",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "Cuántos espacios puede ocupar un jugador: cada entrada del buzón sin reclamar, cada anuncio activo y cada orden de compra abierta ocupan uno; con todo lleno el jugador no puede comprar ni publicar, y las devoluciones al buzón nunca se bloquean.",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount": "Recuperar automáticamente copias antiguas que transfirió otra cuenta",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount_tooltip": "Tras la recuperación de un fallo, un jugador puede llevar todavía una copia antigua de un objeto que otra cuenta ya transfirió (publicó, subastó, vendió al sistema, etc.). Desactivada (por defecto): el servidor no retira nada y solo deja un registro en la lista de conciliación de los administradores; el objeto no se puede transferir por la economía hasta que se resuelva. Activada: el servidor retira la copia antigua automáticamente y guarda una instantánea que un administrador puede devolver por correo. Las copias antiguas de las transferencias de la propia cuenta no dependen de esta opción y siempre se recuperan.",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "Precio mínimo de publicación",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "Precio pedido más bajo permitido (moneda del mercado).",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "Precio máximo de publicación",

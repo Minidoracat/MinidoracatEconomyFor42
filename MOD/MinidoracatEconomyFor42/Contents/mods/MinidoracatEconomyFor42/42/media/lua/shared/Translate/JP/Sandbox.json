@@ -62,6 +62,8 @@
   "Sandbox_MinidoracatEconomy_WantedMaxPerPlayer_tooltip": "1人のプレイヤーが同時に出せる買い注文の数（0＝買い注文を出せません）。出している買い注文は1件につきメールボックスのスロットを1つ占有します。",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount": "プレイヤーごとのメールボックス容量",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "1 人のプレイヤーが占有できるスロット数。未受取の項目、出品中のリスト、出している買い注文がそれぞれ 1 つ占有します。いっぱいになると購入や出品ができませんが、メールボックスへの返却は制限されません。",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount": "別アカウントが移送済みの古い複製を自動回収",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount_tooltip": "クラッシュからの復旧後、別のアカウントがすでに移送した（出品、オークション、システムへの売却など）アイテムの古い複製が、プレイヤーの手元に残っていることがあります。無効（既定）：サーバーは何も削除せず、管理者の照合待ちリストに記録を残すだけです。このアイテムは解決するまで経済システムを通じて移送できません。有効：サーバーが古い複製を自動で削除し、スナップショットを保存します。管理者は記録からメールボックスに送り返せます。自分のアカウントが移送した古い複製はこの設定の影響を受けず、常に回収されます。",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "出品の最低価格",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "出品価格の下限（マーケット通貨）。",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "出品の最高価格",

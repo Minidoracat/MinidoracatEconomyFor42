@@ -353,6 +353,14 @@ option MinidoracatEconomy.MailboxPerAccount
     translation = MinidoracatEconomy_MailboxPerAccount,
 }
 
+option MinidoracatEconomy.RecoveryReclaimOtherAccount
+{
+    type = boolean,
+    default = false,
+    page = MinidoracatEconomy,
+    translation = MinidoracatEconomy_RecoveryReclaimOtherAccount,
+}
+
 option MinidoracatEconomy.MarketPriceMin
 {
     type = integer,

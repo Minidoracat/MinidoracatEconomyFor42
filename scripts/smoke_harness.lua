@@ -231,11 +231,17 @@ local MAIN_TO_TYPE = { Normal = "NORMAL", Food = "FOOD", Weapon = "WEAPON", Lite
 -- ComponentType（LuaManager.java:2277）：哨兵表；腳本的 containsComponent（GameEntityScript.java:95）
 -- 只回答液體容器（knownItems 的 fluid）
 ComponentType = { FluidContainer = { name = "FluidContainer" } }
+-- FindItem 也認省略模組的名稱（ScriptManager.java:1414-1439），getFullName 回完整名稱（Item.java:883）
 ScriptManager = { instance = { FindItem = function(_, name)
     local k = knownItems[name]
+    if not k and type(name) == "string" and knownItems["Base." .. name] then
+        name = "Base." .. name
+        k = knownItems[name]
+    end
     if not k then return nil end
     local itemType = ItemType[k.itemType or MAIN_TO_TYPE[k.main] or "NORMAL"]
-    return { name = name, getDisplayName = function() return name end, getDisplayCategory = function() return k.cat end,
+    return { name = name, getFullName = function() return name end,
+        getDisplayName = function() return name end, getDisplayCategory = function() return k.cat end,
         getDaysTotallyRotten = function() return k.rots or 1000000000 end, isItemType = function(_, t) return t == itemType end,
         containsComponent = function(_, c) return c == ComponentType.FluidContainer and k.fluid == true end,
         getMapID = function() return k.mapId end }
@@ -1209,6 +1215,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a buy order's statement 
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, part of the signature so only copies with the same list share a row or a lot, left out of the buyback comparison like the channel a new copy rolled; listed and taken back through the market; room for a longer list on the rebuilt copy; the buyer's preview of the readings; the buyback takes a new copy, names a hand-built one, refuses a lot tuned or bookmarked differently and offers the sell dialog one lot it would take)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: hand-edited files taken in without a restart (scenario LR-1..10 with 1b, 5b, 6b, 9b, 9c: a whitelist put back as it was told to nobody, an unreadable file logged once, a file put back as it was not pushed, the files opened once per look and the settle time kept across a clock set back, an object in place of a list refused for both files; an unchanged catalog is not loaded or pushed, a settled edit is taken in once with its audit line, the old revision is refused and the day's count kept, a half-saved file is never judged, a broken one keeps the previous catalog and is audited once, a missing one writes no default, a panel write is not taken in twice; the whitelist the same, with the panel's next edit not stale, and a broken one audited once; a whitelist that exists but cannot be opened is not overwritten with the default)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: item metadata notices wait for the holder's square (scenario IS-1..4: a main-inventory item goes at once, a bagged item waits through the tick its position arrives and goes after the next update with nothing lost in the engine, an item that left its container is not sent, a holder who never gets a square is given up on)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: delivery proofs and other accounts' transfers (scenario SF-1..6 with 1b: a letter is not marked claimed by an object of another type or by one unit of two, and is with every unit there even when it names its item without the module; an old-format stamp names units only in the holder's own letter, also against a letter that would admit it from its own account, through a transfer attempt and a login pass, its record neither counts against the holder nor outlives the object, and an administrator can take the object back with a snapshot; a value this mod never wrote does not stop the pass; an old copy that is a bag with contents is held; the account's own saved transfer takes its copy back on the first tick, stamped or not, with the notice held until the client has a square; and the checks on a unit another account's saved transfer moved out: kept and held by default without counting against its holder, left alone by the first tick with its receipt pruned after every other, removed by an administrator from its record - on the object the page showed - with a snapshot, its receipt pruned once the record is closed, and taken back by itself with the owner's option on)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -6640,13 +6647,14 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             "current-receipt insurance preserves units when the world later loses that commitment")
     end
     do
-        local _, seller, buyer = fresh()
+        local admin, seller, buyer = fresh()
         local mail = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 1, kind = "shop" })
         assert(M.claim(seller, mail.id).ok)
         local item, oldPlayer = seller.inventory.items[1], copy(seller.modData)
         seller.inventory:Remove(item)
         buyer.inventory:AddItem(item)
-        list(buyer, item)
+        local spentId = list(buyer, item)
+        local spentKey = "unit:" .. spentId .. ":" .. item:getModData()[EC.PLAYER_MODDATA_KEY].unit
         confirmWorld()
         M.reconcile(seller)            -- this session is past its first-command reconcile
         seller.modData = oldPlayer
@@ -6655,8 +6663,63 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         check(refused.error == "recovery_conflict" and seller.inventory:contains(item),
             "source-owner consumption rejects a stale token before it can be transferred a second time")
         reconcileNow(seller)
-        check(tally(seller, "Base.Bandage") == 0 and tally(buyer, "Base.Bandage") == 1,
-            "reconciliation follows a consumed token across different account owners")
+        local kept = S.Recovery.heldRecord(seller:getUsername(), spentKey)
+        check(seller.inventory:contains(item) and kept ~= nil and kept.reason == "unit_spent_by_other"
+            and S.Recovery.heldCount(seller:getUsername(), true) == 0,
+            "a unit another account's saved transfer moved out is kept and held, and the record does not count against its holder")
+        -- the first tick of a later login leaves it too, and the receipt it stands on is pruned
+        -- only after every other one
+        seller = newSave(seller, 9)
+        fire("OnTickEvenPaused")
+        local laterOp = list(buyer, native(buyer, "Base.CannedCorn"))
+        confirmWorld()
+        S.Recovery.receipt(spentId).closed = nowMs
+        S.Recovery.receipt(laterOp).closed = nowMs + 1
+        S.Recovery.reclaimClosed(0, S.modData().recovery.count - 1)
+        check(seller.inventory:contains(item) and S.Recovery.receipt(spentId) ~= nil and S.Recovery.receipt(laterOp) == nil,
+            "the holder's first tick does not take another account's unit, and the receipt an open record stands on is pruned after every other")
+        S.Recovery.receipt(spentId).closed = nil
+        -- an administrator takes that one object back from its record, with a snapshot kept
+        local listed = cmd(admin, "admin.recovery", { action = "list", username = seller:getUsername() })
+        local rowHeld = nil
+        for _, r in ipairs(listed.records or {}) do if r.key == spentKey then rowHeld = r end end
+        -- the decision is on the object the page showed: another object under that name is refused
+        local shownId = item.id
+        item.id = shownId + 7
+        local swapped = rowHeld and cmd(admin, "admin.recovery", { action = "resolve", username = seller:getUsername(),
+            key = spentKey, revision = rowHeld.revision, decision = "remove", note = "old copy" }) or {}
+        local stillThere = seller.inventory:contains(item)
+        item.id = shownId
+        local removed = rowHeld and cmd(admin, "admin.recovery", { action = "resolve", username = seller:getUsername(),
+            key = spentKey, revision = rowHeld.revision, decision = "remove", note = "old copy" }) or {}
+        local kept1 = nil
+        for _, e in ipairs(X.auditEntries()) do
+            if e.admin == "SYSTEM" and e.after == "reclaimed" and e.target == seller:getUsername() then kept1 = e end
+        end
+        check(rowHeld ~= nil and rowHeld.actions.remove == true and swapped.error == "recovery_stale" and stillThere
+            and removed.ok == true
+            and not seller.inventory:contains(item) and kept1 ~= nil and S.Recovery.reclaimRecord(kept1.reclaimId) ~= nil
+            and tally(buyer, "Base.Bandage") == 1,
+            "an administrator removes the held copy from its record, on the object the page showed; the snapshot is kept and the other account's listing stands")
+        S.Recovery.receipt(spentId).closed = nowMs
+        S.Recovery.reclaimClosed(0, 0)
+        check(S.Recovery.receipt(spentId) == nil,
+            "once that record is closed the receipt it stood on is pruned like any other")
+        -- with the owner's option on the same copy goes by itself
+        local again = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 1, kind = "shop" })
+        assert(M.claim(seller, again.id).ok)
+        local item2 = seller.inventory.items[#seller.inventory.items]
+        local before2 = copy(seller.modData)
+        seller.inventory:Remove(item2); buyer.inventory:AddItem(item2)
+        list(buyer, item2)
+        confirmWorld()
+        seller.modData = before2
+        seller.inventory:AddItem(item2)
+        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = true
+        reconcileNow(seller)
+        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = nil
+        check(not seller.inventory:contains(item2) and tally(buyer, "Base.Bandage") == 2,
+            "with the owner's option on, reconciliation follows a consumed token across different account owners")
     end
     do
         local _, seller = fresh()
@@ -7255,6 +7318,11 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             "an unstamped copy in another account is refused with the operation that consumed it, and held there")
         confirmWorld()
         reconcileNow(buyer)
+        check(buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), key).reason == "unit_spent_by_other",
+            "once the listing is saved, the copy in the other account is still kept and held by default")
+        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = true
+        reconcileNow(buyer)
+        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = nil
         local line = nil
         for _, e in ipairs(X.auditEntries()) do
             if e.action == "recovery" and e.after == "reclaimed" and e.target == buyer:getUsername() then line = e end
@@ -7262,7 +7330,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         check(not buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), key).note == "reclaimed"
             and line ~= nil and line.admin == "SYSTEM" and line.owner == seller:getUsername() and line.item == "Base.Bandage"
             and Mk.listingExists(aId),
-            "once the listing is saved, the copy in the other account is taken back; the audit names whose listing it copied")
+            "with the owner's option on, the copy in the other account is taken back; the audit names whose listing it copied")
         local function restore(who, id, reason)
             return cmd(who, "admin.reclaim", { reclaimId = id, reason = reason })
         end
@@ -7305,6 +7373,112 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         local gone = cmd(admin, "admin.reclaim", { reclaimId = ids[1], reason = "late" })
         check(gone.error == "reclaim_unknown" and R.reclaimRecord(ids[2]) ~= nil and R.reclaimRecord(ids[3]) ~= nil,
             "past the ceiling the oldest reclaim is dropped and can no longer be restored; the newer ones stay")
+    end
+
+    -- SF: delivery proofs and other accounts' transfers.
+    do
+        local _, seller, buyer = fresh()
+        local PROTO = S.Recovery.PROTOCOL
+        -- SF-1: a letter is not marked claimed by one marked object of another type, nor by one
+        -- object of the right type when it owes two; with every unit there it is (the letter may
+        -- name its item without the module)
+        local user = buyer:getUsername()
+        local function mark(fullType, letter, n)
+            native(buyer, fullType):getModData()[KEY] = { proto = PROTO, mailId = letter.id, unit = letter.id .. "#" .. n,
+                owner = user, epoch = S.modData().meta.epoch, seq = 1 }
+        end
+        local parcel = M.add(user, { item = "Base.CannedCorn", qty = 2, kind = "shop" })
+        mark("Base.Bandage", parcel, 1)
+        reconcileNow(buyer)
+        check(M.entryOf(user, parcel.id).state == "ready",
+            "SF-1: an object of another type does not mark a letter claimed")
+        local half = M.add(user, { item = "Base.Bandage", qty = 2, kind = "shop" })
+        mark("Base.Bandage", half, 1)
+        local whole = M.add(user, { item = "Plank", qty = 1, kind = "shop" })
+        mark("Base.Plank", whole, 1)
+        reconcileNow(buyer)
+        check(M.entryOf(user, half.id).state == "ready" and M.entryOf(user, whole.id).state == "claimed"
+            and M.claim(buyer, parcel.id).ok and buyer.inventory.count("Base.CannedCorn") == 2,
+            "SF-1b: one unit of two leaves the letter claimable, every unit there marks it claimed, and the untouched letter still hands over all it owes")
+        -- SF-2: an old-format stamp names units only in a letter of the holder's own account
+        local mine = M.add(seller:getUsername(), { item = "Base.CannedCorn", qty = 1, kind = "shop" })
+        assert(M.claim(seller, mine.id).ok)
+        local entry, corn = M.entryOf(seller:getUsername(), mine.id), seller.inventory.items[#seller.inventory.items]
+        native(buyer, "Base.Bandage"):getModData()[KEY] = { mailId = mine.id, epoch = tostring(entry.claimEpoch), seq = entry.claimSeq }
+        reconcileNow(buyer)
+        check(entry.gen0 == nil and entry.units[1] == mine.id .. "#1"
+            and cmd(seller, "market.list", { itemId = corn:getID(), price = 10 }).ok,
+            "SF-2: an old-format stamp in another account's backpack leaves the letter as it was, and its owner still lists the unit")
+        -- SF-3: a value under this mod's key that is nothing it writes does not stop the pass
+        local odd = native(buyer, "Base.Bandage")
+        odd:getModData()[KEY] = 1
+        local whole, why = M.reconcile(buyer)
+        check(whole == true and why == nil and buyer.inventory:contains(odd),
+            "SF-3: an object carrying something this mod never wrote is walked as an unstamped one and the pass completes")
+    end
+    -- SF-4/5: the account's own saved transfer takes its old copy back on the first tick, before
+    -- any command; a bag that still holds something is held instead, and the client hears of the
+    -- removal only once it has a square.
+    do
+        local _, seller = fresh()
+        local user = seller:getUsername()
+        local parcel = M.add(user, { item = "Base.Bandage", qty = 1, kind = "shop" })
+        assert(M.claim(seller, parcel.id).ok)
+        local item, oldPlayer = seller.inventory.items[1], copy(seller.modData)
+        local oldData = copy(item:getModData())
+        local opId = list(seller, item)
+        confirmWorld()
+        local key = "unit:" .. opId .. ":" .. oldData[KEY].unit
+        local function relog()
+            seller = newSave(seller, 5)
+            seller.modData, seller.inventory.items = copy(oldPlayer), {}
+            item.modData = copy(oldData)
+            seller.inventory:AddItem(item)
+            seller.current, seller.square = nil, nil
+        end
+        local inner = fakeInventory(20)
+        inner:AddItem(instanceItem("Base.Bandage"))
+        relog()
+        item.getInventory = function() return inner end
+        fire("OnTickEvenPaused")
+        local held = S.Recovery.heldRecord(user, key)
+        check(seller.inventory:contains(item) and inner.count("Base.Bandage") == 1
+            and held ~= nil and held.reason == "legacy_container_not_empty",
+            "SF-4: an old copy that is a bag with something in it is held, never removed with its contents")
+        item.getInventory = nil
+        relog()
+        local packets, replies = #sentItemPackets, #sentCommands
+        fire("OnTickEvenPaused")
+        local gone, quiet = not seller.inventory:contains(item), #sentItemPackets == packets and #sentCommands == replies
+        seller.current = {}; seller.square = seller.current
+        for _ = 1, 4 do fire("OnTickEvenPaused") end
+        local told, line = false, nil
+        for i = replies + 1, #sentCommands do
+            if sentCommands[i].player == seller and sentCommands[i].command == "recovery.reclaimed" then told = true end
+        end
+        for _, e in ipairs(X.auditEntries()) do
+            if e.action == "recovery" and e.after == "reclaimed" and e.target == user then line = e end
+        end
+        check(gone and quiet and told and #sentItemPackets == packets + 1
+            and line ~= nil and line.reclaimId == nil and Mk.listingExists(opId),
+            "SF-5: the account's own saved transfer takes its old copy back on the first tick, and the client is told once it has a square")
+        -- SF-6: the same for a copy that never carried a stamp
+        local plain = native(seller, "Base.Bandage")
+        local plainData, plainPlayer = copy(plain:getModData()), copy(seller.modData)
+        local plainOp = list(seller, plain)
+        confirmWorld()
+        seller = newSave(seller, 5)
+        seller.modData, seller.inventory.items = copy(plainPlayer), {}
+        plain.modData = plainData
+        seller.inventory:AddItem(plain)
+        seller.current, seller.square = nil, nil
+        packets = #sentItemPackets
+        fire("OnTickEvenPaused")
+        local plainGone, plainQuiet = not seller.inventory:contains(plain), #sentItemPackets == packets
+        seller.current = {}; seller.square = seller.current
+        for _ = 1, 4 do fire("OnTickEvenPaused") end
+        check(plainGone and plainQuiet and #sentItemPackets == packets + 1 and Mk.listingExists(plainOp),
+            "SF-6: an unstamped old copy of the account's own saved listing goes on the first tick as well, announced once the client has a square")
     end
 
     SandboxVars.MinidoracatEconomy.ShopBuybackEnabled = nil
@@ -8529,13 +8703,53 @@ check(det(foreignReply).reason == "source_claim_pending" and det(foreignReply).a
     "a holder cannot be told to claim another player's mailbox or receive that player's identity")
 put(shared, { mailId = foreign.id, epoch = savedStamp.epoch, seq = savedStamp.seq, txId = savedStamp.txId })
 local foreignLegacy = list(shared, 20)
-check(det(foreignLegacy).reason == "legacy_source_unclaimed" and det(foreignLegacy).action == "admin_review",
-    "an older shared item also routes its inaccessible source claim to administrative review")
+check(det(foreignLegacy).reason == "legacy_source_unknown" and det(foreignLegacy).action == "admin_review"
+    and foreign.gen0 == nil and foreign.units[1] == foreign.id .. "#1",
+    "an older shared item naming another account's letter goes to administrative review and leaves that letter as it was")
 put(shared, { proto = R.PROTOCOL, mailId = foreign.id, unit = foreign.id .. "#L" .. tostring(shared.id),
     owner = other.username, epoch = savedStamp.epoch, seq = savedStamp.seq })
 local foreignAdopted = list(shared, 20)
-check(det(foreignAdopted).reason == "legacy_source_unclaimed" and det(foreignAdopted).action == "admin_review",
-    "a shared adopted token with missing membership cannot tell its holder to claim the source owner's mailbox")
+check(det(foreignAdopted).reason == "source_membership_missing" and det(foreignAdopted).action == "admin_review"
+    and foreign.units[1] == foreign.id .. "#1",
+    "a shared adopted token with missing membership names no slot of another account's letter")
+-- the same two stamps against a letter that would admit them from its own account
+foreign.state, foreign.gen0 = "claimed", true
+local admitted = list(shared, 20)
+M.reconcile(ann)
+check(admitted.ok ~= true and foreign.units[1] == foreign.id .. "#1",
+    "another account's old-format letter keeps its slots through a transfer attempt and a login pass")
+foreign.gen0 = nil
+-- the old-format stamp itself: its record does not count against the holder and closes by itself
+-- once the object is no longer in the backpack
+local countBefore = R.heldCount("ann", true)
+put(shared, { mailId = foreign.id, epoch = savedStamp.epoch, seq = savedStamp.seq, txId = savedStamp.txId })
+M.reconcile(ann)
+local otherRec = R.heldRecord("ann", "legacy:" .. foreign.id)
+local openThen = otherRec ~= nil and otherRec.resolvedAt == nil and otherRec.detailCode == "letter_other_account"
+local countThen = R.heldCount("ann", true)
+ann.inventory:Remove(shared)
+M.reconcile(ann)
+otherRec = R.heldRecord("ann", "legacy:" .. foreign.id)
+check(openThen and countThen == countBefore and countThen == R.heldCount("ann", true)
+    and (otherRec == nil or otherRec.resolvedAt ~= nil),
+    "a record about another account's letter does not count against the holder and closes once the object has left the backpack")
+ann.inventory:AddItem(shared)
+-- while it is there an administrator can take it back; the snapshot is kept and the letter untouched
+M.reconcile(ann)
+local otherRow = nil
+for _, r in ipairs(cmd(boss, "admin.recovery", { action = "list", username = "ann" }).records or {}) do
+    if r.key == "legacy:" .. foreign.id then otherRow = r end
+end
+local otherGone = otherRow and cmd(boss, "admin.recovery", { action = "resolve", username = "ann",
+    key = otherRow.key, revision = otherRow.revision, decision = "remove", note = "not theirs" }) or {}
+local otherLine = nil
+for _, e in ipairs(S.Export.auditEntries()) do
+    if e.action == "recovery" and e.after == "reclaimed" and e.field == foreign.id then otherLine = e end
+end
+check(otherRow ~= nil and otherRow.actions.remove == true and otherGone.ok == true and not ann.inventory:contains(shared)
+    and otherLine ~= nil and R.reclaimRecord(otherLine.reclaimId) ~= nil and foreign.units[1] == foreign.id .. "#1",
+    "an administrator takes back an object naming another account's letter; the snapshot is kept and the letter is as it was")
+ann.inventory:AddItem(shared)
 foreign.state = "claimed"; shared.modData[KEY] = savedStamp
 
 -- 8. 來源信件不在了，領取的 epoch 也超出歷史：判斷是「無法判斷」

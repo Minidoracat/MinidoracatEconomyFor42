@@ -62,6 +62,8 @@
   "Sandbox_MinidoracatEconomy_WantedMaxPerPlayer_tooltip": "Quantas ordens de compra um jogador pode ter abertas ao mesmo tempo (0 = jogadores não podem publicar ordens de compra). Cada ordem de compra aberta ocupa um espaço da caixa de correio.",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount": "Espaços da caixa de correio por jogador",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "Quantos espaços um jogador pode ocupar: cada entrada não resgatada da caixa de correio, cada anúncio ativo no mercado e cada ordem de compra aberta ocupa um; quando cheio, o jogador não pode comprar nem anunciar, e devoluções à caixa de correio nunca são bloqueadas.",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount": "Recuperar automaticamente cópias antigas transferidas por outra conta",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount_tooltip": "Após a recuperação de um travamento, um jogador ainda pode carregar uma cópia antiga de um item que outra conta já transferiu (anunciou, leiloou, vendeu ao sistema etc.). Desativado (padrão): o servidor não remove nada e só deixa um registro na lista de conciliação dos administradores; o item não pode ser transferido pela economia até ser resolvido. Ativado: o servidor remove a cópia antiga automaticamente e guarda um retrato que um administrador pode devolver pelo correio. Cópias antigas das transferências da própria conta não são afetadas por esta opção e são sempre recuperadas.",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "Preço mínimo de anúncio",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "Menor preço pedido permitido (moeda do mercado).",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "Preço máximo de anúncio",

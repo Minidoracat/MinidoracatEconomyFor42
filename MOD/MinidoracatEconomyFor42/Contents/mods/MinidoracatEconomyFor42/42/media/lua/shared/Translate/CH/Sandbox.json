@@ -62,6 +62,8 @@
   "Sandbox_MinidoracatEconomy_WantedMaxPerPlayer_tooltip": "一名玩家同時可開的求購單數（0＝不開放建立求購單）。每張開放中的求購單佔一格信箱。",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount": "每人信箱容量",
   "Sandbox_MinidoracatEconomy_MailboxPerAccount_tooltip": "一名玩家的信箱最多能佔用幾格：待領取的物品、掛在市場上的刊登與開放中的求購單各佔一格；滿了就不能購買或上架，退回信箱不受限。",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount": "自動收回其他帳號已轉出的舊副本",
+  "Sandbox_MinidoracatEconomy_RecoveryReclaimOtherAccount_tooltip": "伺服器崩潰回復後，玩家身上可能留著一件物品的舊副本，而這件物品已經由另一個帳號轉出（上架、拍賣、賣給系統等）。關閉（預設）：伺服器不移除，只在管理員的待對帳清單留一筆紀錄，這件物品暫時不能再經由經濟系統轉出。開啟：伺服器自動移除這件舊副本並保留快照，管理員可以從紀錄把它寄回。自己帳號轉出的舊副本不受這個選項影響，一律自動收回。",
   "Sandbox_MinidoracatEconomy_MarketPriceMin": "刊登最低價",
   "Sandbox_MinidoracatEconomy_MarketPriceMin_tooltip": "刊登定價下限（各幣別通用）。",
   "Sandbox_MinidoracatEconomy_MarketPriceMax": "刊登最高價",

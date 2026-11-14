@@ -152,7 +152,7 @@ local function pair(labelKey, value) return getText(T .. "Admin_Tx_Pair", getTex
 -- fields; the template decides the word order. `detail` is prose an older build stored in the
 -- save, shown as it was written (it is never rewritten). nil when the record says nothing more.
 local DETAIL_ARGS = {
-    letter_ambiguous = { "mailId" }, no_placeholder = { "mailId" },
+    letter_ambiguous = { "mailId" }, letter_other_account = { "mailId" }, no_placeholder = { "mailId" },
     claim_lost = { "epoch", "seq" }, claim_superseded = { "claimSeq", "seq" },
     unit_transferred = { "unitToken" }, admin_remove_partial = { "removed", "stuck" },
 }

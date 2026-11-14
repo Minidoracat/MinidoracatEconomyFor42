@@ -732,7 +732,7 @@ end
 -- position arrived in (GameServer.main), and a tick may come before that frame's update.
 -- The only reference to syncItemModData (verify 12d).
 S.ITEM_SYNC_WAIT_MS = 60000             -- a holder who never gets a square has left
-local itemSyncs = {}                    -- { player, item, at, seen }
+local itemSyncs = {}                    -- { player, item | fn, at, seen }
 
 local function sendItemSync(player, item)
     local ok, err = pcall(syncItemModData, player, item)
@@ -747,13 +747,22 @@ function S.syncItem(player, item)
     itemSyncs[#itemSyncs + 1] = { player = player, item = item, at = EC.now(), seen = 0 }
 end
 
+-- Anything else that has to wait for the same moment (a removal done on a player's first tick is
+-- announced once the client can be addressed): `fn` runs once, on the tick the holder is placed.
+function S.afterPlaced(player, fn)
+    itemSyncs[#itemSyncs + 1] = { player = player, fn = fn, at = EC.now(), seen = 0 }
+end
+
 function S.flushItemSyncs()
     if #itemSyncs == 0 then return end
     local now, waiting = EC.now(), {}
     for _, q in ipairs(itemSyncs) do
         local ok, placed = pcall(function() return q.player:getCurrentSquare() ~= nil end)
         placed = ok and placed
-        if placed and q.seen >= 2 then
+        if placed and q.seen >= 2 and q.fn then
+            local done, err = pcall(q.fn)
+            if not done then EC.log("deferred notification failed: " .. tostring(err)) end
+        elseif placed and q.seen >= 2 then
             -- an item that left every container meanwhile has no address to send
             local held, there = pcall(function() return q.item:getContainer() ~= nil end)
             if held and there then sendItemSync(q.player, q.item) end
@@ -761,7 +770,7 @@ function S.flushItemSyncs()
             q.seen = placed and q.seen + 1 or 0
             waiting[#waiting + 1] = q
         else
-            EC.log("item metadata notification given up: its holder had no square for " .. tostring(now - q.at) .. " ms")
+            EC.log((q.fn and "deferred" or "item metadata") .. " notification given up: its holder had no square for " .. tostring(now - q.at) .. " ms")
         end
     end
     itemSyncs = waiting

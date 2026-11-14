@@ -788,6 +788,8 @@ EC.OPTIONS = {
     { key = "MarketMaxListings", group = "market", kind = "int", min = 1, max = 50, step = 1, default = 5 },
     { key = "WantedMaxPerPlayer", group = "market", kind = "int", min = 0, max = 50, step = 1, default = 5, zeroOff = true },
     { key = "MailboxPerAccount", group = "market", kind = "int", min = 5, max = 500, step = 5, default = 50 },
+    -- false = a stale copy whose unit another account transferred is held for reconciliation, not removed
+    { key = "RecoveryReclaimOtherAccount", group = "market", kind = "bool", default = false },
     { key = "MarketPriceMin", group = "market", kind = "int", min = 1, max = 1000000, step = 1, default = 1, unit = "coin" },
     { key = "MarketPriceMax", group = "market", kind = "int", min = 1, max = 1000000000, step = 1000, default = 1000000, unit = "coin" },
     { key = "AuctionMinHours", group = "auction", kind = "int", min = 1, max = 168, step = 1, default = 1, unit = "hour" },
