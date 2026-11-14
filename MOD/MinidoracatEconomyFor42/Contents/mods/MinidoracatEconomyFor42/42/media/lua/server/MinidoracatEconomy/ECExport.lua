@@ -195,6 +195,18 @@ function X.flush(budget)
     return written
 end
 
+-- Everything queued for one path, now and ahead of the tick (the recovery ledger: what a world
+-- rollback must not forget is on disk before the handler that caused it returns).
+function X.flushPath(path)
+    local entry = queueIndex[path]
+    if not entry then return end
+    for i = 1, #queue do
+        if queue[i] == entry then table.remove(queue, i); break end
+    end
+    table.insert(queue, 1, entry)
+    X.flush(#entry.lines)
+end
+
 -- ---------- records ----------
 
 local function baseRecord(type_, ms)

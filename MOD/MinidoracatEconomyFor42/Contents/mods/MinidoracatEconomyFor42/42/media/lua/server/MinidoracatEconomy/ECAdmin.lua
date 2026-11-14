@@ -1810,8 +1810,8 @@ local function recoveryRow(username, rec, scan, pdata)
         out.presentQty = scan and (unit and 1 or 0) or nil
         out.actions.remove = unit ~= nil and Rcv.removalBlock(unit) == nil
         if unit then out.item, out.nativeIds = unit.fullType, { unit.nativeId } end
-        -- the decision is on this very object: another one under the same name is another revision
-        fingerprint.unit = unit and { id = unit.nativeId, item = unit.fullType, stamp = unit.stamp } or "none"
+        -- the decision is on this very object (what it carries is not part of naming it)
+        fingerprint.unit = unit and { id = unit.nativeId, item = unit.fullType } or "none"
     elseif rec.reason == "claim_epoch_unknown" and type(rec.mailId) == "string" then
         claimRow(out, fingerprint, rec, scan)
     elseif type(rec.opId) == "string" and (A.RECOVERY_MANUAL_REASONS[rec.reason]

@@ -753,6 +753,9 @@ local function optionValueText(spec, value)
     if spec.kind == "roles" then return roleSummary(value) end
     local n = tonumber(value)
     if n == nil then return tostring(value) end
+    if spec.choices then
+        return getTextOrNull("Sandbox_MinidoracatEconomy_" .. spec.key .. "_option" .. tostring(math.floor(n))) or tostring(n)
+    end
     if spec.zeroUnlimited and n <= 0 then return tr("Admin_Set_Unlimited") end
     if spec.zeroOff and n <= 0 then return tr("Admin_Off") end
     if spec.unit == "mhz" then return getText(T .. "Admin_Set_Mhz", tostring(math.floor(n / 1000)) .. "." .. tostring(math.floor((n % 1000) / 100))) end

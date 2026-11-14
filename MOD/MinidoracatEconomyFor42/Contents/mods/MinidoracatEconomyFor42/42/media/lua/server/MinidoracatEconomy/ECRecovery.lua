@@ -193,12 +193,14 @@ end
 
 -- Was this unit of the authoritative record in that walk, and is that sighting still standing?
 --
--- Identity here is the same identity R.matchUnit uses, and for the same reason: a token names
--- exactly one unit, while a 32-bit locator is reused by the engine, so a locator only counts
--- when the object wearing it is the item type the record is about. Anything looser would read
--- "another item happens to carry that number" as "our unit was here and then vanished" and hold
--- a legitimate rebuild for ever (report FINAL-REC-D). A row this server removed itself in that
--- same pass is `gone` and does not count either.
+-- Identity here is coarser than R.matchUnit's on purpose: a token seen in that walk counts
+-- whichever object carried it. This answer is only asked for a unit matchUnit no longer finds,
+-- and an object under the unit having stood there means its absence proves nothing - the record
+-- is held (source_state_changed), not rebuilt. A 32-bit locator is reused by the engine, so a
+-- locator only counts when the object wearing it is the item type the record is about; anything
+-- looser would read "another item happens to carry that number" as "our unit was here and then
+-- vanished" and hold a legitimate rebuild for ever (report FINAL-REC-D). A row this server
+-- removed itself in that same pass is `gone` and does not count either.
 function R.wasSighted(username, origin, expectedType)
     local snap = type(username) == "string" and proofSightings[username] or nil
     if not snap or type(origin) ~= "table" then return false end
@@ -787,9 +789,10 @@ function R.heldCount(username, traceable)
     if not traceable then return o.heldOpen end
     local n = 0
     for key, rec in pairs(o.held) do
-        -- what another account's receipt or letter names is that account's doing, never this holder's
+        -- what another account's receipt or letter names is that account's doing, and two objects
+        -- under one unit is what the backpack shows: neither is this holder's own request
         if not rec.resolvedAt and not claimedHold(key, rec) and rec.reason ~= "unit_spent_by_other"
-            and rec.detailCode ~= "letter_other_account" then n = n + 1 end
+            and rec.reason ~= "duplicate_unit" and rec.detailCode ~= "letter_other_account" then n = n + 1 end
     end
     return n
 end
@@ -1533,9 +1536,58 @@ function R.consumer(origin)
     return nil
 end
 
+-- Is the object `id`, standing on a unit `receipt` moved out, the very object that transfer
+-- moved - as far as this server can tell? true: this account's transfer, of this object. false:
+-- another account's transfer, or this account's of another object. nil: the record cannot say -
+-- it was written before `owner` or the object was kept (an earlier release), and such a copy is
+-- neither taken back nor passed on. `receipt` is a receipt (units) or what a letter kept of one
+-- (outProof: `i` by token). An unstamped copy was found by the receipt's own locator: that is
+-- the object.
+function R.sameCopy(receipt, username, token, id)
+    if type(receipt) ~= "table" or type(receipt.owner) ~= "string" then return nil end
+    if not S.sameAccount(receipt.owner, username) then return false end
+    if type(token) ~= "string" then return true end
+    local moved = type(receipt.i) == "table" and receipt.i[token] or nil
+    for _, c in ipairs(receipt.units or {}) do
+        if c.t == token then moved = c.i or c.n end
+    end
+    if moved == nil then return nil end
+    return moved == id
+end
+
+-- What becomes of a copy that is not provably the object a transfer moved (the owner's sandbox
+-- option): it goes on as an ordinary item, it is held for an administrator, or it is taken back.
+R.COPY_PASS, R.COPY_HOLD, R.COPY_TAKE = 1, 2, 3
+function R.copyPolicy()
+    local v = EC.sandbox("RecoveryCopyPolicy", R.COPY_PASS)
+    return (v == R.COPY_HOLD or v == R.COPY_TAKE) and v or R.COPY_PASS
+end
+
+-- R.COPY_PASS applies to this object: the transfer is known not to be of it, and - for an object
+-- this mod marked - the claim its mark names is one this server made and has not seen rolled back.
+function R.passesCopy(receipt, username, origin)
+    if R.copyPolicy() ~= R.COPY_PASS or R.sameCopy(receipt, username, origin.unit, origin.nativeId) ~= false then return false end
+    if origin.unit == nil or origin.durable == true then return true end
+    local verdict = R.claimVerdict(origin.epoch, origin.seq)
+    return verdict == "survived" or verdict == "current"
+end
+
+-- The object goes on as an ordinary item: what this mod wrote on it is taken off and the record
+-- that held it is closed. Its unit stays spent by the transfer that moved it.
+function R.releaseCopy(player, username, item, token, opId, receipt)
+    if not pcall(function() item:getModData()[EC.PLAYER_MODDATA_KEY] = nil end) then return false end
+    S.syncItem(player, item)
+    R.resolveHold(username, "unit:" .. opId .. ":" .. token, "released")
+    local typed, full = pcall(function() return item:getFullType() end)
+    X.emit("ledger.anomaly", { kind = "recovery", username = username, resolution = "copy-released", opId = opId,
+        owner = receipt.owner ~= username and receipt.owner or nil, item = typed and full or nil, unit = token })
+    return true
+end
+
 -- What a receipt has to remember about a unit: its token (identity) and the letter it came from,
--- or its native locator when that is all there ever was. The claim epoch/seq were judged when the
--- operation was accepted and are not re-litigated here.
+-- or its native locator when that is all there ever was; for a delivered unit also the object
+-- that carried it out (`i`, R.sameCopy). The claim epoch/seq were judged when the operation was
+-- accepted and are not re-litigated here.
 local function compactOrigins(origins, owner)
     local out = {}
     for _, o in ipairs(type(origins) == "table" and origins or {}) do
@@ -1544,7 +1596,7 @@ local function compactOrigins(origins, owner)
             local c = nil
             if type(o.unit) == "string" then
                 c = { t = o.unit, m = o.mailId }
-                if o.src == "native" then c.n = o.nativeId end
+                if o.src == "native" then c.n = o.nativeId else c.i = o.nativeId end
                 if type(o.owner) == "string" and o.owner ~= owner then c.o = o.owner end
             elseif o.nativeId ~= nil then
                 c = { n = o.nativeId }
@@ -1570,8 +1622,14 @@ local function markSources(username, receipt)
             local entry = Mb.entryOf(type(c.o) == "string" and c.o or username, c.m)
             if entry then
                 entry.outProof = entry.outProof or {}
-                -- `owner`: whose transfer it was, kept past the receipt (ECMailbox otherAccount)
-                entry.outProof[receipt.id] = { epoch = receipt.epoch, seq = receipt.seq, owner = receipt.owner }
+                -- `owner` and, by token, the object that carried the unit out (`i`): whose
+                -- transfer it was and of which object, kept past the receipt (R.sameCopy)
+                local proof = entry.outProof[receipt.id]
+                if type(proof) ~= "table" then
+                    proof = { epoch = receipt.epoch, seq = receipt.seq, owner = receipt.owner, i = {} }
+                    entry.outProof[receipt.id] = proof
+                end
+                if type(proof.i) == "table" then proof.i[c.t] = c.i or c.n end
                 -- A generation zero unit was named into this letter by a binding the world may
                 -- since have rolled back below. Its consumption is being recorded right now, so
                 -- its membership has to exist as well, or availableUnits would subtract nothing
@@ -1891,15 +1949,21 @@ function R.worldOperation(id)
     return info
 end
 
--- The live object this origin points at, or nil. A delivered unit is matched by its token, which
--- is the same on the object however often it was rebuilt or redelivered. A unit that entered the
+-- The live object this origin points at, or nil. A delivered unit is matched by its token. The
+-- record also says which object carried the unit (`i`, or the id the origin was read with):
+-- another object under the same token is not that object, and the unit is looked for no further
+-- under it - unless the owner chose to trust the token alone (R.COPY_TAKE), where any object
+-- carrying it is the unit, however often it was rebuilt or redelivered. A unit that entered the
 -- mod unstamped has only its locator, and then an unstamped object with that id is the best this
 -- server can say - which is why an unstamped copy is never deleted on that evidence alone.
 function R.matchUnit(scan, origin, expectedType)
     if type(origin) ~= "table" then return nil end
     if type(origin.unit) == "string" then
         local row = scan.byToken[origin.unit]
-        if row and not row.gone then return row end
+        local moved = origin.i or origin.nativeId
+        if row and not row.gone and (moved == nil or row.nativeId == moved or R.copyPolicy() == R.COPY_TAKE) then
+            return row
+        end
         if origin.src ~= "native" then return nil end
     end
     if origin.nativeId == nil then return nil end
@@ -2530,7 +2594,7 @@ local function judgeRecord(username, id, pend, scan, opts)
             -- A unit that entered the mod with a legacy stamp was compacted as one (`l`), and it
             -- has to come back as one: read as native, its still-stamped original would never
             -- match and the record would call an object that is right here missing.
-            local origin = { unit = unit.t, nativeId = unit.n, mailId = unit.m,
+            local origin = { unit = unit.t, nativeId = unit.n, i = unit.i, mailId = unit.m,
                 src = unit.l == true and "legacy" or (unit.n ~= nil and "native" or "mail") }
             local key = originKey(origin)
             if key then covered[key], out.keys[key] = true, true end
@@ -2988,11 +3052,32 @@ function R.beginOut(player, id, items, rec)
             return false, "recovery_conflict", detail("duplicate_unit",
                 { index = i, item = origin.item, itemId = origin.nativeId, mailId = origin.mailId })
         end
-        local consumed, _, proof = R.consumer(origin)
+        local consumed, receipt, proof = R.consumer(origin)
         if proof == "unreadable" then
             return false, "recovery_unverified", detail("source_state_unknown",
                 { index = i, item = origin.item, itemId = origin.nativeId, mailId = origin.mailId,
                   action = "retry" })
+        end
+        -- A transfer that was not of this object already moved its unit: by the owner's default
+        -- (R.passesCopy) the object goes on as the ordinary item it is read as from here.
+        if consumed and R.passesCopy(receipt, username, origin) then
+            if origin.unit ~= nil then
+                if not R.releaseCopy(player, username, items[i], origin.unit, consumed, receipt) then
+                    return false, "recovery_unverified", detail("item_stamp_unreadable",
+                        { index = i, item = origin.item, itemId = origin.nativeId })
+                end
+                origin = R.originOf(items[i])
+                key = origin and originKey(origin) or nil
+                if key == nil or byKey[key] then
+                    return false, "recovery_conflict", detail("duplicate_unit",
+                        { index = i, item = fullTypeOf(items[i]) })
+                end
+                consumed, receipt, proof = R.consumer(origin)
+            end
+            if consumed and R.passesCopy(receipt, username, origin) then
+                R.resolveHold(username, "unit:" .. consumed .. ":" .. tostring(origin.nativeId), "released")
+                consumed = nil
+            end
         end
         if consumed then
             local reason, heldKey = "unit_already_consumed", nil

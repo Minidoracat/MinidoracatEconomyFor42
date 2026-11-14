@@ -1216,6 +1216,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: a hand-built radio's re
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: hand-edited files taken in without a restart (scenario LR-1..10 with 1b, 5b, 6b, 9b, 9c: a whitelist put back as it was told to nobody, an unreadable file logged once, a file put back as it was not pushed, the files opened once per look and the settle time kept across a clock set back, an object in place of a list refused for both files; an unchanged catalog is not loaded or pushed, a settled edit is taken in once with its audit line, the old revision is refused and the day's count kept, a half-saved file is never judged, a broken one keeps the previous catalog and is audited once, a missing one writes no default, a panel write is not taken in twice; the whitelist the same, with the panel's next edit not stale, and a broken one audited once; a whitelist that exists but cannot be opened is not overwritten with the default)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: item metadata notices wait for the holder's square (scenario IS-1..4: a main-inventory item goes at once, a bagged item waits through the tick its position arrives and goes after the next update with nothing lost in the engine, an item that left its container is not sent, a holder who never gets a square is given up on)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: delivery proofs and other accounts' transfers (scenario SF-1..6 with 1b: a letter is not marked claimed by an object of another type or by one unit of two, and is with every unit there even when it names its item without the module; an old-format stamp names units only in the holder's own letter, also against a letter that would admit it from its own account, through a transfer attempt and a login pass, its record neither counts against the holder nor outlives the object, and an administrator can take the object back with a snapshot; a value this mod never wrote does not stop the pass; an old copy that is a bag with contents is held; the account's own saved transfer takes its copy back on the first tick, stamped or not, with the notice held until the client has a square; and the checks on a unit another account's saved transfer moved out: kept and held by default without counting against its holder, left alone by the first tick with its receipt pruned after every other, removed by an administrator from its record - on the object the page showed - with a snapshot, its receipt pruned once the record is closed, and taken back by itself with the owner's option on)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the owner's three ways with a copy the server cannot tie to the transfer (default: it waits only while its mark names a claim this server cannot place, else goes on as an ordinary item with its record closed; a transfer of it is accepted directly; an unstamped copy in another account is left alone), an object of this account that is not the one its transfer moved is not taken back - also once only the letter remembers the transfer - records for objects sharing one unit or standing under units of the account's saved transfers do not count against the holder, records of an earlier release keep their meaning, a claim's ledger line is written before the handler returns (LG-proof-2a) and a line that cannot be written does not refuse the claim (LG-proof-2b)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -6619,7 +6620,10 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
     do
         local _, seller = fresh()
         -- another save of the same login is a new session whose hours say where it stands
-        -- against the claim (moddata trust boundary, R.claimOrder)
+        -- against the claim (moddata trust boundary, R.claimOrder). Objects other than the ones
+        -- the transfers moved are taken back on the unit they carry only where the owner trusts
+        -- the unit alone (take back); the default for such an object is the scenario after next.
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 3
         local reload = newSave
         local beforeClaim = copy(seller.modData)
         local parcel = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 5, kind = "shop" })
@@ -6645,9 +6649,11 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         reconcileNow(seller)
         check(seller.inventory.count("Base.Bandage") == 1 and tally(seller, "Base.Bandage") == 5,
             "current-receipt insurance preserves units when the world later loses that commitment")
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = nil
     end
     do
         local admin, seller, buyer = fresh()
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 2   -- the owner chose "hold for administrators"
         local mail = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 1, kind = "shop" })
         assert(M.claim(seller, mail.id).ok)
         local item, oldPlayer = seller.inventory.items[1], copy(seller.modData)
@@ -6690,6 +6696,8 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             key = spentKey, revision = rowHeld.revision, decision = "remove", note = "old copy" }) or {}
         local stillThere = seller.inventory:contains(item)
         item.id = shownId
+        -- (what the object carries beside the unit is not part of naming it: the page is not stale)
+        item:getModData()[KEY].durable = not item:getModData()[KEY].durable
         local removed = rowHeld and cmd(admin, "admin.recovery", { action = "resolve", username = seller:getUsername(),
             key = spentKey, revision = rowHeld.revision, decision = "remove", note = "old copy" }) or {}
         local kept1 = nil
@@ -6705,21 +6713,179 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         S.Recovery.reclaimClosed(0, 0)
         check(S.Recovery.receipt(spentId) == nil,
             "once that record is closed the receipt it stood on is pruned like any other")
-        -- with the owner's option on the same copy goes by itself
-        local again = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 1, kind = "shop" })
-        assert(M.claim(seller, again.id).ok)
-        local item2 = seller.inventory.items[#seller.inventory.items]
-        local before2 = copy(seller.modData)
-        seller.inventory:Remove(item2); buyer.inventory:AddItem(item2)
-        list(buyer, item2)
+        -- with the owner's "take back" the same copy goes by itself
+        local function strayCopy()
+            local again = M.add(seller:getUsername(), { item = "Base.Bandage", qty = 1, kind = "shop" })
+            assert(M.claim(seller, again.id).ok)
+            local stray = seller.inventory.items[#seller.inventory.items]
+            local before = copy(seller.modData)
+            seller.inventory:Remove(stray); buyer.inventory:AddItem(stray)
+            local op = list(buyer, stray)
+            return stray, before, "unit:" .. op .. ":" .. stray:getModData()[KEY].unit
+        end
+        local item2, before2 = strayCopy()
         confirmWorld()
         seller.modData = before2
         seller.inventory:AddItem(item2)
-        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = true
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 3
         reconcileNow(seller)
-        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = nil
         check(not seller.inventory:contains(item2) and tally(buyer, "Base.Bandage") == 2,
-            "with the owner's option on, reconciliation follows a consumed token across different account owners")
+            "with the owner's take-back option, reconciliation follows a consumed token across different account owners")
+        -- the default: the copy goes on as an ordinary item (no save has to confirm anything
+        -- first), and a record that was open on it closes. Not when its mark names a claim this
+        -- server cannot place: that one waits, held without counting.
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = nil
+        local item3, before3, key3 = strayCopy()
+        seller.modData = before3
+        seller.inventory:AddItem(item3)
+        local claimEpoch = item3:getModData()[KEY].epoch
+        item3:getModData()[KEY].epoch = "17"
+        reconcileNow(seller)
+        local waiting = S.Recovery.heldRecord(seller:getUsername(), key3)
+        local early = cmd(seller, "market.list", { itemId = item3.id, price = 10 })
+        check(seller.inventory:contains(item3) and item3:getModData()[KEY] ~= nil
+            and waiting ~= nil and waiting.reason == "unit_spent_by_other" and not waiting.resolvedAt
+            and S.Recovery.heldCount(seller:getUsername(), true) == 0 and early.error == "recovery_conflict",
+            "by default a copy whose mark names a claim this server cannot place waits: marked, held without counting, and not transferable")
+        item3:getModData()[KEY].epoch = claimEpoch
+        reconcileNow(seller)
+        local bare = item3:getModData()[KEY] == nil
+        local passed = cmd(seller, "market.list", { itemId = item3.id, price = 10 })
+        check(bare and S.Recovery.heldRecord(seller:getUsername(), key3).note == "released"
+            and M.recoveryStatus(seller:getUsername()).held == 0 and passed.ok == true
+            and tally(buyer, "Base.Bandage") == 3 and tally(seller, "Base.Bandage") == 1,
+            "with a claim this server made, the copy of another account's transfer goes on as an ordinary item: the record closes and its holder lists it")
+        -- the same decision at the transfer itself, with no pass in between
+        local item4, before4 = strayCopy()
+        confirmWorld()
+        seller.modData = before4
+        seller.inventory:AddItem(item4)
+        local direct = cmd(seller, "market.list", { itemId = item4.id, price = 10 })
+        check(direct.ok == true and not seller.inventory:contains(item4) and M.recoveryStatus(seller:getUsername()).held == 0,
+            "a transfer of such a copy is accepted as an ordinary item's without waiting for a login pass")
+    end
+    -- Two objects of one account under one unit. By the default the transfer of one never takes
+    -- the other back: not while that transfer is unsaved, not once it is saved, and not once only
+    -- the letter remembers it. The records such objects open do not count against the holder.
+    do
+        local _, seller, buyer = fresh()
+        local user = buyer:getUsername()
+        SandboxVars.MinidoracatEconomy.MarketMaxListings = 50
+        -- (fixture: one more object in the backpack, standing under the unit `object` carries)
+        local function twin(fullType, object)
+            local it = native(buyer, fullType)
+            it:getModData()[KEY] = copy(object:getModData()[KEY])
+            return it
+        end
+        local function delivered()
+            local parcel = M.add(user, { item = "Base.CannedCorn", qty = 1, kind = "shop" })
+            assert(M.claim(buyer, parcel.id).ok)
+            return buyer.inventory.items[#buyer.inventory.items]
+        end
+        local corn = delivered()
+        local sold = cmd(buyer, "market.list", { itemId = twin("Base.Bandage", corn):getID(), price = 10 })
+        reconcileNow(buyer)
+        local kept = buyer.inventory:contains(corn)
+        confirmWorld()
+        reconcileNow(buyer)
+        check(sold.ok == true and kept and buyer.inventory:contains(corn) and corn:getModData()[KEY] == nil
+            and M.recoveryStatus(user).held == 0 and cmd(buyer, "market.list", { itemId = corn:getID(), price = 10 }).ok == true,
+            "a transfer of another object under the same unit does not take this account's object back: it goes on as an ordinary item")
+        -- the receipt pruned, the letter still there: what the letter kept says which object went
+        local corn2 = delivered()
+        buyer.inventory:Remove(corn2)
+        local op2 = list(buyer, twin("Base.Bandage", corn2))
+        confirmWorld()
+        reconcileNow(buyer)
+        S.Recovery.receipt(op2).closed = nowMs
+        S.Recovery.reclaimClosed(0, 0)
+        local carried = copy(buyer.modData)
+        restart(copy(S.modData()))
+        buyer = newSave(buyer, 9)
+        buyer.modData, buyer.inventory.items = carried, { corn2 }
+        fire("OnTickEvenPaused")
+        local leftByTick = buyer.inventory:contains(corn2)
+        reconcileNow(buyer)
+        check(S.Recovery.receipt(op2) == nil and leftByTick and buyer.inventory:contains(corn2)
+            and corn2:getModData()[KEY] == nil and M.recoveryStatus(user).held == 0,
+            "with the receipt pruned, the letter's own memory of which object went keeps the other object from being taken back")
+        -- two objects under one unit are what the backpack shows, not this holder's request
+        for n = 1, S.Recovery.HELD_LIMIT do
+            for _ = 1, 2 do
+                native(buyer, "Base.Bandage"):getModData()[KEY] = { proto = S.Recovery.PROTOCOL, mailId = "9:" .. n,
+                    unit = "9:" .. n .. "#1", owner = seller:getUsername(), epoch = S.modData().meta.epoch, seq = 1, durable = true }
+            end
+        end
+        reconcileNow(buyer)
+        check(M.recoveryStatus(user).held == S.Recovery.HELD_LIMIT
+            and cmd(buyer, "market.list", { itemId = native(buyer, "Base.Hammer"):getID(), price = 10 }).ok == true,
+            "records for objects sharing one unit do not count against the holder's own transfers")
+        -- nor do objects under units this account's saved transfers moved, marked with a claim
+        -- this server cannot place: they are held uncounted and the transfers' own records close
+        local ops = {}
+        for n = 1, 2 do ops[n] = list(buyer, native(buyer, "Base.Hammer")) end
+        confirmWorld()
+        for n = 1, 2 do
+            native(buyer, "Base.Bandage"):getModData()[KEY] = { proto = S.Recovery.PROTOCOL, src = "native",
+                unit = ops[n] .. "#1", owner = user, epoch = "17", seq = 1 }
+        end
+        local limit = S.Recovery.HELD_LIMIT
+        S.Recovery.HELD_LIMIT = 1
+        reconcileNow(buyer)
+        local pending = EC.countKeys(buyer.modData[KEY].pendingOuts)
+        local free = cmd(buyer, "market.list", { itemId = native(buyer, "Base.Hammer"):getID(), price = 10 })
+        S.Recovery.HELD_LIMIT = limit
+        check(S.Recovery.heldCount(user, true) == 0 and pending == 0 and free.ok == true
+            and S.Recovery.heldRecord(user, "unit:" .. ops[1] .. ":" .. ops[1] .. "#1").reason == "unit_spent_by_other",
+            "objects under units of this account's saved transfers neither keep those transfers' records open nor count against the holder")
+        SandboxVars.MinidoracatEconomy.MarketMaxListings = nil
+    end
+    -- Records an earlier release wrote. A receipt that does not say which object it moved, and a
+    -- letter's memory that does not say whose transfer it was, leave a copy under their unit held
+    -- - neither taken back nor passed on; the owner's take-back option takes it as that release did.
+    do
+        local _, seller = fresh()
+        local user = seller:getUsername()
+        local function sold()
+            local parcel = M.add(user, { item = "Base.Bandage", qty = 1, kind = "shop" })
+            assert(M.claim(seller, parcel.id).ok)
+            local item = seller.inventory.items[#seller.inventory.items]
+            local data, pdata = copy(item:getModData()), copy(seller.modData)
+            local op = list(seller, item)
+            confirmWorld()
+            return item, data, pdata, op, parcel.id
+        end
+        local a, aData, aPlayer, aOp = sold()
+        S.Recovery.receipt(aOp).units[1].i = nil
+        a.modData, a.id = aData, a.id + 1000
+        seller.modData = aPlayer
+        seller.inventory:AddItem(a)
+        reconcileNow(seller)
+        local aHeld = S.Recovery.heldRecord(user, "unit:" .. aOp .. ":" .. aData[KEY].unit)
+        local kept = seller.inventory:contains(a) and a:getModData()[KEY] ~= nil
+            and aHeld ~= nil and aHeld.reason == "unit_spent_by_other" and not aHeld.resolvedAt
+            and S.Recovery.heldCount(user, true) == 0
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 3
+        reconcileNow(seller)
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = nil
+        local taken = kept and not seller.inventory:contains(a)
+        local b, bData, bPlayer, bOp, bMail = sold()
+        M.entryOf(user, bMail).outProof[bOp].owner = nil
+        S.Recovery.receipt(bOp).closed = nowMs
+        S.Recovery.reclaimClosed(0, 0)
+        local bUnit = bData[KEY].unit
+        restart(copy(S.modData()))     -- the next start: only the letter still remembers that transfer
+        seller = newSave(seller, 9)
+        seller.modData, seller.inventory.items = bPlayer, {}
+        b.modData = bData
+        seller.inventory:AddItem(b)
+        fire("OnTickEvenPaused")
+        local leftByTick = seller.inventory:contains(b)
+        reconcileNow(seller)
+        local held = S.Recovery.heldRecord(user, "unit:" .. bOp .. ":" .. bUnit)
+        check(taken and S.Recovery.receipt(bOp) == nil and leftByTick and seller.inventory:contains(b) and b:getModData()[KEY] ~= nil
+            and held ~= nil and held.reason == "unit_spent_by_other" and not held.resolvedAt,
+            "records of an earlier release: a receipt without the object and a letter's memory without an owner hold the copy; the take-back option takes it")
     end
     do
         local _, seller = fresh()
@@ -7305,6 +7471,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
     -- once it is - and an administrator can mail it back from the SYSTEM audit line, once.
     do
         local admin, seller, buyer = fresh()
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 2   -- the owner chose "hold for administrators"
         local a = native(seller, "Base.Bandage")
         local oldData = copy(a:getModData())
         local aId = list(seller, a)
@@ -7319,10 +7486,10 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         confirmWorld()
         reconcileNow(buyer)
         check(buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), key).reason == "unit_spent_by_other",
-            "once the listing is saved, the copy in the other account is still kept and held by default")
-        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = true
+            "once the listing is saved, the copy in the other account is kept and held when the owner chose so")
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 3
         reconcileNow(buyer)
-        SandboxVars.MinidoracatEconomy.RecoveryReclaimOtherAccount = nil
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = nil
         local line = nil
         for _, e in ipairs(X.auditEntries()) do
             if e.action == "recovery" and e.after == "reclaimed" and e.target == buyer:getUsername() then line = e end
@@ -7330,7 +7497,7 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         check(not buyer.inventory:contains(a) and S.Recovery.heldRecord(buyer:getUsername(), key).note == "reclaimed"
             and line ~= nil and line.admin == "SYSTEM" and line.owner == seller:getUsername() and line.item == "Base.Bandage"
             and Mk.listingExists(aId),
-            "with the owner's option on, the copy in the other account is taken back; the audit names whose listing it copied")
+            "with the owner's take-back option, the copy in the other account is taken back; the audit names whose listing it copied")
         local function restore(who, id, reason)
             return cmd(who, "admin.reclaim", { reclaimId = id, reason = reason })
         end
@@ -7357,6 +7524,18 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         check(claimed.ok and back.fullType == "Base.Bandage" and back.condition == 3 and back.id ~= a.id
             and buyer.inventory:contains(back),
             "the restored item is rebuilt as it was taken, under a new id a later login does not take back")
+        -- the default leaves such a copy alone: nothing held, and its holder lists it
+        local b = native(seller, "Base.Bandage")
+        local bData = copy(b:getModData())
+        local bId = list(seller, b)
+        confirmWorld()
+        b.modData = bData
+        buyer.inventory:AddItem(b)
+        reconcileNow(buyer)
+        local free = cmd(buyer, "market.list", { itemId = b.id, price = 10 })
+        check(S.Recovery.heldRecord(buyer:getUsername(), "unit:" .. bId .. ":" .. b.id) == nil and free.ok == true
+            and Mk.listingExists(bId),
+            "by default an unstamped copy in another account is left alone: no record, and its holder lists it")
     end
     -- The restorable snapshots are bounded: past the ceiling the oldest goes, and its audit line
     -- then answers reclaim_unknown instead of restoring something the server no longer has.
@@ -8504,9 +8683,11 @@ io.write("scenario 48: reconciliation administrative safety boundaries\n")
         local nativeOrigin = Rec.originOf(a)
         check(Rec.consumer(nativeOrigin) == "1400:3" and Rec.originState(nativeOrigin, other.username) == "unknown",
             "an unstamped original under another owner is still held by its legacy compensation receipt")
-        check(not M.beginOut(other, "1400:7", { a }, { kind = "listing", qty = 1, seq = 7, epoch = "1400" })
-            and other.inventory:contains(a),
-            "an unstamped resurfaced original cannot be sold twice and is never deleted on its locator alone")
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 2
+        local refusedHeld = not M.beginOut(other, "1400:7", { a }, { kind = "listing", qty = 1, seq = 7, epoch = "1400" })
+        SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = nil
+        check(refusedHeld and other.inventory:contains(a),
+            "when the owner holds such copies, an unstamped resurfaced original cannot be sold twice and is never deleted on its locator alone")
         local wrongType = oldItem(other, "Base.Axe", "1500:1", "1500", 2)
         wrongType.id = a.id
         check(Rec.consumer(Rec.originOf(wrongType)) == nil,
@@ -8604,7 +8785,8 @@ local axe0 = native("Base.Axe")
 local ok0 = list(axe0, 100)
 check(ok0.ok == true and ok0.recoveryDetail == nil, "a listing that succeeds carries no refusal detail")
 
--- 1. 收據已經消耗掉的 unit：說出是哪一筆作業消耗的、哪一件實體
+-- 1. 收據已經消耗掉的 unit：說出是哪一筆作業消耗的、哪一件實體（服主選「交給管理員」時；預設見情境 42）
+SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = 2
 local axe1 = native("Base.Axe")
 put(axe1, { proto = 2, src = "native", unit = ok0.listingId .. "#1", owner = "ann",
     epoch = S.modData().meta.epoch, seq = 1 })
@@ -8615,6 +8797,7 @@ check(r1.ok == false and r1.error == "recovery_conflict" and d1.reason == "unit_
     and d1.opId == ok0.listingId and d1.item == "Base.Axe" and d1.itemId == axe1.id and d1.index == 1
     and d1.action == "admin_review",
     "a unit an existing receipt consumed names that operation and the very object it was refused on")
+SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = nil
 check(bal() == coins1 and axes() == count1 and ann.inventory:contains(axe1),
     "the refused listing moved no item and charged no fee")
 
@@ -18318,7 +18501,15 @@ check(M.entryOf("rl-f", l.id).state == "settled" and p2.inventory.count("Base.Ba
 -- the world forgot; once the claimed letter is pruned a day later, the login after that must not
 -- take them back as a rolled-back delivery (the money for them stayed paid).
 local KEY = EC.PLAYER_MODDATA_KEY
-local function crashLost(snap)             -- the claim's ledger line was still queued: lost too
+-- the claim never reached its ledger file (a release that still queued the line, or a failed
+-- write): the file loses its last line and the world goes back
+local function ledgerLines()
+    local f = files[S.RecoveryJournal.ledgerPath(S.modData().meta.epoch)]
+    return f and f.lines or {}
+end
+local function crashLost(snap)
+    local lines = ledgerLines()
+    lines[#lines] = nil
     onlinePlayers = {}
     modDataStore[EC.MODDATA_KEY] = deep(snap)
     nowMs = nowMs + 1000
@@ -18351,7 +18542,10 @@ check(proofOk and M.entryOf("rl-p", l.id) == nil and p3.inventory.count("Base.Ba
     and count("removed-rolled-back") == removedBefore,
     "LG-proof-1: a claim the ledger proves moves the objects onto the proof, and the pruned letter leaves them in place")
 p, l, snap = claimed("rl-q", 10)
+local linesBefore = #ledgerLines()
 assert(M.claim(p, l.id).ok)
+check(#ledgerLines() == linesBefore + 1 and string.find(ledgerLines()[#ledgerLines()], '"k":"claim"', 1, true) ~= nil,
+    "LG-proof-2a: a claim is in its ledger file before the handler returns, with no tick in between")
 local markedBefore = count("mark-claimed")
 removedBefore = count("removed-rolled-back")
 crashLost(snap)
@@ -18361,6 +18555,18 @@ proofOk = count("mark-claimed") == markedBefore + 1 and anchored(p2, M.entryOf("
 p3 = afterPrune("rl-q", 13, p2)
 check(proofOk and p3.inventory.count("Base.Bandage") == 2 and count("removed-rolled-back") == removedBefore,
     "LG-proof-2: a claim only the objects prove (its ledger line lost) keeps them after the letter is pruned")
+-- LG-proof-2b: a ledger line that cannot be written does not refuse the claim - the letter is
+-- claimed, the file has no line of it, and what the save holds stays the evidence (LG-proof-2)
+do
+    p, l, snap = claimed("rl-w", 10)
+    local path, had = S.RecoveryJournal.ledgerPath(S.modData().meta.epoch), #ledgerLines()
+    writerDeny[path] = true
+    local res = M.claim(p, l.id)
+    writerDeny[path] = nil
+    check(res.ok == true and #ledgerLines() == had and M.entryOf("rl-w", l.id).state == "claimed"
+        and p.inventory.count("Base.Bandage") == 2,
+        "LG-proof-2b: a claim whose ledger line could not be written is still made; its file simply has no line of it")
+end
 p, l, snap = claimed("rl-r", 10)
 assert(M.claim(p, l.id).ok)
 local oldStamps = {}

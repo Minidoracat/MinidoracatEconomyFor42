@@ -353,12 +353,13 @@ option MinidoracatEconomy.MailboxPerAccount
     translation = MinidoracatEconomy_MailboxPerAccount,
 }
 
-option MinidoracatEconomy.RecoveryReclaimOtherAccount
+option MinidoracatEconomy.RecoveryCopyPolicy
 {
-    type = boolean,
-    default = false,
+    type = enum,
+    numValues = 3,
+    default = 1,
     page = MinidoracatEconomy,
-    translation = MinidoracatEconomy_RecoveryReclaimOtherAccount,
+    translation = MinidoracatEconomy_RecoveryCopyPolicy,
 }
 
 option MinidoracatEconomy.MarketPriceMin

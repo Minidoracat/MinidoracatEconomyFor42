@@ -905,10 +905,12 @@ end
 --    "h":"<hours as number text>","life":n,"p":parentMailId?,"u":[token...]?}
 --   {"t":"recovery.ledger","v":1,"k":"start","l":login,"s":seq,"h":"<h0 text>","life":n,"sn":seen}
 --   {"t":"recovery.ledger","v":1,"k":"life","l":login,"s":seq,"life":n}
--- Written through the export queue (same order and budget as every other line; a line still
--- queued at a crash is lost, which only ever costs the conservative answer). Read back
--- synchronously once per start, before any player connects (ECMailbox harvest): the lines of an
--- epoch above the seq the next start loaded are exactly what the world rollback forgot.
+-- Written through the export queue and flushed at once (X.flushPath): the write of a claim is
+-- attempted inside the handler that handed its objects over, not on the next tick. A write that
+-- fails is logged and marks the path failed (ECExport); the claim itself stands, and what the
+-- save holds remains the evidence for it (ECMailbox proveClaims). Read back synchronously once
+-- per start, before any player connects (ECMailbox harvest): the lines of an epoch above the seq
+-- the next start loaded are exactly what the world rollback forgot.
 -- There is no line cap: a file that is not read to its end is reported incomplete, never taken
 -- for a complete one. The rows the world kept (seq <= loaded) are skipped on their seq text
 -- alone (the encoder writes sorted keys, so `"s":` is a top-level key), which keeps a long
@@ -924,7 +926,10 @@ function J.ledger(fields)
     if md == nil or type(fields) ~= "table" then return end
     fields.t, fields.v = J.LEDGER_TYPE, 1
     local ok, line = pcall(EC.jsonEncode, fields)
-    if ok and type(line) == "string" then X.enqueue(J.ledgerPath(md.meta.epoch), line)
+    if ok and type(line) == "string" then
+        local path = J.ledgerPath(md.meta.epoch)
+        X.enqueue(path, line)
+        X.flushPath(path)
     else EC.log("recovery ledger line not encoded: " .. tostring(fields.k)) end
 end
 

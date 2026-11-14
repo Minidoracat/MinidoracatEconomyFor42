@@ -1081,22 +1081,19 @@ end
 -- A world save newer than the player save leaves the older backpack holding objects the world
 -- already moved out (listed, put up for auction or sold to the system). The copy carries no
 -- stamp - the stamp is written at hand-over, after that player save - but it carries the type
--- and engine id a receipt recorded, and it may have changed hands since. Whoever holds it, once
--- that receipt is inside a world save the copy is taken back, and every one is written down: an
--- event line, a SYSTEM audit line that can mail it back (R.noteReclaim keeps the snapshot), the
--- holder's market history and a notice. What could make a removal wrong is held instead: a
+-- and engine id a receipt recorded, and it may have changed hands since. In the hands of the
+-- account that made the transfer, once that receipt is inside a world save the copy is taken
+-- back, and every one is written down: an event line, a SYSTEM audit line that can mail it back
+-- (R.noteReclaim keeps the snapshot), the holder's market history and a notice. What could make
+-- a removal wrong is held instead: a
 -- receipt this run has not seen saved (a rollback would take the operation away and leave
 -- nothing), an id two objects of that type wear, an equipped or hotbar object, a bag with
 -- contents. A heavy item in the hands is no equip slot (R.removalBlock): the hands are emptied
 -- first, and put back if the removal does not happen.
 -- `early` = the holder's first tick: what the client has to hear waits until it can be addressed.
--- A copy whose unit another account transferred is held (unit_spent_by_other) unless the
--- server's owner chose to have it taken back as well (RecoveryReclaimOtherAccount).
-local function reclaimsOthers() return EC.sandbox("RecoveryReclaimOtherAccount", false) == true end
-local function otherAccount(receipt, username)
-    return not (type(receipt) == "table" and type(receipt.owner) == "string" and S.sameAccount(receipt.owner, username))
-end
-
+-- A copy the server cannot tie to that transfer (R.sameCopy: another account made it) follows the
+-- owner's option (R.copyPolicy): left alone as the ordinary item it is, held
+-- (unit_spent_by_other), or taken back as well.
 local function reclaimStaleCopies(player, username, scan, early)
     local notices, noticeOf = {}, {}
     local function later(fn) if early then S.afterPlaced(player, fn) else fn() end end
@@ -1106,14 +1103,16 @@ local function reclaimStaleCopies(player, username, scan, early)
             if not row.gone and row.stamp == nil then
                 opId, receipt, proof = R.consumer({ src = "native", nativeId = id, item = row.fullType })
             end
-            if opId and receipt and proof == "locator" then
+            if opId and receipt and proof == "locator" and R.passesCopy(receipt, username, { nativeId = id }) then
+                R.resolveHold(username, "unit:" .. opId .. ":" .. tostring(id), "released")
+            elseif opId and receipt and proof == "locator" then
                 local key, same = "unit:" .. opId .. ":" .. tostring(id), 0
                 for _, other in ipairs(rows) do
                     if not other.gone and other.fullType == row.fullType then same = same + 1 end
                 end
                 local blocked = (same > 1 and "duplicate_unit")
                     or (R.receiptVerdict(receipt) ~= "survived" and "stale_copy_unsaved")
-                    or (otherAccount(receipt, username) and not reclaimsOthers() and "unit_spent_by_other")
+                    or (R.sameCopy(receipt, username, nil, id) ~= true and R.copyPolicy() ~= R.COPY_TAKE and "unit_spent_by_other")
                     or R.removalBlock(row, player)
                 if not blocked then
                     -- a listing or an auction detached the parts before its snapshot and left
@@ -1154,14 +1153,14 @@ local function reclaimStaleCopies(player, username, scan, early)
     for _, notice in ipairs(notices) do later(function() S.reply(player, "recovery.reclaimed", notice) end) end
 end
 
--- What a taken-back copy leaves behind: a SYSTEM audit line and an event, and for a copy of
--- another account's transfer a snapshot an administrator can mail back (R.noteReclaim; the
--- account's own copy stands in its own listing or sale and needs none).
-local function noteTaken(username, key, row, unit, opId, receipt, snapshot)
+-- What a taken-back copy leaves behind: a SYSTEM audit line and an event, and for a copy the
+-- server could not tie to the transfer (not `proven`, R.sameCopy) a snapshot an administrator can
+-- mail back (R.noteReclaim; the account's own copy stands in its own listing or sale and needs none).
+local function noteTaken(username, key, row, unit, opId, receipt, snapshot, proven)
     local owner = type(receipt) == "table" and receipt.owner or nil
     local foreign = owner ~= username and owner or nil
     local reclaimId = nil
-    if otherAccount(receipt, username) then
+    if not proven then
         reclaimId = R.noteReclaim({ username = username, owner = owner, opId = opId,
             opKind = type(receipt) == "table" and receipt.kind or nil, item = row.fullType, unit = unit, snapshot = snapshot })
     end
@@ -1186,8 +1185,9 @@ local function takeSpent(player, username, key, row, token, opId, receipt, tally
         pcall(S.Codec.detachParts, row.item, player:getInventory())
     end
     local okShot, snapshot = pcall(S.Codec.snapshot, row.item)
-    -- a copy of another account's transfer goes only with the snapshot that can bring it back
-    if not okShot and otherAccount(receipt, username) then
+    -- a copy not tied to the transfer goes only with the snapshot that can bring it back
+    local proven = R.sameCopy(receipt, username, token, row.nativeId) == true
+    if not okShot and not proven then
         R.holdUpdate(username, key, "legacy_item_unreadable", fields)
         return false
     end
@@ -1196,7 +1196,7 @@ local function takeSpent(player, username, key, row, token, opId, receipt, tally
         restoreHands(player, held, early)
         return false
     end
-    noteTaken(username, key, row, token, opId, receipt, okShot and snapshot or nil)
+    noteTaken(username, key, row, token, opId, receipt, okShot and snapshot or nil, proven)
     tally[row.fullType] = (tally[row.fullType] or 0) + 1
     return true
 end
@@ -1261,7 +1261,7 @@ local function reclaimSpent(player, username, scan)
     for token, row in pairs(scan.byToken) do
         if not row.gone and not row.duplicate then
             local opId, receipt, proof = R.consumer(R.originOf(row.item))
-            if opId and proof == nil and not otherAccount(receipt, username)
+            if opId and proof == nil and R.sameCopy(receipt, username, token, row.nativeId) == true
                 and R.receiptVerdict(receipt) == "survived" then
                 takeSpent(player, username, "unit:" .. opId .. ":" .. token, row, token, opId, receipt, tally, true)
             end
@@ -1304,9 +1304,9 @@ local function anchorProven(player, login, entry, scan)
 end
 
 -- The mail's existence proves its creation survived; its later claim need not have survived.
--- A stamp on an object this server walked in the backpack is the save's evidence that it took
--- the letter (item modData only ever comes back from the server, SyncItemModDataPacket.java:
--- 20-21), so the letter is marked claimed where it stands in the account's group (M.entryOf): a
+-- A stamp on an object this server walked in the backpack is what the save says of the letter
+-- when the ledger has no claim of it (a line an earlier release still had queued, or a write that
+-- failed), so the letter is marked claimed where it stands in the account's group (M.entryOf): a
 -- letter a merge moved and a world rollback put back under the alias - with merging turned off
 -- since - cannot be claimed a second time by the alias. The walk is over what the backpack holds,
 -- never over a table the client wrote. What an object carries is not proof by itself (an object
@@ -1914,7 +1914,10 @@ function M.reconcile(player)
         local row = scan.byToken[token]
         if row and not row.gone then
             local key = "unit:" .. info.opId .. ":" .. token
-            if info.proof and otherAccount(info.receipt, username) and not reclaimsOthers() then
+            local same = R.sameCopy(info.receipt, username, token, row.nativeId)
+            if R.passesCopy(info.receipt, username, info.origin) then
+                if R.releaseCopy(player, username, row.item, token, info.opId, info.receipt) then changed = true end
+            elseif same ~= true and not (info.proof and R.copyPolicy() == R.COPY_TAKE) then
                 -- (the receipt this record stands on is kept while it is open, R.reclaimClosed)
                 R.holdUpdate(username, key, "unit_spent_by_other", { opId = info.opId, unit = token, item = row.fullType, qty = 1 })
             elseif info.proof then

@@ -1841,7 +1841,7 @@
   "IGUI_MinidoracatEconomy_Shop_Error_lost_claim_pending": "服务器回滚前，这个账号曾领取过这封信；须等当时领取的登录名上线、服务器确认存盘后才能领取。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_remove_unconfirmed": "尚未确认物品已从容器移除，记录保留待处理。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_stale_native_copy": "这件物品和一笔已完成的转出是同一件，是崩溃前旧存盘留下的副本，不能再上架、拍卖或卖出。",
-  "IGUI_MinidoracatEconomy_Admin_Rec_Reason_unit_spent_by_other": "这件物品的来源份额已经由另一个账号转出。服务器没有自动移除，这件物品暂时不能再上架、拍卖或卖出。",
+  "IGUI_MinidoracatEconomy_Admin_Rec_Reason_unit_spent_by_other": "这件物品的来源份额已经被转出，而服务器无法确认转出的就是这一件（由另一个账号转出，或转出的是另一件物品）。服务器没有自动移除，这件物品暂时不能再上架、拍卖或卖出。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_stale_copy_unsaved": "这件物品是崩溃前旧存盘留下的副本，但它对应的转出还没写进世界存盘：现在收回，世界回滚时物品会消失。存盘确认后，玩家重新登录或管理员按「重新检查」时会自动收回。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_replay_unavailable": "缺少重建交易保护所需的记录，请核对世界存盘。",
   "IGUI_MinidoracatEconomy_Admin_Rec_Reason_foreign_split_owner": "分次交付的来源属于其他账号，需核对归属。",
