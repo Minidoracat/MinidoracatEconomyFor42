@@ -632,12 +632,6 @@ local function stampFor(entry, claimSeq, unit)
         proto = R.PROTOCOL }
 end
 
--- Update the existing item in its actual client container (SyncItemModDataPacket.java:32-60).
-local function syncStamp(player, item)
-    local ok, err = pcall(syncItemModData, player, item)
-    if not ok then EC.log("recovery item metadata notification failed: " .. tostring(err)) end
-end
-
 -- Hand the letter over. The whole letter is built and weighed before anything is added, AddItem
 -- has to give back the very object it was handed, and the container itself is what says whether
 -- the objects arrived. When the whole letter does not fit, only as many whole units as the room
@@ -781,7 +775,7 @@ local function splitDelivered(player, o, entry, claimSeq, kept, ms, inPlace)
     entry.qty = #availableUnits(entry)
     reopen(o, entry)
     if inPlace then
-        for _, item in ipairs(kept) do syncStamp(player, item) end
+        for _, item in ipairs(kept) do S.syncItem(player, item) end
     else
         sendItems(player:getInventory(), kept)
         -- a heavy unit deliver put in the hands: the client hears the equip after it has the unit
@@ -1172,7 +1166,7 @@ local function anchorProven(player, login, entry, scan)
             local consumed, _, readable = R.consumer(R.originOf(row.item))
             if (verdict == "rolledback" or verdict == "unknown") and consumed == nil and readable ~= "unreadable" then
                 stamp.epoch, stamp.seq = proof.e, proof.s
-                syncStamp(player, row.item)
+                S.syncItem(player, row.item)
                 n = n + 1
             end
         end
@@ -1618,7 +1612,7 @@ function M.reconcile(player)
                     for _, item in ipairs(kept) do
                         local token = R.stampOf(item).unit
                         item:getModData()[EC.PLAYER_MODDATA_KEY] = stampFor(parent, claimSeq, token)
-                        syncStamp(player, item)
+                        S.syncItem(player, item)
                     end
                 end
                 -- the rebuilt child carries the same stamps, so the proofs below see it as claimed
@@ -1645,7 +1639,7 @@ function M.reconcile(player)
         if stamp and stamp.proto == R.PROTOCOL and stamp.durable ~= true
             and R.claimVerdict(stamp.epoch, tonumber(stamp.seq)) == "survived" then
             stamp.durable = true
-            syncStamp(player, row.item)
+            S.syncItem(player, row.item)
         end
     end
     changed = proveClaims(player, username, account, scan, blockedLetters, ms) or changed

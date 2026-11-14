@@ -2356,10 +2356,7 @@ function R.adoptGen0(player, item, origin, ctx)
                 durable = bound.durable }
         end)
         if written then
-            if player then
-                local synced, err = pcall(syncItemModData, player, item)
-                if not synced then EC.log("recovery legacy stamp notification failed: " .. tostring(err)) end
-            end
+            if player then S.syncItem(player, item) end
             return bound, info
         end
         info.reason, info.detailCode = "legacy_source_unknown", "metadata_write_failed"

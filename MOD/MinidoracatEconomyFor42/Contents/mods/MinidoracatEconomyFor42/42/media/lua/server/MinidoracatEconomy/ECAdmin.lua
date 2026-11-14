@@ -2094,8 +2094,7 @@ local function approveLegacy(username, target, rows)
                 end)
                 if ok then
                     named[#named + 1] = token
-                    local synced, err = pcall(syncItemModData, target, row.item)
-                    if not synced then EC.log("recovery approve notification failed: " .. tostring(err)) end
+                    S.syncItem(target, row.item)
                 else
                     refused = refused + 1
                 end
@@ -2116,8 +2115,7 @@ local function approveClaims(target, scan, mailId)
         local ok = Rcv.vouchBlock(origin, row) == nil and pcall(function() row.stamp.durable = true end)
         if ok then
             named[#named + 1] = origin.unit
-            local synced, err = pcall(syncItemModData, target, row.item)
-            if not synced then EC.log("recovery approve notification failed: " .. tostring(err)) end
+            S.syncItem(target, row.item)
         else
             refused = refused + 1
         end

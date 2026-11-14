@@ -721,9 +721,50 @@ function S.pollWatched()
     end
 end
 
+-- ---------- item metadata notices ----------
+
+-- syncItemModData addresses an item in a carried bag by its holder's square
+-- (ContainerID.setInventoryContainer), and a player has none until the first update after its
+-- position arrives: a notice sent before that (the login reconcile) throws inside the engine,
+-- which logs it and tells Lua nothing. An item straight in the main inventory needs no square
+-- and goes at once; anything else waits until its holder has stood on a square for a tick.
+-- The only caller of syncItemModData (verify 12d).
+S.ITEM_SYNC_WAIT_MS = 60000             -- a holder who never gets a square has left
+local itemSyncs = {}                    -- { player, item, at, placed }
+
+local function sendItemSync(player, item)
+    local ok, err = pcall(syncItemModData, player, item)
+    if not ok then EC.log("item metadata notification failed: " .. tostring(err)) end
+end
+
+function S.syncItem(player, item)
+    local ok, direct = pcall(function() return item:getContainer() == player:getInventory() end)
+    if ok and direct then return sendItemSync(player, item) end
+    itemSyncs[#itemSyncs + 1] = { player = player, item = item, at = EC.now() }
+end
+
+function S.flushItemSyncs()
+    if #itemSyncs == 0 then return end
+    local now, waiting = EC.now(), {}
+    for _, q in ipairs(itemSyncs) do
+        local ok, placed = pcall(function() return q.player:getCurrentSquare() ~= nil end)
+        placed = ok and placed
+        if placed and q.placed then
+            -- an item that left every container meanwhile has no address to send
+            local held, there = pcall(function() return q.item:getContainer() ~= nil end)
+            if held and there then sendItemSync(q.player, q.item) end
+        elseif now - q.at < S.ITEM_SYNC_WAIT_MS then
+            q.placed = placed
+            waiting[#waiting + 1] = q
+        end
+    end
+    itemSyncs = waiting
+end
+
 Events.OnTickEvenPaused.Add(function()
     S.pollDurable()
     S.pollWatched()
+    S.flushItemSyncs()
 end)
 
 return S

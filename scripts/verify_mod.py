@@ -35,6 +35,8 @@
  12c. recovery 以登入名為範圍 — ECRecovery.lua、ECRecoveryJournal.lua 不准出現 S.principal( 與
                            S.onlinePlayer(（帳號可能有多個登入名＝多個存檔；用 S.login／S.onlineLogin）。
                            `--self-test-identity` 對 12b／12c 植入違規自證
+ 12d. 物品 modData 通知入口 — syncItemModData( 只准 ECServer.lua（S.syncItem）：持有者還沒有 square 時
+                           引擎自己丟例外、吃掉，袋子裡的物品通知不到客戶端（2026-11-14）
  15. client 物品名稱用 getItemName — getItemNameFromFullType 沒有原版接在車輛零件後面的車型，
                           BigGasTank1／2／3 同名（2026-10-18）；確定不需要車型的用法寫進 verify_ignore.txt 並註明依據
  16. 車型英文照抄原版      — ECItemNames 的 VEHICLE_CLASSES 與 "%s (%s Vehicle)" 要等於遊戲 EN IG_UI.json 的
@@ -608,6 +610,12 @@ fail("伺服器身分入口（getUsername／getOnlinePlayers 只經身分閘門�
 _recovery_login = recovery_login_issues(_identity_sources)
 fail("recovery 以登入名為範圍（不准 S.principal／S.onlinePlayer）", _recovery_login) if _recovery_login \
     else ok("recovery 以登入名為範圍（" + "、".join(sorted(RECOVERY_LOGIN_FILES)) + "）")
+
+# ---- 12d. 物品 modData 通知入口 ----
+_item_sync = [name for name, src in _identity_sources
+              if name != "ECServer.lua" and re.search(r"\bsyncItemModData\s*\(", lua_code_only(src))]
+fail("物品 modData 通知只經 S.syncItem（syncItemModData 只准 ECServer.lua）", _item_sync) if _item_sync \
+    else ok("物品 modData 通知只經 S.syncItem")
 
 # ---- 13. 不得定義貨幣類 item ----
 # 主規格 §7.2 不變量：倖存幣／貓幣只存在於伺服器帳本，沒有可掉落／交易的硬幣道具。

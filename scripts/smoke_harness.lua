@@ -645,11 +645,19 @@ end
 -- 只把該物件的 modData 推到 client 端同一個 item，不移除也不新增容器內容；server 端的寫入本來就
 -- 隨 player blob 存檔（ServerPlayerDB.java:348-364）。無效的 player／item 在這裡就丟，受測碼不得
 -- 用空參數假裝同步成功。
+-- 物品不在持有者主背包時，引擎用 player.square 定位（ContainerID.setInventoryContainer）：square 是
+-- nil 就在 INetworkPacket.send 裡丟例外、自己接住只印 log，Lua 這邊照常返回，封包沒送。
 syncedItemModData = {}           -- 全域：主函式已逼近 200 個 local
+swallowedItemSyncs = 0
+itemContainers = setmetatable({}, { __mode = "k" })   -- item -> 容器；不放在 item 上（情境會深拷貝 item）
 function syncItemModData(player, item)
     if type(player) ~= "table" or type(player.getUsername) ~= "function" then error("syncItemModData: no player") end
     if type(item) ~= "table" or type(item.getID) ~= "function" or type(item.getModData) ~= "function" then
         error("syncItemModData: no item")
+    end
+    if player.square == nil and itemContainers[item] ~= player.inventory then
+        swallowedItemSyncs = swallowedItemSyncs + 1
+        return
     end
     syncedItemModData[#syncedItemModData + 1] = { username = player:getUsername(), id = item:getID() }
 end
@@ -667,12 +675,14 @@ function fakeInventory(maxWeight)
         if not it then return nil end
         for _, old in ipairs(inv.items) do if old.id ~= nil and old.id == it.id then return old end end
         inv.items[#inv.items + 1] = it
+        itemContainers[it] = inv
+        it.getContainer = it.getContainer or function(self) return itemContainers[self] end
         return it
     end
     -- ItemContainer.Remove 先清持有者雙手（ItemContainer.java:2036-2039），只在伺服器端
     inv.Remove = function(_, it)
         if inv.character then inv.character:removeFromHands(it) end
-        for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i) end end
+        for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i); itemContainers[it] = nil end end
     end
     inv.removeAllItems = function() inv.items = {} end   -- ItemContainer.java:2925-2944
     inv.getItems = function() return javaList(inv.items) end
@@ -1018,6 +1028,10 @@ local function fakePlayer(username)
     p.getOnlineID = function() return p.onlineId end
     p.isDead = function() return p.dead == true end
     p.getInventory = function() return p.inventory end
+    -- current 由位置封包設、square 要等下一次 update 才跟上（PlayerPacket.java、IsoGameCharacter.update）
+    p.current = {}
+    p.square = p.current
+    p.getCurrentSquare = function() return p.current end
     -- 雙手（IsoGameCharacter.java:3766-3777 removeFromHands）；重物是同一個物件放在兩隻手
     p.inventory.character = p
     p.getPrimaryHandItem = function() return p.primary end
@@ -1191,6 +1205,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 13   -- +13: buy orders for any of s
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a buy order's statement lines count its kinds (scripts/test_wanted.lua W-14n: create, release and raise in the receipt ring and the receipt files; a one-type order and a delivery carry none)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: a hand-built radio's readings and a radio's saved channels (scenario HR: the six readings stored only where they differ from a new copy and rebuilt, useDelta through its /60 setter; an older snapshot unchanged; buyback and lots tell a hand-built set from a new one; saved channels rebuilt in order, refused past what a snapshot keeps while the fullest one still fits a journal line, part of the signature so only copies with the same list share a row or a lot, left out of the buyback comparison like the channel a new copy rolled; listed and taken back through the market; room for a longer list on the rebuilt copy; the buyer's preview of the readings; the buyback takes a new copy, names a hand-built one, refuses a lot tuned or bookmarked differently and offers the sell dialog one lot it would take)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: hand-edited files taken in without a restart (scenario LR-1..10 with 1b, 5b, 6b, 9b, 9c: a whitelist put back as it was told to nobody, an unreadable file logged once, a file put back as it was not pushed, the files opened once per look and the settle time kept across a clock set back, an object in place of a list refused for both files; an unchanged catalog is not loaded or pushed, a settled edit is taken in once with its audit line, the old revision is refused and the day's count kept, a half-saved file is never judged, a broken one keeps the previous catalog and is audited once, a missing one writes no default, a panel write is not taken in twice; the whitelist the same, with the panel's next edit not stale, and a broken one audited once; a whitelist that exists but cannot be opened is not overwritten with the default)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: item metadata notices wait for the holder's square (scenario IS-1..4: a main-inventory item goes at once, a bagged item waits through the tick its position arrives and goes after the next update with nothing lost in the engine, an item that left its container is not sent, a holder who never gets a square is given up on)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -23545,6 +23560,43 @@ getFileReader = realReader
 check(shutOk == false and shut.code == "unavailable" and files[Codec.FILE].lines[1] == '{"categories":["Tool"],"types":[],"excludeTypes":[]}',
     "LR-10: a whitelist.json that exists but cannot be opened is not overwritten with the default")
 onlinePlayers = {}
+end)()
+
+io.write("scenario IS: item metadata notices wait for the holder's square\n")
+;(function()
+    local p = fakePlayer("isholder")
+    p.current, p.square = nil, nil                  -- just connected: no position yet
+    local bag = fakeInventory(50)                   -- a carried bag's container: not the main inventory
+    local loose, inBag, gone = p.inventory:AddItem(instanceItem("Base.Bandage")),
+        bag:AddItem(instanceItem("Base.Bandage")), bag:AddItem(instanceItem("Base.Bandage"))
+    local function sent(item)
+        local n = 0
+        for _, s in ipairs(syncedItemModData) do if s.id == item:getID() then n = n + 1 end end
+        return n
+    end
+    syncedItemModData, swallowedItemSyncs = {}, 0
+    S.syncItem(p, loose); S.syncItem(p, inBag); S.syncItem(p, gone)
+    fire("OnTickEvenPaused")
+    check(sent(loose) == 1 and sent(inBag) == 0 and swallowedItemSyncs == 0,
+        "IS-1: an item in the main inventory is announced at once, one in a carried bag waits")
+    p.current = {}                                  -- the position arrives; the engine has not updated yet
+    fire("OnTickEvenPaused")
+    bag:Remove(gone)
+    p.square = p.current                            -- the engine's next update
+    fire("OnTickEvenPaused")
+    fire("OnTickEvenPaused")
+    check(sent(inBag) == 1 and swallowedItemSyncs == 0,
+        "IS-2: the bagged item is announced once, after the update that follows its holder's position")
+    check(sent(gone) == 0, "IS-3: an item that left its container meanwhile is not announced")
+    local q = fakePlayer("isleft")
+    q.current, q.square = nil, nil
+    local late = fakeInventory(50):AddItem(instanceItem("Base.Bandage"))
+    S.syncItem(q, late)
+    nowMs = nowMs + S.ITEM_SYNC_WAIT_MS + 1000
+    fire("OnTickEvenPaused")
+    q.current = {}; q.square = q.current
+    fire("OnTickEvenPaused"); fire("OnTickEvenPaused")
+    check(sent(late) == 0 and swallowedItemSyncs == 0, "IS-4: a holder who never got a square in time is given up on")
 end)()
 
 -- ===== 求購單 v2（情境在 scripts/test_wanted.lua；共用本檔的假全域與 check）=====
