@@ -23603,8 +23603,9 @@ io.write("scenario IS: item metadata notices wait for the holder's square\n")
     nowMs = nowMs + S.ITEM_SYNC_WAIT_MS + 1000
     fire("OnTickEvenPaused")
     q.current = {}; q.square = q.current
-    fire("OnTickEvenPaused"); fire("OnTickEvenPaused")
-    check(sent(late) == 0 and swallowedItemSyncs == 0, "IS-4: a holder who never got a square in time is given up on")
+    for _ = 1, 4 do fire("OnTickEvenPaused") end    -- long enough for a notice still waiting to go out
+    check(sent(late) == 0 and swallowedItemSyncs == 0 and sent(inBag) == 1,
+        "IS-4: a holder who never got a square in time is given up on, and the notice asked for twice went once")
 end)()
 
 -- ===== 求購單 v2（情境在 scripts/test_wanted.lua；共用本檔的假全域與 check）=====

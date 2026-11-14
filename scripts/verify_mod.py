@@ -35,8 +35,9 @@
  12c. recovery 以登入名為範圍 — ECRecovery.lua、ECRecoveryJournal.lua 不准出現 S.principal( 與
                            S.onlinePlayer(（帳號可能有多個登入名＝多個存檔；用 S.login／S.onlineLogin）。
                            `--self-test-identity` 對 12b／12c 植入違規自證
- 12d. 物品 modData 通知入口 — syncItemModData( 只准 ECServer.lua（S.syncItem）：持有者還沒有 square 時
-                           引擎自己丟例外、吃掉，袋子裡的物品通知不到客戶端（2026-11-14）
+ 12d. 物品 modData 通知入口 — syncItemModData 這個名字（直接呼叫、pcall(syncItemModData, …)、別名都算）只准
+                           出現在 ECServer.lua（S.syncItem）：持有者還沒有 square 時引擎自己丟例外、吃掉，
+                           袋子裡的物品通知不到客戶端（2026-11-14）
  15. client 物品名稱用 getItemName — getItemNameFromFullType 沒有原版接在車輛零件後面的車型，
                           BigGasTank1／2／3 同名（2026-10-18）；確定不需要車型的用法寫進 verify_ignore.txt 並註明依據
  16. 車型英文照抄原版      — ECItemNames 的 VEHICLE_CLASSES 與 "%s (%s Vehicle)" 要等於遊戲 EN IG_UI.json 的
