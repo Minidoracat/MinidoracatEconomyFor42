@@ -1216,7 +1216,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 16   -- +16: a hand-built radio's re
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: hand-edited files taken in without a restart (scenario LR-1..10 with 1b, 5b, 6b, 9b, 9c: a whitelist put back as it was told to nobody, an unreadable file logged once, a file put back as it was not pushed, the files opened once per look and the settle time kept across a clock set back, an object in place of a list refused for both files; an unchanged catalog is not loaded or pushed, a settled edit is taken in once with its audit line, the old revision is refused and the day's count kept, a half-saved file is never judged, a broken one keeps the previous catalog and is audited once, a missing one writes no default, a panel write is not taken in twice; the whitelist the same, with the panel's next edit not stale, and a broken one audited once; a whitelist that exists but cannot be opened is not overwritten with the default)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: item metadata notices wait for the holder's square (scenario IS-1..4: a main-inventory item goes at once, a bagged item waits through the tick its position arrives and goes after the next update with nothing lost in the engine, an item that left its container is not sent, a holder who never gets a square is given up on)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 15   -- +15: delivery proofs and other accounts' transfers (scenario SF-1..6 with 1b: a letter is not marked claimed by an object of another type or by one unit of two, and is with every unit there even when it names its item without the module; an old-format stamp names units only in the holder's own letter, also against a letter that would admit it from its own account, through a transfer attempt and a login pass, its record neither counts against the holder nor outlives the object, and an administrator can take the object back with a snapshot; a value this mod never wrote does not stop the pass; an old copy that is a bag with contents is held; the account's own saved transfer takes its copy back on the first tick, stamped or not, with the notice held until the client has a square; and the checks on a unit another account's saved transfer moved out: kept and held by default without counting against its holder, left alone by the first tick with its receipt pruned after every other, removed by an administrator from its record - on the object the page showed - with a snapshot, its receipt pruned once the record is closed, and taken back by itself with the owner's option on)
-EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 11   -- +11: the owner's three ways with a copy the server cannot tie to the transfer (default: it waits only while its mark names a claim this server cannot place, else goes on as an ordinary item with its record closed; a transfer of it is accepted directly; an unstamped copy in another account is left alone), an object of this account that is not the one its transfer moved is not taken back - also once only the letter remembers the transfer - records for objects sharing one unit or standing under units of the account's saved transfers do not count against the holder, records of an earlier release keep their meaning, a claim's ledger line is written before the handler returns (LG-proof-2a) and a line that cannot be written does not refuse the claim (LG-proof-2b)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 12   -- +12: the owner's three ways with a copy the server cannot tie to the transfer (default: it waits only while its mark names a claim this server cannot place, else goes on as an ordinary item with its record closed; a transfer of it is accepted directly; an unstamped copy in another account is left alone), an object of this account that is not the one its transfer moved is not taken back - also once only the letter remembers the transfer - records for objects sharing one unit or standing under units of the account's saved transfers do not count against the holder, records of an earlier release take nothing back (with and without the holder's own record of the transfer still open), a claim's ledger line is written before the handler returns (LG-proof-2a) and a line that cannot be written does not refuse the claim (LG-proof-2b)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -6869,6 +6869,19 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
         reconcileNow(seller)
         SandboxVars.MinidoracatEconomy.RecoveryCopyPolicy = nil
         local taken = kept and not seller.inventory:contains(a)
+        -- the same receipt with the holder's own record of that transfer still open: the pass
+        -- over open transfers takes nothing on the receipt's word either
+        local c, cData, _, cOp = sold()
+        S.Recovery.receipt(cOp).units[1].i = nil
+        c.modData, c.id = cData, c.id + 1000
+        local open = seller.modData[KEY].pendingOuts[cOp] ~= nil
+        seller.inventory:AddItem(c)
+        reconcileNow(seller)
+        local cHeld = S.Recovery.heldRecord(user, "unit:" .. cOp .. ":" .. cData[KEY].unit)
+        check(open and seller.inventory:contains(c) and c:getModData()[KEY] ~= nil
+            and cHeld ~= nil and cHeld.reason == "unit_spent_by_other" and S.Recovery.heldCount(user, true) == 0
+            and seller.modData[KEY].pendingOuts[cOp] == nil,
+            "with that transfer's own record still open, a receipt without the object still takes nothing: the copy is held and the record closes")
         local b, bData, bPlayer, bOp, bMail = sold()
         M.entryOf(user, bMail).outProof[bOp].owner = nil
         S.Recovery.receipt(bOp).closed = nowMs

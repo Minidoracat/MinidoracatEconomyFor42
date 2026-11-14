@@ -2598,7 +2598,14 @@ local function judgeRecord(username, id, pend, scan, opts)
                 src = unit.l == true and "legacy" or (unit.n ~= nil and "native" or "mail") }
             local key = originKey(origin)
             if key then covered[key], out.keys[key] = true, true end
-            local row, ambiguous = R.matchUnit(scan, origin, expectedType)
+            -- A receipt written before objects were noted cannot say that an object under its
+            -- unit is the one it moved, so it authorizes no removal here: the copy is left to
+            -- the pass over consumed units (held, R.sameCopy) - unless the owner trusts the
+            -- token alone.
+            local row, ambiguous = nil, nil
+            if type(unit.t) ~= "string" or unit.i ~= nil or unit.n ~= nil or R.copyPolicy() == R.COPY_TAKE then
+                row, ambiguous = R.matchUnit(scan, origin, expectedType)
+            end
             if ambiguous then out.action, out.reason = "hold", "native_identity_unverified"; return out end
             if row then
                 out.present[#out.present + 1] = row

@@ -195,8 +195,9 @@ function X.flush(budget)
     return written
 end
 
--- Everything queued for one path, now and ahead of the tick (the recovery ledger: what a world
--- rollback must not forget is on disk before the handler that caused it returns).
+-- Everything queued for one path, now and ahead of the tick (the recovery ledger: the write of
+-- what a world rollback must not forget is attempted before the handler that caused it returns).
+-- Nothing is reported back: a write that fails is handled as in X.flush.
 function X.flushPath(path)
     local entry = queueIndex[path]
     if not entry then return end
