@@ -1952,16 +1952,16 @@ end
 -- The live object this origin points at, or nil. A delivered unit is matched by its token. The
 -- record also says which object carried the unit (`i`, or the id the origin was read with):
 -- another object under the same token is not that object, and the unit is looked for no further
--- under it - unless the owner chose to trust the token alone (R.COPY_TAKE), where any object
--- carrying it is the unit, however often it was rebuilt or redelivered. A unit that entered the
--- mod unstamped has only its locator, and then an unstamped object with that id is the best this
--- server can say - which is why an unstamped copy is never deleted on that evidence alone.
+-- under it - what becomes of that other object is the owner's option, decided where consumed
+-- units are walked (ECMailbox M.reconcile), never here. A unit that entered the mod unstamped
+-- has only its locator, and then an unstamped object with that id is the best this server can
+-- say - which is why an unstamped copy is never deleted on that evidence alone.
 function R.matchUnit(scan, origin, expectedType)
     if type(origin) ~= "table" then return nil end
     if type(origin.unit) == "string" then
         local row = scan.byToken[origin.unit]
         local moved = origin.i or origin.nativeId
-        if row and not row.gone and (moved == nil or row.nativeId == moved or R.copyPolicy() == R.COPY_TAKE) then
+        if row and not row.gone and (moved == nil or row.nativeId == moved) then
             return row
         end
         if origin.src ~= "native" then return nil end
@@ -2600,10 +2600,9 @@ local function judgeRecord(username, id, pend, scan, opts)
             if key then covered[key], out.keys[key] = true, true end
             -- A receipt written before objects were noted cannot say that an object under its
             -- unit is the one it moved, so it authorizes no removal here: the copy is left to
-            -- the pass over consumed units (held, R.sameCopy) - unless the owner trusts the
-            -- token alone.
+            -- the pass over consumed units (R.sameCopy, the owner's option).
             local row, ambiguous = nil, nil
-            if type(unit.t) ~= "string" or unit.i ~= nil or unit.n ~= nil or R.copyPolicy() == R.COPY_TAKE then
+            if type(unit.t) ~= "string" or unit.i ~= nil or unit.n ~= nil then
                 row, ambiguous = R.matchUnit(scan, origin, expectedType)
             end
             if ambiguous then out.action, out.reason = "hold", "native_identity_unverified"; return out end
