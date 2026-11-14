@@ -3022,8 +3022,7 @@ function R.beginOut(player, id, items, rec)
                     -- rolled-back list-out still rebuilds instead of stopping at origin_unverified.
                     origin.durable = true
                     if pcall(function() items[i]:getModData()[EC.PLAYER_MODDATA_KEY].durable = true end) then
-                        local synced, syncError = pcall(syncItemModData, player, items[i])
-                        if not synced then EC.log("recovery item metadata notification failed: " .. tostring(syncError)) end
+                        S.syncItem(player, items[i])
                     end
                 end
             end
@@ -3087,8 +3086,7 @@ function R.beginOut(player, id, items, rec)
             origin.epoch, origin.seq = md.meta.epoch, rec.seq
             items[i]:getModData()[EC.PLAYER_MODDATA_KEY] = { proto = R.PROTOCOL, src = "native",
                 unit = origin.unit, owner = username, epoch = origin.epoch, seq = origin.seq }
-            local synced, syncError = pcall(syncItemModData, player, items[i])
-            if not synced then EC.log("recovery item metadata notification failed: " .. tostring(syncError)) end
+            S.syncItem(player, items[i])
         end
     end
     rec.protocol, rec.origins, rec.at = R.PROTOCOL, origins, tonumber(rec.at) or EC.now()

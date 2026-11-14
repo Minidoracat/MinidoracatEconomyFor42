@@ -613,7 +613,7 @@ fail("recovery 以登入名為範圍（不准 S.principal／S.onlinePlayer）", 
 
 # ---- 12d. 物品 modData 通知入口 ----
 _item_sync = [name for name, src in _identity_sources
-              if name != "ECServer.lua" and re.search(r"\bsyncItemModData\s*\(", lua_code_only(src))]
+              if name != "ECServer.lua" and re.search(r"\bsyncItemModData\b", lua_code_only(src))]
 fail("物品 modData 通知只經 S.syncItem（syncItemModData 只准 ECServer.lua）", _item_sync) if _item_sync \
     else ok("物品 modData 通知只經 S.syncItem")
 

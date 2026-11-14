@@ -684,7 +684,10 @@ function fakeInventory(maxWeight)
         if inv.character then inv.character:removeFromHands(it) end
         for i = #inv.items, 1, -1 do if inv.items[i] == it then table.remove(inv.items, i); itemContainers[it] = nil end end
     end
-    inv.removeAllItems = function() inv.items = {} end   -- ItemContainer.java:2925-2944
+    inv.removeAllItems = function()   -- ItemContainer.java:2925-2944；每件的 container 也清掉
+        for _, it in ipairs(inv.items) do itemContainers[it] = nil end
+        inv.items = {}
+    end
     inv.getItems = function() return javaList(inv.items) end
     inv.contains = function(_, item)
         for _, present in ipairs(inv.items) do if present == item then return true end end
@@ -6842,9 +6845,12 @@ io.write("scenario 42: provenance across escrow and independent saves\n")
             and S.claimVerdict(claimEpoch, claimSeq) == "survived" and S.claimVerdict(claimEpoch, claimSeq + 1000) == "rolledback",
             "EA-1: an epoch the history let go still answers a delivery stamp from the archive; receipts keep the bounded answer")
         seller.inventory:Remove(boxed)              -- kept in a box while the player logs in
+        syncedItemModData = {}
         reconcileNow(seller)
-        check(seller.inventory.items[1]:getModData()[KEY].durable == true and boxed:getModData()[KEY].durable == nil,
-            "EA-2: the login marks a unit in the backpack durable on the archive's word")
+        local told = false
+        for _, s in ipairs(syncedItemModData) do told = told or s.id == seller.inventory.items[1]:getID() end
+        check(seller.inventory.items[1]:getModData()[KEY].durable == true and boxed:getModData()[KEY].durable == nil and told,
+            "EA-2: the login marks a unit in the backpack durable on the archive's word and tells the client")
         seller.inventory:AddItem(boxed)             -- taken out after that login's reconcile
         local beforeList = copy(S.modData())
         local listed = cmd(seller, "market.list", { itemId = boxed.id, price = 10 })
@@ -23579,10 +23585,12 @@ io.write("scenario IS: item metadata notices wait for the holder's square\n")
     fire("OnTickEvenPaused")
     check(sent(loose) == 1 and sent(inBag) == 0 and swallowedItemSyncs == 0,
         "IS-1: an item in the main inventory is announced at once, one in a carried bag waits")
-    p.current = {}                                  -- the position arrives; the engine has not updated yet
+    p.current = {}                                  -- the position arrives
     fire("OnTickEvenPaused")
     bag:Remove(gone)
-    p.square = p.current                            -- the engine's next update
+    fire("OnTickEvenPaused")                        -- a tick ahead of the first update that reaches the player
+    S.syncItem(p, inBag)                            -- asked again while waiting: still one notice
+    p.square = p.current                            -- that update
     fire("OnTickEvenPaused")
     fire("OnTickEvenPaused")
     check(sent(inBag) == 1 and swallowedItemSyncs == 0,

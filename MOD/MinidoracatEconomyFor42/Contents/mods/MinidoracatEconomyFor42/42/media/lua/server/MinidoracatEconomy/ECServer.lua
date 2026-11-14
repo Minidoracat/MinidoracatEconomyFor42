@@ -724,13 +724,15 @@ end
 -- ---------- item metadata notices ----------
 
 -- syncItemModData addresses an item in a carried bag by its holder's square
--- (ContainerID.setInventoryContainer), and a player has none until the first update after its
+-- (ContainerID.setInventoryContainer), and a player has none until its first update after its
 -- position arrives: a notice sent before that (the login reconcile) throws inside the engine,
 -- which logs it and tells Lua nothing. An item straight in the main inventory needs no square
--- and goes at once; anything else waits until its holder has stood on a square for a tick.
--- The only caller of syncItemModData (verify 12d).
+-- and goes at once; anything else waits until its holder has been seen on a square on two
+-- earlier ticks. Two, because a new player joins the updated objects only after the frame its
+-- position arrived in (GameServer.main), and a tick may come before that frame's update.
+-- The only reference to syncItemModData (verify 12d).
 S.ITEM_SYNC_WAIT_MS = 60000             -- a holder who never gets a square has left
-local itemSyncs = {}                    -- { player, item, at, placed }
+local itemSyncs = {}                    -- { player, item, at, seen }
 
 local function sendItemSync(player, item)
     local ok, err = pcall(syncItemModData, player, item)
@@ -740,7 +742,9 @@ end
 function S.syncItem(player, item)
     local ok, direct = pcall(function() return item:getContainer() == player:getInventory() end)
     if ok and direct then return sendItemSync(player, item) end
-    itemSyncs[#itemSyncs + 1] = { player = player, item = item, at = EC.now() }
+    -- the notice carries what the item holds when it goes: one waiting notice per item is enough
+    for _, q in ipairs(itemSyncs) do if q.item == item and q.player == player then return end end
+    itemSyncs[#itemSyncs + 1] = { player = player, item = item, at = EC.now(), seen = 0 }
 end
 
 function S.flushItemSyncs()
@@ -749,13 +753,15 @@ function S.flushItemSyncs()
     for _, q in ipairs(itemSyncs) do
         local ok, placed = pcall(function() return q.player:getCurrentSquare() ~= nil end)
         placed = ok and placed
-        if placed and q.placed then
+        if placed and q.seen >= 2 then
             -- an item that left every container meanwhile has no address to send
             local held, there = pcall(function() return q.item:getContainer() ~= nil end)
             if held and there then sendItemSync(q.player, q.item) end
         elseif now - q.at < S.ITEM_SYNC_WAIT_MS then
-            q.placed = placed
+            q.seen = placed and q.seen + 1 or 0
             waiting[#waiting + 1] = q
+        else
+            EC.log("item metadata notification given up: its holder had no square for " .. tostring(now - q.at) .. " ms")
         end
     end
     itemSyncs = waiting
