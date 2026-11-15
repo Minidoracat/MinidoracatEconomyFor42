@@ -328,7 +328,7 @@ C.handlers["entitlement.changed"] = function(args)
     end
 end
 
--- entitlement.notice (owner only, ECEntitlements tellPaused): an auto-renew consent the plan stopped
+-- entitlement.notice (owner only, ECEntitlements tellPaused / tellEnded): an auto-renew consent the plan stopped
 -- charging - paused, due and not renewed, ended; `_off` when the plan stopped auto-renew itself, so a
 -- new consent cannot help - or charging again (resumed). A toast naming the product, the source
 -- whose window takes a new consent or a renewal and, while it matters, the period's end (paused) or

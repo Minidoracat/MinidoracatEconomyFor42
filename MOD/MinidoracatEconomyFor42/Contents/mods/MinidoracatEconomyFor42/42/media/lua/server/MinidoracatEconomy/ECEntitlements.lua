@@ -74,7 +74,7 @@
 -- consent lapses), other errors paused and retried without touching the consent. A server that was
 -- down for several periods charges one period and starts it at activation - no arrears. A consent
 -- the plan stopped charging is told to its owner stage by stage (tellPaused, lease.told) and lapses
--- when grace ends (lapsed_terms); that rental leaves only once its owner heard it ended.
+-- when grace ends (lapsed_terms); that rental leaves like any other and its "ended" waits in row.ends.
 --
 -- Frozen products (registerProduct{ freezeWhenAbsent = true }, API rev 4): the flag is kept on the
 -- plan row. A flagged product that is not registered in this process stands still - no expiry, no
@@ -502,7 +502,7 @@ local function consentOff(ref, row, r, why, now, journaled)
         wait(ref)
     end
     if offOwed[k] == nil then return true end
-    -- the line keeps a plan lapse and its cause (tellPaused / ended need them after a crash); older
+    -- the line keeps a plan lapse and its cause (endedNotice needs them after a crash); older
     -- readers ignore the extra field
     local lapsed = r.auto.why == "lapsed_terms" and r.lease and r.lease.lapsed or nil
     if journaled or verdict(r.auto, S.durableStatus().seq) == "confirmed" or appendJournal({ k = "off",
@@ -1551,8 +1551,8 @@ end
 
 -- "ended" for the rentals the plan lapsed. The rental leaves the row when grace ends whether or not
 -- its owner is around (user 2026-11-16: a rental must not stay held for an owner who never comes
--- back); the notice waits here instead, for E.ENDED_KEEP_MS at most (row.notice still shows the
--- lapse on the rentals page).
+-- back); the notice waits here instead, for E.ENDED_KEEP_MS at most, delivered even while the
+-- product stands still (it is no use of the product).
 local function tellEnded(ref, row, now, seen)
     local keep = {}
     for _, e in ipairs(row.ends) do
@@ -1683,7 +1683,11 @@ end
 local function visitLease(ref, now, w)
     local row = rowOf(ref.m, ref.u, ref.p)
     if not row or not row.rentals or (#row.rentals == 0 and row.ends == nil) then return false end
-    if standsStill(ref.m, ref.p) then return true end   -- frozen, or not registered yet: kept as is
+    local seen = {}
+    if standsStill(ref.m, ref.p) then   -- frozen, or not registered yet: the rentals are kept as is
+        if row.ends then tellEnded(ref, row, now, seen) end   -- the notices are not the product's time
+        return #row.rentals > 0 or row.ends ~= nil
+    end
     local spec = P.product(ref.m, ref.p)
     local instant = spec ~= nil and spec.instant
     local planRow = P.row(ref.m, ref.p)
@@ -1692,7 +1696,6 @@ local function visitLease(ref, now, w)
     -- a renewal replaces the row: walk the ids and read the row again for each
     local ids = {}
     for i, r in ipairs(row.rentals) do ids[i] = r.id end
-    local seen = {}
     for _, id in ipairs(ids) do
         row = rowOf(ref.m, ref.u, ref.p)
         local r = rentalOf(row, id)

@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+147 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+148 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1582,8 +1582,9 @@ do
 end
 
 -- 14. a plan change that stops charging a consent (2026-11-15): the owner is told stage by stage -
--- paused, the reminder, due, half the grace, ended - once each (lease.told), only while online and
--- placed; the source can preview how many consents a change would pause. Shared state in `tm`.
+-- paused, the reminder, due, half the grace - once each (lease.told), only while online and placed;
+-- at grace end the consent lapses, the rental leaves and "ended" waits in row.ends for the owner
+-- (2026-11-16). The source can preview how many consents a change would pause. Shared state in `tm`.
 local tm = {}
 do
     tm.p1, tm.p2, tm.p3 = fakePlayer("tm1"), fakePlayer("tm2"), fakePlayer("tm3")
@@ -1696,7 +1697,7 @@ do
     tm.tick()
     tm.tick()
     check(#tm.heard(tm.p1) == 5 and tm.codes(tm.p3) == "ended" and #E.peek("TestVM", "tm3", "terms_slot").rentals == 0,
-        "a restart tells nothing again; an owner offline the whole time hears only ended, once, after login, and the rental then ends")
+        "a restart tells nothing again; an owner offline the whole time hears only ended, once, after login, from the row (the rental left at grace end)")
     local bal3 = tm.bal("tm3")
     vm.setPlan("terms_slot", tm.vals({ rentalPrice = 250 }))
     tm.tick()
@@ -1945,32 +1946,65 @@ do
         and k3.lease.lapsed == "terms_changed" and kept3 and tm.codes(p3) == "ended"
         and #E.peek("TestVM", "tn3", SLOW).rentals == 0,
         "a lapse replayed with the activation of its own period marks that period: once saved the rental leaves and its offline owner hears ended")
+    L.credit("tn4", "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-tn4", reasonCode = "t" })
+    local o4 = vm.purchase("tn4", vm.quote("tn4", SLOW, "rental").quote.id)
+    confirmAll()
+    confirmAll()
+    local s4 = vm.getEntitlement("tn4", SLOW)
+    vm.setAutoRenew("tn4", SLOW, true, s4.entitlement.revision, s4.plan.revision, rent1(s4.entitlement).id)
+    confirmAll()
+    vm.setPlan(SLOW, vs({ rentalPrice = vs().rentalPrice + 5 }))
+    local l5 = rent1(E.peek("TestVM", "tn4", SLOW)).lease
+    ctx.setNow(l5.paidUntil + l5.G + 1000)
+    tm.tick()                                  -- lapses; the off is not saved yet, so the rental stays
+    local byHand = vm.purchase("tn4", vm.quote("tn4", SLOW, "rental", nil, o4.orderId).quote.id)
+    confirmAll()
+    confirmAll()
+    tm.tick()
+    local live4 = #E.peek("TestVM", "tn4", SLOW).rentals == 1
+    local refund = vm.refund("tn4", SLOW, byHand.orderId, { reason = "test" })
+    confirmAll()
+    tm.tick()
+    tm.tick()
+    local p4 = fakePlayer("tn4")
+    ctx.setOnline({ ann, bob, boss, p4 })
+    tm.tick()
+    check(byHand.ok and live4 and refund.ok and #E.peek("TestVM", "tn4", SLOW).rentals == 0 and tm.codes(p4) == "ended"
+        and E.peek("TestVM", "tn4", SLOW).ends == nil,
+        "a refund back to a lapsed period brings its mark back: the rental leaves and its offline owner hears ended once")
 end
 do
     local vals = {}
     for k, v in pairs(P.row("TestWatch", "frz_slot").values) do vals[k] = v end
-    local r9 = fz.rent("fz9")                  -- offline owner of a product that freezes while its mod is away
-    local s9 = fz.src.getEntitlement("fz9", "frz_slot")
-    fz.src.setAutoRenew("fz9", "frz_slot", true, s9.entitlement.revision, s9.plan.revision, r9.orderId)
+    local auto = function(u, r)
+        local s = fz.src.getEntitlement(u, "frz_slot")
+        fz.src.setAutoRenew(u, "frz_slot", true, s.entitlement.revision, s.plan.revision, r.orderId)
+    end
+    auto("fz9", fz.rent("fz9"))                -- offline owners of a product that freezes while its mod is away
+    auto("fz10", fz.rent("fz10"))
     fz.tick()
     vals.rentalPrice = vals.rentalPrice + 10
     fz.src.setPlan("frz_slot", vals)
     local l9 = fz.lease("fz9")
-    ctx.setNow(l9.paidUntil + l9.G + 1000)
+    ctx.setNow(math.max(l9.paidUntil, fz.lease("fz10").paidUntil) + l9.G + 1000)
     fz.tick()
+    fz.tick()
+    local owed = E.peek("TestWatch", "fz9", "frz_slot").ends ~= nil and E.peek("TestWatch", "fz10", "frz_slot").ends ~= nil
     fz.restart({})
     fz.tick(61000)                             -- frozen
-    fz.tick(3 * DAY)
-    fz.register("frz_slot")                    -- back: the lease moves by the frozen time
-    fz.tick()
-    local owed = E.peek("TestWatch", "fz9", "frz_slot").ends ~= nil
     local p9 = fakePlayer("fz9")
     ctx.clearSent()
     ctx.setOnline({ ann, bob, boss, p9 })
     fz.tick()
     fz.tick()
-    check(owed and tm.codes(p9) == "ended" and #E.peek("TestWatch", "fz9", "frz_slot").rentals == 0,
-        "the ended notice of a product frozen and back still reaches its owner")
+    local heard = tm.codes(p9)
+    fz.tick(E.ENDED_KEEP_MS)
+    fz.tick()
+    check(owed and heard == "ended" and E.peek("TestWatch", "fz9", "frz_slot").ends == nil
+        and E.peek("TestWatch", "fz10", "frz_slot").ends == nil,
+        "an ended notice reaches its owner and expires while the product is frozen")
+    fz.register("frz_slot")
+    fz.tick()
 end
 
 ctx.setOnline({})
