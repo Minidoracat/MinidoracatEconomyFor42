@@ -243,7 +243,7 @@ A server option.
 [list]
 [*] [b]Buy or rent[/b]: supporting mods (Vehicle Manager first) let you buy permanent or rent periodic extra slots with economy currency.
 [*] [b]Auto-renewal[/b]: off by default; it needs your consent and can be cancelled anytime.
-[*] [b]Plan changes[/b]: if the host changes the rent, currency or days per period, stops rentals or turns auto-renew off, your auto-renew pauses and you get a notice, and another before the end; agree again (or renew by hand) before grace ends to keep it, otherwise the lease ends with nothing charged.
+[*] [b]Plan changes[/b]: if the host changes the rent, currency or days per period, stops rentals or turns auto-renew off, your auto-renew pauses and you get a notice, another before the end, and one at every login while it stays paused. Agree again (or renew by hand) before grace ends to keep it, otherwise the lease ends with nothing charged.
 [*] [b]Frozen[/b]: if the server removes the mod that provides your slots and that mod supports freezing, your rental shows as frozen and its time stops, with no rent charged; once the mod is back it continues from the time it had left.
 [*] [b]Your slots[/b]: see Slots under "Wallet".
 [/list]

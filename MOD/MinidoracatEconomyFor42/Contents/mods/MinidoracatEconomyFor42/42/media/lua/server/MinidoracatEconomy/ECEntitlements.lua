@@ -18,10 +18,11 @@
 --                  owed to the owner of rentals the plan lapsed, which left the row already
 --   Rental = { id,                       -- the order id that created it
 --              q,                        -- its units, fixed for its whole life
---              lease = { price, D, G, R, cur, amt, tr, k?, start, paidUntil, cycle, last, phase?, reminded?, told?, lapsed? } | nil,
+--              lease = { price, D, G, R, cur, amt, tr, k?, start, paidUntil, cycle, last, phase?, reminded?, told?, hush?, lapsed? } | nil,
 --                (lapsed: the error code of a plan lapse at the end of this period; a rental ending
 --                with it leaves an ended notice in row.ends. told: the paused-terms stage its owner
---                heard; 0 on an auto-renewal of a period whose owner never heard resumed, owed on login)
+--                heard; 0 on an auto-renewal of a period whose owner never heard resumed, owed on login.
+--                hush: the owner paid this period by hand after hearing the pause: no login repeats)
 --              pend  = { o, q, price, D, G, R, cur, amt, tr, k?, renewal?, auto?, epoch, seq, ts, tx } | nil,
 --              auto  = { on, gen, price?, cur?, D?, tr, rev, why?, epoch, seq, at } | nil }
 --   D/G/R are milliseconds (period, grace, reminder); price is the rent per unit; tr is the plan
@@ -441,6 +442,8 @@ local function nextLeaseOf(pend, lease, at)
         cycle = (lease and lease.cycle or 0) + 1, last = pend.o, phase = "active",
         -- an auto-renewal whose owner heard paused / due but never resumed still owes resumed
         told = (pend.auto and lease and lease.told) and 0 or nil,
+        -- paid by hand after hearing the pause: the owner acted on it (user 2026-11-16)
+        hush = (not pend.auto and lease and (lease.told or 0) > 0) or nil,
     }, continuing
 end
 
@@ -1499,10 +1502,14 @@ end
 -- resumed when the plan offers the agreed terms again. The lapse itself is told by tellEnded once
 -- the rental left the row. Only an owner who is online and
 -- placed in the world is told (a toast during the loading screen is lost); the next visit tries
--- again, so an offline owner hears the stage reached by then, once, after login.
+-- again, so an offline owner hears the stage reached by then after login. Each new login hears the
+-- current stage once more until the owner agrees, pays by hand (lease.hush), switches auto-renew
+-- off or the rental lapses (user 2026-11-16); a login is a player object not told yet (toldTo, RAM:
+-- a restart or a respawn counts as one).
 -- ponytail: one toast per rental (at most E.RENTALS_MAX per product per visit); aggregate if
 -- hosts sell many small rentals.
 local TOLD_CODE = { "paused", "paused", "due", "due" }
+local toldTo = {}                                   -- rentalKey -> the player object told last
 -- The plan stopped auto-renew itself (rentals off or auto-renew not allowed): agreeing again cannot help.
 local function renewStopped(plan)
     return not (plan.rentalEnabled == true and plan.autoRenewAllowed == true)
@@ -1518,8 +1525,9 @@ end
 local function tellPaused(ref, r, planRow, now, seen)
     local lease, auto = r.lease, r.auto
     if r.pend then return end                       -- a payment on the way: its period says the rest
+    local k = rentalKey(ref, r.id)
     if not (auto and auto.on) then
-        lease.told = nil
+        lease.told, lease.hush, toldTo[k] = nil, nil, nil
         return
     end
     local stage = 0                                 -- 0: the plan charges it again
@@ -1538,10 +1546,15 @@ local function tellPaused(ref, r, planRow, now, seen)
             stage = 1
         end
     end
-    if stage > 0 and stage <= (lease.told or 0) then return end
+    local again = stage > 0 and stage <= (lease.told or 0)
+    if again and lease.hush then return end
     local player = ownerPlaced(ref, seen)
-    if not player then return end
-    lease.told = stage > 0 and stage or nil
+    if not player or (again and toldTo[k] == player) then return end
+    if stage > 0 then
+        lease.told, toldTo[k] = math.max(stage, lease.told or 0), player
+    else
+        lease.told, lease.hush, toldTo[k] = nil, nil, nil
+    end
     local code = TOLD_CODE[stage] or "resumed"
     if stage > 0 and renewStopped(planRow.values) then code = code .. "_off" end
     S.reply(player, "entitlement.notice", sourceLabel({ code = code, sourceMod = ref.m,
@@ -1817,7 +1830,7 @@ function E.init(r)
     ent = r.entitlements
     ent.rows = ent.rows or {}
     quotes, quoteOf, closed, closedRing, closedAt, waiting, offOwed = {}, {}, {}, {}, 0, {}, {}
-    leaseRefs, leaseSet, cursor, nextRetry, cooldown = {}, {}, 1, {}, {}
+    leaseRefs, leaseSet, cursor, nextRetry, cooldown, toldTo = {}, {}, 1, {}, {}, {}
     journal = { state = "ok", lines = 0, needSeq = 0, readAt = 0 }
     lastStep, lastW, dirty, saveMinutes = 0, nil, true, false
     startedAt, windowOpen = EC.now(), true

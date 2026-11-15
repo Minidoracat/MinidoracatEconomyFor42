@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+148 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+154 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1827,6 +1827,74 @@ do
         "an owner away when the plan came back and renewed hears resumed after login: the last word was not 'no charge'")
 end
 do
+    -- each new login hears the current paused stage once more until the owner acts (user 2026-11-16);
+    -- a login is a new player object
+    local login = function(u, others)
+        local p = fakePlayer(u)
+        local list = { ann, bob, boss, p }
+        for _, o in ipairs(others or {}) do list[#list + 1] = o end
+        ctx.setOnline(list)
+        return p
+    end
+    ctx.setOnline({ ann, bob, boss })
+    tm.o13, tm.o14, tm.o15 = tm.rent("tm13", true), tm.rent("tm14", true), tm.rent("tm15", true)
+    local p13 = login("tm13")
+    ctx.clearSent()
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 395 }))
+    tm.tick()
+    tm.tick()
+    local p13b = login("tm13")
+    tm.tick()
+    tm.tick()
+    check(tm.codes(p13) == "paused" and tm.codes(p13b) == "paused" and tm.lease("tm13").told == 1,
+        "each login hears the paused stage once, however many visits it stays")
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 395, autoRenewAllowed = false }))
+    tm.tick()
+    local p13c = login("tm13")
+    tm.tick()
+    tm.tick()
+    check(tm.codes(p13b) == "paused" and tm.codes(p13c) == "paused_off",
+        "a consent stopped by the server is repeated on login too, told as stopped")
+    vm.setPlan("terms_slot", tm.vals({ autoRenewAllowed = true }))   -- the price stays changed
+    tm.tick()
+    advance(61000)
+    local s = vm.getEntitlement("tm13", "terms_slot")
+    local agreed = vm.setAutoRenew("tm13", "terms_slot", true, s.entitlement.revision, s.plan.revision, tm.o13)
+    tm.tick()
+    local p13d = login("tm13")
+    tm.tick()
+    check(agreed.ok and tm.codes(p13c) == "paused_off" and tm.codes(p13d) == "" and tm.lease("tm13").told == nil,
+        "once the owner agrees to the new terms no login hears it again")
+    local p15 = login("tm15")
+    tm.tick()
+    s = vm.getEntitlement("tm15", "terms_slot")
+    local off = vm.setAutoRenew("tm15", "terms_slot", false, s.entitlement.revision, s.plan.revision, tm.o15)
+    tm.tick()
+    local p15b = login("tm15")
+    tm.tick()
+    check(tm.codes(p15) == "paused" and off.ok and tm.codes(p15b) == "" and tm.lease("tm15").told == nil,
+        "once the owner switches auto-renew off no login hears it again")
+    local p14 = login("tm14")
+    tm.tick()
+    local paid14 = tm.lease("tm14").paidUntil
+    local bought = vm.purchase("tm14", vm.quote("tm14", "terms_slot", "rental", nil, tm.o14).quote.id)
+    tm.tick()
+    local l14 = tm.lease("tm14")
+    local p14b = login("tm14")
+    tm.tick()
+    tm.tick()
+    check(bought.ok and l14.paidUntil > paid14 and l14.hush == true and tm.codes(p14) == "paused,paused"
+        and tm.codes(p14b) == "",
+        "paid by hand while paused: the new period is told once, then no login hears it again")
+    ctx.setNow(l14.paidUntil - 24 * HOUR + 1000)   -- the new period's reminder window
+    tm.tick()
+    local p14c = login("tm14")
+    tm.tick()
+    check(tm.codes(p14b) == "paused" and tm.codes(p14c) == "" and tm.lease("tm14").told == 2,
+        "a period paid by hand still hears each new stage once, without login repeats")
+    ctx.setOnline({ ann, bob, boss })
+end
+do
     tm.rent("tm11", true)                      -- offline owner who stays away past the notice's keep
     vm.setPlan("terms_slot", tm.vals({ rentalPrice = 400 }))
     tm.tick()
@@ -1884,8 +1952,8 @@ do
     proofRestartFrom(snap)
     tm.tick()
     local savedTold = snap.entitlements.rows.TestVM.tn1[SLOW].rentals[1].lease.told
-    check(reg.ok and savedTold == 1 and tm.codes(pn) == "paused_off",
-        "the stage told is in the world save: a restart from it does not tell the online owner again")
+    check(reg.ok and savedTold == 1 and tm.codes(pn) == "paused_off,paused_off" and rent1(E.peek("TestVM", "tn1", SLOW)).lease.told == 1,
+        "the stage told is in the world save; a restart is a new login for everyone, told the stage once more, not a new stage")
     ctx.setOnline({ ann, bob, boss })
     local ln = rent1(E.peek("TestVM", "tn1", SLOW)).lease
     ctx.setNow(ln.paidUntil + ln.G + 1000)
@@ -1899,7 +1967,7 @@ do
     ctx.setOnline({ ann, bob, boss, pn })
     tm.tick()
     tm.tick()
-    check(kept and offLine == 1 and tm.codes(pn) == "paused_off,ended_off"
+    check(kept and offLine == 1 and tm.codes(pn) == "paused_off,paused_off,ended_off"
         and #E.peek("TestVM", "tn1", SLOW).rentals == 0,
         "a saved consent the plan stopped lapses with autorenew_not_allowed and the rental leaves; its offline owner hears ended as stopped by the server even after the plan is back")
     L.credit("tn2", "survivor", 2000, "SYSTEM_MINT", { requestId = "ent-tn2", reasonCode = "t" })
