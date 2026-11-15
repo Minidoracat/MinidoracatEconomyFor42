@@ -148,6 +148,7 @@ local waiting = {}                   -- rowKey -> ref: rows with something not y
 local leaseRefs, leaseSet, cursor = {}, {}, 1
 local nextRetry = {}                 -- rentalKey -> ms before which auto-renew does not try again
 local cooldown = {}                  -- rentalKey -> ms before which a new consent is refused
+local toldTo = {}                    -- rentalKey -> the player object last told a paused stage (tellPaused)
 local listeners = {}                 -- modId -> { fn, ... }
 local journal = { state = "ok", lines = 0, needSeq = 0, readAt = 0 }
 local lastStep, lastW, dirty = 0, nil, false
@@ -493,7 +494,7 @@ end
 local function consentOff(ref, row, r, why, now, journaled)
     local k = rentalKey(ref, r.id)
     local auto = r.auto
-    nextRetry[k] = nil
+    nextRetry[k], toldTo[k] = nil, nil
     if auto and auto.on then
         local seq = S.nextSeq()
         row.rev = row.rev + 1
@@ -1241,7 +1242,8 @@ function E.setAutoRenew(modId, username, productId, enabled, expectedRevision, t
     r.auto = { on = true, gen = (auto and auto.gen or 0) + 1, price = plan.rentalPrice, cur = plan.rentalCurrency,
         D = plan.rentalDays * E.DAY_MS, tr = termsRevision, rev = row.rev, epoch = root.meta.epoch, seq = S.nextSeq(), at = now }
     -- the player agreed to the terms as they are: nothing told about the old consent stands
-    if r.lease then r.lease.told = nil end
+    if r.lease then r.lease.told, r.lease.hush = nil, nil end
+    toldTo[k] = nil
     cooldown[k] = now + E.CONSENT_COOLDOWN_MS
     wait(ref)
     X.emit("entitlement.autorenew", { sourceMod = modId, username = username, productId = productId, rental = r.id,
@@ -1339,6 +1341,7 @@ function E.refund(modId, username, productId, orderId, opts)
         return withSnapshot({ ok = true, duplicate = true, orderId = orderId, txId = found.rf and found.rf.tx }, modId, username, productId)
     end
     local ref = { m = modId, u = username, p = productId }
+    if o.rental then toldTo[rentalKey(ref, o.rental)] = nil end   -- consent off or rental gone: nothing left to repeat
     if #nextRow.rentals > 0 then trackLease(ref) end
     wait(ref)
     X.audit({ action = "entitlement.refund", target = username, sourceMod = modId, productId = productId, orderId = orderId,
@@ -1495,9 +1498,10 @@ end
 -- ---------- scheduler ----------
 
 -- What the player is told about a consent the plan stopped charging (a changed rent, currency or
--- period, rentals stopped, auto-renew no longer allowed), one stage at a time, each once per
--- period: lease.told (bookkeeping of this lease only, like phase / reminded) is the last stage
--- the owner heard; a new period starts with none. Stages: 1 paused, 2 inside the reminder window,
+-- period, rentals stopped, auto-renew no longer allowed): each stage once per period, plus the
+-- current stage once per new login while it stays paused (below). lease.told (bookkeeping of this
+-- lease only, like phase / reminded) is the highest stage the owner heard; a new period starts
+-- with none. Stages: 1 paused, 2 inside the reminder window,
 -- 3 due and not renewed, 4 half of grace gone. A player told it is paused hears once that it
 -- resumed when the plan offers the agreed terms again. The lapse itself is told by tellEnded once
 -- the rental left the row. Only an owner who is online and
@@ -1505,11 +1509,10 @@ end
 -- again, so an offline owner hears the stage reached by then after login. Each new login hears the
 -- current stage once more until the owner agrees, pays by hand (lease.hush), switches auto-renew
 -- off or the rental lapses (user 2026-11-16); a login is a player object not told yet (toldTo, RAM:
--- a restart or a respawn counts as one).
+-- a restart or a respawn counts as one; cleared wherever the consent goes off, is given again or refunded).
 -- ponytail: one toast per rental (at most E.RENTALS_MAX per product per visit); aggregate if
 -- hosts sell many small rentals.
 local TOLD_CODE = { "paused", "paused", "due", "due" }
-local toldTo = {}                                   -- rentalKey -> the player object told last
 -- The plan stopped auto-renew itself (rentals off or auto-renew not allowed): agreeing again cannot help.
 local function renewStopped(plan)
     return not (plan.rentalEnabled == true and plan.autoRenewAllowed == true)
@@ -1532,6 +1535,8 @@ local function tellPaused(ref, r, planRow, now, seen)
     end
     local stage = 0                                 -- 0: the plan charges it again
     if planAllows(auto, planRow.values) then
+        -- the pause the owner answered by hand is over, whether or not resumed reaches anyone
+        lease.hush, toldTo[k] = nil, nil
         if lease.told == nil then return end
     else
         local due = lease.paidUntil
@@ -1547,9 +1552,16 @@ local function tellPaused(ref, r, planRow, now, seen)
         end
     end
     local again = stage > 0 and stage <= (lease.told or 0)
-    if again and lease.hush then return end
+    if again and lease.hush then
+        toldTo[k] = nil
+        return
+    end
     local player = ownerPlaced(ref, seen)
-    if not player or (again and toldTo[k] == player) then return end
+    if not player then
+        if seen.player == false then toldTo[k] = nil end   -- offline: the next login is a new object anyway
+        return
+    end
+    if again and toldTo[k] == player then return end
     if stage > 0 then
         lease.told, toldTo[k] = math.max(stage, lease.told or 0), player
     else

@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+154 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+156 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1582,7 +1582,8 @@ do
 end
 
 -- 14. a plan change that stops charging a consent (2026-11-15): the owner is told stage by stage -
--- paused, the reminder, due, half the grace - once each (lease.told), only while online and placed;
+-- paused, the reminder, due, half the grace - once each (lease.told), and the current stage again on
+-- each new login while it stays paused (2026-11-16), only while online and placed;
 -- at grace end the consent lapses, the rental leaves and "ended" waits in row.ends for the owner
 -- (2026-11-16). The source can preview how many consents a change would pause. Shared state in `tm`.
 local tm = {}
@@ -1892,6 +1893,37 @@ do
     tm.tick()
     check(tm.codes(p14b) == "paused" and tm.codes(p14c) == "" and tm.lease("tm14").told == 2,
         "a period paid by hand still hears each new stage once, without login repeats")
+    advance(61000)
+    s = vm.getEntitlement("tm14", "terms_slot")
+    local again14 = vm.setAutoRenew("tm14", "terms_slot", true, s.entitlement.revision, s.plan.revision, tm.o14)
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 396 }))
+    tm.tick()
+    local p14d = login("tm14")
+    tm.tick()
+    tm.tick()
+    check(again14.ok and tm.lease("tm14").hush == nil and tm.codes(p14c) == "paused" and tm.codes(p14d) == "paused",
+        "agreeing again ends the hand-paid hush: a later plan change is repeated on login again")
+    local agreed16 = P.row("TestVM", "terms_slot").values.rentalPrice
+    tm.o16 = tm.rent("tm16", true)
+    local p16 = login("tm16")
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = agreed16 + 1 }))
+    tm.tick()
+    vm.purchase("tm16", vm.quote("tm16", "terms_slot", "rental", nil, tm.o16).quote.id)
+    tm.tick()
+    local hushed = tm.lease("tm16").hush
+    ctx.setOnline({ ann, bob, boss })
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = agreed16 }))   -- back while the owner is away
+    tm.tick()
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = agreed16 + 2 }))
+    tm.tick()
+    local p16b = login("tm16")
+    tm.tick()
+    tm.tick()
+    local p16c = login("tm16")
+    tm.tick()
+    check(hushed == true and tm.codes(p16) == "paused,paused" and tm.lease("tm16").hush == nil
+        and tm.codes(p16b) == "paused" and tm.codes(p16c) == "paused",
+        "a plan back ends the hand-paid hush even unheard: a new pause is repeated on each login")
     ctx.setOnline({ ann, bob, boss })
 end
 do
