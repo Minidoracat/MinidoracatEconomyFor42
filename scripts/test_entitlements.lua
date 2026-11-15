@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+140 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+143 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1779,6 +1779,30 @@ do
         "a lapse replayed from the journal after a crash keeps the rental until its offline owner hears ended")
 end
 do
+    tm.p8 = fakePlayer("tm8")
+    ctx.setOnline({ ann, bob, boss, tm.p1, tm.p2, tm.p3, tm.p7, tm.p8 })
+    tm.rent("tm8", true)
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 380 }))
+    tm.tick()
+    local l8 = tm.lease("tm8")
+    local realReader = getFileReader
+    getFileReader = function(path, create)      -- the lapse's off line cannot be read back
+        if path == E.JOURNAL_FILE then error("java.io.IOException: read back") end
+        return realReader(path, create)
+    end
+    ctx.clearSent()
+    ctx.setNow(l8.paidUntil + l8.G + 1000)
+    tm.tick()
+    tm.tick()
+    local owed = tm.codes(tm.p8)
+    getFileReader = realReader
+    advance(E.JOURNAL_RETRY_MS + 1000)
+    tm.tick()
+    tm.tick()
+    check(owed == "" and tm.codes(tm.p8) == "ended" and #E.peek("TestVM", "tm8", "terms_slot").rentals == 0,
+        "ended waits until the lapse is in the journal: a crash before that would bring the consent back")
+end
+do
     local SLOW = "terms_slow"                  -- a product that waits for saves (not instant)
     local reg = vm.registerProduct({ id = SLOW, nameKey = "K", defaults = defaults() })
     local vs = function(over)
@@ -1814,12 +1838,57 @@ do
     tm.tick()
     local row = E.peek("TestVM", "tn1", SLOW)
     local kept = #row.rentals == 1 and row.rentals[1].auto.why == "lapsed_terms" and (row.notice or {}).error == "autorenew_not_allowed"
+    vm.setPlan(SLOW, vs({ autoRenewAllowed = true }))   -- back on before its owner logs in
     ctx.setOnline({ ann, bob, boss, pn })
     tm.tick()
     tm.tick()
     check(kept and offLine == 1 and tm.codes(pn) == "paused_off,ended_off"
         and #E.peek("TestVM", "tn1", SLOW).rentals == 0,
-        "a saved consent the plan stopped lapses with autorenew_not_allowed; the rental waits for its offline owner, who hears ended as stopped by the server")
+        "a saved consent the plan stopped lapses with autorenew_not_allowed; the rental waits for its offline owner, who hears ended as stopped by the server even after the plan is back")
+    L.credit("tn2", "survivor", 2000, "SYSTEM_MINT", { requestId = "ent-tn2", reasonCode = "t" })
+    vm.purchase("tn2", vm.quote("tn2", SLOW, "rental").quote.id)
+    confirmAll()
+    confirmAll()
+    local s2 = vm.getEntitlement("tn2", SLOW)
+    vm.setAutoRenew("tn2", SLOW, true, s2.entitlement.revision, s2.plan.revision, rent1(s2.entitlement).id)
+    vm.setPlan(SLOW, vs({ rentalPrice = vs().rentalPrice + 5 }))   -- the consent is not saved yet
+    local l2 = rent1(E.peek("TestVM", "tn2", SLOW)).lease
+    ctx.setNow(l2.paidUntil + l2.G + 1000)
+    tm.tick()
+    local a2 = rent1(E.peek("TestVM", "tn2", SLOW)).auto
+    check(a2.on == false and a2.why == "lapsed_terms",
+        "a consent not proven saved yet lapses at the end of grace all the same")
+    L.credit("tn3", "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-tn3", reasonCode = "t" })
+    vm.purchase("tn3", vm.quote("tn3", SLOW, "rental").quote.id)
+    confirmAll()
+    confirmAll()
+    local s3 = vm.getEntitlement("tn3", SLOW)
+    vm.setAutoRenew("tn3", SLOW, true, s3.entitlement.revision, s3.plan.revision, rent1(s3.entitlement).id)
+    confirmAll()
+    local l3 = rent1(E.peek("TestVM", "tn3", SLOW)).lease
+    ctx.setNow(l3.paidUntil + 1000)
+    tm.tick()                                  -- the renewal is paid; its period waits for the save
+    local renewing = rent1(E.peek("TestVM", "tn3", SLOW)).pend ~= nil
+    local snap3 = proofSnapshot()              -- the last world save: payment in, next period not
+    confirmAll()                               -- the payment is saved: the next period starts
+    local l4 = rent1(E.peek("TestVM", "tn3", SLOW)).lease
+    vm.setPlan(SLOW, vs({ rentalPrice = vs().rentalPrice + 5 }))
+    ctx.setNow(l4.paidUntil + l4.G + 1000)
+    tm.tick()                                  -- that period lapses; only the journal has both
+    proofRestartFrom(snap3)
+    tm.tick()
+    local k3 = rent1(E.peek("TestVM", "tn3", SLOW))
+    confirmAll()
+    tm.tick()
+    local kept3 = #E.peek("TestVM", "tn3", SLOW).rentals == 1
+    local p3 = fakePlayer("tn3")
+    ctx.setOnline({ ann, bob, boss, p3 })
+    tm.tick()
+    tm.tick()
+    check(renewing and l4.paidUntil > l3.paidUntil and k3.lease.paidUntil == l4.paidUntil
+        and k3.lease.lapsed == "terms_changed" and kept3 and tm.codes(p3) == "ended"
+        and #E.peek("TestVM", "tn3", SLOW).rentals == 0,
+        "a lapse replayed with the activation of its own period marks that period: the rental waits for its offline owner")
 end
 do
     local vals = {}
