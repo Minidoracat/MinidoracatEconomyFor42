@@ -243,6 +243,7 @@ A server option.
 [list]
 [*] [b]Buy or rent[/b]: supporting mods (Vehicle Manager first) let you buy permanent or rent periodic extra slots with economy currency.
 [*] [b]Auto-renewal[/b]: off by default; it needs your consent and can be cancelled anytime.
+[*] [b]Plan changes[/b]: if the host changes the rent, currency or days per period, stops rentals or turns auto-renew off, your auto-renew pauses and you get a notice, and another before the end; agree again (or renew by hand) before grace ends to keep it, otherwise the lease ends with nothing charged.
 [*] [b]Frozen[/b]: if the server removes the mod that provides your slots and that mod supports freezing, your rental shows as frozen and its time stops, with no rent charged; once the mod is back it continues from the time it had left.
 [*] [b]Your slots[/b]: see Slots under "Wallet".
 [/list]
@@ -469,7 +470,7 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]Integration plans[/h3]
 [list]
 [*] [b]Who sets prices[/b]: each mod sets the price, currency, limits and rental period of its own paid slots (Vehicle Manager: its settings file and in-game settings window).
-[*] [b]Plans[/b]: read-only; shows each product's current terms, where they were last changed and any settings file error.
+[*] [b]Plans[/b]: read-only; shows each product's current terms, where they were last changed, any settings file error, and how many auto-renewals wait for players to agree to changed terms.
 [*] [b]Accounts & refunds[/b]: lists every player's slot orders, newest first; click an order to see only that player.
 [*] [b]Refunds[/b]: an order that can be refunded has its own Refund... button, and the confirmation says how much goes back to whom and what happens to the slots or rental.
 [/list]
