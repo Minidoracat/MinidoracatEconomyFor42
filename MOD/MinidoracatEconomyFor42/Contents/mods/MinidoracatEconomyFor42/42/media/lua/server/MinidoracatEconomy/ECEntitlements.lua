@@ -16,7 +16,7 @@
 --           notice = { code, at, error?, rental? } | nil }
 --   Rental = { id,                       -- the order id that created it
 --              q,                        -- its units, fixed for its whole life
---              lease = { price, D, G, R, cur, amt, tr, k?, start, paidUntil, cycle, last, phase?, reminded? } | nil,
+--              lease = { price, D, G, R, cur, amt, tr, k?, start, paidUntil, cycle, last, phase?, reminded?, told? } | nil,
 --              pend  = { o, q, price, D, G, R, cur, amt, tr, k?, renewal?, auto?, epoch, seq, ts, tx } | nil,
 --              auto  = { on, gen, price?, cur?, D?, tr, rev, why?, epoch, seq, at } | nil }
 --   D/G/R are milliseconds (period, grace, reminder); price is the rent per unit; tr is the plan
@@ -65,7 +65,8 @@
 -- on every read; the scheduler only sends notices, activates, and charges consented renewals: the
 -- first attempt at paidUntil, insufficient funds retried every hour until grace ends (then the
 -- consent lapses), other errors paused and retried without touching the consent. A server that was
--- down for several periods charges one period and starts it at activation - no arrears.
+-- down for several periods charges one period and starts it at activation - no arrears. A consent
+-- the plan stopped charging is told to its owner stage by stage (tellPaused, lease.told).
 --
 -- Frozen products (registerProduct{ freezeWhenAbsent = true }, API rev 4): the flag is kept on the
 -- plan row. A flagged product that is not registered in this process stands still - no expiry, no
@@ -284,8 +285,15 @@ end
 
 -- The money terms a consent was given for, against the plan as it stands: auto-renew charges only
 -- while they are the same. A changed price, currency or period waits for the player's new consent.
+-- (A plan row an older version saved may lack a field: it simply does not match.)
 local function sameTerms(auto, plan)
-    return auto.price == plan.rentalPrice and auto.cur == plan.rentalCurrency and auto.D == plan.rentalDays * E.DAY_MS
+    return auto.price == plan.rentalPrice and auto.cur == plan.rentalCurrency and auto.D == (plan.rentalDays or 0) * E.DAY_MS
+end
+
+-- Whether the plan as it stands would charge this consent: the one definition the snapshot, the
+-- scheduler, the player's notices and the admin's counts share.
+local function planAllows(auto, plan)
+    return sameTerms(auto, plan) and plan.rentalEnabled == true and plan.autoRenewAllowed == true
 end
 
 -- `instant`: the product's orders, refunds and consents take effect when committed; only pp / pend
@@ -660,7 +668,7 @@ local function autoStateOf(r, planRow, w, blocked, over, instant, owed)
     if not auto.on then return (proven and not owed) and "off" or "pending_off" end
     if blocked then return "paused_system" end
     local plan = planRow.values
-    if not sameTerms(auto, plan) or not plan.rentalEnabled or not plan.autoRenewAllowed or over then
+    if not planAllows(auto, plan) or over then
         return "paused_terms"
     end
     return proven and "on" or "pending_on"
@@ -784,6 +792,17 @@ end
 local function withSnapshot(res, modId, username, productId)
     res.snapshot = snapshot(modId, username, productId)
     return res
+end
+
+-- The source's names as the client words them (C.Entitlements.sourceName): its key and the two
+-- display languages the client reads. registerSource bounds each name, not how many languages a
+-- source sends, so the whole table would leave a reply unbounded.
+local function sourceLabel(out, modId)
+    local src = G.source(modId)
+    local names = src and src.displayName or {}
+    out.sourceNameKey = src and src.nameKey or nil
+    out.sourceName = (names.CH ~= nil or names.EN ~= nil) and { CH = names.CH, EN = names.EN } or nil
+    return out
 end
 
 -- ---------- pricing ----------
@@ -1193,6 +1212,8 @@ function E.setAutoRenew(modId, username, productId, enabled, expectedRevision, t
     row.rev = rev + 1
     r.auto = { on = true, gen = (auto and auto.gen or 0) + 1, price = plan.rentalPrice, cur = plan.rentalCurrency,
         D = plan.rentalDays * E.DAY_MS, tr = termsRevision, rev = row.rev, epoch = root.meta.epoch, seq = S.nextSeq(), at = now }
+    -- the player agreed to the terms as they are: nothing told about the old consent stands
+    if r.lease then r.lease.told = nil end
     cooldown[k] = now + E.CONSENT_COOLDOWN_MS
     wait(ref)
     X.emit("entitlement.autorenew", { sourceMod = modId, username = username, productId = productId, rental = r.id,
@@ -1308,6 +1329,52 @@ local function eachRow(modId, productId, fn)
     end
 end
 
+-- fn(auto, username) for every consent of one product that is on and could still charge: its
+-- rental runs (grace included) or has a payment on the way. A frozen product counts at frozenAt.
+-- ponytail: walks every row of the product per preview / setPlan / admin overview; index consents
+-- when one product reaches thousands of accounts.
+local function eachLiveConsent(modId, productId, fn)
+    local pr = P.row(modId, productId)
+    local at = pr and pr.frozenAt or EC.now()
+    eachRow(modId, productId, function(username, row)
+        for _, r in ipairs(row.rentals or {}) do
+            local auto = r.auto
+            if auto and auto.on == true and (r.pend ~= nil or leaseLive(r.lease, at)) then fn(auto, username) end
+        end
+    end)
+end
+
+-- What replacing plan values `before` with `after` does to the consents of one product: how many
+-- the plan would stop charging (and on how many accounts), how many it would charge again.
+local function planEffect(modId, productId, before, after)
+    local out, seen = { pausedConsents = 0, pausedAccounts = 0, resumedConsents = 0 }, {}
+    if not ent then return out end
+    eachLiveConsent(modId, productId, function(auto, username)
+        local was, will = planAllows(auto, before), planAllows(auto, after)
+        if was and not will then
+            out.pausedConsents = out.pausedConsents + 1
+            local account = S.accountOf(username) or username
+            if not seen[account] then
+                seen[account] = true
+                out.pausedAccounts = out.pausedAccounts + 1
+            end
+        elseif will and not was then
+            out.resumedConsents = out.resumedConsents + 1
+        end
+    end)
+    return out
+end
+
+-- Consents of one product the plan as it stands does not charge (the admin overview).
+local function pausedNow(modId, productId)
+    local pr, n = P.row(modId, productId), 0
+    if not (pr and ent) then return 0 end
+    eachLiveConsent(modId, productId, function(auto)
+        if not planAllows(auto, pr.values) then n = n + 1 end
+    end)
+    return n
+end
+
 -- The registration window closed: a flagged product still not registered stands still from start.
 -- Idempotent: one that froze in an earlier start keeps that frozenAt.
 local function freezeAbsent()
@@ -1379,8 +1446,9 @@ function E.registerProduct(modId, spec)
 end
 
 -- The plan belongs to the source (ECEntitlementPlans): setPlan(productId, values, opts),
--- getPlan(productId), setPlanSource(productId, { file?, problem? }).
-E.setPlan, E.getPlan, E.setPlanSource = P.set, P.get, P.setSource
+-- previewPlan(productId, values), getPlan(productId), setPlanSource(productId, { file?, problem? }).
+E.setPlan, E.previewPlan, E.getPlan, E.setPlanSource = P.set, P.preview, P.get, P.setSource
+P.effectOf = planEffect
 
 function E.onEntitlementChanged(modId, fn)
     if type(fn) ~= "function" then return fail("invalid_args") end
@@ -1398,6 +1466,52 @@ end
 
 -- ---------- scheduler ----------
 
+-- What the player is told about a consent the plan stopped charging (a changed rent, currency or
+-- period, rentals stopped, auto-renew no longer allowed), one stage at a time, each once per
+-- period: lease.told (bookkeeping of this lease only, like phase / reminded) is the last stage
+-- the owner heard; a new period starts with none. Stages: 1 paused, 2 inside the reminder window,
+-- 3 due and not renewed, 4 half of grace gone, 5 ended. A player told it is paused hears once
+-- that it resumed when the plan offers the agreed terms again. Only an owner who is online and
+-- placed in the world is told (a toast during the loading screen is lost); the next visit tries
+-- again, so an offline owner hears the stage reached by then, once, after login.
+-- ponytail: one toast per rental (at most E.RENTALS_MAX per product per visit); aggregate if
+-- hosts sell many small rentals.
+local TOLD_CODE = { "paused", "paused", "due", "due", "ended" }
+local function tellPaused(ref, r, planRow, now)
+    local lease, auto = r.lease, r.auto
+    if r.pend then return end                       -- a payment on the way: its period says the rest
+    if not (auto and auto.on) then
+        lease.told = nil
+        return
+    end
+    local stage = 0                                 -- 0: the plan charges it again
+    if planAllows(auto, planRow.values) then
+        if lease.told == nil then return end
+    else
+        local due = lease.paidUntil
+        if now >= due + lease.G then
+            stage = 5
+        elseif now >= due + lease.G / 2 then
+            stage = 4
+        elseif now >= due then
+            stage = 3
+        elseif lease.R > 0 and now >= due - lease.R then
+            stage = 2
+        else
+            stage = 1
+        end
+        if stage <= (lease.told or 0) then return end
+    end
+    local player = S.onlineLogin(ref.u)
+    if not player then return end
+    local ok, placed = pcall(function() return player:getCurrentSquare() ~= nil end)
+    if not (ok and placed) then return end
+    lease.told = stage > 0 and stage or nil
+    S.reply(player, "entitlement.notice", sourceLabel({ code = TOLD_CODE[stage] or "resumed", sourceMod = ref.m,
+        productId = ref.p, nameKey = planRow.nameKey, rental = r.id, paidUntil = lease.paidUntil,
+        graceUntil = lease.paidUntil + lease.G }, ref.m))
+end
+
 local function lapse(ref, row, r, err, now)
     -- journaled like a cancel; owed while it cannot be written
     consentOff(ref, row, r, err == "limit_reached" and "lapsed_limit" or "lapsed_funds", now)
@@ -1407,10 +1521,9 @@ end
 -- A rental due now under a consent to the money terms the plan offers now, with no payment pending.
 -- The consent must be proven saved, except for an instant product (header).
 local function consented(r, planRow, now, w, instant)
-    local auto, lease, plan = r.auto, r.lease, planRow.values
+    local auto, lease = r.auto, r.lease
     return auto ~= nil and auto.on == true and r.pend == nil and lease ~= nil and now >= lease.paidUntil
-        and (instant or verdict(auto, w) == "confirmed") and sameTerms(auto, plan) and plan.rentalEnabled
-        and plan.autoRenewAllowed
+        and (instant or verdict(auto, w) == "confirmed") and planAllows(auto, planRow.values)
 end
 
 -- One consented renewal attempt for a rental that is due (auto on, no pending payment).
@@ -1489,6 +1602,7 @@ local function visitLease(ref, now, w)
     if standsStill(ref.m, ref.p) then return true end   -- frozen, or not registered yet: kept as is
     local spec = P.product(ref.m, ref.p)
     local instant = spec ~= nil and spec.instant
+    local planRow = P.row(ref.m, ref.p)
     -- a renewal replaces the row: walk the ids and read the row again for each
     local ids = {}
     for i, r in ipairs(row.rentals) do ids[i] = r.id end
@@ -1516,6 +1630,7 @@ local function visitLease(ref, now, w)
                 row.notice = { code = code, at = now, rental = id }
                 changed(ref.m, ref.u, ref.p)
             end
+            if planRow then tellPaused(ref, r, planRow, now) end
             local auto = r.auto
             if auto and auto.on and not r.pend and now >= lease.paidUntil and (instant or verdict(auto, w) == "confirmed") then
                 tryRenew(ref, row, r, now, w)
@@ -1705,11 +1820,9 @@ S.handlers["entitlement.order"] = function(player, args)
 end
 
 -- Every product of the caller's own login name (rows are per login, never merged across the
--- account's other characters) as its envelope plus the source's name, for the wallet's entitlement
--- tab. Read only; nobody else's row can be named. `more`: the list was cut at E.LIST_MAX.
--- The source's display name goes out as the two languages the client reads (C.Entitlements
--- .sourceName): registerSource bounds each name, not how many languages a source sends, so the
--- whole table would leave the reply unbounded by LIST_MAX.
+-- account's other characters) as its envelope plus the source's name (sourceLabel), for the
+-- wallet's entitlement tab. Read only; nobody else's row can be named. `more`: the list was cut at
+-- E.LIST_MAX.
 S.handlers["entitlement.list"] = function(player, args)
     local res
     if not ent then
@@ -1718,12 +1831,7 @@ S.handlers["entitlement.list"] = function(player, args)
         local all = accountEntries(S.login(player))
         local entries = {}
         for i = 1, math.min(#all, E.LIST_MAX) do
-            local env = all[i]
-            local src = G.source(env.sourceMod)
-            local names = src and src.displayName or {}
-            env.sourceNameKey = src and src.nameKey or nil
-            env.sourceName = (names.CH ~= nil or names.EN ~= nil) and { CH = names.CH, EN = names.EN } or nil
-            entries[i] = env
+            entries[i] = sourceLabel(all[i], all[i].sourceMod)
         end
         res = { ok = true, entries = entries, more = #all > E.LIST_MAX or nil }
     end
@@ -1843,6 +1951,10 @@ S.handlers["admin.entitlements"] = function(player, args)
     res.perms = { read = true, write = A.isAdmin(player) }
     if action == "plans" then
         res.plans = P.list()
+        for _, p in ipairs(res.plans) do
+            local n = pausedNow(p.sourceMod, p.productId)
+            if n > 0 then p.pausedConsents = n end
+        end
         res.journal = E.journalStatus()
     end
     S.reply(player, "admin.entitlements", res)

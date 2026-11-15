@@ -1294,5 +1294,22 @@ end)()
     for _, m in ipairs(mods) do package.loaded[m] = nil end
 end)()
 
+-- ---------- entitlement.notice: one toast in the reader's words; an unknown code shows nothing ----------
+;(function()
+    local toasts = {}
+    C.toast = function(s) toasts[#toasts + 1] = s end
+    C.UI = { stampText = function(ms) return "t" .. tostring(ms) end, localOffsetMinutes = function() return 0 end }
+    known["IGUI_MinidoracatEconomy_Ent_Toast_due"] = "due"
+    local args = { code = "due", sourceMod = SRC, productId = PROD, nameKey = "K", paidUntil = 1000, graceUntil = 2000 }
+    reply("entitlement.notice", args)
+    check(#toasts == 1 and toasts[1] == "due|" .. E.productName(args) .. "|" .. E.sourceName(args) .. "|t2000",
+        "notice: a due notice names the product, the source and the grace end")
+    reply("entitlement.notice", { code = "weird", sourceMod = SRC, productId = PROD })
+    reply("entitlement.notice", { code = "paused", sourceMod = SRC, productId = PROD, paidUntil = 1000 })
+    reply("entitlement.notice", "junk")
+    check(#toasts == 1, "notice: a code without a translation or a malformed notice shows nothing")
+    C.toast, C.UI, known["IGUI_MinidoracatEconomy_Ent_Toast_due"] = nil, nil, nil
+end)()
+
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

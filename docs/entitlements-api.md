@@ -76,6 +76,7 @@ local result = source.registerProduct({
 |---|---|
 | `registerProduct(spec)` | 登錄產品、初始方案、是否即時生效（`instant`）、缺席時是否凍結（`freezeWhenAbsent`，rev 4）及購買驗證回呼 |
 | `setPlan(productId, values, opts)` | 交付完整方案，見「方案」 |
+| `previewPlan(productId, values)` | 試算交付這份方案會暫停幾張自動續租，不改任何東西（以 `type(handle.previewPlan) == "function"` 探測），見「方案」 |
 | `getPlan(productId)` | 讀目前生效的方案、最後修改與來源狀態 |
 | `setPlanSource(productId, info)` | 告訴 Economy 方案從哪個檔案來、有沒有錯誤（只給管理台唯讀總覽顯示） |
 | `getEntitlement(username, productId)` | 唯讀權益、方案、餘額及近期訂單；不建立錢包 |
@@ -110,7 +111,7 @@ Economy 玩家錢包的「名額」分頁會列出名額紀錄：客戶端送 `e
 
 - `values`：完整 12 個方案欄位，不能多也不能少；幣別只能是該來源註冊的幣別。
 - `opts = { actor?, origin?, reason?, expectedRevision? }`：`actor` 1–64 位元組、無控制字元（預設 `"source"`）；`origin` 為 `"file"`／`"admin"`／`"source"`（預設 `"source"`）；`reason` 選填字串（控制字元換成空白；最後修改紀錄存前 64 位元組，稽核存全文，上限同管理員原因）；`expectedRevision` 選填整數。
-- 成功：`{ ok = true, updated = true, revision = <新版本>, changed = { "<欄位>", ... } }`。版本 +1，記下 `lastChange = { actor, origin, at, reason, revision }`，寫 `entitlement.plan` 事件與每個改動欄位一筆稽核，並廣播產品的公開更新訊號。
+- 成功：`{ ok = true, updated = true, revision = <新版本>, changed = { "<欄位>", ... }, pausedConsents, pausedAccounts, resumedConsents }`。版本 +1，記下 `lastChange = { actor, origin, at, reason, revision }`，寫 `entitlement.plan` 事件與每個改動欄位一筆稽核，並廣播產品的公開更新訊號。三個計數是這次變更實際暫停的自動續租張數、涉及的帳號數，以及恢復的張數（只算還在期內或寬限中、或有付款在途的同意）。
 - 內容和目前方案相同（且目前方案不是 provisional）：`{ ok = true, updated = false, revision = <目前版本>, changed = {} }`，**不看 `expectedRevision`**，重送天然冪等。
 - 判斷順序與錯誤：
 
@@ -123,7 +124,20 @@ Economy 玩家錢包的「名額」分頁會列出名額紀錄：客戶端送 `e
 | 5 | `{ ok = true, updated = false, ... }` | 內容相同 |
 | 6 | `{ ok = false, error = "stale_revision" }` | 有給 `expectedRevision` 且不等於目前版本 |
 
-合約效果不必另外處理：改了租金、幣別或每期天數，以舊條款同意的自動續租自動暫停（改回原值恢復）；調低 `rentalLimit` 時超額的帳號照「租用與續租」的規則處理。任何方案變更都會讓舊報價失效。
+合約效果不必另外處理：改了租金、幣別或每期天數，以舊條款同意的自動續租自動暫停（改回原值恢復）；調低 `rentalLimit` 時超額的帳號照「租用與續租」的規則處理。任何方案變更都會讓舊報價失效。被方案暫停的自動續租，Economy 會自己通知租約擁有者（見「租用與續租」），消費端不必處理。
+
+### `previewPlan(productId, values)`
+
+試算 `setPlan` 收到這份方案會怎樣，不改版本、不寫稽核或事件、不通知任何人。沒有 `opts`，所以不會回 `stale_revision`；其他錯誤與判斷順序同 `setPlan`（`not_ready`、`unknown_product`、`invalid_plan`／`unknown_fields`）。成功回 `{ ok = true, updated, revision = <目前版本>, changed, pausedConsents, pausedAccounts, resumedConsents }`；內容相同時 `updated = false`、計數都是 0。不升 facade rev，以 `type(handle.previewPlan) == "function"` 探測。
+
+消費端契約：
+
+1. 探不到 `previewPlan` 的舊 Economy 照舊直接 `setPlan`。
+2. `pausedConsents > 0` 才請管理員確認；確認後 `setPlan` 帶 `expectedRevision = preview.revision`，期間有別人改過就回 `stale_revision`，重新試算。
+3. 結果以 `setPlan` 回覆的計數為準（試算與存檔之間玩家可能剛同意或剛到期）。
+4. 一次存多個產品（例如多個等級）時，先全部試算、加總後只問一次。
+5. 沒有人可以確認的來源（例如從設定檔載入）照存，把計數寫進自己的 log 或狀態。
+6. 不必處理 `entitlement.notice`：通知由 Economy 直接送給租約擁有者。
 
 ### `getPlan(productId)`
 
@@ -207,7 +221,8 @@ Economy 玩家錢包的「名額」分頁會列出名額紀錄：客戶端送 `e
 - 寬限時間內租用名額仍有效（`usable` 照算）。寬限結束後不再計入。消費端可另讀 `rentals[i].state` 決定自己的到期處理：VehicleManager 在寬限中不讓這些名額綁新車、把超出名額的車由新到舊鎖定，寬限結束且租約從清單移除後才解除仍超額的車；讀取失敗時不動任何車。
 - 伺服器停機跨過多個周期，不補扣多期；重新開通只收一個明示周期。
 - **到期移除**：寬限結束、沒有待確認付款、自動續租已關閉且已存檔的租約，伺服器自動從清單移除；即時生效商品不必等存檔，關閉的 `off` 日誌行寫入後就移除。
-- **改租金、幣別或每期天數**：不改寫已付期間。只要方案的 `rentalPrice`、`rentalCurrency`、`rentalDays` 與某張租約同意時記下的不同，那張的自動續租就暫停（`paused_terms`），玩家重新同意後才會再扣款（同意會記下當時的條款）；方案改回同意時的值，自動續租恢復。其他方案欄位（買斷欄位、`rentalLimit`、寬限、提醒等）的變更不會暫停已同意的自動續租；關閉 `autoRenewAllowed` 則另外停止自動續租。報價仍綁 termsRevision，任何方案變更都會讓舊報價失效。
+- **改租金、幣別或每期天數**：不改寫已付期間。只要方案的 `rentalPrice`、`rentalCurrency`、`rentalDays` 與某張租約同意時記下的不同，那張的自動續租就暫停（`paused_terms`），玩家重新同意後才會再扣款（同意會記下當時的條款）；方案改回同意時的值，自動續租恢復。其他方案欄位（買斷欄位、`rentalLimit`、寬限、提醒等）的變更不會暫停已同意的自動續租；停售租用或關閉 `autoRenewAllowed` 也會暫停。報價仍綁 termsRevision，任何方案變更都會讓舊報價失效。
+- **暫停的通知**：被方案暫停（上面三種情況）的自動續租，Economy 以 `entitlement.notice` 直接告訴租約擁有者，依階段各一次：暫停時、到期前的提醒時間、到期沒續租時、寬限過半、寬限結束；方案改回後說一次已恢復。擁有者不在線或還沒進入世界時不送，上線後只補送當時到達的那一階段。已講過的階段記在租約上（存檔），重啟不重講；新的一期或玩家重新同意後從頭算。
 - **調低 `rentalLimit`、低於玩家目前的租用合計**：現有租約照常用到到期，已付的續租照常啟用；合計超過上限時不能新租或續租（`limit_reached`），自動續租暫停；寬限期結束仍超過上限的那張關閉自動續租並到期。合計降回上限內後，其餘租約恢復續租。
 - **退款**綁原訂單、至多原額一次，與權益減少同時提交，並關閉該張租約的自動續租：
   - 待確認的新租約：連同租約一起取消。
@@ -254,7 +269,7 @@ local result = source.registerProduct({
 
 ## 管理台
 
-Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action = "plans"`（讀取權）回 `plans[i] = { sourceMod, productId, nameKey, sourceNameKey?, sourceName?, loaded, instant, plan, lastChange, source }`，顯示各產品目前的條款、最後從哪裡修改、設定檔有沒有錯誤（`source` 是 `setPlanSource` 存的那份，沒有就省略；`sourceName` 是來源的 `displayName`，來源本次沒載入時兩個名稱欄位都省略）。方案編輯、`action = "apply"` 與沙盒同步已移除。
+Economy 管理頁「整合方案」是唯讀總覽：`admin.entitlements action = "plans"`（讀取權）回 `plans[i] = { sourceMod, productId, nameKey, sourceNameKey?, sourceName?, loaded, instant, plan, lastChange, source, pausedConsents? }`，顯示各產品目前的條款、最後從哪裡修改、設定檔有沒有錯誤（`source` 是 `setPlanSource` 存的那份，沒有就省略；`sourceName` 是來源的 `displayName`，來源本次沒載入時兩個名稱欄位都省略；`pausedConsents` 是目前方案不扣款、等玩家重新同意的自動續租張數，0 時省略）。方案編輯、`action = "apply"` 與沙盒同步已移除。
 
 ### 訂單清單 `action = "orders"`
 

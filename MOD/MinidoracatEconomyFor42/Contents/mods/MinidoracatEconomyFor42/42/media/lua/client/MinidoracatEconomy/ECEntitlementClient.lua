@@ -328,6 +328,20 @@ C.handlers["entitlement.changed"] = function(args)
     end
 end
 
+-- entitlement.notice (owner only, ECEntitlements tellPaused): an auto-renew consent the plan stopped
+-- charging - paused, due and not renewed, ended - or charging again (resumed). A toast naming the
+-- product, the source whose window takes a new consent and, while it matters, the period's end
+-- (paused) or the grace end (due). A code the translation files do not know shows nothing.
+local NOTICE_TIME = { paused = "paidUntil", due = "graceUntil" }
+C.handlers["entitlement.notice"] = function(args)
+    if type(args) ~= "table" or type(args.code) ~= "string" then return end
+    local ms = NOTICE_TIME[args.code] and tonumber(args[NOTICE_TIME[args.code]])
+    local when = (ms and C.UI) and C.UI.stampText(ms, C.UI.localOffsetMinutes()) or "-"
+    -- the args go in the one lookup: probing the key bare makes the engine warn about %1
+    local text = getTextOrNull(T .. "Ent_Toast_" .. args.code, E.productName(args), E.sourceName(args), when)
+    if text then C.toast(text) end
+end
+
 -- ---------- wallet ----------
 
 -- An envelope's balances are what the server read when it built the envelope, and no envelope is

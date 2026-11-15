@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+123 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+133 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1579,6 +1579,149 @@ do
     check(frozenAt ~= nil and P.row("TestWatch", "frz_slot").frozenAt == nil and fz.lease("fz1").paidUntil == before,
         "a product registered before the start thaws there; a clock set back moves nothing")
     ctx.setNow(frozenAt + DAY)
+end
+
+-- 14. a plan change that stops charging a consent (2026-11-15): the owner is told stage by stage -
+-- paused, the reminder, due, half the grace, ended - once each (lease.told), only while online and
+-- placed; the source can preview how many consents a change would pause. Shared state in `tm`.
+local tm = {}
+do
+    tm.p1, tm.p2, tm.p3 = fakePlayer("tm1"), fakePlayer("tm2"), fakePlayer("tm3")
+    tm.p2.current = nil                        -- online, not placed in the world yet
+    ctx.setOnline({ ann, bob, boss, tm.p1, tm.p2 })
+    tm.reg = vm.registerProduct({ id = "terms_slot", nameKey = "K", defaults = defaults(), instant = true })
+    tm.vals = function(over)
+        local t = {}
+        for k, v in pairs(P.row("TestVM", "terms_slot").values) do t[k] = v end
+        for k, v in pairs(over or {}) do t[k] = v end
+        return t
+    end
+    tm.tick = function()
+        for _ = 1, 4 do
+            advance(1000)
+            fire("OnTickEvenPaused")
+        end
+    end
+    tm.heard = function(p)                     -- every entitlement.notice sent to p since the last clearSent
+        local out = {}
+        for _, r in ipairs(ctx.sent()) do
+            if r.player == p and r.command == "entitlement.notice" then out[#out + 1] = r.args end
+        end
+        return out
+    end
+    tm.codes = function(p)
+        local out = {}
+        for _, a in ipairs(tm.heard(p)) do out[#out + 1] = a.code end
+        return table.concat(out, ",")
+    end
+    tm.rent = function(u, consent)
+        L.credit(u, "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-tm-" .. u, reasonCode = "t" })
+        local r = vm.purchase(u, vm.quote(u, "terms_slot", "rental").quote.id)
+        if consent then
+            local s = vm.getEntitlement(u, "terms_slot")
+            vm.setAutoRenew(u, "terms_slot", true, s.entitlement.revision, s.plan.revision, r.orderId)
+        end
+        return r.orderId
+    end
+    tm.lease = function(u) return E.peek("TestVM", u, "terms_slot").rentals[1].lease end
+    tm.bal = function(u) return L.getBalance(u, "survivor").available end
+    for _, u in ipairs({ "tm1", "tm2", "tm3" }) do tm.rent(u, true) end
+    tm.rent("tm4", false)                      -- no consent: nothing to pause
+    tm.tick()
+    ctx.clearSent()
+    local r0 = P.row("TestVM", "terms_slot").revision
+    local plans0 = #eventsOf("entitlement.plan")
+    local audits0 = #EC.Export.auditEntries()
+    local pv = vm.previewPlan("terms_slot", tm.vals({ rentalPrice = 300 }))
+    local same = vm.previewPlan("terms_slot", tm.vals())
+    local grace = vm.previewPlan("terms_slot", tm.vals({ graceHours = 48, permanentPrice = 900 }))
+    check(tm.reg.ok and pv.ok and pv.updated == true and pv.revision == r0 and pv.pausedConsents == 3
+        and pv.pausedAccounts == 3 and pv.resumedConsents == 0 and pv.changed[1] == "rentalPrice"
+        and same.ok and same.updated == false and same.pausedConsents == 0 and #same.changed == 0
+        and grace.ok and grace.updated == true and grace.pausedConsents == 0,
+        "a preview counts the running consents a change would pause, on how many accounts; same terms or grace / permanent fields pause none")
+    check(vm.previewPlan("nope", tm.vals()).error == "unknown_product"
+        and vm.previewPlan("terms_slot", tm.vals({ rentalPrice = 0 })).field == "rentalPrice"
+        and vm.previewPlan("terms_slot", tm.vals({ rentalCurrency = "gold" })).ok == false
+        and P.row("TestVM", "terms_slot").revision == r0 and #eventsOf("entitlement.plan") == plans0
+        and #EC.Export.auditEntries() == audits0 and #tm.heard(tm.p1) == 0,
+        "a preview refuses what setPlan refuses and changes nothing: no revision, event, audit line or notice")
+    tm.set = vm.setPlan("terms_slot", tm.vals({ rentalPrice = 300 }), { expectedRevision = pv.revision })
+    tm.paid1 = tm.lease("tm1").paidUntil
+end
+do
+    tm.bal1 = tm.bal("tm1")
+    tm.tick()
+    local a = tm.heard(tm.p1)[1] or {}
+    check(tm.set.ok and tm.set.pausedConsents == 3 and tm.set.pausedAccounts == 3 and tm.set.resumedConsents == 0
+        and #tm.heard(tm.p1) == 1 and a.code == "paused" and a.sourceMod == "TestVM" and a.productId == "terms_slot"
+        and a.nameKey == "K" and a.sourceNameKey == "IGUI_Test_Source" and a.paidUntil == tm.paid1
+        and a.graceUntil == tm.paid1 + 24 * HOUR and tm.lease("tm1").told == 1,
+        "setPlan answers the preview's counts and the owner online hears paused once, with the product, source and end")
+    check(#tm.heard(tm.p2) == 0 and tm.lease("tm2").told == nil and tm.lease("tm3").told == nil
+        and #tm.heard(ann) == 0 and #tm.heard(bob) == 0,
+        "an owner not placed in the world or offline is not told yet (and not marked told); other players hear nothing")
+    tm.tick()
+    tm.p2.current = {}
+    tm.tick()
+    local overview = cmd(boss, "admin.entitlements", { action = "plans" })
+    check(#tm.heard(tm.p1) == 1 and tm.codes(tm.p2) == "paused" and tm.lease("tm2").told == 1
+        and (planRowIn(overview.plans, "terms_slot") or {}).pausedConsents == 3
+        and (planRowIn(overview.plans, "vehicle_slot") or {}).pausedConsents == nil,
+        "the same stage is not told twice; once placed the owner hears it; the admin overview counts the paused consents")
+end
+do
+    ctx.setNow(tm.paid1 - 24 * HOUR + 1000)   -- the reminder window
+    tm.tick()
+    ctx.setNow(tm.paid1 + 1000)               -- due, not renewed
+    tm.tick()
+    local due = tm.heard(tm.p1)[3] or {}
+    ctx.setNow(tm.paid1 + 12 * HOUR + 1000)   -- half the grace
+    tm.tick()
+    ctx.setNow(tm.paid1 + 24 * HOUR + 1000)   -- past grace
+    tm.tick()
+    tm.tick()
+    check(tm.codes(tm.p1) == "paused,paused,due,due,ended" and due.graceUntil == tm.paid1 + 24 * HOUR
+        and tm.lease("tm1").told == 5 and tm.bal("tm1") == tm.bal1 and tm.lease("tm1").paidUntil == tm.paid1,
+        "each stage is told once: the reminder, due with the grace end, half the grace, ended; nothing is charged")
+    fire("OnServerStarted")
+    tm.tick()
+    ctx.setOnline({ ann, bob, boss, tm.p1, tm.p2, tm.p3 })
+    tm.tick()
+    tm.tick()
+    check(#tm.heard(tm.p1) == 5 and tm.codes(tm.p3) == "ended" and tm.lease("tm3").told == 5,
+        "a restart tells nothing again; an owner offline the whole time hears only the stage reached, once, after login")
+end
+do
+    tm.o5 = tm.rent("tm1", true)               -- a second rental under the 300 plan (tm1's first stays)
+    tm.r5 = function() return E.peek("TestVM", "tm1", "terms_slot").rentals[2] end
+    ctx.clearSent()
+    local off = vm.previewPlan("terms_slot", tm.vals({ rentalEnabled = false }))
+    vm.setPlan("terms_slot", tm.vals({ rentalEnabled = false }))
+    tm.tick()
+    local still = vm.previewPlan("terms_slot", tm.vals({ autoRenewAllowed = false }))
+    local back = vm.previewPlan("terms_slot", tm.vals({ rentalEnabled = true }))
+    vm.setPlan("terms_slot", tm.vals({ rentalEnabled = true }))
+    tm.tick()
+    check(off.pausedConsents == 1 and still.pausedConsents == 0 and back.resumedConsents == 1
+        and tm.codes(tm.p1) == "paused,resumed" and tm.r5().lease.told == nil,
+        "rentals switched off pause a consent (expired ones are not counted, a paused one is not paused again); back on, the owner hears resumed")
+    vm.setPlan("terms_slot", tm.vals({ autoRenewAllowed = false }))
+    tm.tick()
+    vm.setPlan("terms_slot", tm.vals({ autoRenewAllowed = true }))
+    tm.tick()
+    vm.setPlan("terms_slot", tm.vals({ graceHours = 48, permanentPrice = 900 }))
+    tm.tick()
+    check(tm.codes(tm.p1) == "paused,resumed,paused,resumed" and #tm.heard(tm.p2) == 0,
+        "auto-renew not allowed pauses it too; grace or permanent fields tell nothing; only the owner hears")
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 350 }))
+    tm.tick()
+    advance(61000)
+    local s = vm.getEntitlement("tm1", "terms_slot")
+    local again = vm.setAutoRenew("tm1", "terms_slot", true, s.entitlement.revision, s.plan.revision, tm.o5)
+    tm.tick()
+    check(again.ok and tm.codes(tm.p1) == "paused,resumed,paused,resumed,paused" and tm.r5().lease.told == nil,
+        "a consent the owner gives again to the new terms is not announced as resumed")
 end
 
 ctx.setOnline({})

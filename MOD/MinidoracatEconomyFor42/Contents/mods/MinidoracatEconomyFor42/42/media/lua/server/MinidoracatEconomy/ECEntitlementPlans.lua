@@ -249,7 +249,8 @@ end
 -- The source hands over its whole plan. The same content (with a real plan in place) is a no-op
 -- that ignores expectedRevision, so a resend is idempotent by itself; a change needs the revision it
 -- was based on when one is given. Effects on contracts follow from the plan alone: consents pause
--- and resume by their recorded terms, rentals over a lowered limit by rentalLimit.
+-- and resume by their recorded terms (ECEntitlements tells their owners), rentals over a lowered
+-- limit by rentalLimit. A change answers how many consents it paused / resumed (P.effectOf).
 function P.set(modId, productId, values, opts)
     if not md then return { ok = false, error = "not_ready" } end
     local row = P.row(modId, productId)
@@ -262,6 +263,7 @@ function P.set(modId, productId, values, opts)
         return { ok = true, updated = false, revision = row.revision, changed = {} }
     end
     if expected ~= nil and expected ~= row.revision then return { ok = false, error = "stale_revision" } end
+    local effect = P.effectOf and P.effectOf(modId, productId, row.values, clean) or {}
     local before = row.values
     local changed = changedFields(before, clean)
     local revision = row.revision + 1
@@ -276,7 +278,25 @@ function P.set(modId, productId, values, opts)
             after = clean[f], revision = revision, admin = actor, origin = origin, reason = reason })
     end
     if P.onChanged then P.onChanged(modId, productId) end
-    return { ok = true, updated = true, revision = revision, changed = changed }
+    return { ok = true, updated = true, revision = revision, changed = changed, pausedConsents = effect.pausedConsents,
+        pausedAccounts = effect.pausedAccounts, resumedConsents = effect.resumedConsents }
+end
+
+-- What setPlan would do with these values, changing nothing: the same refusals up to the content
+-- check (no opts, so no stale_revision), `updated` / `changed` as setPlan would answer, and the
+-- consents it would pause / resume. `revision` is the plan's current one, for setPlan's
+-- expectedRevision.
+function P.preview(modId, productId, values)
+    if not md then return { ok = false, error = "not_ready" } end
+    local row = P.row(modId, productId)
+    if not row then return { ok = false, error = "unknown_product" } end
+    local clean, err, field = P.validate(values, sourceCurrencies(modId))
+    if not clean then return { ok = false, error = err, field = field } end
+    local same = not row.provisional and sameValues(clean, row.values)
+    local effect = (not same and P.effectOf) and P.effectOf(modId, productId, row.values, clean) or {}
+    return { ok = true, updated = not same, revision = row.revision, changed = same and {} or changedFields(row.values, clean),
+        pausedConsents = effect.pausedConsents or 0, pausedAccounts = effect.pausedAccounts or 0,
+        resumedConsents = effect.resumedConsents or 0 }
 end
 
 function P.get(modId, productId)

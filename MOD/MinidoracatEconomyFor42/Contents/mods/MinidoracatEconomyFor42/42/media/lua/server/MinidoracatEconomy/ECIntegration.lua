@@ -185,10 +185,11 @@ local function dailyRow(day, modId, create)
 end
 
 -- Entitlement methods every handle carries (rev 2; setPlan / getPlan / setPlanSource with
--- CAPABILITIES.setPlan). Resolved at call time, so a handle made before ECEntitlements finished
--- loading still reaches it; each call is bound to the source.
+-- CAPABILITIES.setPlan; previewPlan without a revision of its own - probe type(src.previewPlan)).
+-- Resolved at call time, so a handle made before ECEntitlements finished loading still reaches it;
+-- each call is bound to the source.
 G.ENTITLEMENT_METHODS = { "registerProduct", "getEntitlement", "quote", "purchase", "setAutoRenew",
-    "getOrder", "refund", "onEntitlementChanged", "setPlan", "getPlan", "setPlanSource" }
+    "getOrder", "refund", "onEntitlementChanged", "setPlan", "previewPlan", "getPlan", "setPlanSource" }
 
 -- Refusals are counted per source per day (panel statistics) and exported as
 -- integration.rejected; before ModData is ready there is nowhere to record them.

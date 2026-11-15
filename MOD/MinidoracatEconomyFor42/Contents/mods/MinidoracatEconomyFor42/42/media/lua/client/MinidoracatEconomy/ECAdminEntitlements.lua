@@ -13,7 +13,7 @@
 -- them is open at a time and a reply is matched against exactly that request.
 --   plans     every registered source product:
 --             { sourceMod, productId, nameKey, loaded, instant, plan, lastChange, source,
---               sourceNameKey?, sourceName? }
+--               sourceNameKey?, sourceName?, pausedConsents? (running consents the plan does not charge) }
 --   orders    { before? } -> one page of every account's orders, newest first, { orders, more }
 --   account   { username } -> every entitlement snapshot of that exact account
 --   refund    { username, sourceMod, productId, orderId, reason }
@@ -1090,6 +1090,9 @@ function Page:layoutOverview(g, ex, ey, ew, eh)
         { tr("Ent_L_GraceReminder"), getText(T .. "Ent_GraceReminder", num(plan.graceHours), num(plan.reminderHours)) },
         { tr("Ent_L_AutoRenew"), tr(plan.autoRenewAllowed == true and "Ent_Allowed" or "Ent_NotAllowed") },
     }
+    if (tonumber(entry.pausedConsents) or 0) > 0 then
+        rental[#rental + 1] = { tr("Ent_L_AutoPaused"), getText(T .. "Ent_PausedConsents", num(entry.pausedConsents)) }
+    end
     if iw >= CARD_MIN_W * 2 + PAD then
         local cw = math.floor((iw - PAD) / 2)
         local c1, h1 = opCard(ops, x, y, cw, tr("Ent_CardPermanent"), plan.permanentEnabled == true, permanent)
