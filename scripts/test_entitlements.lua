@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+135 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+140 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1721,24 +1721,131 @@ do
     vm.setPlan("terms_slot", tm.vals({ rentalEnabled = true }))
     tm.tick()
     check(off.pausedConsents == 1 and still.pausedConsents == 0 and back.resumedConsents == 1
-        and tm.codes(tm.p1) == "paused,resumed" and tm.r5().lease.told == nil,
-        "rentals switched off pause a consent (expired ones are not counted, a paused one is not paused again); back on, the owner hears resumed")
+        and tm.codes(tm.p1) == "paused_off,resumed" and tm.r5().lease.told == nil,
+        "rentals switched off pause a consent, told as stopped by the server (expired ones are not counted, a paused one is not paused again); back on, the owner hears resumed")
     vm.setPlan("terms_slot", tm.vals({ autoRenewAllowed = false }))
     tm.tick()
     vm.setPlan("terms_slot", tm.vals({ autoRenewAllowed = true }))
     tm.tick()
     vm.setPlan("terms_slot", tm.vals({ graceHours = 48, permanentPrice = 900 }))
     tm.tick()
-    check(tm.codes(tm.p1) == "paused,resumed,paused,resumed" and #tm.heard(tm.p2) == 0,
-        "auto-renew not allowed pauses it too; grace or permanent fields tell nothing; only the owner hears")
+    check(tm.codes(tm.p1) == "paused_off,resumed,paused_off,resumed" and #tm.heard(tm.p2) == 0,
+        "auto-renew not allowed pauses it too, told as stopped; grace or permanent fields tell nothing; only the owner hears")
     vm.setPlan("terms_slot", tm.vals({ rentalPrice = 350 }))
     tm.tick()
     advance(61000)
     local s = vm.getEntitlement("tm1", "terms_slot")
     local again = vm.setAutoRenew("tm1", "terms_slot", true, s.entitlement.revision, s.plan.revision, tm.o5)
     tm.tick()
-    check(again.ok and tm.codes(tm.p1) == "paused,resumed,paused,resumed,paused" and tm.r5().lease.told == nil,
+    check(again.ok and tm.codes(tm.p1) == "paused_off,resumed,paused_off,resumed,paused" and tm.r5().lease.told == nil,
         "a consent the owner gives again to the new terms is not announced as resumed")
+end
+do
+    tm.rent("tm6", true)                       -- offline owner; the source is off when grace ends
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 360 }))
+    tm.tick()
+    local l6 = tm.lease("tm6")
+    G.setSource("TestVM", { enabled = false }, "boss", "entitlement test")
+    ctx.setNow(l6.paidUntil + l6.G + 1000)
+    tm.tick()
+    local a6 = E.peek("TestVM", "tm6", "terms_slot").rentals[1].auto
+    G.setSource("TestVM", { enabled = true }, "boss", "entitlement test")
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 350 }))
+    local bal6 = tm.bal("tm6")
+    advance(E.SYSTEM_RETRY_MS + 1000)
+    tm.tick()
+    check(a6.on == false and a6.why == "lapsed_terms" and offLinesOf("tm6") == 1 and tm.bal("tm6") == bal6
+        and #E.peek("TestVM", "tm6", "terms_slot").rentals == 1,
+        "a consent the plan stopped lapses when grace ends even while its source is off; the plan back later charges nothing")
+end
+do
+    tm.rent("tm7", true)                       -- offline owner; the lapse never reaches a save
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 370 }))
+    tm.tick()
+    local saved = proofSnapshot()
+    local l7 = tm.lease("tm7")
+    ctx.setNow(l7.paidUntil + l7.G + 1000)
+    tm.tick()
+    proofRestartFrom(saved)                    -- the save still has the consent on; the journal has the lapse
+    tm.tick()
+    local kept = E.peek("TestVM", "tm7", "terms_slot").rentals[1] or {}
+    tm.p7 = fakePlayer("tm7")
+    ctx.clearSent()
+    ctx.setOnline({ ann, bob, boss, tm.p1, tm.p2, tm.p3, tm.p7 })
+    tm.tick()
+    tm.tick()
+    check((kept.auto or {}).on == false and kept.auto.why == "lapsed_terms" and offLinesOf("tm7") == 1
+        and tm.codes(tm.p7) == "ended" and #E.peek("TestVM", "tm7", "terms_slot").rentals == 0,
+        "a lapse replayed from the journal after a crash keeps the rental until its offline owner hears ended")
+end
+do
+    local SLOW = "terms_slow"                  -- a product that waits for saves (not instant)
+    local reg = vm.registerProduct({ id = SLOW, nameKey = "K", defaults = defaults() })
+    local vs = function(over)
+        local t = {}
+        for k, v in pairs(P.row("TestVM", SLOW).values) do t[k] = v end
+        for k, v in pairs(over or {}) do t[k] = v end
+        return t
+    end
+    local pn = fakePlayer("tn1")
+    ctx.setOnline({ ann, bob, boss, pn })
+    L.credit("tn1", "survivor", 2000, "SYSTEM_MINT", { requestId = "ent-tn1", reasonCode = "t" })
+    vm.purchase("tn1", vm.quote("tn1", SLOW, "rental").quote.id)
+    confirmAll()                               -- the payment is saved: the period starts
+    confirmAll()                               -- the activation is saved
+    local s = vm.getEntitlement("tn1", SLOW)
+    vm.setAutoRenew("tn1", SLOW, true, s.entitlement.revision, s.plan.revision, rent1(s.entitlement).id)
+    confirmAll()                               -- the consent is saved
+    ctx.clearSent()
+    vm.setPlan(SLOW, vs({ autoRenewAllowed = false }))
+    tm.tick()
+    local snap = proofSnapshot()
+    proofRestartFrom(snap)
+    tm.tick()
+    local savedTold = snap.entitlements.rows.TestVM.tn1[SLOW].rentals[1].lease.told
+    check(reg.ok and savedTold == 1 and tm.codes(pn) == "paused_off",
+        "the stage told is in the world save: a restart from it does not tell the online owner again")
+    ctx.setOnline({ ann, bob, boss })
+    local ln = rent1(E.peek("TestVM", "tn1", SLOW)).lease
+    ctx.setNow(ln.paidUntil + ln.G + 1000)
+    tm.tick()
+    local offLine = offLinesOf("tn1")          -- the journal drops lines once their state is saved
+    confirmAll()                               -- the off consent is saved
+    tm.tick()
+    local row = E.peek("TestVM", "tn1", SLOW)
+    local kept = #row.rentals == 1 and row.rentals[1].auto.why == "lapsed_terms" and (row.notice or {}).error == "autorenew_not_allowed"
+    ctx.setOnline({ ann, bob, boss, pn })
+    tm.tick()
+    tm.tick()
+    check(kept and offLine == 1 and tm.codes(pn) == "paused_off,ended_off"
+        and #E.peek("TestVM", "tn1", SLOW).rentals == 0,
+        "a saved consent the plan stopped lapses with autorenew_not_allowed; the rental waits for its offline owner, who hears ended as stopped by the server")
+end
+do
+    local vals = {}
+    for k, v in pairs(P.row("TestWatch", "frz_slot").values) do vals[k] = v end
+    local r9 = fz.rent("fz9")                  -- offline owner of a product that freezes while its mod is away
+    local s9 = fz.src.getEntitlement("fz9", "frz_slot")
+    fz.src.setAutoRenew("fz9", "frz_slot", true, s9.entitlement.revision, s9.plan.revision, r9.orderId)
+    fz.tick()
+    vals.rentalPrice = vals.rentalPrice + 10
+    fz.src.setPlan("frz_slot", vals)
+    local l9 = fz.lease("fz9")
+    ctx.setNow(l9.paidUntil + l9.G + 1000)
+    fz.tick()
+    fz.restart({})
+    fz.tick(61000)                             -- frozen
+    fz.tick(3 * DAY)
+    fz.register("frz_slot")                    -- back: the lease moves by the frozen time
+    fz.tick()
+    local kept = #E.peek("TestWatch", "fz9", "frz_slot").rentals
+    local p9 = fakePlayer("fz9")
+    ctx.clearSent()
+    ctx.setOnline({ ann, bob, boss, p9 })
+    fz.tick()
+    fz.tick()
+    check(kept == 1 and tm.codes(p9) == "ended" and #E.peek("TestWatch", "fz9", "frz_slot").rentals == 0,
+        "a lapsed rental of a product frozen and back keeps waiting for its owner to hear ended")
 end
 
 ctx.setOnline({})

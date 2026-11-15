@@ -25,7 +25,9 @@
 --   only when above 1. Auto-renew always pays one period.
 --   A rental is a contract: each period records the terms it was paid under, and an auto-renew
 --   consent records the money terms the player agreed to (unit price, currency, period). Renewals run
---   only while the plan still offers exactly those; any other plan edit leaves the consent alone.
+--   only while the plan still offers exactly those with rentals and auto-renew on (planAllows); other
+--   plan edits (purchase fields, grace, reminder) leave the consent alone, and a lower rentalLimit
+--   waits like missing money (limit_reached).
 --   Rentals are independent of each other; usable is perm + the units of every live rental, and all
 --   rentals together stay within plan.rentalLimit.
 --
@@ -492,9 +494,10 @@ local function consentOff(ref, row, r, why, now, journaled)
         wait(ref)
     end
     if offOwed[k] == nil then return true end
+    -- the line keeps a plan lapse (tellPaused / ended need it after a crash); older readers ignore `why`
     if journaled or verdict(r.auto, S.durableStatus().seq) == "confirmed" or appendJournal({ k = "off",
         realm = root.meta.realmId, src = ref.m, acct = ref.u, prod = ref.p, rental = r.id, gen = r.auto.gen,
-        at = now }) then
+        why = r.auto.why == "lapsed_terms" and "lapsed_terms" or nil, at = now }) then
         offOwed[k] = nil
         return true
     end
@@ -538,7 +541,12 @@ local function loadJournal(now)
     journal.state, journal.lines = "ok", #lines
     for _, rec in ipairs(offs) do
         local row = rowOf(rec.src, rec.acct, rec.prod)
-        consentOff({ m = rec.src, u = rec.acct, p = rec.prod }, row, rentalOf(row, rec.rental), "cancel_replayed", now, true)
+        local r = rentalOf(row, rec.rental)
+        local why = "cancel_replayed"
+        if rec.why == "lapsed_terms" and r.lease then
+            why, r.lease.lapsed = "lapsed_terms", true
+        end
+        consentOff({ m = rec.src, u = rec.acct, p = rec.prod }, row, r, why, now, true)
     end
     for _, rec in ipairs(acts) do
         local ref = { m = rec.src, u = rec.acct, p = rec.prod }
@@ -1471,18 +1479,25 @@ end
 -- period, rentals stopped, auto-renew no longer allowed), one stage at a time, each once per
 -- period: lease.told (bookkeeping of this lease only, like phase / reminded) is the last stage
 -- the owner heard; a new period starts with none. Stages: 1 paused, 2 inside the reminder window,
--- 3 due and not renewed, 4 half of grace gone, 5 ended. A player told it is paused hears once
--- that it resumed when the plan offers the agreed terms again. Only an owner who is online and
+-- 3 due and not renewed, 4 half of grace gone (also past grace until the lapse runs), 5 ended
+-- (only once the consent lapsed). A player told it is paused hears once that it resumed when the
+-- plan offers the agreed terms again. Only an owner who is online and
 -- placed in the world is told (a toast during the loading screen is lost); the next visit tries
 -- again, so an offline owner hears the stage reached by then, once, after login.
 -- ponytail: one toast per rental (at most E.RENTALS_MAX per product per visit); aggregate if
 -- hosts sell many small rentals.
 local TOLD_CODE = { "paused", "paused", "due", "due", "ended" }
--- The plan lapsed this consent at the end of this very period (a period paid since starts later).
+-- The plan lapsed this consent at the end of this very period: lapse marks the lease (a period paid
+-- since is a new lease; thaw copies the mark along with the dates).
 local function lapsedHere(auto, lease)
-    return auto ~= nil and auto.on == false and auto.why == "lapsed_terms" and (auto.at or 0) >= lease.paidUntil + lease.G
+    return auto ~= nil and auto.on == false and auto.why == "lapsed_terms" and lease.lapsed == true
 end
-local function tellPaused(ref, r, planRow, now)
+-- The plan stopped auto-renew itself (rentals off or auto-renew not allowed): agreeing again cannot help.
+local function renewStopped(plan)
+    return not (plan.rentalEnabled == true and plan.autoRenewAllowed == true)
+end
+-- `seen` is shared by the rentals of one row (one owner): the online lookup runs once per visit.
+local function tellPaused(ref, r, planRow, now, seen)
     local lease, auto = r.lease, r.auto
     if r.pend then return end                       -- a payment on the way: its period says the rest
     -- a consent the plan lapsed stays at "ended" until its owner heard it (ended() keeps the rental)
@@ -1498,9 +1513,7 @@ local function tellPaused(ref, r, planRow, now)
         if lease.told == nil then return end
     else
         local due = lease.paidUntil
-        if now >= due + lease.G then
-            stage = 5
-        elseif now >= due + lease.G / 2 then
+        if now >= due + lease.G / 2 then           -- "ended" waits for the lapse itself
             stage = 4
         elseif now >= due then
             stage = 3
@@ -1511,21 +1524,39 @@ local function tellPaused(ref, r, planRow, now)
         end
     end
     if stage > 0 and stage <= (lease.told or 0) then return end
-    local player = S.onlineLogin(ref.u)
+    if seen.player == nil then seen.player = S.onlineLogin(ref.u) or false end
+    local player = seen.player
     if not player then return end
     local ok, placed = pcall(function() return player:getCurrentSquare() ~= nil end)
     if not (ok and placed) then return end
     lease.told = stage > 0 and stage or nil
-    S.reply(player, "entitlement.notice", sourceLabel({ code = TOLD_CODE[stage] or "resumed", sourceMod = ref.m,
+    local code = TOLD_CODE[stage] or "resumed"
+    if stage > 0 and renewStopped(planRow.values) then code = code .. "_off" end
+    S.reply(player, "entitlement.notice", sourceLabel({ code = code, sourceMod = ref.m,
         productId = ref.p, nameKey = planRow.nameKey, rental = r.id, paidUntil = lease.paidUntil,
         graceUntil = lease.paidUntil + lease.G }, ref.m))
 end
 
-local LAPSE_WHY = { limit_reached = "lapsed_limit", terms_changed = "lapsed_terms" }
+local LAPSE_WHY = { limit_reached = "lapsed_limit", terms_changed = "lapsed_terms", autorenew_not_allowed = "lapsed_terms" }
 local function lapse(ref, row, r, err, now)
+    if LAPSE_WHY[err] == "lapsed_terms" then r.lease.lapsed = true end
     -- journaled like a cancel; owed while it cannot be written
     consentOff(ref, row, r, LAPSE_WHY[err] or "lapsed_funds", now)
     row.notice = { code = "renewal_failed", at = now, error = err, rental = r.id }
+end
+
+-- At the end of grace a consent the plan no longer charges lapses like one without money, and the
+-- rental ends (user 2026-11-15). Before retry waits, system pauses and the save of the consent: the
+-- plan alone decides, and a consent that lapsed can never be charged.
+local function termsLapse(ref, row, r, planRow, now)
+    local auto = r.auto
+    if not (auto and auto.on and r.pend == nil and r.lease) or planAllows(auto, planRow.values)
+        or now < r.lease.paidUntil + r.lease.G then
+        return false
+    end
+    lapse(ref, row, r, renewStopped(planRow.values) and "autorenew_not_allowed" or "terms_changed", now)
+    changed(ref.m, ref.u, ref.p)
+    return true
 end
 
 -- A rental due now under a consent to the money terms the plan offers now, with no payment pending.
@@ -1546,17 +1577,8 @@ local function tryRenew(ref, row, r, now, w)
         nextRetry[k] = now + E.SYSTEM_RETRY_MS
         return
     end
-    -- paused_terms: the snapshot says so; nothing is charged on terms nobody agreed to. At the end of
-    -- grace such a consent lapses like one without money, and the rental ends (user 2026-11-15)
-    if not consented(r, planRow, now, w, spec.instant) then
-        local auto = r.auto
-        if auto and auto.on and r.pend == nil and not planAllows(auto, planRow.values)
-            and now >= r.lease.paidUntil + r.lease.G then
-            lapse(ref, row, r, "terms_changed", now)
-            changed(ref.m, ref.u, ref.p)
-        end
-        return
-    end
+    -- paused_terms: the snapshot says so; nothing is charged on terms nobody agreed to
+    if not consented(r, planRow, now, w, spec.instant) then return end
     local rev, auto = row.rev, r.auto
     local terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w, id)
     if terms then
@@ -1627,6 +1649,7 @@ local function visitLease(ref, now, w)
     -- a renewal replaces the row: walk the ids and read the row again for each
     local ids = {}
     for i, r in ipairs(row.rentals) do ids[i] = r.id end
+    local seen = {}
     for _, id in ipairs(ids) do
         row = rowOf(ref.m, ref.u, ref.p)
         local r = rentalOf(row, id)
@@ -1651,9 +1674,11 @@ local function visitLease(ref, now, w)
                 row.notice = { code = code, at = now, rental = id }
                 changed(ref.m, ref.u, ref.p)
             end
-            if planRow then tellPaused(ref, r, planRow, now) end
+            if planRow then tellPaused(ref, r, planRow, now, seen) end
             local auto = r.auto
-            if auto and auto.on and not r.pend and now >= lease.paidUntil and (instant or verdict(auto, w) == "confirmed") then
+            local lapsed = planRow ~= nil and termsLapse(ref, row, r, planRow, now)
+            if not lapsed and auto and auto.on and not r.pend and now >= lease.paidUntil
+                and (instant or verdict(auto, w) == "confirmed") then
                 tryRenew(ref, row, r, now, w)
             end
         end

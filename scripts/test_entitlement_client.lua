@@ -1308,7 +1308,12 @@ end)()
     reply("entitlement.notice", { code = "paused", sourceMod = SRC, productId = PROD, paidUntil = 1000 })
     reply("entitlement.notice", "junk")
     check(#toasts == 1, "notice: a code without a translation or a malformed notice shows nothing")
+    known["IGUI_MinidoracatEconomy_Ent_Toast_paused_off"] = "off"
+    reply("entitlement.notice", { code = "paused_off", sourceMod = SRC, productId = PROD, paidUntil = 1000, graceUntil = 2000 })
+    check(#toasts == 2 and toasts[2]:sub(-6) == "|t1000",
+        "notice: a pause the server made itself names the period's end like a paused notice")
     C.toast, C.UI, known["IGUI_MinidoracatEconomy_Ent_Toast_due"] = nil, nil, nil
+    known["IGUI_MinidoracatEconomy_Ent_Toast_paused_off"] = nil
 end)()
 
 print(string.format("test_entitlement_client: %d checks, %d failed", checks, failures))

@@ -329,10 +329,11 @@ C.handlers["entitlement.changed"] = function(args)
 end
 
 -- entitlement.notice (owner only, ECEntitlements tellPaused): an auto-renew consent the plan stopped
--- charging - paused, due and not renewed, ended - or charging again (resumed). A toast naming the
--- product, the source whose window takes a new consent and, while it matters, the period's end
--- (paused) or the grace end (due). A code the translation files do not know shows nothing.
-local NOTICE_TIME = { paused = "paidUntil", due = "graceUntil" }
+-- charging - paused, due and not renewed, ended; `_off` when the plan stopped auto-renew itself, so a
+-- new consent cannot help - or charging again (resumed). A toast naming the product, the source
+-- whose window takes a new consent or a renewal and, while it matters, the period's end (paused) or
+-- the grace end (due). A code the translation files do not know shows nothing.
+local NOTICE_TIME = { paused = "paidUntil", due = "graceUntil", paused_off = "paidUntil", due_off = "graceUntil" }
 C.handlers["entitlement.notice"] = function(args)
     if type(args) ~= "table" or type(args.code) ~= "string" then return end
     local ms = NOTICE_TIME[args.code] and tonumber(args[NOTICE_TIME[args.code]])
