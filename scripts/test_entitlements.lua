@@ -1686,10 +1686,10 @@ do
     check(tm.codes(tm.p1) == "paused,paused,due,due,ended" and due.graceUntil == tm.paid1 + 24 * HOUR
         and tm.bal("tm1") == tm.bal1 and #E.peek("TestVM", "tm1", "terms_slot").rentals == 0 and offLinesOf("tm1") == 1,
         "each stage is told once: the reminder, due with the grace end, half the grace, ended; nothing is charged; the consent lapses with its off line and the rental ends")
-    local kept = E.peek("TestVM", "tm3", "terms_slot").rentals[1] or {}
-    check(tm.lauto.on == true and (kept.auto or {}).on == false and kept.auto.why == "lapsed_terms" and kept.lease.told == nil
+    local row3 = E.peek("TestVM", "tm3", "terms_slot")
+    check(tm.lauto.on == true and #row3.rentals == 0 and #(row3.ends or {}) == 1 and row3.ends[1].code == "ended"
         and offLinesOf("tm3") == 1 and #E.peek("TestVM", "tm2", "terms_slot").rentals == 0,
-        "an offline owner's lapsed rental stays until the owner hears it ended")
+        "an offline owner's lapsed rental leaves at the end of grace; the ended notice waits on the row for the owner")
     fire("OnServerStarted")
     tm.tick()
     ctx.setOnline({ ann, bob, boss, tm.p1, tm.p2, tm.p3 })
@@ -1748,15 +1748,15 @@ do
     G.setSource("TestVM", { enabled = false }, "boss", "entitlement test")
     ctx.setNow(l6.paidUntil + l6.G + 1000)
     tm.tick()
-    local a6 = E.peek("TestVM", "tm6", "terms_slot").rentals[1].auto
+    local row6 = E.peek("TestVM", "tm6", "terms_slot")
+    local gone6 = #row6.rentals == 0 and (row6.ends or {})[1] ~= nil and row6.ends[1].code == "ended"
     G.setSource("TestVM", { enabled = true }, "boss", "entitlement test")
     vm.setPlan("terms_slot", tm.vals({ rentalPrice = 350 }))
     local bal6 = tm.bal("tm6")
     advance(E.SYSTEM_RETRY_MS + 1000)
     tm.tick()
-    check(a6.on == false and a6.why == "lapsed_terms" and offLinesOf("tm6") == 1 and tm.bal("tm6") == bal6
-        and #E.peek("TestVM", "tm6", "terms_slot").rentals == 1,
-        "a consent the plan stopped lapses when grace ends even while its source is off; the plan back later charges nothing")
+    check(gone6 and offLinesOf("tm6") == 1 and tm.bal("tm6") == bal6,
+        "a consent the plan stopped lapses when grace ends even while its source is off, and the rental leaves; the plan back later charges nothing")
 end
 do
     tm.rent("tm7", true)                       -- offline owner; the lapse never reaches a save
@@ -1767,8 +1767,8 @@ do
     ctx.setNow(l7.paidUntil + l7.G + 1000)
     tm.tick()
     proofRestartFrom(saved)                    -- the save still has the consent on; the journal has the lapse
-    tm.tick()
     local kept = E.peek("TestVM", "tm7", "terms_slot").rentals[1] or {}
+    tm.tick()
     tm.p7 = fakePlayer("tm7")
     ctx.clearSent()
     ctx.setOnline({ ann, bob, boss, tm.p1, tm.p2, tm.p3, tm.p7 })
@@ -1776,7 +1776,7 @@ do
     tm.tick()
     check((kept.auto or {}).on == false and kept.auto.why == "lapsed_terms" and offLinesOf("tm7") == 1
         and tm.codes(tm.p7) == "ended" and #E.peek("TestVM", "tm7", "terms_slot").rentals == 0,
-        "a lapse replayed from the journal after a crash keeps the rental until its offline owner hears ended")
+        "a lapse replayed from the journal after a crash still leaves its offline owner an ended notice")
 end
 do
     tm.p8 = fakePlayer("tm8")
@@ -1826,24 +1826,21 @@ do
         "an owner away when the plan came back and renewed hears resumed after login: the last word was not 'no charge'")
 end
 do
-    local o11 = tm.rent("tm11", true)          -- offline owner: lapse, renew by hand, refund that period
+    tm.rent("tm11", true)                      -- offline owner who stays away past the notice's keep
     vm.setPlan("terms_slot", tm.vals({ rentalPrice = 400 }))
     tm.tick()
     local l11 = tm.lease("tm11")
     ctx.setNow(l11.paidUntil + l11.G + 1000)
     tm.tick()
-    local byHand = vm.purchase("tm11", vm.quote("tm11", "terms_slot", "rental", nil, o11).quote.id)
+    local owed = #(E.peek("TestVM", "tm11", "terms_slot").ends or {})
+    advance(E.ENDED_KEEP_MS + 1000)
     tm.tick()
-    local refund = vm.refund("tm11", "terms_slot", byHand.orderId, { reason = "test" })
-    tm.tick()
-    local back = tm.lease("tm11")
     tm.p11 = fakePlayer("tm11")
+    ctx.clearSent()
     ctx.setOnline({ ann, bob, boss, tm.p9, tm.p10, tm.p11 })
     tm.tick()
-    tm.tick()
-    check(byHand.ok and refund.ok and back.paidUntil == l11.paidUntil and back.lapsed == "terms_changed"
-        and tm.codes(tm.p11) == "ended" and #E.peek("TestVM", "tm11", "terms_slot").rentals == 0,
-        "a refund back to a lapsed period brings its mark back: the rental waits for its offline owner to hear ended")
+    check(owed == 1 and E.peek("TestVM", "tm11", "terms_slot").ends == nil and tm.codes(tm.p11) == "",
+        "an ended notice its owner never logged in for is dropped after E.ENDED_KEEP_MS")
     local pv = vm.registerProduct({ id = "terms_prov", nameKey = "K", defaults = defaults(), instant = true })
     tm.p12 = fakePlayer("tm12")
     ctx.setOnline({ ann, bob, boss, tm.p12 })
@@ -1896,14 +1893,14 @@ do
     confirmAll()                               -- the off consent is saved
     tm.tick()
     local row = E.peek("TestVM", "tn1", SLOW)
-    local kept = #row.rentals == 1 and row.rentals[1].auto.why == "lapsed_terms" and (row.notice or {}).error == "autorenew_not_allowed"
+    local kept = #row.rentals == 0 and ((row.ends or {})[1] or {}).code == "ended_off" and (row.notice or {}).error == "autorenew_not_allowed"
     vm.setPlan(SLOW, vs({ autoRenewAllowed = true }))   -- back on before its owner logs in
     ctx.setOnline({ ann, bob, boss, pn })
     tm.tick()
     tm.tick()
     check(kept and offLine == 1 and tm.codes(pn) == "paused_off,ended_off"
         and #E.peek("TestVM", "tn1", SLOW).rentals == 0,
-        "a saved consent the plan stopped lapses with autorenew_not_allowed; the rental waits for its offline owner, who hears ended as stopped by the server even after the plan is back")
+        "a saved consent the plan stopped lapses with autorenew_not_allowed and the rental leaves; its offline owner hears ended as stopped by the server even after the plan is back")
     L.credit("tn2", "survivor", 2000, "SYSTEM_MINT", { requestId = "ent-tn2", reasonCode = "t" })
     vm.purchase("tn2", vm.quote("tn2", SLOW, "rental").quote.id)
     confirmAll()
@@ -1939,7 +1936,7 @@ do
     local k3 = rent1(E.peek("TestVM", "tn3", SLOW))
     confirmAll()
     tm.tick()
-    local kept3 = #E.peek("TestVM", "tn3", SLOW).rentals == 1
+    local kept3 = #E.peek("TestVM", "tn3", SLOW).rentals == 0 and E.peek("TestVM", "tn3", SLOW).ends ~= nil
     local p3 = fakePlayer("tn3")
     ctx.setOnline({ ann, bob, boss, p3 })
     tm.tick()
@@ -1947,7 +1944,7 @@ do
     check(renewing and l4.paidUntil > l3.paidUntil and k3.lease.paidUntil == l4.paidUntil
         and k3.lease.lapsed == "terms_changed" and kept3 and tm.codes(p3) == "ended"
         and #E.peek("TestVM", "tn3", SLOW).rentals == 0,
-        "a lapse replayed with the activation of its own period marks that period: the rental waits for its offline owner")
+        "a lapse replayed with the activation of its own period marks that period: once saved the rental leaves and its offline owner hears ended")
 end
 do
     local vals = {}
@@ -1966,14 +1963,14 @@ do
     fz.tick(3 * DAY)
     fz.register("frz_slot")                    -- back: the lease moves by the frozen time
     fz.tick()
-    local kept = #E.peek("TestWatch", "fz9", "frz_slot").rentals
+    local owed = E.peek("TestWatch", "fz9", "frz_slot").ends ~= nil
     local p9 = fakePlayer("fz9")
     ctx.clearSent()
     ctx.setOnline({ ann, bob, boss, p9 })
     fz.tick()
     fz.tick()
-    check(kept == 1 and tm.codes(p9) == "ended" and #E.peek("TestWatch", "fz9", "frz_slot").rentals == 0,
-        "a lapsed rental of a product frozen and back keeps waiting for its owner to hear ended")
+    check(owed and tm.codes(p9) == "ended" and #E.peek("TestWatch", "fz9", "frz_slot").rentals == 0,
+        "the ended notice of a product frozen and back still reaches its owner")
 end
 
 ctx.setOnline({})

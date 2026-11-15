@@ -13,13 +13,15 @@
 --           rentals = { Rental, ... },   -- creation order, <= RENTALS_MAX; an ended one is pruned
 --           orders = { { id, kind, q, amt, cur, tr, rental?, periods?, auto?, renewal?, st, epoch, seq, ts, tx,
 --                        activatedAt?, prev?, rf? }, ... newest first, <= ORDERS_KEEP },
---           notice = { code, at, error?, rental? } | nil }
+--           notice = { code, at, error?, rental? } | nil,
+--           ends = { { rental, code, at, paidUntil, graceUntil, nameKey }, ... } | nil }   -- "ended"
+--                  owed to the owner of rentals the plan lapsed, which left the row already
 --   Rental = { id,                       -- the order id that created it
 --              q,                        -- its units, fixed for its whole life
 --              lease = { price, D, G, R, cur, amt, tr, k?, start, paidUntil, cycle, last, phase?, reminded?, told?, lapsed? } | nil,
---                (lapsed: the error code of a plan lapse at the end of this period; ended() keeps the
---                rental until its owner heard it. told: the paused-terms stage its owner heard; 0 on
---                an auto-renewal of a period whose owner never heard resumed, owed on login)
+--                (lapsed: the error code of a plan lapse at the end of this period; a rental ending
+--                with it leaves an ended notice in row.ends. told: the paused-terms stage its owner
+--                heard; 0 on an auto-renewal of a period whose owner never heard resumed, owed on login)
 --              pend  = { o, q, price, D, G, R, cur, amt, tr, k?, renewal?, auto?, epoch, seq, ts, tx } | nil,
 --              auto  = { on, gen, price?, cur?, D?, tr, rev, why?, epoch, seq, at } | nil }
 --   D/G/R are milliseconds (period, grace, reminder); price is the rent per unit; tr is the plan
@@ -134,6 +136,7 @@ E.CLOSED_KEEP = 256
 -- ponytail: a fixed wait for late registrations before an absent product counts as frozen; one that
 -- registers inside it is never frozen, and the wait counts against its leases like any other time.
 E.FREEZE_WINDOW_MS = 60000
+E.ENDED_KEEP_MS = 30 * 86400000   -- an "ended" notice an owner never logged in for is dropped after this
 
 local root, ent = nil, nil          -- ModData root, root.entitlements
 local quotes = {}                    -- orderId -> live quote (RAM, this process only)
@@ -1492,39 +1495,35 @@ end
 -- period, rentals stopped, auto-renew no longer allowed), one stage at a time, each once per
 -- period: lease.told (bookkeeping of this lease only, like phase / reminded) is the last stage
 -- the owner heard; a new period starts with none. Stages: 1 paused, 2 inside the reminder window,
--- 3 due and not renewed, 4 half of grace gone, 5 ended
--- (only once the consent lapsed and its off line is in the journal). A player told it is paused hears once that it resumed when the
--- plan offers the agreed terms again. Only an owner who is online and
+-- 3 due and not renewed, 4 half of grace gone. A player told it is paused hears once that it
+-- resumed when the plan offers the agreed terms again. The lapse itself is told by tellEnded once
+-- the rental left the row. Only an owner who is online and
 -- placed in the world is told (a toast during the loading screen is lost); the next visit tries
 -- again, so an offline owner hears the stage reached by then, once, after login.
 -- ponytail: one toast per rental (at most E.RENTALS_MAX per product per visit); aggregate if
 -- hosts sell many small rentals.
-local TOLD_CODE = { "paused", "paused", "due", "due", "ended" }
--- The plan lapsed this consent at the end of this very period: lapse marks the lease with its cause
--- (a period paid since is a new lease; thaw copies the mark along with the dates).
-local function lapsedHere(auto, lease)
-    return auto ~= nil and auto.on == false and auto.why == "lapsed_terms" and lease.lapsed ~= nil
-end
+local TOLD_CODE = { "paused", "paused", "due", "due" }
 -- The plan stopped auto-renew itself (rentals off or auto-renew not allowed): agreeing again cannot help.
 local function renewStopped(plan)
     return not (plan.rentalEnabled == true and plan.autoRenewAllowed == true)
 end
 -- `seen` is shared by the rentals of one row (one owner): the online lookup runs once per visit.
+local function ownerPlaced(ref, seen)
+    if seen.player == nil then seen.player = S.onlineLogin(ref.u) or false end
+    local player = seen.player
+    if not player then return nil end
+    local ok, placed = pcall(function() return player:getCurrentSquare() ~= nil end)
+    return ok and placed and player or nil
+end
 local function tellPaused(ref, r, planRow, now, seen)
     local lease, auto = r.lease, r.auto
     if r.pend then return end                       -- a payment on the way: its period says the rest
-    -- a consent the plan lapsed stays at "ended" until its owner heard it (ended() keeps the rental)
-    local lapsed = lapsedHere(auto, lease)
-    if not (auto and auto.on) and not lapsed then
+    if not (auto and auto.on) then
         lease.told = nil
         return
     end
     local stage = 0                                 -- 0: the plan charges it again
-    if lapsed then
-        -- "ended" only once the lapse is in the journal: before that a crash brings the consent back
-        if offOwed[rentalKey(ref, r.id)] then return end
-        stage = 5
-    elseif planAllows(auto, planRow.values) then
+    if planAllows(auto, planRow.values) then
         if lease.told == nil then return end
     else
         local due = lease.paidUntil
@@ -1540,22 +1539,36 @@ local function tellPaused(ref, r, planRow, now, seen)
         end
     end
     if stage > 0 and stage <= (lease.told or 0) then return end
-    if seen.player == nil then seen.player = S.onlineLogin(ref.u) or false end
-    local player = seen.player
+    local player = ownerPlaced(ref, seen)
     if not player then return end
-    local ok, placed = pcall(function() return player:getCurrentSquare() ~= nil end)
-    if not (ok and placed) then return end
     lease.told = stage > 0 and stage or nil
     local code = TOLD_CODE[stage] or "resumed"
-    -- ended tells the cause the lapse recorded; the other stages the plan as it stands
-    if (lapsed and lease.lapsed == "autorenew_not_allowed") or (not lapsed and stage > 0 and renewStopped(planRow.values)) then
-        code = code .. "_off"
-    end
+    if stage > 0 and renewStopped(planRow.values) then code = code .. "_off" end
     S.reply(player, "entitlement.notice", sourceLabel({ code = code, sourceMod = ref.m,
         productId = ref.p, nameKey = planRow.nameKey, rental = r.id, paidUntil = lease.paidUntil,
         graceUntil = lease.paidUntil + lease.G }, ref.m))
 end
 
+-- "ended" for the rentals the plan lapsed. The rental leaves the row when grace ends whether or not
+-- its owner is around (user 2026-11-16: a rental must not stay held for an owner who never comes
+-- back); the notice waits here instead, for E.ENDED_KEEP_MS at most (row.notice still shows the
+-- lapse on the rentals page).
+local function tellEnded(ref, row, now, seen)
+    local keep = {}
+    for _, e in ipairs(row.ends) do
+        if now - e.at < E.ENDED_KEEP_MS then
+            local player = ownerPlaced(ref, seen)
+            if player then
+                S.reply(player, "entitlement.notice", sourceLabel({ code = e.code, sourceMod = ref.m,
+                    productId = ref.p, nameKey = e.nameKey, rental = e.rental, paidUntil = e.paidUntil,
+                    graceUntil = e.graceUntil }, ref.m))
+            else
+                keep[#keep + 1] = e
+            end
+        end
+    end
+    row.ends = #keep > 0 and keep or nil
+end
 local LAPSE_WHY = { limit_reached = "lapsed_limit", terms_changed = "lapsed_terms", autorenew_not_allowed = "lapsed_terms" }
 local function lapse(ref, row, r, err, now)
     if LAPSE_WHY[err] == "lapsed_terms" then r.lease.lapsed = err end
@@ -1644,23 +1657,32 @@ local function tryRenew(ref, row, r, now, w)
 end
 
 -- A rental that ended for good: past grace, nothing paid on the way, no consent that could still
--- charge it (off and proven saved, no off line owed), and, when the plan lapsed it, its owner told.
--- Nothing is left to show or to renew. An instant product's off consent needs no save: its off line
--- is in the journal, so a crash brings the rental back with the line that switches it off again, and
--- it ends again.
+-- charge it (off and proven saved, no off line owed). Nothing is left to show or to renew. An
+-- instant product's off consent needs no save: its off line is in the journal, so a crash brings
+-- the rental back with the line that switches it off again, and it ends again.
 local function ended(ref, r, now, w, instant)
     if r.pend or leaseLive(r.lease, now) then return false end
     local auto = r.auto
     if auto and (auto.on or (not instant and verdict(auto, w) ~= "confirmed")) then return false end
-    if lapsedHere(auto, r.lease) and (r.lease.told or 0) < 5 then return false end
     return not offOwed[rentalKey(ref, r.id)]
+end
+
+-- The lapse of rental `r`, owed to its owner once it left the row (tellEnded).
+local function endedNotice(ref, row, r, now)
+    if not (r.auto and r.auto.why == "lapsed_terms" and r.lease and r.lease.lapsed) then return end
+    local planRow = P.row(ref.m, ref.p)
+    local ends = row.ends or {}
+    ends[#ends + 1] = { rental = r.id, at = now, paidUntil = r.lease.paidUntil, graceUntil = r.lease.paidUntil + r.lease.G,
+        code = r.lease.lapsed == "autorenew_not_allowed" and "ended_off" or "ended",
+        nameKey = planRow and planRow.nameKey or nil }
+    row.ends = ends
 end
 
 -- Notices for phase changes and the reminder, then a due renewal, rental by rental; rentals that
 -- ended for good leave the row. Returns whether the row still needs scanning.
 local function visitLease(ref, now, w)
     local row = rowOf(ref.m, ref.u, ref.p)
-    if not row or not row.rentals or #row.rentals == 0 then return false end
+    if not row or not row.rentals or (#row.rentals == 0 and row.ends == nil) then return false end
     if standsStill(ref.m, ref.p) then return true end   -- frozen, or not registered yet: kept as is
     local spec = P.product(ref.m, ref.p)
     local instant = spec ~= nil and spec.instant
@@ -1709,15 +1731,17 @@ local function visitLease(ref, now, w)
     row = rowOf(ref.m, ref.u, ref.p)
     local kept = {}
     for _, r in ipairs(row.rentals) do
-        if not ended(ref, r, now, w, instant) then kept[#kept + 1] = r end
+        if ended(ref, r, now, w, instant) then endedNotice(ref, row, r, now) else kept[#kept + 1] = r end
     end
     if #kept ~= #row.rentals then
         -- no money, no units, nothing any quote priced (a renewal of it fails as rental_unknown): no
         -- journal and no new revision, or every open quote of the account would go stale
         row.rentals = kept
         changed(ref.m, ref.u, ref.p)
+        row = rowOf(ref.m, ref.u, ref.p)
     end
-    return #kept > 0
+    if row.ends then tellEnded(ref, row, now, seen) end
+    return #row.rentals > 0 or row.ends ~= nil
 end
 
 -- Promotions (pp proven saved) and activations (payment proven saved), then a refresh of every
@@ -1807,7 +1831,7 @@ function E.init(r)
                     leased = leased or r.lease ~= nil
                     paying = paying or r.pend ~= nil
                 end
-                if leased then trackLease(ref) end
+                if leased or row.ends then trackLease(ref) end
                 if paying then wait(ref) end
             end
         end
