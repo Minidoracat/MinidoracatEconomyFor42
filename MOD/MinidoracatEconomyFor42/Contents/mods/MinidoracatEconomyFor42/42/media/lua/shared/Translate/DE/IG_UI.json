@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Zu viele Anfragen; versuche es gleich erneut.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "Das Tageslimit dieser Mod ist erreicht; versuche es morgen erneut.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "Das Limit ist erreicht (dauerhafte Plätze oder gemietete Summe).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "Die Mietbedingungen haben sich geändert und den neuen wurde nicht zugestimmt.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "Dieser Preis ist nicht mehr bekannt; fordere einen neuen an.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "Der Preis ist abgelaufen; fordere einen neuen an.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "Die Bedingungen haben sich geändert; lies sie vor dem Bestätigen erneut.",

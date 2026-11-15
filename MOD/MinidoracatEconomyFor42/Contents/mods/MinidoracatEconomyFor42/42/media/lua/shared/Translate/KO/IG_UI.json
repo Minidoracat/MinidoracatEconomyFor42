@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "요청이 너무 많습니다. 잠시 후 다시 시도하세요.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "이 모드의 일일 한도에 도달했습니다. 내일 다시 시도하세요.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "한도에 도달했습니다 (영구 슬롯 또는 대여 합계).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "대여 조건이 바뀌었고 새 조건에 동의하지 않았습니다.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "더 이상 알 수 없는 가격입니다. 새 가격을 요청하세요.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "가격이 만료되었습니다. 새 가격을 요청하세요.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "조건이 바뀌었습니다. 확인하기 전에 다시 읽으세요.",

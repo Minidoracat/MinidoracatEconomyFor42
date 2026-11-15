@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Demasiadas solicitudes; inténtalo de nuevo en breve.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "Se alcanzó el límite diario de este mod; inténtalo de nuevo mañana.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "Se alcanzó el límite (espacios en propiedad o total alquilado).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "Cambiaron las condiciones del alquiler y no se aceptaron las nuevas.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "Ese precio ya no se conoce; pide uno nuevo.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "El precio caducó; pide uno nuevo.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "Las condiciones cambiaron; vuelve a leerlas antes de confirmar.",

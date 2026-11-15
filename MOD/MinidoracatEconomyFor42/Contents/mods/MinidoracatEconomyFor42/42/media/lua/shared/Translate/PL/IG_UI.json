@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Za dużo żądań; spróbuj za chwilę.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "Osiągnięto dzienny limit tego moda; spróbuj jutro.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "Osiągnięto limit (miejsca na stałe lub łączna liczba wynajętych).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "Zmieniły się warunki najmu, a nowe nie zostały zaakceptowane.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "Ta cena nie jest już znana; poproś o nową.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "Cena wygasła; poproś o nową.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "Warunki się zmieniły; przeczytaj je ponownie przed potwierdzeniem.",

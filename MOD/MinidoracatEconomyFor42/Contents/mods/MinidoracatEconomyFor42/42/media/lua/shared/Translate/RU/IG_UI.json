@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Слишком много запросов; попробуйте чуть позже.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "Дневной лимит этого мода исчерпан; попробуйте завтра.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "Лимит достигнут (ячеек навсегда или всего в аренде).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "Условия аренды изменились, а новые не были приняты.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "Эта цена больше не известна; запросите новую.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "Срок цены истёк; запросите новую.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "Условия изменились; прочитайте их снова перед подтверждением.",

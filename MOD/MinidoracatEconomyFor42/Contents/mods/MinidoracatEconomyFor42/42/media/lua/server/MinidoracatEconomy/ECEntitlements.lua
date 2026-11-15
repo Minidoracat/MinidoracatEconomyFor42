@@ -66,7 +66,8 @@
 -- first attempt at paidUntil, insufficient funds retried every hour until grace ends (then the
 -- consent lapses), other errors paused and retried without touching the consent. A server that was
 -- down for several periods charges one period and starts it at activation - no arrears. A consent
--- the plan stopped charging is told to its owner stage by stage (tellPaused, lease.told).
+-- the plan stopped charging is told to its owner stage by stage (tellPaused, lease.told) and lapses
+-- when grace ends (lapsed_terms); that rental leaves only once its owner heard it ended.
 --
 -- Frozen products (registerProduct{ freezeWhenAbsent = true }, API rev 4): the flag is kept on the
 -- plan row. A flagged product that is not registered in this process stands still - no expiry, no
@@ -1477,15 +1478,23 @@ end
 -- ponytail: one toast per rental (at most E.RENTALS_MAX per product per visit); aggregate if
 -- hosts sell many small rentals.
 local TOLD_CODE = { "paused", "paused", "due", "due", "ended" }
+-- The plan lapsed this consent at the end of this very period (a period paid since starts later).
+local function lapsedHere(auto, lease)
+    return auto ~= nil and auto.on == false and auto.why == "lapsed_terms" and (auto.at or 0) >= lease.paidUntil + lease.G
+end
 local function tellPaused(ref, r, planRow, now)
     local lease, auto = r.lease, r.auto
     if r.pend then return end                       -- a payment on the way: its period says the rest
-    if not (auto and auto.on) then
+    -- a consent the plan lapsed stays at "ended" until its owner heard it (ended() keeps the rental)
+    local lapsed = lapsedHere(auto, lease)
+    if not (auto and auto.on) and not lapsed then
         lease.told = nil
         return
     end
     local stage = 0                                 -- 0: the plan charges it again
-    if planAllows(auto, planRow.values) then
+    if lapsed then
+        stage = 5
+    elseif planAllows(auto, planRow.values) then
         if lease.told == nil then return end
     else
         local due = lease.paidUntil
@@ -1500,8 +1509,8 @@ local function tellPaused(ref, r, planRow, now)
         else
             stage = 1
         end
-        if stage <= (lease.told or 0) then return end
     end
+    if stage > 0 and stage <= (lease.told or 0) then return end
     local player = S.onlineLogin(ref.u)
     if not player then return end
     local ok, placed = pcall(function() return player:getCurrentSquare() ~= nil end)
@@ -1512,9 +1521,10 @@ local function tellPaused(ref, r, planRow, now)
         graceUntil = lease.paidUntil + lease.G }, ref.m))
 end
 
+local LAPSE_WHY = { limit_reached = "lapsed_limit", terms_changed = "lapsed_terms" }
 local function lapse(ref, row, r, err, now)
     -- journaled like a cancel; owed while it cannot be written
-    consentOff(ref, row, r, err == "limit_reached" and "lapsed_limit" or "lapsed_funds", now)
+    consentOff(ref, row, r, LAPSE_WHY[err] or "lapsed_funds", now)
     row.notice = { code = "renewal_failed", at = now, error = err, rental = r.id }
 end
 
@@ -1536,8 +1546,17 @@ local function tryRenew(ref, row, r, now, w)
         nextRetry[k] = now + E.SYSTEM_RETRY_MS
         return
     end
-    -- paused_terms: the snapshot says so; nothing is charged on terms nobody agreed to
-    if not consented(r, planRow, now, w, spec.instant) then return end
+    -- paused_terms: the snapshot says so; nothing is charged on terms nobody agreed to. At the end of
+    -- grace such a consent lapses like one without money, and the rental ends (user 2026-11-15)
+    if not consented(r, planRow, now, w, spec.instant) then
+        local auto = r.auto
+        if auto and auto.on and r.pend == nil and not planAllows(auto, planRow.values)
+            and now >= r.lease.paidUntil + r.lease.G then
+            lapse(ref, row, r, "terms_changed", now)
+            changed(ref.m, ref.u, ref.p)
+        end
+        return
+    end
     local rev, auto = row.rev, r.auto
     local terms, err = priceOf(ref.m, planRow, row, ref.u, "rental", nil, now, w, id)
     if terms then
@@ -1584,13 +1603,15 @@ local function tryRenew(ref, row, r, now, w)
 end
 
 -- A rental that ended for good: past grace, nothing paid on the way, no consent that could still
--- charge it (off and proven saved, no off line owed). Nothing is left to show or to renew. An
--- instant product's off consent needs no save: its off line is in the journal, so a crash brings the
--- rental back with the line that switches it off again, and it ends again.
+-- charge it (off and proven saved, no off line owed), and, when the plan lapsed it, its owner told.
+-- Nothing is left to show or to renew. An instant product's off consent needs no save: its off line
+-- is in the journal, so a crash brings the rental back with the line that switches it off again, and
+-- it ends again.
 local function ended(ref, r, now, w, instant)
     if r.pend or leaseLive(r.lease, now) then return false end
     local auto = r.auto
     if auto and (auto.on or (not instant and verdict(auto, w) ~= "confirmed")) then return false end
+    if lapsedHere(auto, r.lease) and (r.lease.told or 0) < 5 then return false end
     return not offOwed[rentalKey(ref, r.id)]
 end
 

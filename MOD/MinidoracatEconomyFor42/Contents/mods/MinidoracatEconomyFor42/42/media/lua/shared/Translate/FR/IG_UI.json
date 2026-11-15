@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Trop de requêtes ; réessayez dans un instant.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "La limite quotidienne de ce mod est atteinte ; réessayez demain.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "La limite est atteinte (emplacements achetés ou total loué).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "Les conditions de location ont changé et les nouvelles n'ont pas été acceptées.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "Ce prix n'est plus connu ; demandez-en un nouveau.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "Le prix a expiré ; demandez-en un nouveau.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "Les conditions ont changé ; relisez-les avant de confirmer.",

@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Too many requests; try again shortly.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "This mod's daily limit is reached; try again tomorrow.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "The limit is reached (outright slots or rented total).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "The rental terms changed and the new terms were not agreed to.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "That price is no longer known; ask for a new one.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "The price expired; ask for a new one.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "The terms changed; read them again before confirming.",

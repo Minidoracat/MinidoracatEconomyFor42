@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "請求太頻繁，請稍後再試。",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "這個 MOD 今天的額度已用完，請明天再試。",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "已達上限（買斷名額或租用合計）。",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "租用方案變了，新方案沒有同意。",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "這個報價已不存在，請重新取得價格。",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "報價已過期，請重新取得價格。",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "條款已變更，確認前請重新閱讀。",

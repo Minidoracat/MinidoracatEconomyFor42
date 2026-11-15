@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "要求が多すぎます。少し待ってから再試行してください。",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "このMODの本日の上限に達しました。明日再試行してください。",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "上限に達しました（買い切り枠数またはレンタル合計）。",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "レンタル条件が変わり、新しい条件に同意していません。",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "この見積もりはもう存在しません。価格を取り直してください。",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "見積もりの期限が切れました。価格を取り直してください。",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "条件が変更されました。確定する前にもう一度読んでください。",

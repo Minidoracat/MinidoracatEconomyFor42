@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Solicitações demais; tente de novo em instantes.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "O limite diário deste mod foi atingido; tente de novo amanhã.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "O limite foi atingido (espaços definitivos ou total alugado).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "As condições do aluguel mudaram e as novas não foram aceitas.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "Esse preço não é mais conhecido; peça um novo.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "O preço expirou; peça um novo.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "As condições mudaram; leia de novo antes de confirmar.",

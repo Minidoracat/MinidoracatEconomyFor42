@@ -2505,6 +2505,7 @@
   "IGUI_MinidoracatEconomy_Ent_Error_rate_limited": "Çok fazla istek; birazdan tekrar deneyin.",
   "IGUI_MinidoracatEconomy_Ent_Error_cap_exceeded": "Bu modun günlük limitine ulaşıldı; yarın tekrar deneyin.",
   "IGUI_MinidoracatEconomy_Ent_Error_limit_reached": "Limite ulaşıldı (kalıcı yuvalar veya kiralık toplam).",
+  "IGUI_MinidoracatEconomy_Ent_Error_terms_changed": "Kiralama koşulları değişti ve yeni koşullar kabul edilmedi.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_unknown": "Bu fiyat artık bilinmiyor; yeni bir fiyat isteyin.",
   "IGUI_MinidoracatEconomy_Ent_Error_quote_expired": "Fiyatın süresi doldu; yeni bir fiyat isteyin.",
   "IGUI_MinidoracatEconomy_Ent_Error_stale_terms": "Koşullar değişti; onaylamadan önce yeniden okuyun.",

@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+133 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+135 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1625,7 +1625,8 @@ do
     end
     tm.lease = function(u) return E.peek("TestVM", u, "terms_slot").rentals[1].lease end
     tm.bal = function(u) return L.getBalance(u, "survivor").available end
-    for _, u in ipairs({ "tm1", "tm2", "tm3" }) do tm.rent(u, true) end
+    tm.order = {}
+    for _, u in ipairs({ "tm1", "tm2", "tm3" }) do tm.order[u] = tm.rent(u, true) end
     tm.rent("tm4", false)                      -- no consent: nothing to pause
     tm.tick()
     ctx.clearSent()
@@ -1678,23 +1679,39 @@ do
     local due = tm.heard(tm.p1)[3] or {}
     ctx.setNow(tm.paid1 + 12 * HOUR + 1000)   -- half the grace
     tm.tick()
-    ctx.setNow(tm.paid1 + 24 * HOUR + 1000)   -- past grace
+    ctx.setNow(tm.paid1 + 24 * HOUR + 1000)   -- past grace: the consent lapses
+    tm.lauto = E.peek("TestVM", "tm3", "terms_slot").rentals[1].auto
     tm.tick()
     tm.tick()
     check(tm.codes(tm.p1) == "paused,paused,due,due,ended" and due.graceUntil == tm.paid1 + 24 * HOUR
-        and tm.lease("tm1").told == 5 and tm.bal("tm1") == tm.bal1 and tm.lease("tm1").paidUntil == tm.paid1,
-        "each stage is told once: the reminder, due with the grace end, half the grace, ended; nothing is charged")
+        and tm.bal("tm1") == tm.bal1 and #E.peek("TestVM", "tm1", "terms_slot").rentals == 0 and offLinesOf("tm1") == 1,
+        "each stage is told once: the reminder, due with the grace end, half the grace, ended; nothing is charged; the consent lapses with its off line and the rental ends")
+    local kept = E.peek("TestVM", "tm3", "terms_slot").rentals[1] or {}
+    check(tm.lauto.on == true and (kept.auto or {}).on == false and kept.auto.why == "lapsed_terms" and kept.lease.told == nil
+        and offLinesOf("tm3") == 1 and #E.peek("TestVM", "tm2", "terms_slot").rentals == 0,
+        "an offline owner's lapsed rental stays until the owner hears it ended")
     fire("OnServerStarted")
     tm.tick()
     ctx.setOnline({ ann, bob, boss, tm.p1, tm.p2, tm.p3 })
     tm.tick()
     tm.tick()
-    check(#tm.heard(tm.p1) == 5 and tm.codes(tm.p3) == "ended" and tm.lease("tm3").told == 5,
-        "a restart tells nothing again; an owner offline the whole time hears only the stage reached, once, after login")
+    check(#tm.heard(tm.p1) == 5 and tm.codes(tm.p3) == "ended" and #E.peek("TestVM", "tm3", "terms_slot").rentals == 0,
+        "a restart tells nothing again; an owner offline the whole time hears only ended, once, after login, and the rental then ends")
+    local bal3 = tm.bal("tm3")
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 250 }))
+    tm.tick()
+    check(tm.bal("tm1") == tm.bal1 and tm.bal("tm3") == bal3 and #tm.heard(tm.p3) == 1
+        and vm.quote("tm3", "terms_slot", "rental", nil, tm.order.tm3).error == "rental_unknown",
+        "the plan back at the old terms charges no lapsed consent, and the ended rental cannot be renewed")
 end
 do
-    tm.o5 = tm.rent("tm1", true)               -- a second rental under the 300 plan (tm1's first stays)
-    tm.r5 = function() return E.peek("TestVM", "tm1", "terms_slot").rentals[2] end
+    tm.o5 = tm.rent("tm1", true)               -- a new rental for tm1
+    tm.r5 = function()
+        for _, r in ipairs(E.peek("TestVM", "tm1", "terms_slot").rentals) do
+            if r.id == tm.o5 then return r end
+        end
+        return {}
+    end
     ctx.clearSent()
     local off = vm.previewPlan("terms_slot", tm.vals({ rentalEnabled = false }))
     vm.setPlan("terms_slot", tm.vals({ rentalEnabled = false }))
