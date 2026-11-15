@@ -18,7 +18,8 @@
 --              q,                        -- its units, fixed for its whole life
 --              lease = { price, D, G, R, cur, amt, tr, k?, start, paidUntil, cycle, last, phase?, reminded?, told?, lapsed? } | nil,
 --                (lapsed: the error code of a plan lapse at the end of this period; ended() keeps the
---                rental until its owner heard it)
+--                rental until its owner heard it. told: the paused-terms stage its owner heard; 0 on
+--                an auto-renewal of a period whose owner never heard resumed, owed on login)
 --              pend  = { o, q, price, D, G, R, cur, amt, tr, k?, renewal?, auto?, epoch, seq, ts, tx } | nil,
 --              auto  = { on, gen, price?, cur?, D?, tr, rev, why?, epoch, seq, at } | nil }
 --   D/G/R are milliseconds (period, grace, reminder); price is the rent per unit; tr is the plan
@@ -435,6 +436,8 @@ local function nextLeaseOf(pend, lease, at)
         k = pend.k, start = continuing and lease.start or at,
         paidUntil = (continuing and lease.paidUntil or at) + pend.D * (pend.k or 1),
         cycle = (lease and lease.cycle or 0) + 1, last = pend.o, phase = "active",
+        -- an auto-renewal whose owner heard paused / due but never resumed still owes resumed
+        told = (pend.auto and lease and lease.told) and 0 or nil,
     }, continuing
 end
 
@@ -548,7 +551,8 @@ local function loadJournal(now)
         local row = rowOf(rec.src, rec.acct, rec.prod)
         local why = "cancel_replayed"
         if type(rec.lapsed) == "string" then
-            why, lapses[#lapses + 1] = "lapsed_terms", rec
+            why = "lapsed_terms"
+            lapses[#lapses + 1] = rec
         end
         consentOff({ m = rec.src, u = rec.acct, p = rec.prod }, row, rentalOf(row, rec.rental), why, now, true)
     end
@@ -1661,6 +1665,8 @@ local function visitLease(ref, now, w)
     local spec = P.product(ref.m, ref.p)
     local instant = spec ~= nil and spec.instant
     local planRow = P.row(ref.m, ref.p)
+    -- a provisional plan stands in for one that no longer validates: it is no new terms to tell or lapse on
+    if planRow and planRow.provisional then planRow = nil end
     -- a renewal replaces the row: walk the ids and read the row again for each
     local ids = {}
     for i, r in ipairs(row.rentals) do ids[i] = r.id end
@@ -1688,11 +1694,13 @@ local function visitLease(ref, now, w)
             if code then
                 row.notice = { code = code, at = now, rental = id }
                 changed(ref.m, ref.u, ref.p)
+                row = rowOf(ref.m, ref.u, ref.p)   -- listeners run inside changed() and may replace the row
+                r = rentalOf(row, id)
             end
-            if planRow then tellPaused(ref, r, planRow, now, seen) end
-            local auto = r.auto
-            local lapsed = planRow ~= nil and termsLapse(ref, row, r, planRow, now)
-            if not lapsed and auto and auto.on and not r.pend and now >= lease.paidUntil
+            if planRow and r and r.lease then tellPaused(ref, r, planRow, now, seen) end
+            local auto = r and r.auto
+            local lapsed = planRow ~= nil and r ~= nil and r.lease ~= nil and termsLapse(ref, row, r, planRow, now)
+            if not lapsed and auto and auto.on and not r.pend and r.lease and now >= r.lease.paidUntil
                 and (instant or verdict(auto, w) == "confirmed") then
                 tryRenew(ref, row, r, now, w)
             end

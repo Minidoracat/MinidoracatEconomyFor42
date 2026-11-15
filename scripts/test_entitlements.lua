@@ -1,7 +1,7 @@
 --[[
 Generic entitlements (API rev 2) - behaviour scenarios, run by scripts/smoke_harness.lua after every
 other scenario. The harness passes its fake PZ globals, clock and `check`; this file loads nothing of
-its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+143 here).
+its own. Every check counts toward the harness EXPECTED_ASSERTIONS (+147 here).
 
 Native boundaries faked here (and only these): the companion's durable.json marker. Money, ModData,
 journal file, events and commands all go through the real modules.
@@ -1801,6 +1801,65 @@ do
     tm.tick()
     check(owed == "" and tm.codes(tm.p8) == "ended" and #E.peek("TestVM", "tm8", "terms_slot").rentals == 0,
         "ended waits until the lapse is in the journal: a crash before that would bring the consent back")
+end
+do
+    tm.p9, tm.p10 = fakePlayer("tm9"), fakePlayer("tm10")
+    ctx.setOnline({ ann, bob, boss, tm.p9, tm.p10 })
+    tm.rent("tm9", true)
+    tm.rent("tm10", true)
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 390 }))
+    tm.tick()                                  -- both hear paused
+    ctx.setOnline({ ann, bob, boss, tm.p10 })  -- tm9 leaves
+    local l9, l10 = tm.lease("tm9"), tm.lease("tm10")
+    local bal9, bal10 = tm.bal("tm9"), tm.bal("tm10")
+    ctx.setNow(l10.paidUntil + 1000)
+    tm.tick()                                  -- tm10 hears due
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 380 }))   -- back inside grace
+    tm.tick()
+    check(tm.codes(tm.p10) == "paused,due,resumed" and bal10 - tm.bal("tm10") == 380
+        and tm.lease("tm10").paidUntil > l10.paidUntil and tm.lease("tm10").told == nil,
+        "the plan back inside grace: the online owner hears resumed, then the agreed terms are charged once")
+    ctx.setOnline({ ann, bob, boss, tm.p9, tm.p10 })
+    tm.tick()
+    check(bal9 - tm.bal("tm9") == 380 and tm.lease("tm9").paidUntil > l9.paidUntil
+        and tm.codes(tm.p9) == "paused,resumed" and tm.lease("tm9").told == nil,
+        "an owner away when the plan came back and renewed hears resumed after login: the last word was not 'no charge'")
+end
+do
+    local o11 = tm.rent("tm11", true)          -- offline owner: lapse, renew by hand, refund that period
+    vm.setPlan("terms_slot", tm.vals({ rentalPrice = 400 }))
+    tm.tick()
+    local l11 = tm.lease("tm11")
+    ctx.setNow(l11.paidUntil + l11.G + 1000)
+    tm.tick()
+    local byHand = vm.purchase("tm11", vm.quote("tm11", "terms_slot", "rental", nil, o11).quote.id)
+    tm.tick()
+    local refund = vm.refund("tm11", "terms_slot", byHand.orderId, { reason = "test" })
+    tm.tick()
+    local back = tm.lease("tm11")
+    tm.p11 = fakePlayer("tm11")
+    ctx.setOnline({ ann, bob, boss, tm.p9, tm.p10, tm.p11 })
+    tm.tick()
+    tm.tick()
+    check(byHand.ok and refund.ok and back.paidUntil == l11.paidUntil and back.lapsed == "terms_changed"
+        and tm.codes(tm.p11) == "ended" and #E.peek("TestVM", "tm11", "terms_slot").rentals == 0,
+        "a refund back to a lapsed period brings its mark back: the rental waits for its offline owner to hear ended")
+    local pv = vm.registerProduct({ id = "terms_prov", nameKey = "K", defaults = defaults(), instant = true })
+    tm.p12 = fakePlayer("tm12")
+    ctx.setOnline({ ann, bob, boss, tm.p12 })
+    L.credit("tm12", "survivor", 5000, "SYSTEM_MINT", { requestId = "ent-tm-tm12", reasonCode = "t" })
+    local p12 = vm.purchase("tm12", vm.quote("tm12", "terms_prov", "rental").quote.id)
+    local s12 = vm.getEntitlement("tm12", "terms_prov")
+    vm.setAutoRenew("tm12", "terms_prov", true, s12.entitlement.revision, s12.plan.revision, p12.orderId)
+    S.modData().entitlements.plans.TestVM.terms_prov.values = defaults({ permanentPrice = 0 })   -- an older version's plan
+    local again = vm.registerProduct({ id = "terms_prov", nameKey = "K", defaults = defaults({ rentalPrice = 999 }), instant = true })
+    local l12 = E.peek("TestVM", "tm12", "terms_prov").rentals[1].lease
+    ctx.setNow(l12.paidUntil + l12.G + 1000)
+    tm.tick()
+    local r12 = E.peek("TestVM", "tm12", "terms_prov").rentals[1] or {}
+    check(pv.ok and again.ok and P.row("TestVM", "terms_prov").provisional == true and tm.codes(tm.p12) == ""
+        and (r12.auto or {}).why ~= "lapsed_terms" and r12.lease ~= nil,
+        "a provisional plan is no change of terms: nothing is told and no consent lapses on it")
 end
 do
     local SLOW = "terms_slow"                  -- a product that waits for saves (not instant)
