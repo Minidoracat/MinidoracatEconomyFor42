@@ -1,23 +1,36 @@
-[h1]Minidoracat Economy for B42 42.22.2-0.26.0[/h1]
-[i]2026-11-12[/i]
+[h1]Minidoracat Economy for B42 42.22.2-0.27.0[/h1]
+[i]2026-11-15[/i]
 
 [b]English summary[/b]
 [list]
-[*] New for server hosts: edit the shop catalog file or the listing whitelist file on the server and it takes effect by itself within about half a minute. No restart, no Reload button.
-[*] A file with a mistake leaves the current settings in place; the reason shows on the Shop or Listing whitelist page of Economy Administration when you reopen it.
-[*] Orders sent from a screen that still shows the old prices are refused instead of going through at the new price.
-[*] Fixed: a list written in the wrong format in either file could be read as "no items" or "no categories"; it is now refused.
+[*] New sandbox option for server hosts, "Old copies the server cannot verify": after a crash recovery, choose what happens to an old copy of an item that was already listed, auctioned or sold when it sits in another account's hands or the server cannot confirm it is the very item: leave it as an ordinary item (default), hold it for administrators, or take it back automatically.
+[*] Behaviour change: 0.26.0 and earlier always took such copies back. After this update the default leaves them in place; set the option to "Take back automatically" to keep the old behaviour.
+[*] An old copy of the very item the same account transferred is still taken back at login, as before.
+[*] Stronger checks on delivered items and crash recovery.
+[*] Fixed: the server log no longer shows an item sync error right after a player logs in. Items and money were never affected.
 [/list]
 
 [h3]✨ 新增[/h3]
 [list]
-[*] [b]服主直接改伺服器上的商店目錄檔或上架白名單檔，不用重啟也不用按「重新載入」[/b]：改好存檔後，伺服器大約半分鐘內會自己套用，在線玩家的商店畫面跟著更新。管理台的「重新載入」按鈕照舊可用，按了立刻生效。
-[*] 檔案內容有錯時，伺服器繼續用原本的設定；錯誤原因在重新打開管理台的商店頁或白名單頁時看得到，改好再存一次就會套用。
-[*] 玩家畫面還停在舊價格時送出的購買或出售會被擋下，不會用新價格成交。
+[*] [b]服主可以選擇怎麼處理「伺服器無法確認的舊副本」[/b]：伺服器崩潰回復後，玩家身上偶爾會留著一件已經上架、拍賣或賣出的物品舊副本。舊副本在別的帳號手上，或伺服器無法確認就是轉出的那一件時，由新的沙盒選項決定，共三檔：
+[list]
+[*] [b]當成一般物品（預設）[/b]：不移除，物品照常使用與交易；只有伺服器的紀錄不足以判斷的副本會先列入待對帳。
+[*] [b]交給管理員對帳[/b]：不移除，在管理員的待對帳清單留一筆紀錄，這件物品暫時不能再經由經濟系統轉出；管理員可以在那筆紀錄按「移除」逐件收回。
+[*] [b]自動收回[/b]：伺服器直接收回。
+[/list]
+[*] 後兩檔收回的物品都會保留快照，管理員可以從稽核紀錄把它寄回。
+[*] 這個選項也可以在遊戲內「經濟管理台 → 設定」直接改，不用重啟。
+[/list]
+
+[h3]🔄 變更[/h3]
+[list]
+[*] [b]升級後預設不再自動收回上面那類舊副本[/b]：0.26.0 和更早的版本一律自動收回；想維持原本的做法，請把選項改成「自動收回」。
+[*] 更新前就已經轉出的物品，它們的舊副本在預設值下會先列入待對帳，不會自動收回。
+[*] 同一個帳號轉出的同一件物品，舊副本照舊在登入時自動收回；穿在身上、掛在腰帶上或裝著東西的背包類物品不會被自動收回，改列入待對帳。
+[*] 強化了交付物品來源與崩潰回復對帳的驗證。
 [/list]
 
 [h3]🔧 修正[/h3]
 [list]
-[*] 手改檔案時把商品清單或分類清單寫錯格式，以前可能被讀成「沒有任何商品」或「沒有任何分類」；現在會被拒收並沿用原本的設定。
-[*] 白名單檔存在但伺服器暫時讀不到時，不會再被預設內容蓋掉。
+[*] 玩家剛登入時，伺服器紀錄檔偶爾出現一段物品同步失敗的錯誤。物品與錢都不受影響，現在不再出現。
 [/list]

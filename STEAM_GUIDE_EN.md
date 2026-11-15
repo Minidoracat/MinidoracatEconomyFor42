@@ -527,12 +527,13 @@ Three separate role lists, picked from the server's native roles, custom roles i
 [h3]Crash duplicates[/h3]
 [list]
 [*] [b]How it happens[/b]: when the world save is newer than a player save, the older save can bring back items already listed, auctioned or sold to the system, possibly already passed to someone else.
-[*] [b]Taken back[/b]: once the trade is in a world save, the copy is taken back at the holder's login with a notice, and each piece leaves a SYSTEM line in Audit (noting it when the original trader is not the holder).
-[*] [b]Left pending[/b]: worn, hotbar and non-empty bag items, or two pieces with the same ID.
+[*] [b]Taken back[/b]: for the very item the same account transferred, once the trade is in a world save the copy is taken back at the holder's login with a notice and a SYSTEM line in Audit.
+[*] [b]Every other case is the owner's choice[/b]: when the copy is in another account's hands, or the server cannot confirm it is the very item that was transferred, the sandbox option "Old copies the server cannot verify" decides: leave as ordinary item (default, nothing removed), hold for administrators (nothing removed; it goes on the Reconciliation list, where an admin can press Remove on that record), or take back automatically. Items taken back by the last two keep a snapshot.
+[*] [b]Left pending[/b]: worn, hotbar and non-empty bag items, two pieces with the same ID, or copies the server's records cannot place.
 [/list]
 [h3]Restore[/h3]
 [list]
-[*] [b]How[/b]: select that Audit line, press Restore and give a reason; a copy rebuilt as it was when reclaimed is mailed to the holder.
+[*] [b]How[/b]: select that Audit line, press Restore and give a reason; a copy rebuilt as it was when reclaimed is mailed to the holder. When Restore is unavailable on a line, that reclaim kept no snapshot (the very item an account claimed from the mailbox and then transferred itself).
 [*] [b]Limits[/b]: once per reclaim; only the latest 200 are kept.
 [*] [b]Only real mistakes[/b]: the original still exists in the world, so [b]restore only real mistakes[/b], or there will be one extra.
 [/list]
