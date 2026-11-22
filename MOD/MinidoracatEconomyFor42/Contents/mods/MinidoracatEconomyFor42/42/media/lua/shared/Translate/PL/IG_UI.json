@@ -2362,7 +2362,7 @@
   "IGUI_MinidoracatEconomy_Ent_On": "Wł.",
   "IGUI_MinidoracatEconomy_Ent_Off": "Wył.",
   "IGUI_MinidoracatEconomy_Ent_Hours": "%1 godz.",
-  "IGUI_MinidoracatEconomy_Ent_Days": "Dni: %1",
+  "IGUI_MinidoracatEconomy_Ent_Days": "%1 dni",
   "IGUI_MinidoracatEconomy_Ent_RefundTitle": "Zwrot",
   "IGUI_MinidoracatEconomy_Ent_RefundLine": "Zwrot %1 dla %2",
   "IGUI_MinidoracatEconomy_Ent_Effect_units": "Odbiera miejsca kupione na stałe: %1.",

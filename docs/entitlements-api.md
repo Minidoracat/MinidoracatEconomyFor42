@@ -94,7 +94,7 @@ local result = source.registerProduct({
 - `entitlement.rentalCommitted`：計入 `rentalLimit` 的名額，即有效租約加上有待確認付款的租約。`entitlement.rentalsMax`：每個帳號最多幾張租約（伺服器固定 10）。
 - `entitlement.rentals`：依建立順序的租約清單，每張 `{ id, quantity, state, paidUntil?, graceUntil?, terms?, autoRenew, autoRenewState, autoTerms?, termsRevision?, pendingOrderId?, autoPending? }`。`id` 是建立它的訂單 id；`state` 為 `pending/active/grace/expired/paused_terms/paused_system/frozen`（條款改變、租用合計超過 `rentalLimit` 或租用停售時為 `paused_terms`；`frozen` 只出現在 `freezeWhenAbsent` 商品缺席時，見「缺席時凍結」）；`autoRenewState` 為 `off/pending_on/on/pending_off/paused_terms/paused_system`，其中 `paused_terms` 表示目前方案的租金、幣別或每期天數和同意時記下的不同（或租用合計超過上限），要玩家重新同意；`autoPending=true` 表示這張的待確認付款是自動續租發起的。即時生效商品的租約不會是 `pending`，同意直接是 `on`。
 - `rentals[i].terms = { price, amount, currency, days, periods, graceHours }`：這張租約正在跑（或已付款待生效）的那筆訂單的條款，`price` 是每個名額每期的租金、`days` 是每期天數、`periods` 是那筆訂單付了幾期（自動續租與沒帶 `periods` 的訂單是 1）、`amount` 是那筆訂單的總額（名額數 × `price` × `periods`）。`rentals[i].autoTerms = { price, currency, days }`：自動續租開啟時，玩家同意的條款。
-- `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`（`notice.rental` 指出是哪張租約）。
+- `entitlement.durable`（status、source、seq 等），以及可選的 `wait`、`notice`（`notice.rental` 指出是哪張租約）。`notice` 整個商品只有一份，存的是最後發生的一件事（續租、扣款失敗、提醒、寬限、到期等），後來的會蓋掉前面的：玩家在線時每件事都會各推一次 snapshot（`entitlement.changed`），離線期間發生好幾件時，上線讀到的只有最後一件。要知道每張租約現在的狀況，讀 `rentals[i].state`，不靠 `notice`。
 - `balances`（以貨幣 ID 索引的 available、reserved、rev）、最近最多 20 筆 `orders`；租用訂單帶 `rental`（所屬租約 id）與 `periods`（這筆付了幾期，至少 1），排程自動續租的訂單帶 `auto=true`，已生效的訂單帶 `activatedAt`。每筆另帶付款交易 `txId` 與退款判斷（見「管理台」）：`refundable`、`refundEffect?`、`previousUntil?`、`rentalNo?`；已退款的訂單帶 `refund = { amount, at, txId, durable = { status } }`（不帶執行退款的管理員，那只在稽核紀錄）。
 
 Economy 玩家錢包的「名額」分頁會列出名額紀錄：客戶端送 `entitlement.list`（無參數），伺服器回呼叫者登入名下每個商品的 snapshot（上面的格式，另帶來源的 `sourceNameKey?`、`sourceName?`；`sourceName` 只帶 `displayName` 的 `CH`、`EN` 兩個鍵），最多 30 項（`E.LIST_MAX`，超過時 `more = true`）；ModData 未就緒回 `not_ready`。名額照登入名記，同一帳號的其他角色不合併。
@@ -327,6 +327,7 @@ end
 - 租約 id 與其他 id 同規則（1–96 字元字串、不含控制字元），不合格時本機回 `nil, "invalid_args"`。
 - `requestList(cb?)`／`getList()`／`onPush(fn)`：Economy 錢包「名額」分頁用。`requestList` 讀回自己全部商品（同一條排隊／合併／逾時規則），每個 snapshot 也寫進 `getState` 的快取；`getList()` 回 `{ entries, more }`（上一次成功讀到的商品，各取快取中最新的一份）與上一次讀取的錯誤；`onPush` 在每個 `entitlement.changed` 之後呼叫。
 - 快取裡 snapshot 的 `balances` 跟著錢包更新：只有錢變動時（簽到、領信、轉帳、別的 MOD 扣款）伺服器不會送新的 snapshot，客戶端每收到一次 `wallet.changed` 或 `wallet.state`，就把餘額寫進快取裡帶有該幣別的 snapshot：換成新的表（`getState` 回傳的表會不同），並呼叫 `onChanged`。整合 MOD 顯示餘額不必另外重送 `requestState`；以 `getState` 回傳的表有沒有換來決定重排的畫面也會立即更新。42.21.0-0.23.0 和更早的客戶端不會更新，要等下一次讀取或推送。
+- `remainingText(ms)`：剩餘時間的顯示文字，兩天以上是整天數（`Ent_Days`），不到兩天是小時（`Ent_Hours`，至少 1），所以天數一定是複數。放進自己的句子時注意兩件事：有些語言的縮寫以句點結尾（德文 `Std.`、波蘭文 `godz.`、俄文 `дн.`），`%N` 後面再接句點會變成「..」，句子要把 `%N` 放在句中或句尾不加句點；字串只有數字加單位，不含「剩」「還有」這類字，前後文由你的句子提供。
 
 `Client.openAdminPlans(sourceMod?, productId?)` 開啟管理台的唯讀方案總覽並選到該產品；讀取權限仍由伺服器重新驗證。
 

@@ -864,13 +864,15 @@ end)()
     check(tag("paused_terms", disallowed) == T .. "Ent_AutoTag_disallowed", "the plan does not allow auto-renew")
     check(tag("paused_terms", nil) == T .. "Ent_AutoTag_paused", "no plan to compare: a plain pause, no invented reason")
 
-    -- rental lines: what is left in days, or hours below a day
+    -- rental lines: what is left in days from two days up, hours below that (no "1 days")
     local now = 1000000000
     local line = E.rentalLine(1, { quantity = 2, state = "active", paidUntil = now + 7 * 86400000 + 3 * 3600000 }, now, 0)
     check(line == T .. "Ent_RentalLine_active|1|2|t" .. tostring(now + 7 * 86400000 + 3 * 3600000) .. "|" .. T .. "Ent_Days|7",
         "an active rental shows its end and whole days left")
     check(has(E.rentalLine(1, { quantity = 2, state = "paused_terms", paidUntil = now + 5 * 3600000 }, now, 0),
         T .. "Ent_Hours|5"), "under a day left is shown in hours")
+    check(E.remainingText(2 * 86400000) == T .. "Ent_Days|2", "two days left is the first day count")
+    check(E.remainingText(2 * 86400000 - 1) == T .. "Ent_Hours|48", "just under two days is shown in hours, never as 1 day")
     check(E.rentalLine(2, { quantity = 1, state = "grace", paidUntil = now - 10, graceUntil = now + 900 }, now, 0)
         == T .. "Ent_RentalLine_grace|2|1|t" .. tostring(now + 900), "a rental in grace shows the grace end")
     check(E.rentalLine(3, { quantity = 1, state = "expired" }, now, 0) == T .. "Ent_RentalLine_expired|3|1", "expired")

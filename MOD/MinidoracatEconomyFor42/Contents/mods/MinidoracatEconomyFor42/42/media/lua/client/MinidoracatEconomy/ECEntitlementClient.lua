@@ -645,10 +645,11 @@ function E.autoTag(r, plan, ent)
     return getText(T .. "Ent_AutoTag_" .. reason), "warn"
 end
 
--- Whole days while a day or more is left, hours below that.
+-- Whole days while two days or more are left, hours below that: the day count is never 1, so the
+-- plural-only Ent_Days ("%1 days", "%1 dni") reads right in every language.
 function E.remainingText(ms)
     ms = math.max(0, tonumber(ms) or 0)
-    if ms >= DAY_MS then return getText(T .. "Ent_Days", tostring(math.floor(ms / DAY_MS))) end
+    if ms >= 2 * DAY_MS then return getText(T .. "Ent_Days", tostring(math.floor(ms / DAY_MS))) end
     return getText(T .. "Ent_Hours", tostring(math.max(1, math.ceil(ms / HOUR_MS))))
 end
 
