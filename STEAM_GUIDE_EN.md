@@ -254,6 +254,7 @@ A server option.
 [*] [b]Same versions[/b]: keep server and all clients on the same versions; fully restart both after each update.
 [*] [b]World saves[/b]: set a suitable world save interval and always shut down normally.
 [*] [b]companion[/b]: deploy it on the server host (see "World saves and companion") so item transfers settle and player identities import automatically.
+[*] [b]Recommended: JavaPatch[/b]: dedicated servers should also install [url=https://github.com/Minidoracat/MinidoracatJavaPatchFor42]MinidoracatJavaPatchFor42[/url], which strengthens server-side validation of item data; see its README for installation.
 [*] [b]Review settings[/b]: in game, press Admin in the Economy Center to open [b]Economy Administration[/b] (it opens on Overview) and review each Settings tab and the authorized roles.
 [/olist]
 === ⚙️ Admin overview

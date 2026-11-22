@@ -254,6 +254,7 @@ https://steamcommunity.com/sharedfiles/filedetails/?id=3801482125
 [*] [b]同版[/b]：伺服器與所有客戶端保持同版；每次更新後，伺服器與客戶端都要完整重新啟動。
 [*] [b]世界存檔[/b]：設定合適的世界存檔間隔，並用正常程序關服。
 [*] [b]companion[/b]：在伺服器主機部署 companion（見「世界存檔與 companion」），物品轉移才能正常結案，玩家身分也會自動匯入。
+[*] [b]建議搭配 JavaPatch[/b]：專用伺服器建議另外安裝 [url=https://github.com/Minidoracat/MinidoracatJavaPatchFor42]MinidoracatJavaPatchFor42[/url]，加強伺服器端對物品資料的驗證；安裝方式見它的 README。
 [*] [b]檢查設定[/b]：進遊戲在經濟中心按「管理」開啟「經濟管理台」（預設開在「總覽」），檢查「設定」各分頁與授權角色。
 [/olist]
 === ⚙️ 管理台總覽
