@@ -677,11 +677,17 @@ decodeCompact = function(s, pos)
     return num, pos + #numStr
 end
 
+-- A leading UTF-8 BOM is skipped, not stripped, so error positions still count from the text's
+-- start: Kahlua reads a file saved "UTF-8 with BOM" with one U+FEFF char first (getFileReader
+-- keeps it); the three raw bytes are the same mark in a byte string.
 function EC.jsonDecode(s)
     if type(s) ~= "string" then return nil, "not a string" end
-    local value, np = decodeCompact(s, 1)
+    local start = 1
+    if string.byte(s, 1) == 65279 then start = 2
+    elseif string.sub(s, 1, 3) == "\239\187\191" then start = 4 end
+    local value, np = decodeCompact(s, start)
     if value ~= nil and np == #s + 1 then return value end
-    value, np = decodeValue(s, 1)
+    value, np = decodeValue(s, start)
     if type(np) ~= "number" then return nil, np end
     np = skipSpace(s, np)
     if np <= #s then return decodeError(s, np, "trailing garbage") end

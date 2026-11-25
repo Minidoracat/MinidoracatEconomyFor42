@@ -1224,10 +1224,30 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 3    -- +3: second review of the lap
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: final review of the paused-terms notices (scripts/test_entitlements.lua scenario 14: the plan back inside grace tells resumed then charges once; an owner away when the plan came back and renewed hears resumed after login; a refund back to a lapsed period keeps the rental for ended; a provisional plan tells and lapses nothing)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a lapsed rental leaves at grace end without its owner (scripts/test_entitlements.lua scenario 14: the ended notice waits on the row, reaches the owner and expires after E.ENDED_KEEP_MS also while the product is frozen; the refund back to a lapsed period moved to a non-instant product; the notice-expiry check replaced the instant refund one)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: a paused consent is told again on each new login (scripts/test_entitlements.lua scenario 14: once per login across visits, stopped-by-server too, none after agreeing, after auto-renew off or after paying by hand; a new stage of a hand-paid period is still told once; agreeing again or the plan back, even unheard, ends the hand-paid hush)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: a catalog.json and a whitelist.json saved with a UTF-8 BOM load (the raw bytes and Kahlua's U+FEFF char)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
     else failures = failures + 1; io.write("  FAIL  ", label, "\n") end
+end
+-- Loads text saved "UTF-8 with BOM" both ways a reader can see it and leaves the plain text in the
+-- file: the raw bytes EF BB BF, then Kahlua's one U+FEFF char (string.byte gives 65279), which a
+-- byte string cannot hold, so "\254" stands in for it while load runs. A global: the main chunk
+-- is at Lua's 200-local limit.
+function loadWithBoms(path, text, load)
+    files[path] = { lines = { "\239\187\191" .. text }, opens = 0 }
+    local asBytes = load()
+    files[path] = { lines = { "\254" .. text }, opens = 0 }
+    local byte = string.byte
+    string.byte = function(s, i, j)
+        if (i == nil or i == 1) and j == nil and type(s) == "string" and byte(s, 1) == 254 then return 65279 end
+        return byte(s, i, j)
+    end
+    local ok, asChar = pcall(load)
+    string.byte = byte
+    files[path] = { lines = { text }, opens = 0 }
+    if not ok then error(asChar, 0) end
+    return asBytes, asChar
 end
 local function lastSent(command)
     for i = #sentCommands, 1, -1 do
@@ -3336,7 +3356,12 @@ local ghost = cmd(boss, "admin.catalog", { action = "reload" })
 check(ghost.ok == false and type(ghost.detail) == "table" and ghost.detail.code == "unknown_item" and ghost.detail.id == "ghost"
     and ghost.detail.field == "item" and ghost.detail.item == "Base.Nope" and ghost.detail.index == 1 and Shop.fileStatus().count == 13,
     "an unknown item type names the offending SKU and keeps the previous catalog")
-files["MinidoracatEconomy/catalog.json"] = { lines = { '{"items":[{"id":"only","item":"Base.Twine","qty":2,"price":7,"dailyCap":0,"category":"z"}]}' }, opens = 0 }
+check((function()
+    local asBytes, asChar = loadWithBoms("MinidoracatEconomy/catalog.json",
+        '{"items":[{"id":"only","item":"Base.Twine","qty":2,"price":7,"dailyCap":0,"category":"z"}]}',
+        function() return cmd(boss, "admin.catalog", { action = "reload" }) end)
+    return asBytes.ok == true and asBytes.count == 1 and asChar.ok == true and asChar.count == 1
+end)(), "a catalog.json saved with a UTF-8 BOM loads (the raw bytes and Kahlua's U+FEFF char)")
 local good = cmd(boss, "admin.catalog", { action = "reload" })
 check(good.ok == true and good.count == 1 and good.items[1].id == "only" and good.items[1].remaining == nil and good.revision ~= rev, "a valid file replaces the catalog and bumps the revision")
 check(cmd(mod, "admin.catalog", { action = "reload" }).error == "forbidden" and cmd(mod, "admin.catalog", { action = "list" }).ok == true, "reload needs the write gate, list only the read gate")
@@ -3667,6 +3692,10 @@ check(Codec.rebuild(appleSnap).age == 2, "no elapsed time, no extra age")
 -- snapshot / rebuild round trip incl. fluid + allowed modData
 files["MinidoracatEconomy/whitelist.json"] = { lines = { '{"categories":["ToolWeapon","VehicleMaintenance"],"types":["Base.Nails"],"excludeTypes":["Base.Saw"]}' }, opens = 0 }
 check(Codec.load() == true and Codec.status().counts.types == 1, "a hand-edited whitelist loads")
+check((function()
+    local asBytes, asChar = loadWithBoms("MinidoracatEconomy/whitelist.json", files["MinidoracatEconomy/whitelist.json"].lines[1], Codec.load)
+    return asBytes == true and asChar == true and Codec.status().counts.types == 1
+end)(), "a whitelist.json saved with a UTF-8 BOM loads (the raw bytes and Kahlua's U+FEFF char)")
 check(Codec.check(instanceItem("Base.Nails")) == true and Codec.check(instanceItem("Base.Saw")) == false and Codec.check(instanceItem("Base.Bandage")) == false,
     "types / excludeTypes / categories from the file are honoured")
 local can = instanceItem("Base.PetrolCan"); can:getFluidContainer():addFluid(Fluid.Get("Petrol"), 3.5); can.condition = 7; can.modData.Keep = "yes"; can.modData[EC.PLAYER_MODDATA_KEY] = { mailId = "x" }
