@@ -80,7 +80,6 @@
 4	client/MinidoracatEconomy/ECClient.lua|send|1<2
 2	client/MinidoracatEconomy/ECClient.lua|setIdentity|1<2
 5	client/MinidoracatEconomy/ECClient.lua|snapshotRead|1<3
-5	client/MinidoracatEconomy/ECClient.lua|weightText|1<2
 1	client/MinidoracatEconomy/ECDetailWindow.lua|isOpen|1<2
 5	client/MinidoracatEconomy/ECDetailWindow.lua|opRight|5<7
 18	client/MinidoracatEconomy/ECDetailWindow.lua|opText|5<7
@@ -155,10 +154,8 @@
 2	server/MinidoracatEconomy/ECIdentity.lua|standing|1<2
 1	server/MinidoracatEconomy/ECIdentity.lua|verdict|1<2
 3	server/MinidoracatEconomy/ECIdentity.lua|writeLines|1<2
-1	server/MinidoracatEconomy/ECMailbox.lua|add|2<3
 2	server/MinidoracatEconomy/ECMailbox.lua|anomaly|3<4
 2	server/MinidoracatEconomy/ECMailbox.lua|carryHeavy|2<3
-2	server/MinidoracatEconomy/ECMailbox.lua|claim|2<3
 1	server/MinidoracatEconomy/ECMailbox.lua|deliver|3<4
 1	server/MinidoracatEconomy/ECMailbox.lua|noteTaken|7<8
 1	server/MinidoracatEconomy/ECMailbox.lua|reclaimStaleCopies|3<4
@@ -179,6 +176,4 @@
 3	server/MinidoracatEconomy/ECStats.lua|census|1<2
 4	server/MinidoracatEconomy/ECTradeRadioRelay.lua|setState|2<3
 14	server/MinidoracatEconomy/ECTransfer.lua|fail|1<2
-1	server/MinidoracatEconomy/ECWallet.lua|eventPaths|1<3
-1	server/MinidoracatEconomy/ECWallet.lua|tail|4<7
 2	server/MinidoracatEconomy/ECWanted.lua|closeOrder|2<3

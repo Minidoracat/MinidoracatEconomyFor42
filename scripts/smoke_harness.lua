@@ -979,7 +979,12 @@ ISMoveableSpriteProps = {
         end
         return false
     end,
-    canRotateMoveable = function(_self, _sq, _obj, _origProps) movCalls[#movCalls + 1] = "canRotate"; return true end,
+    -- ... records what the guard forwards past _object (vanilla's _origProps, ISMoveableCursor.lua:628,640)
+    canRotateMoveable = function(_self, _sq, _obj, ...)
+        movCalls[#movCalls + 1] = "canRotate"
+        rotateArgs = { n = select("#", ...), ... }
+        return true
+    end,
     canScrapObject = function(_self, _chr) movCalls[#movCalls + 1] = "canScrap"; return { canScrap = true }, 100, "Electrical" end,
     scrapObjectInternal = function(_self, _chr, _def, _sq, _obj, _res, _chance, _perk)
         movCalls[#movCalls + 1] = "scrapInternal"
@@ -1225,6 +1230,7 @@ EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 4    -- +4: final review of the paus
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: a lapsed rental leaves at grace end without its owner (scripts/test_entitlements.lua scenario 14: the ended notice waits on the row, reaches the owner and expires after E.ENDED_KEEP_MS also while the product is frozen; the refund back to a lapsed period moved to a non-instant product; the notice-expiry check replaced the instant refund one)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 8    -- +8: a paused consent is told again on each new login (scripts/test_entitlements.lua scenario 14: once per login across visits, stopped-by-server too, none after agreeing, after auto-renew off or after paying by hand; a new stage of a hand-paid period is still told once; agreeing again or the plan back, even unheard, ends the hand-paid hush)
 EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 2    -- +2: a catalog.json and a whitelist.json saved with a UTF-8 BOM load (the raw bytes and Kahlua's U+FEFF char)
+EXPECTED_ASSERTIONS = EXPECTED_ASSERTIONS + 1    -- +1: the rotate guard forwards exactly the arguments past the object (two-argument vanilla call, three-argument cursor call)
 local function check(ok, label)
     assertions = assertions + 1
     if ok then io.write("  PASS  ", label, "\n")
@@ -14885,6 +14891,12 @@ check(ISMoveableSpriteProps.canScrapObject({ object = plain2 }, boss).canScrap =
 check(ISMoveableSpriteProps.canRotateMoveable({}, sq, guarded) == false
     and ISMoveableSpriteProps.canRotateMoveable({}, sq, plain2) == true,
     "an owned device cannot be rotated, a vanilla one can")
+rotateArgs = nil
+ISMoveableSpriteProps.canRotateMoveable({}, sq, plain2)
+local rotateTwo, origProps = rotateArgs, {}
+ISMoveableSpriteProps.canRotateMoveable({}, sq, plain2, origProps)
+check(rotateTwo ~= nil and rotateTwo.n == 0 and rotateArgs ~= nil and rotateArgs.n == 1 and rotateArgs[1] == origProps,
+    "the rotate guard forwards exactly what it got: nothing past the object from vanilla's two-argument call, the cursor's original props from its three-argument one")
 check(ISDeviceBatteryAction.isValid({ deviceData = guarded:getDeviceData(), isRemove = false }) == false
     and ISDeviceMediaAction.isValid({ deviceData = guarded:getDeviceData(), isRemove = false,
         secondaryItem = { getMediaType = function() return -1 end } }) == false,
