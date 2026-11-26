@@ -244,7 +244,8 @@ local function jobOwner(player)
     return "?" .. S.claimedName(player)
 end
 
-function W.tail(player, command, paths, extra, projector, strictJson, options)
+function W.tail(player, command, paths, extra, ...)
+    local projector, strictJson, options = ...
     options = type(options) == "table" and options or {}
     local owner = type(options.owner) == "string" and options.owner or nil
     local key = (owner or jobOwner(player)) .. ":" .. command
@@ -309,7 +310,8 @@ end
 -- days and today is the 31st). With a range it is every UTC day covering fromMs .. toMs-1; the
 -- caller bounds the span first (the admin endpoints refuse more than 62 days).
 -- Server-built from timestamps: no client string ever reaches a path.
-function W.eventPaths(ms, fromMs, toMs)
+function W.eventPaths(ms, ...)
+    local fromMs, toMs = ...
     local keys = {}
     if fromMs and toMs then
         for day = math.floor(fromMs / 86400000), math.floor((toMs - 1) / 86400000) do

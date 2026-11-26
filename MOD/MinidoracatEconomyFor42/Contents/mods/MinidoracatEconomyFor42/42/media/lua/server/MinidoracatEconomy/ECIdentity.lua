@@ -906,7 +906,8 @@ Id.onlineVerdicts, Id.announce = onlineVerdicts, announce
 -- decided and recorded the way the policy does it (nothing written with `peek`), or nil while none
 -- of its logins used the economy. ECMerge's account of the text's group, so the policy and the
 -- merge never name two different accounts.
-function Id.primaryOfText(text, peek)
+function Id.primaryOfText(text, ...)
+    local peek = ...
     local d = sidFromText(text, Id.SID_EXACT)
     if d == nil then return nil end
     local key, set = Id.sidText(d), bySid[d]

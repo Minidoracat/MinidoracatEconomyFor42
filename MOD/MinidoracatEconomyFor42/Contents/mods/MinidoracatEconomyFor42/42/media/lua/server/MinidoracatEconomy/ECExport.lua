@@ -265,7 +265,8 @@ end
 -- the admin panel reads (newest first via X.auditEntries). `private` fields go to the two files
 -- only: the ring is Global ModData, and any logged-in client can ask for a whole Global ModData
 -- table (GlobalModDataRequestPacket.java:15,32), so a SteamID must never be written there.
-function X.audit(fields, private)
+function X.audit(fields, ...)
+    local private = ...
     local ms = EC.now()
     local rec = baseRecord("audit", ms)
     for k, v in pairs(fields or {}) do rec[k] = v end
@@ -311,7 +312,8 @@ end
 -- than AUDIT_RING); a positive integer `limit` below that narrows the reply, anything else is
 -- ignored. Each copy is stamped with rolledBack for its own (epoch, seq) so the panel can mark
 -- operations that did not survive into the save the current process loaded (spec 19.6).
-function X.auditEntries(limit)
+function X.auditEntries(...)
+    local limit = ...
     local ring = md.audit
     local n = ring.count
     if type(limit) == "number" and limit == math.floor(limit) and limit > 0 and limit < n then

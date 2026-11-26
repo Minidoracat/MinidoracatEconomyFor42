@@ -255,7 +255,8 @@ end
 -- auction's seller), written from the server's own record of the deal and from nowhere else. A
 -- letter with no third party - a shop purchase, a return, anything written before this field -
 -- simply has none: it is never guessed from a listing that is already gone.
-function M.add(username, fields, restoredId)
+function M.add(username, fields, ...)
+    local restoredId = ...
     username = S.accountOf(username)
     local o = owner(username, true)
     local id = restoredId or S.newId()
@@ -514,7 +515,8 @@ end
 -- freed for `wanted` more weight to fit. A reading the engine does not give is left out, never
 -- guessed. `heavy` = a letter carried in the hands (M.prepare): the client names the hands, not
 -- the weights.
-function M.roomFields(out, player, unitWeight, wanted, heavy)
+function M.roomFields(out, player, unitWeight, ...)
+    local wanted, heavy = ...
     out.unitWeight = unitWeight
     if heavy then out.heavy = true end
     local ok, free, cap = pcall(function()
@@ -815,7 +817,8 @@ end
 -- Item counts accompany, and never replace, the boolean delivery result.
 -- `prepared` is an M.prepare result for this same letter made earlier in the same synchronous
 -- handler (a purchase prepares before it debits): its objects are reused instead of built twice.
-function M.claim(player, mailId, prepared)
+function M.claim(player, mailId, ...)
+    local prepared = ...
     -- the account's box; the save that takes the letter is this login's (entry.claimLogin)
     local login = S.login(player)
     local username = S.accountOf(login)

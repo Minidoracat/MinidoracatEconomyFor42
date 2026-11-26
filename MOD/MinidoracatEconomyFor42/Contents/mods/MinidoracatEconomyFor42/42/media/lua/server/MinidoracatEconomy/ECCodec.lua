@@ -214,7 +214,8 @@ end
 
 -- withLists adds the four arrays (the admin page edits from them); admin.system only wants counts.
 -- A refused file is errorCode + errorDetail, the same pair the catalog's file status carries.
-function Codec.status(withLists)
+function Codec.status(...)
+    local withLists = ...
     local s = { loadedAt = wl.loadedAt, counts = wl.counts, path = Codec.FILE,
         errorCode = wl.error and "whitelist_invalid" or nil, errorDetail = wl.error }
     if withLists then
@@ -840,7 +841,8 @@ end
 -- channel skips the whitelist (its mod declared it tradeable) and container_not_empty (the mod
 -- carries the contents), and its handler's check(item, player, channel) is asked last: a refusal
 -- or an error is unique_refused with the handler's detail as the fourth value.
-function Codec.check(item, player, channel)
+function Codec.check(item, ...)
+    local player, channel = ...
     local fullType = call(item, "getFullType")
     if type(fullType) ~= "string" then return false, "invalid_item" end
     if wl.excludeTypes[fullType] then return false, "not_whitelisted", "excluded" end
@@ -956,7 +958,8 @@ local function encoded(v) return v == nil and "" or EC.jsonEncode(v) end
 -- SKU's own send name (ECShop): a copy carrying exactly that name is compared as if it carried the
 -- fresh copy's own, so what the shop sold under that name comes back as new; any other name is
 -- still "renamed". The reference stays cached per fullType, whatever name is allowed.
-function Codec.isCanonical(item, fullType, allowName)
+function Codec.isCanonical(item, fullType, ...)
+    local allowName = ...
     if call(item, "getFullType") ~= fullType then return false, "other" end
     local ref = canonical[fullType]
     if not ref then

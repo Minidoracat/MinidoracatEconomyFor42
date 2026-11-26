@@ -456,8 +456,8 @@ end
 
 -- Tables with a positive #len and no other keys encode as arrays; everything else as objects
 -- with keys sorted (deterministic lines). Non-string keys are stringified. Depth is capped.
-function EC.jsonEncode(value, depth)
-    depth = depth or 0
+function EC.jsonEncode(value, ...)
+    local depth = ... or 0
     local t = type(value)
     if t == "string" then return jsonString(value) end
     if t == "number" then return jsonNumber(value) end
@@ -863,7 +863,8 @@ EC.ICON_HASH_LEN = 8
 -- reduced mod 2^32 every step). Same function on both ends; the hex form names the cache file.
 function EC.hashInit() return 5381 end
 
-function EC.hashUpdate(hash, byteString, fromIndex, toIndex)
+function EC.hashUpdate(hash, byteString, ...)
+    local fromIndex, toIndex = ...
     local h = hash
     for i = fromIndex or 1, toIndex or #byteString do
         h = (h * 33 + string.byte(byteString, i)) % 4294967296

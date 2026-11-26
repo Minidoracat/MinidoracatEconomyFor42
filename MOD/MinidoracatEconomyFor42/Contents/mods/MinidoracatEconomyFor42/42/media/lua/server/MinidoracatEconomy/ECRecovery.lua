@@ -225,7 +225,8 @@ end
 
 -- Retire the tickets this drain has answered. `upto` is the mark taken before the answering
 -- pass ran, so a ticket that pass took anew (a read that still has to finish) survives.
-function R.clearProofTickets(username, upto)
+function R.clearProofTickets(username, ...)
+    local upto = ...
     local owned = type(username) == "string" and proofTickets[username] or nil
     if not owned then
         if upto == nil and type(username) == "string" then proofSightings[username] = nil end
@@ -700,7 +701,8 @@ end
 -- postcondition, the container read is (ItemContainer.java:630-632). No held record is touched
 -- here - the caller decides what a partial result means. `holder`: the removal is announced once
 -- that player can be addressed (S.afterPlaced) instead of now.
-function R.dropRow(row, holder)
+function R.dropRow(row, ...)
+    local holder = ...
     if row.gone then return true end
     local ok, err = pcall(function() row.container:Remove(row.item) end)
     local checked, present = pcall(function() return row.container:contains(row.item) end)
@@ -755,7 +757,8 @@ end
 -- The automatic path. A legacy-stamped object is never removed here: this server cannot name its
 -- source, so it is held instead. Removing one is an administrator's decision, taken against a
 -- named set of ids with a written reason (admin.recovery), and it goes through R.dropRow.
-function R.removeUnit(username, key, row, fields, holder)
+function R.removeUnit(username, key, row, fields, ...)
+    local holder = ...
     if row.gone then return true end
     local origin = R.originOf(row.item)
     local allowed = origin ~= nil and origin.src == "mail" and not row.duplicate
@@ -1266,7 +1269,8 @@ end
 -- The anchor of a claim. From evidence (a stamp, a reattached unit) the true claim moment is
 -- unknown, only that it is not after this save: 0 = "every save of this life has it". A live
 -- claim is also written to the ledger, so a world rollback cannot forget that it happened.
-function R.anchorClaim(entry, player, login, fromProof)
+function R.anchorClaim(entry, player, login, ...)
+    local fromProof = ...
     entry.claimSess, entry.claimEpoch = R.session(player).sid, md.meta.epoch
     entry.claimHours = (not fromProof) and hoursOf(player) or 0
     entry.claimLife = R.life(login)

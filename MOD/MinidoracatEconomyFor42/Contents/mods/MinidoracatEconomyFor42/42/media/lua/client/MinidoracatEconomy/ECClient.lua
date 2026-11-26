@@ -704,7 +704,8 @@ local DELIVERY_CODES = { mailbox = true, backpack_full = true, delivery_failed =
 -- A weight as the player reads it (one decimal, like the buy dialog). `round` = "up" for an
 -- amount to free (never shown smaller than the server asked for), "down" for room left (never
 -- shown larger than there is, so "weight - room = what to free" adds up on screen), nil = nearest.
-function C.weightText(value, round)
+function C.weightText(value, ...)
+    local round = ...
     local v = tonumber(value) or 0
     if round == "up" then v = math.ceil(v * 10 - 1e-6) / 10
     elseif round == "down" then v = math.floor(v * 10 + 1e-6) / 10 end

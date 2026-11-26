@@ -265,7 +265,8 @@ end
 -- the honest choice: a wallet changed by something that commits no transaction - a migration,
 -- another mod, an operator's edit - would otherwise sit behind a stale snapshot for seconds
 -- while the page claims to be showing the economy as it is.
-function St.supply(ms)
+function St.supply(...)
+    local ms = ...
     local snap = census(ms or EC.now(), true)
     return snap.supply, snap.at
 end

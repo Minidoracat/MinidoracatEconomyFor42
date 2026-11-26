@@ -163,9 +163,9 @@ function TR.installGuards()
     end
     -- ...and the sprite swap, so the cursor cannot re-face the device either.
     local canRotate = props.canRotateMoveable
-    props.canRotateMoveable = function(self, _square, _object, _origProps)
+    props.canRotateMoveable = function(self, _square, _object, ...)
         if TR.isOwned(_object) then return false end
-        return canRotate(self, _square, _object, _origProps)
+        return canRotate(self, _square, _object, ...)
     end
 
     -- scrap: the gate first (its result table is what the info panel renders, so the original

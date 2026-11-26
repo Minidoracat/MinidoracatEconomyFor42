@@ -83,7 +83,9 @@ local function install()
 
 
     local baseReadPresets = RWMChannel.readPresets
-    function RWMChannel:readPresets(_selected, keepShared)
+    -- native calls this with no argument (RWMChannel.lua:215): Kahlua does not promise nil for an omitted fixed parameter
+    function RWMChannel:readPresets(...)
+        local _selected, keepShared = ...
         baseReadPresets(self, _selected)
         refresh(self, keepShared)
     end
